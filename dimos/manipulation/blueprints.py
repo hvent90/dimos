@@ -32,7 +32,7 @@ import math
 from dimos.agents.mcp.mcp_client import McpClient
 from dimos.agents.mcp.mcp_server import McpServer
 from dimos.control.coordinator import ControlCoordinator
-from dimos.core.coordination.blueprints import autoconnect
+from dimos.core.blueprints import autoconnect
 from dimos.core.global_config import global_config
 from dimos.core.transport import LCMTransport
 from dimos.hardware.sensors.camera.realsense.camera import RealSenseCamera
@@ -50,7 +50,7 @@ from dimos.robot.foxglove_bridge import FoxgloveBridge  # TODO: migrate to rerun
 _xarm6_planner_cfg = _catalog_xarm6(
     name="arm",
     adapter_type="xarm" if global_config.xarm6_ip else "mock",
-    address=global_config.xarm6_ip,
+    address=global_config.xarm6_ip or None,
 )
 
 xarm6_planner_only = ManipulationModule.blueprint(
@@ -69,13 +69,13 @@ xarm6_planner_only = ManipulationModule.blueprint(
 _left_arm_cfg = _catalog_xarm6(
     name="left_arm",
     adapter_type="xarm" if global_config.xarm6_ip else "mock",
-    address=global_config.xarm6_ip,
+    address=global_config.xarm6_ip or None,
     y_offset=0.5,
 )
 _right_arm_cfg = _catalog_xarm6(
     name="right_arm",
     adapter_type="xarm" if global_config.xarm6_ip else "mock",
-    address=global_config.xarm6_ip,
+    address=global_config.xarm6_ip or None,
     y_offset=-0.5,
 )
 
@@ -98,7 +98,7 @@ dual_xarm6_planner = ManipulationModule.blueprint(
 _xarm7_cfg = _catalog_xarm7(
     name="arm",
     adapter_type="xarm" if global_config.xarm7_ip else "mock",
-    address=global_config.xarm7_ip,
+    address=global_config.xarm7_ip or None,
 )
 
 xarm7_planner_coordinator = autoconnect(
@@ -170,7 +170,7 @@ _XARM_PERCEPTION_CAMERA_TRANSFORM = Transform(
 _xarm7_perception_cfg = _catalog_xarm7(
     name="arm",
     adapter_type="xarm" if global_config.xarm7_ip else "mock",
-    address=global_config.xarm7_ip,
+    address=global_config.xarm7_ip or None,
     pitch=math.radians(45),
     add_gripper=True,
     tf_extra_links=["link7"],
