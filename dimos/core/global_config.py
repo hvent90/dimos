@@ -12,11 +12,14 @@
 # See the License for the specific language governing permissions and
 # limitations under the License.
 
+import platform
 import re
 
+from pydantic import Field
 from pydantic_settings import BaseSettings, SettingsConfigDict
 
 from dimos.constants import DEFAULT_BUILD_NATIVE
+from dimos.core.transport import ZENOH_AVAILABLE
 from dimos.models.vl.types import VlModelName
 from dimos.visualization.rerun.constants import (
     RERUN_ENABLE_WEB,
@@ -28,6 +31,12 @@ from dimos.visualization.rerun.constants import (
 
 def _get_all_numbers(s: str) -> list[float]:
     return [float(x) for x in re.findall(r"-?\d+\.?\d*", s)]
+
+
+def _default_transport() -> str:
+    if platform.system() == "Darwin" and ZENOH_AVAILABLE:
+        return "zenoh"
+    return "lcm"
 
 
 class GlobalConfig(BaseSettings):
@@ -61,7 +70,7 @@ class GlobalConfig(BaseSettings):
     planner_robot_speed: float | None = None
     mcp_port: int = 9990
     build_native: bool = DEFAULT_BUILD_NATIVE
-    transport: str = "lcm"
+    transport: str = Field(default_factory=_default_transport)
     dtop: bool = False
     obstacle_avoidance: bool = True
     detection_model: VlModelName = "moondream"

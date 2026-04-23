@@ -38,7 +38,7 @@ Self-hosted tests are marked with `@pytest.mark.self_hosted` (they need LFS, ROS
 ### Default suite
 
 ```bash
-./bin/pytest-fast
+CI=1 ./bin/pytest-fast
 ```
 
 This is the same as:
@@ -51,11 +51,15 @@ The default `addopts` in `pyproject.toml` includes a `-m` filter that excludes `
 
 ### Self-hosted tests
 
+For non-interactive runs, especially on macOS, prefer `CI=1`. This skips system configurator prompts and avoids test runs trying to change local multicast or sysctl state.
+
 ```bash
-./bin/pytest-slow
+CI=1 ./bin/pytest-slow
 ```
 
 (Shortcut for `pytest -m 'not (tool or mujoco)' dimos` — runs the default suite *and* self-hosted tests, but not `tool` or `mujoco`.)
+
+This includes slow agent and MCP-style integration tests in addition to slower transport and module tests. If one of those paths is broken, a failure can take close to a minute to surface because the harness waits for the agent flow to finish before timing out.
 
 When writing or debugging a specific self-hosted test, override `-m` yourself to run it:
 
