@@ -191,12 +191,32 @@ def _default_pubsubs(config: Any = None) -> list[SubscribeAllCapable[Any, Any]]:
     return [LCM()]
 
 
+def _resolve_pubsubs(config: Any) -> list[SubscribeAllCapable[Any, Any]]:
+    """Return explicit pubsubs when truly overridden, else transport defaults.
+
+    Older blueprints commonly passed ``pubsubs=[LCM()]`` as the effective
+    default. Preserve the newer transport-driven behavior for that legacy
+    value, but honor explicit non-default overrides such as custom backends.
+    """
+    fields_set: set[str] = cast("set[str]", getattr(config, "model_fields_set", set()))
+    pubsubs = cast(
+        "list[SubscribeAllCapable[Any, Any]] | None",
+        getattr(config, "pubsubs", None),
+    )
+    if "pubsubs" in fields_set and pubsubs is not None:
+        is_legacy_default = len(pubsubs) == 1 and isinstance(pubsubs[0], LCM)
+        if not is_legacy_default:
+            return pubsubs
+    return _default_pubsubs(getattr(config, "g", config))
+
+
 class Config(ModuleConfig):
     """Configuration for RerunBridgeModule.
 
-    The pubsubs field is accepted for backwards compatibility (existing blueprints
-    pass it), but ignored at start() — the actual pubsub backend is resolved
-    lazily from global_config.transport.
+    The pubsubs field is accepted for backwards compatibility. The legacy
+    ``[LCM()]`` value is treated as the old default and replaced by the
+    transport-driven runtime default. Explicit non-default overrides are still
+    honored.
     """
 
     pubsubs: list[SubscribeAllCapable[Any, Any]] = field(default_factory=lambda: [LCM()])
@@ -439,7 +459,7 @@ class RerunBridgeModule(Module):
         # Resolve pubsubs lazily — the module-level global_config singleton in worker
         # processes doesn't have CLI overrides. Use self.config.g which is the parent's
         # updated config, passed via the worker kwargs.
-        pubsubs = _default_pubsubs(self.config.g)
+        pubsubs = _resolve_pubsubs(self.config)
 
         for pubsub in pubsubs:
             logger.info(f"bridge listening on {pubsub.__class__.__name__}")
