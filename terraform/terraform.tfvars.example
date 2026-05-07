@@ -1,0 +1,6 @@
+aws_region           = "us-east-2"
+instance_type        = "t3.small"
+key_name             = "daneel-local"
+cf_teleop_app_id     = "620f45c4e8a372701e158ced3abbfb11"
+cf_teleop_app_secret = "your-secret-here"
+# jwt_secret         = ""  # Leave empty to auto-generate
