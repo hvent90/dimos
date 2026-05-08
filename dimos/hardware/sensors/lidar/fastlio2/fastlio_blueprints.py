@@ -16,19 +16,23 @@ from pathlib import Path
 
 from dimos.core.coordination.blueprints import autoconnect
 from dimos.core.core import rpc
-from dimos.core.stream import In
+from dimos.core.stream import In, Out
 from dimos.hardware.sensors.lidar.fastlio2.module import FastLio2
 from dimos.mapping.voxels import VoxelGridMapper
-from dimos.memory2.module import Recorder, RecorderConfig
+from dimos.memory2.module import MemoryModule, MemoryModuleConfig, Recorder, RecorderConfig
 from dimos.msgs.geometry_msgs.Transform import Transform
 from dimos.msgs.nav_msgs.Odometry import Odometry
 from dimos.msgs.sensor_msgs.PointCloud2 import PointCloud2
+from dimos.utils.testing.replay import timed_playback
 from dimos.visualization.rerun.bridge import RerunBridgeModule
 
 
 class FastlioMemoryConfig(RecorderConfig):
     db_path: str | Path = "recording_fastlio.db"
     default_frame_id: str = "base_link"
+
+
+voxel_size = 0.05
 
 
 class FastlioMemory(Recorder):
@@ -41,13 +45,53 @@ class FastlioMemory(Recorder):
         super().start()
 
         def _on_odom(msg: Odometry) -> None:
-            print(f"[FastlioMemory] odom: {msg.frame_id!r} -> {msg.child_frame_id!r} ts={msg.ts}")
             self.tf.publish(Transform.from_odometry(msg))
 
         self.odometry.subscribe(_on_odom)
 
 
-voxel_size = 0.05
+class FastlioReplayConfig(MemoryModuleConfig):
+    db_path: str | Path = "recording_fastlio.db"
+    speed: float = 1.0
+
+
+class FastlioReplay(MemoryModule):
+    """Replays a FastLIO2 recording (lidar + odometry) at real-time speed.
+
+    Drop-in replacement for ``FastLio2`` when feeding rerun off a recorded session.
+    Publishes odometry to tf so downstream visualizers see robot pose.
+    """
+
+    config: FastlioReplayConfig
+    lidar: Out[PointCloud2]
+    odometry: Out[Odometry]
+
+    @rpc
+    def start(self) -> None:
+        super().start()
+
+        lidar_stream = self.store.stream("lidar", PointCloud2)
+        odom_stream = self.store.stream("odometry", Odometry)
+
+        def _publish_odom(msg: Odometry) -> None:
+            self.tf.publish(Transform.from_odometry(msg))
+            self.odometry.publish(msg)
+
+        speed = self.config.speed
+
+        self.register_disposable(
+            timed_playback(
+                lambda: ((obs.ts, obs.data) for obs in lidar_stream),
+                speed=speed,
+            ).subscribe(self.lidar.publish)
+        )
+        self.register_disposable(
+            timed_playback(
+                lambda: ((obs.ts, obs.data) for obs in odom_stream),
+                speed=speed,
+            ).subscribe(_publish_odom)
+        )
+
 
 mid360_fastlio = autoconnect(
     FastLio2.blueprint(voxel_size=voxel_size, map_voxel_size=voxel_size, map_freq=-1),
@@ -60,21 +104,45 @@ mid360_fastlio_memory = autoconnect(
     FastlioMemory.blueprint(),
 ).global_config(n_workers=3, robot_model="mid360_fastlio2_memory")
 
+
+def _convert_global_map(msg: PointCloud2):
+    return msg.to_rerun(mode="boxes", voxel_size=voxel_size)
+
+
 mid360_fastlio_voxels = autoconnect(
     FastLio2.blueprint(),
-    VoxelGridMapper.blueprint(voxel_size=voxel_size, carve_columns=False),
+    VoxelGridMapper.blueprint(voxel_size=voxel_size, carve_columns=True),
     RerunBridgeModule.blueprint(
         visual_override={
-            "world/lidar": None,
+            "world/global_map": _convert_global_map,
         }
     ),
 ).global_config(n_workers=3, robot_model="mid360_fastlio2_voxels")
+
+mid360_fastlio_replay = autoconnect(
+    FastlioReplay.blueprint(),
+    RerunBridgeModule.blueprint(
+        visual_override={
+            "world/global_map": _convert_global_map,
+        }
+    ),
+).global_config(n_workers=2, robot_model="mid360_fastlio2_replay")
+
+mid360_fastlio_replay_voxels = autoconnect(
+    FastlioReplay.blueprint(),
+    VoxelGridMapper.blueprint(voxel_size=voxel_size, carve_columns=True),
+    RerunBridgeModule.blueprint(
+        visual_override={
+            "world/global_map": _convert_global_map,
+        }
+    ),
+).global_config(n_workers=2, robot_model="mid360_fastlio2_replay")
 
 mid360_fastlio_voxels_native = autoconnect(
     FastLio2.blueprint(voxel_size=voxel_size, map_voxel_size=voxel_size, map_freq=3.0),
     RerunBridgeModule.blueprint(
         visual_override={
-            "world/lidar": None,
+            "world/global_map": _convert_global_map,
         }
     ),
 ).global_config(n_workers=2, robot_model="mid360_fastlio2")
