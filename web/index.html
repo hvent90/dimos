@@ -55,6 +55,15 @@
         let activeRobot = null;
         const sendInterval = 1000 / 80;
 
+        // Probed once at boot. Quest browser → true; desktop/mobile → false.
+        let xrSupported = false;
+        const xrDetection = (async () => {
+            if (!navigator.xr) return false;
+            const ar = await navigator.xr.isSessionSupported('immersive-ar').catch(() => false);
+            if (ar) return true;
+            return await navigator.xr.isSessionSupported('immersive-vr').catch(() => false);
+        })().then(v => { xrSupported = v; return v; });
+
         // ─── API helpers ────────────────────────────────────────────────────
         function brokerOrigin() {
             return brokerOverride || window.location.origin;
@@ -339,6 +348,7 @@
         // ─── Robot list ─────────────────────────────────────────────────────
         async function loadRobots() {
             const listEl = document.getElementById('robots-list');
+            await xrDetection;
             try {
                 const robots = await api('GET', '/sessions');
                 // Broker returns a flat list per sessions.py:list_sessions response_model.
@@ -357,28 +367,17 @@
                                 ${s.rtt_ms ? `<span class="text-gray-500 text-xs ml-2">${Math.round(s.rtt_ms)}ms</span>` : ''}
                             </div>
                         </div>
-                        <div class="flex gap-2">
-                            <button data-id="${s.session_id}" data-name="${escHtml(s.robot_name)}"
-                                class="connect-vr-btn px-3 py-2 bg-dim-600 hover:bg-dim-700 text-white text-sm rounded-lg transition-colors disabled:opacity-50 disabled:cursor-not-allowed"
-                                ${s.state === 'active' ? 'disabled' : ''}>
-                                ${s.state === 'active' ? 'Busy' : 'VR'}
-                            </button>
-                            <button data-id="${s.session_id}" data-name="${escHtml(s.robot_name)}"
-                                class="connect-kb-btn px-3 py-2 bg-gray-700 hover:bg-gray-600 text-white text-sm rounded-lg transition-colors disabled:opacity-50 disabled:cursor-not-allowed"
-                                ${s.state === 'active' ? 'disabled' : ''}>
-                                Keyboard
-                            </button>
-                        </div>
+                        <button data-id="${s.session_id}" data-name="${escHtml(s.robot_name)}"
+                            class="connect-btn px-4 py-2 bg-dim-600 hover:bg-dim-700 text-white text-sm rounded-lg transition-colors disabled:opacity-50 disabled:cursor-not-allowed"
+                            ${s.state === 'active' ? 'disabled' : ''}>
+                            ${s.state === 'active' ? 'Busy' : 'Connect'}
+                        </button>
                     </div>
                 `).join('');
-                listEl.querySelectorAll('.connect-vr-btn').forEach(btn => {
+                const handler = xrSupported ? connectToRobot : connectKeyboard;
+                listEl.querySelectorAll('.connect-btn').forEach(btn => {
                     btn.addEventListener('click', (e) => {
-                        connectToRobot(e.target.dataset.id, e.target.dataset.name);
-                    });
-                });
-                listEl.querySelectorAll('.connect-kb-btn').forEach(btn => {
-                    btn.addEventListener('click', (e) => {
-                        connectKeyboard(e.target.dataset.id, e.target.dataset.name);
+                        handler(e.target.dataset.id, e.target.dataset.name);
                     });
                 });
             } catch (err) {
