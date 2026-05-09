@@ -26,6 +26,7 @@ from dimos.memory2.utils.formatting import FilterRepr
 if TYPE_CHECKING:
     from collections.abc import Callable, Iterator, Sequence
 
+    from dimos.memory2.stream import Stream
     from dimos.memory2.type.observation import Observation
 
 T = TypeVar("T")
@@ -136,19 +137,19 @@ def throttle(interval: float) -> FnIterTransformer[T, T]:
     return FnIterTransformer(_throttle)
 
 
-def measure_time(out):
-    """Returns a transformer that records per-frame downstream cost into *out*."""
+def measure_time(out: Stream[float]) -> FnIterTransformer[T, T]:
+    """Returns a transformer that records per-frame downstream cost (ms) into *out*."""
 
-    def _xf(upstream):
+    def _xf(upstream: Iterator[Observation[T]]) -> Iterator[Observation[T]]:
         for obs in upstream:
             start = time.perf_counter()
             yield obs
             out.append((time.perf_counter() - start) * 1000, ts=obs.ts)
 
-    return _xf
+    return FnIterTransformer(_xf)
 
 
-def measure_gpu_mem(out, device: int = 0):
+def measure_gpu_mem(out: Stream[float], device: int = 0) -> FnIterTransformer[T, T]:
     """Returns a transformer that records device-level GPU VRAM used (MB) per frame into *out*.
 
     Reads ``torch.cuda.mem_get_info`` *after* each yield (and ``synchronize()``
@@ -156,16 +157,20 @@ def measure_gpu_mem(out, device: int = 0):
     capturing memory used by every allocator on the device — Open3D, torch,
     other processes — not just the current process.
     """
+    import open3d.core as o3c  # type: ignore[import-untyped]
     import torch
 
-    def _xf(upstream):
+    if not o3c.cuda.is_available():
+        raise RuntimeError("measure_gpu_mem requires a CUDA-capable GPU")
+
+    def _xf(upstream: Iterator[Observation[T]]) -> Iterator[Observation[T]]:
         for obs in upstream:
             yield obs
             torch.cuda.synchronize(device)
             free, total = torch.cuda.mem_get_info(device)
             out.append((total - free) / 1_000_000, ts=obs.ts)
 
-    return _xf
+    return FnIterTransformer(_xf)
 
 
 def speed() -> FnIterTransformer[Any, float]:
