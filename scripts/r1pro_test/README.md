@@ -1,0 +1,912 @@
+# R1 Pro DiMOS Integration — Setup & Connection Guide
+
+## Overview
+
+This directory contains diagnostic scripts and the rerun-bridge launcher for
+validating DiMOS connectivity to the Galaxea R1 Pro humanoid robot over
+ethernet. The robot runs ROS2 Humble on a Jetson Orin (Ubuntu 22.04 / L4T).
+The laptop runs DiMOS inside a **Humble-on-22.04 docker container** so the
+ROS2 stack matches the robot exactly (no cross-version DDS issues).
+
+**Current status (2026-05-09)**: Connection module + coordinator blueprint
+running end-to-end. All sensor streams flowing through LCM into the rerun
+bridge (verified). Chassis Twist teleop blueprint shipped. Manipulation
+(planner-coordinator) blueprint researched but **not yet implemented** —
+three viable paths identified, decision deferred. See "Session Log —
+Connection-module refactor (2026-05-09)" at the bottom.
+
+---
+
+## Network Setup
+
+### Physical Connection
+- Connect laptop to robot via ethernet cable
+- Robot ethernet port: `eth1` on the robot
+
+### Robot IP (persistent after netplan config)
+- Robot `eth1`: `192.168.123.150/24`
+- Laptop ethernet (`enxf8e43bb7046c`): `192.168.123.100/24`
+
+### Set laptop ethernet IP (if not already set)
+```bash
+sudo ip addr add 192.168.123.100/24 dev enxf8e43bb7046c
+```
+
+### SSH into robot
+```bash
+ssh nvidia@192.168.123.150
+# password: nvidia
+```
+
+### Make robot IP persistent across reboots (already done)
+Edit `/etc/netplan/50-cloud-init.yaml` on the robot, add `192.168.123.150/24`
+to eth1 addresses:
+```yaml
+eth1:
+  dhcp4: true
+  addresses: [192.168.2.150/24, 192.168.123.150/24]
+```
+Then: `sudo netplan apply`
+
+---
+
+## Robot Startup Procedure
+
+Run these commands on the robot via SSH every session:
+
+```bash
+# Step 1: Start CAN bus driver
+bash ~/can.sh
+
+# Step 2: Launch full robot stack (ros2_discovery, mobiman, hdas, tools)
+cd ~/galaxea/install/startup_config/share/startup_config/script
+./robot_startup.sh boot ../sessions.d/ATCStandard/R1PROBody.d/
+
+# Step 3: Wait ~30 seconds for HDAS to fully init (arms open/close = healthy)
+
+# Step 4: Launch Livox MID360 LiDAR driver
+#   The R1PROBody.d session config does NOT include the lidar launch — you have
+#   to start it by hand each session, otherwise /hdas/lidar_chassis_left has
+#   zero publishers and the connection sits subscribed to silence.
+#   Hardware is at 192.168.2.100; verify reachable with `ping 192.168.2.100`.
+bash ~/galaxea/install/startup_config/share/startup_config/script/boot/modules/hdas/start_livox_lidar.sh
+
+# Step 5: Verify the head depth stream
+#   The signal_camera_head launch publishes RGB but sometimes does NOT publish
+#   /hdas/camera_head/depth/depth_registered. If `ros2 topic info` shows 0
+#   publishers on that topic, restart the head signal camera launch:
+#   bash ~/galaxea/install/startup_config/share/startup_config/script/boot/modules/hdas/start_signal_camera_head.sh
+
+# Step 6: Start chassis gatekeeper (required for chassis control from laptop)
+source ~/galaxea/install/setup.bash
+export ROS_DOMAIN_ID=41
+python3 ~/chassis_gatekeeper.py
+```
+
+```bash
+# Step 7: Verify everything is publishing (run on the robot or laptop)
+source ~/galaxea/install/setup.bash
+export ROS_DOMAIN_ID=41
+ros2 topic list --no-daemon | grep -E 'hdas|lidar' | head -20
+# Expected: /hdas/feedback_arm_left, /hdas/feedback_arm_right, /hdas/lidar_chassis_left, etc.
+
+# Spot-check rates on the streams the connection consumes:
+ros2 topic hz /hdas/lidar_chassis_left                                    # ~10 Hz
+ros2 topic hz /hdas/camera_wrist_left/color/image_raw/compressed          # ~15 Hz
+ros2 topic hz /hdas/camera_wrist_right/color/image_raw/compressed         # ~15 Hz
+ros2 topic hz /hdas/camera_head/left_raw/image_raw_color/compressed       # ~15 Hz
+```
+
+### Sensors that should auto-start (and what to do when they don't)
+
+`robot_startup.sh` reads sessions from `R1PROBody.d/` and runs each entry's
+launch script. On a clean boot the session brings up:
+
+- **HDAS** (CAN-side: arms, torso, chassis, grippers, IMUs) via
+  `start_hdas_r1pro.sh`
+- **RealSense wrist cameras** (left + right D405) via
+  `start_realsense_camera_r1pro.sh` — reads serials from
+  `/opt/galaxea/sensor/realsense/RS_LEFT` and `RS_RIGHT`
+- **Head signal camera** (head RGB stereo + depth) via
+  `start_signal_camera_head.sh`
+
+The session does NOT bring up the **Livox MID360 LiDAR** — Step 4 above is the
+manual workaround. If you want it to launch automatically, add a session
+entry under `~/galaxea/install/startup_config/share/startup_config/script/sessions.d/ATCStandard/R1PROBody.d/`
+that invokes
+`~/galaxea/install/startup_config/share/startup_config/script/boot/modules/hdas/start_livox_lidar.sh`
+(this hasn't been pushed upstream — keep the manual step in sync until that
+session config gets fixed on the robot).
+
+If a wrist camera reports `RS2_USB_STATUS_BUSY` or repeatedly disconnects
+(check `~/.ros/log/realsense2_camera_node_*_*.log`), it's a USB-layer fault
+— reseat the cable on that camera and rerun
+`start_realsense_camera_r1pro.sh`.
+
+### Robot tmux sessions
+| Session | Purpose |
+|---|---|
+| `ros_discovery` | FastDDS discovery server on port 11811 (for VR/WiFi, not needed for ethernet) |
+| `mobiman` | Main motion control stack |
+| `hdas` | Hardware abstraction — arms, chassis, torso, grippers |
+| `tools` | Utilities |
+
+Check session health: `tmux attach -t hdas` (Ctrl+B D to detach)
+
+---
+
+## Laptop Setup (every session)
+
+DiMOS runs inside the dev docker container. Open a shell into it via the
+`./bin/dev` wrapper or `docker compose exec`. Inside the container:
+
+```bash
+cd /app
+source .venv/bin/activate                      # Python 3.10 venv (see §6 + §12)
+source /opt/ros/humble/setup.bash              # Humble's rclpy on PYTHONPATH
+export ROS_DOMAIN_ID=41                        # match the robot
+```
+
+**One-time on a fresh checkout** — see "Challenges & How We Solved Them" §12
+for the rationale:
+
+```bash
+echo "3.10" > .python-version                  # pin uv to 3.10
+rm -rf .venv
+uv sync --python 3.10 --all-extras --no-extra dds --no-extra unitree-dds
+```
+
+`requires-python = ">=3.10"` in `pyproject.toml`, with `onnxruntime<1.24`
+and `onnxruntime-gpu>=1.17.1,<1.24` upper-bounded so cp310 wheels are
+available (PyPI's 1.24.x dropped Python 3.10 support on 2026-02-05).
+
+The XML profile `fastdds_r1pro.xml` is no longer required — the docker
+container uses Humble's default FastDDS multicast over the `--network=host`
+ethernet link. The XML stays in this directory as a fallback for networks
+that block multicast.
+
+---
+
+## Chassis Gatekeeper (Key Concept)
+
+The R1 Pro `chassis_control_node` has **three internal gates** that all must be
+unlocked simultaneously for chassis movement to work. The on-robot gatekeeper
+script handles all three; the new `R1ProConnection` module on the laptop side
+also opens Gate 1 and Gate 3 itself (see §12).
+
+### The 3 Gates
+
+| Gate | What blocks it | Where it's opened |
+|---|---|---|
+| **Gate 1**: Subscriber count on `/motion_control/chassis_speed` | Node skips IK if nobody subscribes | `R1ProConnection._on_chassis_speed` subscribes (also drives odom dead-reckoning) |
+| **Gate 2**: `breaking_mode_` flag from `/controller` | HDAS publishes `mode=2` at 200Hz, setting `breaking_mode_=1` | On-robot: launch remaps `/controller` → `/controller_unused`, gatekeeper publishes `mode=5` |
+| **Gate 3**: `acc_limit` defaults to zero | `calculateNextVelocity` uses `acc_limit * dt` which stays 0 | `R1ProConnection._on_cmd_vel` publishes nonzero `TwistStamped` to `/motion_target/chassis_acc_limit` on every Twist command |
+
+### Prerequisites (one-time on robot)
+1. Edit `~/galaxea/src/mobiman/launch/r1_pro_chassis_control_launch.py`
+2. Uncomment/add: `remappings=[('/controller', '/controller_unused')]`
+3. Rebuild and restart mobiman
+
+### Running
+```bash
+# On robot:
+source ~/galaxea/install/setup.bash && export ROS_DOMAIN_ID=41
+python3 ~/chassis_gatekeeper.py
+
+# From laptop container — direct LCM publish to test the chassis path:
+dimos run r1pro-coordinator         # in one shell
+# Then: publish a Twist on LCM /cmd_vel from another shell or use the keyboard
+# teleop blueprint below.
+```
+
+---
+
+## DiMOS Integration Architecture (current — 2026-05-09)
+
+### One Module owns the ROS 2 connection
+
+```
+                     coordinator-side                                  robot-side
+   ┌────────────────────────────────────────────────┐    ┌────────────────────────────┐
+   │  ControlCoordinator                            │    │  R1ProConnection (Module)  │
+   │   ├─ TransportWholeBodyAdapter (hw="r1pro")    │◄──►│  In[MotorCommandArray]     │
+   │   │     publishes /r1pro/motor_command         │    │  Out[JointState]   (18-DOF)│
+   │   │     subscribes /r1pro/motor_states + /imu  │    │  Out[Imu] x2               │
+   │   │                                            │    │                            │
+   │   └─ TransportTwistAdapter      (hw="chassis") │◄──►│  In[Twist]                 │
+   │         publishes /chassis/cmd_vel             │    │  Out[PoseStamped] (odom)   │
+   │         subscribes /chassis/odom               │    │                            │
+   └────────────────────────────────────────────────┘    │  Out[Image] x9             │
+                                                         │  Out[PointCloud2]          │
+                                                         └────────────┬───────────────┘
+                                                                      │ ROS 2 (FastDDS)
+                                                          ┌───────────▼──────────┐
+                                                          │  Galaxea R1Pro robot │
+                                                          └──────────────────────┘
+```
+
+`R1ProConnection` runs one control RawROS node + a separate isolated
+`rclpy.Context` for sensor subscriptions (so heavy fragmented camera/lidar
+UDP doesn't starve the control DDS receive thread). All 10 ROS subscriptions
+are inside this Module.
+
+### Files
+
+| Path | Purpose |
+|---|---|
+| `dimos/robot/galaxea/r1pro/connection.py` | `R1ProConnection` Module + `R1PRO_UPPER_BODY_JOINTS` constant + `R1ProConnectionConfig` |
+| `dimos/robot/galaxea/r1pro/blueprints/basic/r1pro_coordinator.py` | Coordinator blueprint: `autoconnect(R1ProConnection, ControlCoordinator)` with WHOLE_BODY + BASE hardware components, both wired through `transport_lcm` |
+| `dimos/robot/galaxea/r1pro/blueprints/basic/r1pro_keyboard_teleop.py` | Composes `r1pro_coordinator` + `KeyboardTeleop` for chassis Twist (display throttled to 10 Hz to survive X11 forwarding — see §12.D) |
+| `dimos/robot/galaxea/r1pro/rerun.py` | `r1pro_rerun_blueprint()` — Rerun viewer layout (tabs: Main / Surround + depth) |
+| `dimos/robot/catalog/galaxea.py` | `R1PRO_MODEL_PATH`, `R1PRO_COLLISION_EXCLUSIONS`, `r1pro_arm()` factory (planner / Drake side only) |
+| `scripts/r1pro_test/run_rerun_bridge.py` | Launches `RerunBridgeModule` with the r1pro layout; ephemeral-port viewer (avoids VS Code port-cache issue, §8) |
+| `dimos/robot/all_blueprints.py` | Registry — `r1pro-coordinator`, `r1pro-keyboard-teleop`, `r1-pro-connection` |
+
+**Removed in this refactor** (the old per-segment monolithic adapters from
+`task/mustafa/r1pro-dual-arm-testing`):
+
+- `dimos/hardware/manipulators/r1pro/{__init__.py,adapter.py}` — `R1ProArmAdapter` / `R1ProTorsoAdapter` / `R1ProUpperBodyAdapter`
+- `dimos/hardware/drive_trains/r1pro/{__init__.py,adapter.py}` — `R1ProChassisAdapter`
+- `dimos/hardware/whole_body/r1pro/{__init__.py,adapter.py}` — `R1ProWholeBodyAdapter`
+- `dimos/hardware/r1pro_ros_env.py` — Humble↔Jazzy bridging is no longer needed (docker container = Humble end-to-end)
+- `dimos/robot/humanoids/r1pro/blueprints.py` — old blueprint zoo (`r1pro-full`, `r1pro-dual-mock`, `r1pro-planner-full`, `r1pro-upper-body-full`, `r1pro-whole-body-full`)
+
+The new pattern mirrors `unitree/g1/wholebody_connection.py` + `unitree/go2/connection.py` — one connection Module, generic `transport_lcm` adapters from `dimos/hardware/whole_body/transport/` and `dimos/hardware/drive_trains/transport/`, no robot-specific adapter code on the coordinator side.
+
+### Joint layout
+
+`R1PRO_UPPER_BODY_JOINTS` (URDF-faithful names, prefixed with `r1pro/`):
+
+| Index range | Segment | Names |
+|---|---|---|
+| 0–3 | torso | `r1pro/torso_joint1` … `r1pro/torso_joint4` |
+| 4–10 | left arm | `r1pro/left_arm_joint1` … `r1pro/left_arm_joint7` |
+| 11–17 | right arm | `r1pro/right_arm_joint1` … `r1pro/right_arm_joint7` |
+
+Chassis joint names are `chassis/vx`, `chassis/vy`, `chassis/wz` (3-DOF
+holonomic Twist).
+
+### Blueprints
+
+| Registry name | What it composes |
+|---|---|
+| `r1pro-coordinator` | `R1ProConnection` + `ControlCoordinator` (WHOLE_BODY + BASE hardware, `servo_r1pro` + `vel_chassis` tasks) |
+| `r1pro-keyboard-teleop` | `r1pro_coordinator` + `KeyboardTeleop` (display 10 Hz) — drives chassis only |
+
+```bash
+dimos run r1pro-coordinator
+dimos run r1pro-keyboard-teleop
+```
+
+The bare `r1pro-coordinator` exposes a public LCM `/cmd_vel` Twist bus
+(both `cmd_vel` and `twist_command` transports point at `/cmd_vel`), so any
+external Twist publisher can drive the chassis without a new blueprint —
+e.g. phone teleop, joystick, an autonomous policy, or `lcm-spy`-style
+test scripts.
+
+---
+
+## Key Topics (current naming)
+
+| LCM topic | Type | Direction | Owner |
+|---|---|---|---|
+| `/cmd_vel` | `geometry_msgs/Twist` | external publisher → coordinator | KeyboardTeleop, others |
+| `/chassis/cmd_vel` | `geometry_msgs/Twist` | coordinator → connection | TransportTwistAdapter (hw=chassis) |
+| `/chassis/odom` | `geometry_msgs/PoseStamped` | connection → coordinator | dead-reckoned from `/motion_control/chassis_speed` |
+| `/r1pro/motor_command` | `sensor_msgs/MotorCommandArray` | coordinator → connection | TransportWholeBodyAdapter (hw=r1pro) |
+| `/r1pro/motor_states` | `sensor_msgs/JointState` | connection → coordinator | aggregated 18-DOF feedback |
+| `/r1pro/imu` | `sensor_msgs/Imu` | connection → coordinator | chassis IMU (the WholeBody adapter expects `/imu`) |
+| `/r1pro/imu_torso` | `sensor_msgs/Imu` | connection → consumers | torso IMU (separate stream) |
+| `/r1pro/head_color` | `sensor_msgs/Image` | connection → consumers | head RGB |
+| `/r1pro/head_depth` | `sensor_msgs/Image` | connection → consumers | head 32FC1 depth |
+| `/r1pro/chassis_front_left` … `_rear` | `sensor_msgs/Image` | connection → consumers | 5 surround chassis cams |
+| `/r1pro/lidar` | `sensor_msgs/PointCloud2` | connection → consumers | Livox MID360 |
+| `/r1pro/wrist_left_color`, `_depth` | `sensor_msgs/Image` | connection → consumers | left wrist D405 |
+| `/r1pro/wrist_right_color`, `_depth` | `sensor_msgs/Image` | connection → consumers | right wrist D405 |
+| `/coordinator/joint_state` | `sensor_msgs/JointState` | coordinator → consumers | aggregated coordinator joint state |
+| `/r1pro/joint_command` | `sensor_msgs/JointState` | external → coordinator | streaming joint commands (planner, etc.) |
+
+ROS topic names used by `R1ProConnection` (subscribed/published on the
+robot side):
+
+| ROS topic | Direction |
+|---|---|
+| `/hdas/feedback_arm_{left,right}` | robot → connection |
+| `/hdas/feedback_torso` | robot → connection |
+| `/hdas/imu_chassis`, `/hdas/imu_torso` | robot → connection |
+| `/hdas/lidar_chassis_left` | robot → connection |
+| `/hdas/camera_head/...`, `/hdas/camera_chassis_*/...`, `/hdas/camera_wrist_{left,right}/...` | robot → connection |
+| `/motion_target/target_joint_state_{torso,arm_left,arm_right}` | connection → robot |
+| `/motion_target/target_speed_chassis`, `/motion_target/chassis_acc_limit` | connection → robot |
+| `/motion_target/brake_mode` | connection → robot |
+| `/motion_control/chassis_speed` | robot → connection (Gate 1 + odom) |
+
+---
+
+## Rerun bridge
+
+```bash
+# Terminal A
+dimos run r1pro-coordinator
+
+# Terminal B
+python scripts/r1pro_test/run_rerun_bridge.py
+# Or: --mode web   (browser viewer at http://localhost:9090)
+# Or: --mode connect --connect-url URL
+```
+
+The layout in `dimos/robot/galaxea/r1pro/rerun.py` has two tabs:
+
+- **Main**: wrist_left_color, wrist_right_color, head_color (left column) +
+  3D world view (lidar + odom).
+- **Surround + depth**: 3×2 grid of the 5 surround chassis cams + head_depth.
+
+Entity paths are `world/r1pro/<stream_name>` (the bridge prefixes `world/`
+to the LCM topic name). See §8 for the VS Code port-cache workaround that
+the launcher script handles automatically.
+
+---
+
+## Verification Tests (legacy)
+
+The original test scripts (`test_01_topic_discovery.py` ... `test_06_torso_command.py`)
+on the dual-arm-testing branch still validate the **robot-side** ROS 2 layer
+— they don't depend on DiMOS. They were not ported to this branch but can
+be run directly from a copy of the dual-arm branch if needed for hardware
+bring-up debugging.
+
+For the DiMOS-side, the canonical verification is now:
+
+1. `dimos run r1pro-coordinator` → boot logs show all 21 transports, the
+   connection module gets through `Starting R1ProConnection control RawROS...`
+   to `Waiting up to 5s for first feedback from torso/left_arm/right_arm...`
+   (or `R1ProConnection started` once the robot is talking).
+2. `python scripts/r1pro_test/run_rerun_bridge.py` → rerun window opens,
+   wrist + head + 3D + surround cams populate (see §11 for sensor-dropout
+   troubleshooting if any pane stays blank).
+3. `dimos run r1pro-keyboard-teleop` → press W, robot moves forward.
+
+---
+
+## Robot Architecture Notes
+
+- **Platform**: Jetson Orin (aarch64), Ubuntu 22.04, L4T (Jetpack)
+- **ROS2**: Humble, FastDDS (rmw_fastrtps_cpp)
+- **ROS_DOMAIN_ID**: 41
+- **CAN bus**: arms and torso communicate via CAN (`can.sh` starts the driver)
+- **HDAS**: Hardware abstraction layer — publishes all sensor feedback, receives
+  all motion commands
+- **mobiman**: Motion manager — handles kinematics, IK, safety limits
+- **Custom message package**: `hdas_msg` — used for motor control, BMS, LED,
+  version info. Standard ROS2 types used for joint states and geometry
+- **Chassis type**: W1 (3-wheel swerve drive), from `/opt/galaxea/body/hardware.json`
+
+---
+
+## Next Steps
+
+- [x] Topic discovery and DDS connectivity over ethernet
+- [x] Arm feedback reading
+- [x] Arm joint movement
+- [x] Chassis movement (via gatekeeper)
+- [x] DiMOS adapters (chassis + arms) — original monolithic adapters
+- [x] Sensor stream integration (wrist cameras, chassis cameras, LiDAR, IMUs)
+- [x] Whole-body adapter
+- [x] Sensor dropout under coordinator load — IP fragment buffer too small (resolved 2026-05-08)
+- [x] **Architectural refactor: monolithic adapters → R1ProConnection Module + transport_lcm bridges (2026-05-09)**
+- [x] **Coordinator blueprint registered as `r1pro-coordinator`**
+- [x] **Keyboard teleop blueprint (chassis Twist) — `r1pro-keyboard-teleop`**
+- [x] **Phase 1 hardware verification: connection boots, sensors flow, rerun renders all panes (2026-05-09)**
+- [ ] Manipulation blueprint (planner-coordinator) — researched, three paths identified, decision deferred (see §12.E)
+- [ ] Push the URDF + meshes (`data/r1_pro_description/`) to git LFS so manipulation-blueprint paths can run on a fresh clone
+- [ ] Torso planning approach — fold torso into bimanual planner (richer reachability) vs hold-fixed (simpler). Open question.
+- [ ] Verify keyboard teleop end-to-end on hardware after the X11-flip-rate patch (§12.D)
+- [ ] Phase 2/3/4 hardware verification: ROS topic counts, motor_states / cmd_vel flow under load, brake-mode sanity
+
+---
+
+## Challenges & How We Solved Them
+
+(Sections 1–11 are preserved from the dual-arm-testing branch — all still
+factually valid for the robot side and the docker container setup. Section 12
+is today's work.)
+
+### 1. Finding the robot's IP
+Robot had no known IP when connected via ethernet. Used `tcpdump` and `arp -a`
+to discover it. Robot's `eth1` had no IPv4 assigned by default — manually
+assigned `192.168.123.150/24` with `sudo ip addr add`, then made it persistent
+via netplan.
+
+### 2. ROS2 topic discovery failing across machines
+**Root causes found (in order):**
+
+**a) `ROS_LOCALHOST_ONLY=1` set in robot's `~/.bashrc`**
+The robot was configured to only accept local DDS connections. Changed to
+`ROS_LOCALHOST_ONLY=0` in `~/.bashrc` so tmux sessions (which source bashrc)
+inherit the correct setting.
+
+**b) CycloneDDS ↔ FastDDS EDP incompatibility**
+Tried CycloneDDS on the laptop (ROS2 Jazzy default) thinking it would
+interoperate with FastDDS on the robot (ROS2 Humble). Peer discovery (PDP)
+worked — tcpdump confirmed packets flowing both ways — but endpoint discovery
+(EDP) failed silently. Topics never appeared.
+
+Fix: switch laptop to FastDDS (`RMW_IMPLEMENTATION=rmw_fastrtps_cpp`) to match
+the robot. The docker-container migration (§6) makes both sides Humble, so
+this is no longer relevant for new sessions — left here as historical context.
+
+**c) FastDDS using wrong network interface on laptop**
+Laptop has WiFi, ethernet, and Tailscale interfaces. FastDDS multicast was
+going out the wrong one. Fix: `fastdds_r1pro.xml` profile binding to the
+ethernet interface and setting the robot's IP as an explicit unicast peer.
+Also no longer needed in docker-container setup — `--network=host` plus
+default multicast over the direct ethernet link works without XML.
+
+**d) `interfaceWhiteList` renamed in FastDDS 3.x (Jazzy)**
+The original XML used `<interfaceWhiteList>` (FastDDS 2.x) which Jazzy's
+FastDDS 3.x silently ignored (renamed to `allowlist`). Switched to
+locator-based config that works in both.
+
+**e) Robot's FastDDS discovery server (port 11811)**
+Initially thought `ROS_DISCOVERY_SERVER` was needed. Investigation showed
+mobiman/hdas use multicast directly; the discovery server is for VR/WiFi
+remote control only. Using `ROS_DISCOVERY_SERVER` broke topic visibility.
+
+**f) HDAS process crashing (exit code -9)**
+HDAS needs ~30 seconds to initialize on boot. If you check topics too early,
+only chassis topics appear. The arm open/close cycle confirms hardware is
+healthy — wait for it.
+
+### 3. FastDDS 2.x/3.x DDS participant corruption
+Running test scripts back-to-back with separate `rclpy.init()`/`rclpy.shutdown()`
+cycles created new FastDDS 3.x participants each time. The
+`ParticipantEntitiesInfo` wire format differs between FastDDS 2.x (Humble)
+and 3.x (Jazzy), corrupting the robot's DDS state.
+
+Fix: `run_all_tests.py` calls `rclpy.init()` once. Same docker-container
+migration in §6 also retired this concern (everything is FastDDS 2.x now).
+
+### 4. Chassis control node ignoring commands (the 3-gate problem)
+See "Chassis Gatekeeper" section above. Took multiple sessions including
+binary disassembly to identify the three gates.
+
+### 5. ROS2 daemon unreliable on robot
+The robot's ros2 daemon often shows only 2 topics (`/parameter_events`,
+`/rosout`) even when 70+ are active. Always use `ros2 topic list --no-daemon`
+on the robot.
+
+### 6. Docker migration (Humble container on the laptop)
+
+We moved the laptop-side DimOS runtime into a Docker container so the
+environment matches the robot exactly (Ubuntu 22.04 + ROS2 Humble).
+
+**a) Python 3.10 ↔ Python 3.12 mismatch with Humble's rclpy** — see §12.A,
+which recapitulates this issue (it bit us *again* on this branch after a
+rebase regenerated `uv.lock` with newer wheels).
+
+**b) Docker dropped the DDS-XML unicast workaround** — Humble↔Humble plus
+`--network=host` multicast works without XML. `FASTRTPS_DEFAULT_PROFILES_FILE`
+removed from compose; XML kept as fallback.
+
+**c) `ros2` daemon cache** — in the container, `ros2 topic list` returns
+0–2 topics if it cached an empty discovery from earlier (e.g. while a bad
+XML pinned bad locators). Run `ros2 daemon stop` and use `--no-daemon` after
+any RMW change. `rclpy` in DimOS adapters is unaffected.
+
+**d) Host-only kernel config the container can't apply itself** — DimOS's
+system_configurator wants loopback multicast, a `224.0.0.0/4` route via `lo`,
+and a higher `net.core.rmem_max`. The container can't modify host sysctls.
+Apply once on the host:
+```bash
+sudo ip link set lo multicast on
+sudo ip route add 224.0.0.0/4 dev lo   # ignore "exists" errors
+sudo sysctl -w net.core.rmem_max=67108864
+sudo sysctl -w net.core.rmem_default=67108864
+```
+Persist via `/etc/sysctl.d/60-r1pro-ros2.conf`.
+
+**e) Python version pinning file (`.python-version`)** — historically pinned
+to 3.12 (correct for old Jazzy host setup), broke the Humble container.
+Updated to `3.10` on this branch (§12.A).
+
+### 7. Rerun visualization with X11/Wayland forwarding from the container
+
+(Detail preserved from the dual-arm branch — still valid.)
+
+**Host one-time setup (run on the laptop):**
+
+```bash
+xhost +local:                                  # allow container windows
+touch ~/.Xauthority                            # avoid Docker creating a dir
+sudo ip link set lo multicast on
+sudo ip route add 224.0.0.0/4 dev lo 2>/dev/null || true
+sudo sysctl -w net.core.rmem_max=67108864
+sudo sysctl -w net.core.rmem_default=67108864
+```
+
+**Inside the container — verify the display socket, GPU, and venv:**
+
+```bash
+echo "DISPLAY=$DISPLAY  WAYLAND_DISPLAY=$WAYLAND_DISPLAY  XDG_RUNTIME_DIR=$XDG_RUNTIME_DIR"
+ls -l /tmp/.X11-unix/                          # expect X0 (or X1) socket
+ls -l /dev/dri/                                # expect renderD128 / card0
+
+apt-get update && apt-get install -y x11-apps mesa-utils libvulkan1 vulkan-tools
+xeyes &                                         # window should pop up
+glxinfo -B | head -10                           # OpenGL renderer
+vulkaninfo --summary 2>&1 | head -20            # Rerun's wgpu prefers Vulkan
+
+cd /app
+[ -d .venv ] || uv venv --python 3.10 .venv
+source .venv/bin/activate
+python -c "import rerun, rclpy; print('rerun', rerun.__version__, 'rclpy ok')"
+```
+
+If `xeyes` opens, X11 forwarding works.
+
+**Three-terminal workflow (all inside the same container):**
+
+```bash
+# Terminal 1 — coordinator
+dimos run r1pro-coordinator
+
+# Terminal 2 — Rerun bridge
+python scripts/r1pro_test/run_rerun_bridge.py
+# Optional: --mode web
+
+# Terminal 3 — keyboard teleop / REPL / future manipulation client
+```
+
+**Troubleshooting** (preserved from the dual-arm branch):
+
+| Symptom | Likely cause | Fix |
+|---|---|---|
+| `Authorization required, but no authorization protocol specified` | Host X server rejecting container UID | `xhost +local:` on host |
+| `xeyes` works but Rerun blank/crashes | wgpu can't find a working GPU backend | Install `libvulkan1 mesa-utils`; for NVIDIA, add `runtime: nvidia` + `NVIDIA_DRIVER_CAPABILITIES=all` |
+| Rerun opens but no panels populate | LCM bridge not receiving messages | Confirm `dimos run r1pro-coordinator` is in the same container; check connection logs |
+| `ModuleNotFoundError: rerun` | Wrong venv (3.12) — see §12.A | `rm -rf .venv && uv venv --python 3.10 && uv sync` |
+| Window appears but laggy/tearing under Wayland | Going through XWayland | Set `WAYLAND_DISPLAY=` (empty) to force pure X path |
+| `~/.Xauthority` becomes a directory on host | Docker auto-created it | Stop container, `rmdir ~/.Xauthority`, `touch ~/.Xauthority`, restart |
+
+### 8. Why `rr.spawn()` silently fails inside the dev container
+
+VS Code extension hosts (`urdf-visualizer`, `rde-ros-2`, etc.) cache TCP
+ports they've previously seen Rerun bind, and re-bind them on `127.0.0.1` on
+subsequent VS Code launches. With `network_mode: host`, those collide with
+our viewer subprocess. `rr.spawn(port=9876)` falsely concludes a viewer is
+already there and routes data into a black hole.
+
+**Fix is built into [scripts/r1pro_test/run_rerun_bridge.py](run_rerun_bridge.py)** —
+picks an ephemeral port at runtime, launches `rerun` CLI subprocess, polls
+the port, then `rr.connect_grpc()` the bridge to it. Single command:
+
+```bash
+python scripts/r1pro_test/run_rerun_bridge.py
+```
+
+Escape hatches: `--mode web` (browser, no X needed), `--mode connect --connect-url URL`.
+
+### 9. Manipulation blueprint blocked on missing deps (Drake + trimesh)
+
+(Old session log entry — still valid for when manipulation comes online.)
+
+`dimos run r1pro-planner-full` (the dual-arm-branch blueprint) surfaced two
+missing dependencies:
+
+**a) Drake** — declared under `[project.optional-dependencies].manipulation`,
+not base. Fix: `uv sync --python 3.10 --extra manipulation`.
+
+**b) `uv pip install` bypassing the venv** — Dockerfile sets
+`UV_SYSTEM_PYTHON=1`. Fix: `unset UV_SYSTEM_PYTHON` per session, or use
+`uv pip install --python /app/.venv/bin/python <pkg>`.
+
+**c) `trimesh` not declared anywhere → STL→OBJ conversion silent-skips →
+Drake rejects URDF** — Drake 1.40+ dropped `.STL` for collision geometry.
+DimOS's `mesh_utils.py` does STL→OBJ via trimesh but soft-fails when missing.
+Fix: `pip install trimesh` + `rm -rf /tmp/dimos_urdf_cache`. To-do upstream:
+add `trimesh` to the `manipulation` extra in `pyproject.toml`.
+
+### 10. Sensor spin loop hot-looping on an invalidated rclpy context
+
+Per-adapter sensor spin loops (in the OLD adapter files) wrapped
+`spin_once()` in a blanket `try/except Exception: log; continue`. When
+SIGINT or another module's shutdown invalidated the sensor's isolated
+Context, every `spin_once()` raised "context is not valid" and the recovery
+loop spun forever at wall-clock speed.
+
+Fix carried into the new `R1ProConnection._sensor_spin` at
+[connection.py](../../dimos/robot/galaxea/r1pro/connection.py):
+
+```python
+while not self._sensor_stop.is_set() and ctx.ok():
+    try:
+        executor.spin_once(timeout_sec=0.1)
+    except Exception as exc:
+        if not ctx.ok() or "context is not valid" in str(exc):
+            logger.warning(f"Sensor context invalid, exiting spin: {exc}")
+            break
+        logger.warning(f"sensor spin_once raised (continuing): {exc}", exc_info=True)
+```
+
+Clean shutdowns now produce one exit line per sensor thread instead of a
+flood. Critical for the new architecture too — same pattern carried over.
+
+### 11. Chassis sensors missing from Rerun tree → IP fragment buffer
+
+**Symptom** — wrist + head cameras render in Rerun, but
+`world/r1pro/chassis/lidar`, `chassis_front_left/right`, `chassis_left/right`,
+`chassis_rear`, `head_depth` entries are missing or stop after a few seconds.
+
+**Root cause** — Linux `net.ipv4.ipfrag_high_thresh` defaults to 4 MB.
+6 chassis cameras × ~100 KB JPEGs × ~30 Hz = ~18 MB/s of fragmented UDP,
+plus PointCloud2 lidar. Reassembly pool fills in <300 ms; partially-assembled
+datagrams evict each other; kernel drops them silently. Small messages (IMU)
+pass because they fit in a single packet. This is *separate* from
+`net.core.rmem_max`.
+
+**Fix — apply on the laptop host** (network namespace inheritance via
+`network_mode: host`):
+
+```bash
+sudo sysctl -w net.ipv4.ipfrag_high_thresh=67108864
+sudo sysctl -w net.ipv4.ipfrag_low_thresh=50331648
+sudo sysctl -w net.ipv4.ipfrag_time=60
+```
+
+Persist via `/etc/sysctl.d/60-r1pro-ros2.conf`:
+```
+net.core.rmem_max = 67108864
+net.core.rmem_default = 67108864
+net.ipv4.ipfrag_high_thresh = 67108864
+net.ipv4.ipfrag_low_thresh = 50331648
+net.ipv4.ipfrag_time = 60
+```
+
+Diagnostic that pinned it (in case it recurs):
+
+```bash
+nstat -az | grep -iE 'Reasm|FragOK|FragFail'
+```
+`IpReasmFails` climbing while `IpReasmOKs` flat ⇒ same problem, same fix.
+
+---
+
+### 12. Architectural refactor + bring-up (2026-05-09 — this branch)
+
+The current branch (`mustafa/task/r1pro-coordinator-integration`) replaces
+the monolithic per-segment adapters with one connection Module + generic
+`transport_lcm` adapters, mirroring Go2/G1. New code under
+`dimos/robot/galaxea/r1pro/`. Old code (per §12 of the architecture
+section) deleted. Several issues surfaced during bring-up:
+
+**A. Python 3.10 ↔ 3.12 mismatch (round 2: rebase regenerated uv.lock)**
+
+After rebasing this branch onto a more recent `dev`, `uv sync` silently
+provisioned a Python 3.12 venv (project's `.python-version` was `3.12` at the
+time, and `requires-python = ">=3.10"` permits both). `dimos run
+r1pro-coordinator` then crashed at `R1ProConnection.start()`:
+
+```
+ImportError: rclpy is not installed. ROS pubsub requires ROS 2.
+```
+
+The path in the trace was `cpython-3.12.13-linux-x86_64-gnu`. Humble's
+rclpy is built for **Python 3.10** (Ubuntu 22.04 system Python) — its
+compiled `.so` files won't load under 3.12.
+
+**Fix — what worked**:
+
+```bash
+echo "3.10" > .python-version                  # commit-or-keep-local
+rm -rf .venv
+uv venv --python /usr/bin/python3.10 --seed
+uv sync --python 3.10 --all-extras --no-extra dds --no-extra unitree-dds
+source .venv/bin/activate
+source /opt/ros/humble/setup.bash
+python -c "import rclpy; print(rclpy.__file__)"
+# /opt/ros/humble/lib/python3.10/site-packages/rclpy/__init__.py
+```
+
+**Why it kept happening**: `uv sync` honours the project's
+`.python-version` over the `--python` flag passed to `uv venv`. Without
+either pinning `.python-version` to 3.10 or passing `--python 3.10` to
+`uv sync` itself, every subsequent sync regenerates the venv at the
+highest installed Python (3.12 in our uv install).
+
+**B. `onnxruntime` 1.24.1 dropped cp310 wheels**
+
+After the Python pin, `uv sync --all-extras ...` failed with:
+
+```
+error: Distribution `onnxruntime==1.24.1` ... only has wheels with the
+following Python implementation tags: cp311, cp312, cp313, cp314
+```
+
+PyPI released `onnxruntime` and `onnxruntime-gpu` 1.24.1 on **2026-02-05**
+and dropped Python 3.10 wheel builds. The project's `cpu` extra in
+`pyproject.toml` had `"onnxruntime"` (no upper bound), so a fresh
+`uv lock` after that date resolves to 1.24.1 — incompatible with Humble.
+
+The previous lock had 1.23.2 (released 2025-10-22) which still ships
+cp310 wheels. The `db05bf0cb` commit ("Create DDS Transport Protocol
+(#1174)", 2026-02-13) regenerated `uv.lock` and was the moment the bump
+landed on this branch's lineage.
+
+**Fix — `pyproject.toml`** (committed on this branch):
+
+```toml
+cpu = [
+    # CPU inference backends.
+    # Upper bound: onnxruntime 1.24+ dropped cp310 wheels. Lift when ROS 2
+    # Humble (Python 3.10) is no longer supported.
+    "onnxruntime<1.24",
+    "ctransformers==0.2.27",
+]
+
+cuda = [
+    "cupy-cuda12x==13.6.0; platform_machine == 'x86_64'",
+    "nvidia-nvimgcodec-cu12[all]; platform_machine == 'x86_64'",
+    # Upper bound: onnxruntime-gpu 1.24+ dropped cp310 wheels. Lift when ROS 2
+    # Humble (Python 3.10) is no longer supported. Lower bound covers both
+    # cuda11 and cuda12.
+    "onnxruntime-gpu>=1.17.1,<1.24; platform_machine == 'x86_64'",
+    "ctransformers[cuda]==0.2.27",
+    "xformers>=0.0.20; platform_machine == 'x86_64'",
+]
+```
+
+Then: `uv lock --python 3.10 && uv sync --python 3.10 --all-extras --no-extra dds --no-extra unitree-dds`.
+Sanity check: `grep -A1 '^name = "onnxruntime"$' uv.lock | head -2`
+should show `version = "1.23.x"`. **Lift these bounds when the project
+moves off Humble (Jazzy = Python 3.12).**
+
+**C. Keyboard teleop publishing into the void — missing `cmd_vel ↔ twist_command` LCM bridge**
+
+After the venv was working, `r1pro-keyboard-teleop` booted clean but
+keypresses never moved the chassis. Investigation:
+
+- `KeyboardTeleop` declares `cmd_vel: Out[Twist]`.
+- `ControlCoordinator` declares `twist_command: In[Twist]`.
+- They're different stream names. `autoconnect` doesn't auto-bridge them
+  in-process; it relies on **shared LCM topics** to route across names.
+
+The Go2 coordinator had this transport pair:
+
+```python
+("cmd_vel", Twist): LCMTransport("/cmd_vel", Twist),
+("twist_command", Twist): LCMTransport("/cmd_vel", Twist),
+```
+
+— both pointing at `/cmd_vel`. KeyboardTeleop publishes to the topic on
+its `cmd_vel` Out side; ControlCoordinator subscribes on its
+`twist_command` In side. Same topic, different stream names, both bridged.
+
+Our `r1pro_coordinator` was missing those entries, so the coordinator's
+`twist_command` defaulted to `/twist_command` and KeyboardTeleop's
+`cmd_vel` had no transport at all. No wires.
+
+**Fix** — added two transports to `r1pro_coordinator.py`:
+
+```python
+# Public Twist bus on /cmd_vel — `cmd_vel` covers any module's Out
+# (KeyboardTeleop, phone teleop, etc.); `twist_command` is the
+# ControlCoordinator's matching In. Both pinned to the same LCM
+# topic so any Twist publisher drives the chassis.
+("cmd_vel", Twist): LCMTransport("/cmd_vel", Twist),
+("twist_command", Twist): LCMTransport("/cmd_vel", Twist),
+```
+
+Living on the **base coordinator** (not the keyboard-teleop blueprint
+specifically) means any future Twist publisher (phone teleop, joystick,
+autonomous policy) drives the chassis without a new blueprint.
+
+**D. Keyboard teleop laggy in remote / X11-forwarded sessions**
+
+After fix C, teleop "barely sent any commands". Tracing
+`KeyboardTeleop._pygame_loop()` showed it calls `pygame.display.flip()`
+**every iteration** — a synchronous X11 round-trip. In remote / docker /
+X11-forwarded sessions, `flip()` stalls 100–300 ms per call, throttling
+the entire loop (including `pygame.event.get()` and `cmd_vel.publish()`)
+to 3–10 Hz instead of the intended 50 Hz.
+
+**Fix** — patched `dimos/robot/unitree/keyboard_teleop.py` (shared
+module, backwards-compatible):
+
+- Added `display_rate_hz: float = 50.0` config knob (default keeps current
+  behavior — Go2 unaffected).
+- Decoupled display refresh from publish loop. Publish + event-poll fire
+  every iteration at 50 Hz; `_update_display` only runs when wall clock
+  crosses the next display deadline. Absolute deadline (not delta-from-flip)
+  so a stalled flip doesn't cause catch-up bursts.
+
+`r1pro_keyboard_teleop.py` blueprint passes `KeyboardTeleop.blueprint(display_rate_hz=10.0)`.
+Status pane updates 5× per second instead of 50×; key capture and Twist
+publish stay at 50 Hz. If still laggy: try `display_rate_hz=2.0` or
+`0.0` (window stays open for SDL key events but never refreshes).
+
+User feedback at end of session: even with the patch, teleop still felt
+heavy — open question whether the bottleneck is now elsewhere (LCM RPC
+crossing worker boundaries, pygame event poll itself stalling on X11) or
+whether `display_rate_hz` needs to go lower. Worth a fresh test next
+session before assuming the patch is insufficient.
+
+**E. Manipulation blueprint — researched, not yet built**
+
+Goal: dual-arm planner-coordinator that lets the planner generate joint
+trajectories for the two arms and execute them through the existing
+whole-body adapter. Researched in detail; three viable paths identified,
+none yet implemented:
+
+| Path | Approach | Status |
+|---|---|---|
+| **A** | Two per-arm `HardwareComponent`s (mock adapters), one trajectory task per arm | Cleanest mirror of OpenArm dual-arm pattern. Doesn't exercise the new whole-body adapter. |
+| **B** | Override `joint_prefix="r1pro/"` on both `r1pro_arm()` RobotConfigs so coordinator joint names match the WHOLE_BODY adapter directly | Risks Drake model-name collision when both arms load the same URDF. Needs verification. |
+| **C** | Single 18-DOF `r1pro_upper_body()` RobotConfig (torso + both arms) | Drake's Cartesian IK works on a single end-effector — bimanual targeting needs custom planner, more work. |
+
+The critical wiring detail: `ManipulationModule` plans against **bare URDF
+joint names** (e.g. `left_arm_joint1`); the whole-body adapter expects
+**prefixed coordinator names** (`r1pro/left_arm_joint1`). The existing
+translation in `_translate_trajectory_to_coordinator()` uses
+`RobotConfig.joint_prefix` — Path B forces this mapping to align with the
+whole-body adapter's namespace.
+
+**Decision deferred**. When picking up: read the manipulation research
+notes from this session (transcript) before re-running the analysis.
+
+**F. URDF in LFS**
+
+The R1Pro URDF + meshes live at `data/r1_pro_description/` on the user's
+laptop but are **not in git LFS yet**. `LfsPath` short-circuits when the
+directory exists locally (`get_data` returns immediately if `file_path.
+exists()` at [dimos/utils/data.py:230](../../dimos/utils/data.py)), so
+manipulation works locally but breaks on a fresh clone.
+
+**To-do** when manipulation is implemented:
+```bash
+./bin/lfs_push                              # tars data/r1_pro_description/ → data/.lfs/
+git add data/.lfs/r1_pro_description.tar.gz
+git commit -m "lfs: add r1_pro_description (urdf + meshes)"
+```
+
+---
+
+## Session Log — Sensor Streams & Dual-Arm Coordinator Integration
+
+(Preserved from the dual-arm-testing branch. Most details still apply
+architecturally — the topic name prefixes have changed in the new
+connection-module architecture, but the data flow and the kernel-level
+fixes are identical.)
+
+### What was built
+
+**Sensor streams on adapters** (now consolidated into `R1ProConnection` —
+see §12). All sensors physically attached to the robot are now subscribed
+by a single Module's isolated DDS participant and decoded in dedicated
+worker threads.
+
+| Old per-adapter LCM topic | New connection-module LCM topic |
+|---|---|
+| `/r1pro/left_arm/wrist_color`, `/r1pro/left_arm/wrist_depth` | `/r1pro/wrist_left_color`, `/r1pro/wrist_left_depth` |
+| `/r1pro/right_arm/wrist_color`, `/r1pro/right_arm/wrist_depth` | `/r1pro/wrist_right_color`, `/r1pro/wrist_right_depth` |
+| `/r1pro/chassis/head` | `/r1pro/head_color` |
+| `/r1pro/chassis/head_depth` | `/r1pro/head_depth` |
+| `/r1pro/chassis/chassis_front_left` … | `/r1pro/chassis_front_left` … |
+| `/r1pro/chassis/lidar` | `/r1pro/lidar` |
+| `/r1pro/chassis/imu_chassis` | `/r1pro/imu` |
+| `/r1pro/chassis/imu_torso` | `/r1pro/imu_torso` |
+
+**Async worker pattern** (preserved verbatim in the new module):
+
+1. ROS spin thread callback → enqueue raw `msg` (zero-copy)
+2. Dedicated worker thread per sensor → `bytes(msg.data)` + decode + Out stream publish
+3. All queues are `maxsize=1` (latest-frame semantics — stale frames replaced)
+
+**Separate rclpy context for sensor subscriptions** — `R1ProConnection`'s
+`_setup_sensor_streams()` creates a separate `rclpy.Context()` with its own
+`MultiThreadedExecutor` and DDS participant. Same rationale as before:
+prevents control traffic from saturating sensor DDS receive threads.
+
+### The sensor dropout problem (resolved 2026-05-08)
+
+(See §11 — IP fragment reassembly buffer too small. Same fix applies
+on the new architecture; nothing changed at the kernel-buffer level.)
