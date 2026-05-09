@@ -14,6 +14,10 @@ from services.cloudflare import CloudflareRealtimeError, cf_client
 
 router = APIRouter(prefix="/sessions", tags=["sessions"])
 
+CMD_CHANNEL_NAME = "cmd_unreliable"
+
+_robot_subscriber_dc_ids: dict[str, int] = {}
+
 
 # ─── Request/Response schemas ────────────────────────────────────────
 
@@ -42,6 +46,7 @@ class JoinSessionResponse(BaseModel):
     robot_cf_session_id: str
     ice_servers: list[dict]
     role: str
+    cmd_channel_id: int | None = None
 
 
 class HeartbeatRequest(BaseModel):
@@ -99,6 +104,11 @@ async def create_session(
         cf_result = await cf_client.create_session(body.sdp_offer)
     except CloudflareRealtimeError as e:
         raise HTTPException(status_code=502, detail=f"Cloudflare error: {e.detail}")
+    except Exception as e:
+        raise HTTPException(
+            status_code=502,
+            detail=f"Cloudflare session create failed ({type(e).__name__}): {e}",
+        )
 
     # Store session
     session = TeleopSession(
@@ -138,7 +148,10 @@ async def heartbeat(
     session.last_heartbeat = datetime.now(timezone.utc)
     await db.commit()
 
-    return {"ack": True}
+    return {
+        "ack": True,
+        "cmd_channel_subscriber_id": _robot_subscriber_dc_ids.get(session_id),
+    }
 
 
 @router.delete("/{session_id}", status_code=204)
@@ -153,6 +166,7 @@ async def delete_session(
         raise HTTPException(status_code=404, detail="Session not found")
 
     session.state = "disconnected"
+    _robot_subscriber_dc_ids.pop(session_id, None)
     await db.commit()
 
 
@@ -211,20 +225,65 @@ async def join_session(
         cf_result = await cf_client.create_session(body.sdp_offer)
     except CloudflareRealtimeError as e:
         raise HTTPException(status_code=502, detail=f"Cloudflare error: {e.detail}")
+    except Exception as e:
+        raise HTTPException(
+            status_code=502,
+            detail=f"Cloudflare session create failed ({type(e).__name__}): {e}",
+        )
+
+    operator_cf_id = cf_result["cf_session_id"]
+    publisher_dc_id: int | None = None
+
+    if body.role == "operator" and session.cf_session_id:
+        try:
+            pub = await cf_client.add_datachannels(
+                operator_cf_id,
+                [{"location": "local", "dataChannelName": CMD_CHANNEL_NAME}],
+            )
+            sub = await cf_client.add_datachannels(
+                session.cf_session_id,
+                [
+                    {
+                        "location": "remote",
+                        "sessionId": operator_cf_id,
+                        "dataChannelName": CMD_CHANNEL_NAME,
+                    }
+                ],
+            )
+        except CloudflareRealtimeError as e:
+            raise HTTPException(
+                status_code=502,
+                detail=f"Cloudflare datachannel bridge failed: {e.detail}",
+            )
+        except Exception as e:
+            raise HTTPException(
+                status_code=502,
+                detail=f"Datachannel bridge failed ({type(e).__name__}): {e}",
+            )
+
+        if not pub or "id" not in pub[0] or not sub or "id" not in sub[0]:
+            raise HTTPException(
+                status_code=502,
+                detail="Cloudflare did not return a DataChannel id",
+            )
+
+        publisher_dc_id = int(pub[0]["id"])
+        _robot_subscriber_dc_ids[session.id] = int(sub[0]["id"])
 
     # Update session state
     if body.role == "operator":
         session.operator_id = user_id
-        session.operator_cf_session_id = cf_result["cf_session_id"]
+        session.operator_cf_session_id = operator_cf_id
         session.state = "active"
         await db.commit()
 
     return JoinSessionResponse(
-        cf_session_id=cf_result["cf_session_id"],
+        cf_session_id=operator_cf_id,
         sdp_answer=cf_result["sdp_answer"],
         robot_cf_session_id=session.cf_session_id,
         ice_servers=ICE_SERVERS,
         role=body.role,
+        cmd_channel_id=publisher_dc_id,
     )
 
 
@@ -246,6 +305,7 @@ async def leave_session(
         session.operator_id = None
         session.operator_cf_session_id = None
         session.state = "idle"
+        _robot_subscriber_dc_ids.pop(session_id, None)
         await db.commit()
 
     return {"session_id": session_id, "state": session.state}

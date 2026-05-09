@@ -55,6 +55,19 @@ class CloudflareRealtime:
             raise CloudflareRealtimeError(resp.status_code, resp.text)
         return resp.json()
 
+    async def add_datachannels(self, session_id: str, channels: list[dict]) -> list[dict]:
+        async with httpx.AsyncClient() as client:
+            resp = await client.post(
+                f"{self.base_url}/sessions/{session_id}/datachannels/new",
+                headers=self.headers,
+                json={"dataChannels": channels},
+                timeout=10.0,
+            )
+        if resp.status_code not in (200, 201):
+            raise CloudflareRealtimeError(resp.status_code, resp.text)
+        data = resp.json()
+        return data.get("dataChannels", [])
+
     async def get_session(self, session_id: str) -> dict | None:
         """Get session info. Returns None if not found."""
         async with httpx.AsyncClient() as client:

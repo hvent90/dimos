@@ -413,15 +413,9 @@
                 iceServers: [{ urls: 'stun:stun.cloudflare.com:3478' }]
             });
 
-            cmdChannel = pc.createDataChannel('cmd_unreliable', {
-                ordered: false,
-                maxRetransmits: 0,
-            });
-            cmdChannel.binaryType = 'arraybuffer';
+            const sctpPlaceholder = pc.createDataChannel('_sctp_init');
 
-            const opened = new Promise((resolve, reject) => {
-                cmdChannel.onopen = () => resolve();
-                cmdChannel.onerror = (e) => reject(e);
+            const iceFailed = new Promise((_, reject) => {
                 pc.oniceconnectionstatechange = () => {
                     if (pc.iceConnectionState === 'failed' ||
                         pc.iceConnectionState === 'disconnected') {
@@ -447,7 +441,28 @@
             });
             await pc.setRemoteDescription({ type: 'answer', sdp: data.sdp_answer });
 
-            await opened;
+            try { sctpPlaceholder.close(); } catch (_) {}
+
+            if (data.cmd_channel_id == null) {
+                throw new Error('Broker did not return cmd_channel_id');
+            }
+
+            cmdChannel = pc.createDataChannel('cmd_unreliable', {
+                negotiated: true,
+                id: data.cmd_channel_id,
+                ordered: false,
+                maxRetransmits: 0,
+            });
+            cmdChannel.binaryType = 'arraybuffer';
+
+            await Promise.race([
+                new Promise((resolve, reject) => {
+                    if (cmdChannel.readyState === 'open') return resolve();
+                    cmdChannel.onopen = () => resolve();
+                    cmdChannel.onerror = (e) => reject(e);
+                }),
+                iceFailed,
+            ]);
         }
 
         function send(bytes) {
