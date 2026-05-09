@@ -1,8 +1,12 @@
 """Cloudflare Realtime SFU API client."""
 
+import logging
+
 import httpx
 
 from config import settings
+
+log = logging.getLogger(__name__)
 
 
 class CloudflareRealtimeError(Exception):
@@ -56,13 +60,23 @@ class CloudflareRealtime:
         return resp.json()
 
     async def add_datachannels(self, session_id: str, channels: list[dict]) -> list[dict]:
-        async with httpx.AsyncClient() as client:
-            resp = await client.post(
-                f"{self.base_url}/sessions/{session_id}/datachannels/new",
-                headers=self.headers,
-                json={"dataChannels": channels},
-                timeout=10.0,
-            )
+        url = f"{self.base_url}/sessions/{session_id}/datachannels/new"
+        log.info("CF add_datachannels POST %s body=%s", url, channels)
+        try:
+            async with httpx.AsyncClient() as client:
+                resp = await client.post(
+                    url,
+                    headers=self.headers,
+                    json={"dataChannels": channels},
+                    timeout=30.0,
+                )
+        except httpx.HTTPError as e:
+            log.error("CF add_datachannels %s failed: %r", type(e).__name__, e)
+            raise
+        log.info(
+            "CF add_datachannels response status=%s body=%s",
+            resp.status_code, resp.text[:500],
+        )
         if resp.status_code not in (200, 201):
             raise CloudflareRealtimeError(resp.status_code, resp.text)
         data = resp.json()
