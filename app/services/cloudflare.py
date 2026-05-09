@@ -80,6 +80,11 @@ class CloudflareRealtime:
         if resp.status_code not in (200, 201):
             raise CloudflareRealtimeError(resp.status_code, resp.text)
         data = resp.json()
+        if data.get("errorCode"):
+            raise CloudflareRealtimeError(
+                resp.status_code,
+                f"{data['errorCode']}: {data.get('errorDescription', '')}",
+            )
         return data.get("dataChannels", [])
 
     async def get_session(self, session_id: str) -> dict | None:
