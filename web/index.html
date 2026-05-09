@@ -411,8 +411,8 @@
         }
 
         // ─── Keyboard mode ──────────────────────────────────────────────────
-        // Connect, set up WebRTC, then drive a TwistStamped at 30 Hz from
-        // currently-held keys. WASD + Shift (2x) + Ctrl (0.5x).
+        // WASD-driven TwistStamped over the same cmd_unreliable channel as VR,
+        // sent at the shared `sendInterval` (80 Hz).
         let kbInterval = null;
         const kbKeys = new Set();
 
@@ -545,7 +545,7 @@ angular.z = 0</pre>
                     `linear.y  = ${t.linear_y.toFixed(2)}\n` +
                     `linear.z  = ${t.linear_z.toFixed(2)}\n` +
                     `angular.z = ${t.angular_z.toFixed(2)}`;
-            }, 1000 / 30);
+            }, sendInterval);
         }
 
         function updateKeyVisuals() {
