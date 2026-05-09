@@ -441,15 +441,32 @@
             });
             await pc.setRemoteDescription({ type: 'answer', sdp: data.sdp_answer });
 
+            // CF rejects /datachannels/new until the PC is 'connected'.
+            await Promise.race([
+                new Promise((resolve, reject) => {
+                    const check = () => {
+                        if (pc.connectionState === 'connected') resolve();
+                        else if (pc.connectionState === 'failed' ||
+                                 pc.connectionState === 'closed') {
+                            reject(new Error('PC ' + pc.connectionState));
+                        }
+                    };
+                    check();
+                    pc.addEventListener('connectionstatechange', check);
+                }),
+                iceFailed,
+            ]);
+
             try { sctpPlaceholder.close(); } catch (_) {}
 
-            if (data.cmd_channel_id == null) {
+            const bridge = await api('POST', `/sessions/${sessionId}/bridge-datachannel`);
+            if (bridge.cmd_channel_id == null) {
                 throw new Error('Broker did not return cmd_channel_id');
             }
 
             cmdChannel = pc.createDataChannel('cmd_unreliable', {
                 negotiated: true,
-                id: data.cmd_channel_id,
+                id: bridge.cmd_channel_id,
                 ordered: false,
                 maxRetransmits: 0,
             });

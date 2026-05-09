@@ -46,7 +46,10 @@ class JoinSessionResponse(BaseModel):
     robot_cf_session_id: str
     ice_servers: list[dict]
     role: str
-    cmd_channel_id: int | None = None
+
+
+class BridgeDatachannelResponse(BaseModel):
+    cmd_channel_id: int
 
 
 class HeartbeatRequest(BaseModel):
@@ -232,45 +235,7 @@ async def join_session(
         )
 
     operator_cf_id = cf_result["cf_session_id"]
-    publisher_dc_id: int | None = None
 
-    if body.role == "operator" and session.cf_session_id:
-        try:
-            pub = await cf_client.add_datachannels(
-                operator_cf_id,
-                [{"location": "local", "dataChannelName": CMD_CHANNEL_NAME}],
-            )
-            sub = await cf_client.add_datachannels(
-                session.cf_session_id,
-                [
-                    {
-                        "location": "remote",
-                        "sessionId": operator_cf_id,
-                        "dataChannelName": CMD_CHANNEL_NAME,
-                    }
-                ],
-            )
-        except CloudflareRealtimeError as e:
-            raise HTTPException(
-                status_code=502,
-                detail=f"Cloudflare datachannel bridge failed: {e.detail}",
-            )
-        except Exception as e:
-            raise HTTPException(
-                status_code=502,
-                detail=f"Datachannel bridge failed ({type(e).__name__}): {e}",
-            )
-
-        if not pub or "id" not in pub[0] or not sub or "id" not in sub[0]:
-            raise HTTPException(
-                status_code=502,
-                detail="Cloudflare did not return a DataChannel id",
-            )
-
-        publisher_dc_id = int(pub[0]["id"])
-        _robot_subscriber_dc_ids[session.id] = int(sub[0]["id"])
-
-    # Update session state
     if body.role == "operator":
         session.operator_id = user_id
         session.operator_cf_session_id = operator_cf_id
@@ -283,8 +248,63 @@ async def join_session(
         robot_cf_session_id=session.cf_session_id,
         ice_servers=ICE_SERVERS,
         role=body.role,
-        cmd_channel_id=publisher_dc_id,
     )
+
+
+@router.post(
+    "/{session_id}/bridge-datachannel",
+    response_model=BridgeDatachannelResponse,
+)
+async def bridge_datachannel(
+    session_id: str,
+    user: dict = Depends(get_current_user),
+    db: AsyncSession = Depends(get_db),
+):
+    """Bridge cmd_unreliable. Call after operator's PC is 'connected' — CF
+    rejects /datachannels/new on a half-negotiated session."""
+    session = await db.get(TeleopSession, session_id)
+    if not session:
+        raise HTTPException(status_code=404, detail="Session not found")
+    if session.operator_id != user["sub"]:
+        raise HTTPException(status_code=403, detail="Not the bound operator")
+    if not session.operator_cf_session_id or not session.cf_session_id:
+        raise HTTPException(status_code=409, detail="CF sessions not ready")
+
+    try:
+        pub = await cf_client.add_datachannels(
+            session.operator_cf_session_id,
+            [{"location": "local", "dataChannelName": CMD_CHANNEL_NAME}],
+        )
+        sub = await cf_client.add_datachannels(
+            session.cf_session_id,
+            [
+                {
+                    "location": "remote",
+                    "sessionId": session.operator_cf_session_id,
+                    "dataChannelName": CMD_CHANNEL_NAME,
+                }
+            ],
+        )
+    except CloudflareRealtimeError as e:
+        raise HTTPException(
+            status_code=502,
+            detail=f"Cloudflare datachannel bridge failed: {e.detail}",
+        )
+    except Exception as e:
+        raise HTTPException(
+            status_code=502,
+            detail=f"Datachannel bridge failed ({type(e).__name__}): {e}",
+        )
+
+    if not pub or "id" not in pub[0] or not sub or "id" not in sub[0]:
+        raise HTTPException(
+            status_code=502,
+            detail="Cloudflare did not return a DataChannel id",
+        )
+
+    _robot_subscriber_dc_ids[session.id] = int(sub[0]["id"])
+
+    return BridgeDatachannelResponse(cmd_channel_id=int(pub[0]["id"]))
 
 
 @router.post("/{session_id}/leave")
