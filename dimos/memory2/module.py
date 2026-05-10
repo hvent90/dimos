@@ -17,6 +17,7 @@ from __future__ import annotations
 import inspect
 import os
 from pathlib import Path
+import threading
 from typing import TYPE_CHECKING, Any, Generic, TypeVar, cast
 
 from pydantic import field_validator
@@ -68,6 +69,56 @@ def stream_to_port(stream: Stream[T], out: Out[T]) -> DisposableBase:
 def port_to_stream(in_: In[T], stream: Stream[T]) -> DisposableBase:
     """Append each message received on a Module ``In`` port to *stream*."""
     return Disposable(in_.subscribe(stream.append))
+
+
+class _LatestPoseCache:
+    """Thread-safe holder for the most recent pose.
+
+    Used by :class:`Recorder` to attach a pose to every appended sample
+    on streams other than the pose stream itself. ``get()`` returns
+    ``None`` until the first pose arrives.
+    """
+
+    def __init__(self) -> None:
+        self._lock = threading.Lock()
+        self._latest: Any | None = None
+
+    def update(self, msg: Any) -> None:
+        with self._lock:
+            self._latest = msg
+
+    def get(self) -> Any | None:
+        with self._lock:
+            return self._latest
+
+
+def port_to_stream_with_pose(
+    in_: In[T], stream: Stream[T], pose_cache: _LatestPoseCache
+) -> DisposableBase:
+    """Variant of :func:`port_to_stream` that attaches the latest pose.
+
+    ``stream.append`` is called with ``pose=<latest cached pose>`` for
+    every sample. Pose can be ``None`` until the first pose arrives.
+    """
+
+    def _on_data(data: T) -> None:
+        stream.append(data, pose=pose_cache.get())
+
+    return Disposable(in_.subscribe(_on_data))
+
+
+def port_to_stream_self_pose(in_: In[T], stream: Stream[T]) -> DisposableBase:
+    """Append each message with itself as the pose.
+
+    Used for the pose stream itself (odom): each Odometry/PoseStamped
+    sample is recorded with its own value as pose so ``.near()`` queries
+    on the pose stream work natively.
+    """
+
+    def _on_data(data: T) -> None:
+        stream.append(data, pose=data)
+
+    return Disposable(in_.subscribe(_on_data))
 
 
 class StreamModule(Module, Generic[TIn, TOut]):
@@ -253,10 +304,19 @@ class Recorder(MemoryModule):
         class MyRecorder(Recorder):
             color_image: In[Image]
             lidar: In[PointCloud2]
+            odom: In[PoseStamped]  # optional but recommended
 
         blueprint.add(MyRecorder, db_path="session.db")
+
+    If a port named :attr:`POSE_PORT_NAME` (default ``"odom"``) is
+    declared, its latest value is cached and attached as ``pose`` to
+    every sample appended on every other stream. This is what makes
+    spatial queries like ``.near(pose_stamped, radius)`` work against
+    live recordings — without it, every observation has ``pose=None``
+    and no spatial filter can match.
     """
 
+    POSE_PORT_NAME: str = "odom"
     config: RecorderConfig
 
     @rpc
@@ -285,8 +345,32 @@ class Recorder(MemoryModule):
             logger.warning("Recorder has no In ports — nothing to record, subclass the Recorder")
             return
 
+        # Set up the pose cache from the designated pose port (if present).
+        # The pose port itself records data-as-pose; every other port
+        # appends with the latest cached pose attached.
+        pose_cache = _LatestPoseCache()
+        pose_port = self.inputs.get(self.POSE_PORT_NAME)
+        if pose_port is not None:
+            self.register_disposable(Disposable(pose_port.subscribe(pose_cache.update)))
+            logger.info(
+                "Recording %s (%s) as pose source for sibling streams",
+                self.POSE_PORT_NAME,
+                pose_port.type.__name__,
+            )
+        else:
+            logger.warning(
+                "Recorder %s has no '%s' port — recorded streams will have pose=None "
+                "and spatial queries (.near, .pose_stamped) won't work",
+                self.__class__.__name__,
+                self.POSE_PORT_NAME,
+            )
+
         for name, port in self.inputs.items():
             stream: Stream[Any] = self.store.stream(name, port.type)
-            self.register_disposable(port_to_stream(port, stream))
-            logger.info("Recording %s (%s)", name, port.type.__name__)
+            if name == self.POSE_PORT_NAME:
+                self.register_disposable(port_to_stream_self_pose(port, stream))
+            elif pose_port is not None:
+                self.register_disposable(port_to_stream_with_pose(port, stream, pose_cache))
+            else:
+                self.register_disposable(port_to_stream(port, stream))
             logger.info("Recording %s (%s)", name, port.type.__name__)

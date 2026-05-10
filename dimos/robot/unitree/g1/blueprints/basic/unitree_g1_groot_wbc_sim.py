@@ -68,6 +68,7 @@ from dimos.mapping.costmapper import CostMapper
 from dimos.mapping.mesh_camera import MeshCameraModule
 from dimos.mapping.static_costmap import StaticCostmapModule
 from dimos.mapping.voxels import VoxelGridMapper
+from dimos.memory2.finder import ObjectFinder3D
 from dimos.memory2.module import Recorder, RecorderConfig
 from dimos.msgs.geometry_msgs.PoseStamped import PoseStamped
 from dimos.msgs.geometry_msgs.Twist import Twist
@@ -103,19 +104,27 @@ from dimos.web.websocket_vis.websocket_vis_module import WebsocketVisModule
 logger = setup_logger()
 
 
+_G1_MEMORY_DB_PATH = "recording_g1.db"
+
+
 class G1MemoryConfig(RecorderConfig):
-    db_path: str | Path = "recording_g1.db"
+    db_path: str | Path = _G1_MEMORY_DB_PATH
 
 
 class G1Memory(Recorder):
     """G1 ``Recorder`` subclass — records the visual + spatial streams.
 
     Mirrors ``Go2Memory`` shape so memory2's existing playback / search
-    tooling works on G1 recordings without special-casing.
+    tooling works on G1 recordings without special-casing. The ``odom``
+    port doubles as the pose source — the base ``Recorder`` cache-and-
+    attaches the latest pose to every ``color_image`` / ``lidar``
+    sample, which is what makes spatial queries (``.near``,
+    ``obs.pose_stamped``) work against live recordings.
     """
 
     color_image: In[Image]
     lidar: In[PointCloud2]
+    odom: In[PoseStamped]
     config: G1MemoryConfig
 
 
@@ -744,6 +753,24 @@ _g1_perception_stack = (
     # — ObjectTracking and the G1Memory recorder dropped to keep the
     # module set close to unitree-go2-temporal-memory.
     SpatialMemory.blueprint(),
+    # memory2 single-module deployment: ObjectFinder3D records
+    # color_image+lidar+odom+camera_info, attaches latest pose to
+    # every frame (via Recorder's POSE_PORT_NAME logic), runs a live
+    # CLIP embedding pipeline that fills color_image_embedded, and
+    # exposes find_object_3d(label) — the test_visualizer recipe
+    # end-to-end: CLIP search → spatial+temporal window → VLM
+    # detection → Detection3DPC.from_2d back-projection → world-frame
+    # xyz. Three concerns in one module because each MemoryModule
+    # owns its own SqliteStore + per-instance SubjectNotifier, so
+    # split-module variants can't share live() events even at the
+    # same db_path.
+    ObjectFinder3D.blueprint(db_path=_G1_MEMORY_DB_PATH).transports(
+        {
+            ("color_image", Image): LCMTransport("/splat/color_image", Image),
+            ("camera_info", CameraInfo): LCMTransport("/splat/camera_info", CameraInfo),
+            ("odom", PoseStamped): LCMTransport("/odom", PoseStamped),
+        }
+    ),
 )
 
 # Agentic stack — Go2 parity minus xArm and minus PersonFollow.
