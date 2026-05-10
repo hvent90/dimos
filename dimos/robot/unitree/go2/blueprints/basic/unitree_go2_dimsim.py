@@ -28,7 +28,7 @@ from dimos.mapping.voxels import VoxelGridMapper
 from dimos.navigation.replanning_a_star.module import ReplanningAStarPlanner
 from dimos.robot.sim.bridge import DimSimBridge
 from dimos.robot.sim.jpeg_lcm import SimJpegLCM
-from dimos.web.websocket_vis.websocket_vis_module import WebsocketVisModule
+from dimos.visualization.vis_module import vis_module
 
 
 def _go2_sim_rerun_blueprint() -> Any:
@@ -92,18 +92,12 @@ rerun_config = {
     },
 }
 
-if global_config.viewer.startswith("rerun"):
-    from dimos.visualization.rerun.bridge import RerunBridgeModule, _resolve_viewer_mode
-
-    with_vis = autoconnect(
-        RerunBridgeModule.blueprint(viewer_mode=_resolve_viewer_mode(), **rerun_config),
-    )
-else:
-    with_vis = autoconnect()
-
 unitree_go2_dimsim = (
     autoconnect(
-        with_vis,
+        vis_module(
+            viewer_backend=global_config.viewer,
+            rerun_config=rerun_config,
+        ),
         DimSimBridge.blueprint(
             scene="apt",
             vehicle_height=0.3,
@@ -111,7 +105,6 @@ unitree_go2_dimsim = (
         VoxelGridMapper.blueprint(voxel_size=0.1),
         CostMapper.blueprint(),
         ReplanningAStarPlanner.blueprint(),
-        WebsocketVisModule.blueprint(),
     )
     .global_config(n_workers=6, robot_model="unitree_go2", simulation=True)
 )

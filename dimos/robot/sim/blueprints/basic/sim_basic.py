@@ -23,7 +23,7 @@ from dimos.msgs.sensor_msgs.Image import Image
 from dimos.protocol.pubsub.impl.lcmpubsub import LCM
 from dimos.robot.sim.bridge import sim_bridge
 from dimos.robot.sim.tf_module import sim_tf
-from dimos.web.websocket_vis.websocket_vis_module import WebsocketVisModule
+from dimos.visualization.vis_module import vis_module
 
 
 class _SimLCM(LCM):  # type: ignore[misc]
@@ -179,28 +179,15 @@ rerun_config = {
     },
 }
 
-if global_config.viewer == "foxglove":
-    from dimos.robot.foxglove_bridge import FoxgloveBridge
-
-    with_vis = autoconnect(
-        _transports_base,
-        FoxgloveBridge.blueprint(shm_channels=["/color_image#sensor_msgs.Image"]),
-    )
-elif global_config.viewer.startswith("rerun"):
-    from dimos.visualization.rerun.bridge import RerunBridgeModule, _resolve_viewer_mode
-
-    with_vis = autoconnect(
-        _transports_base,
-        RerunBridgeModule.blueprint(viewer_mode=_resolve_viewer_mode(), **rerun_config),
-    )
-else:
-    with_vis = _transports_base
-
 sim_basic = autoconnect(
-    with_vis,
+    _transports_base,
+    vis_module(
+        viewer_backend=global_config.viewer,
+        rerun_config=rerun_config,
+        foxglove_config={"shm_channels": ["/color_image#sensor_msgs.Image"]},
+    ),
     sim_bridge(),
     sim_tf(),
-    WebsocketVisModule.blueprint(),
 ).global_config(n_workers=4, robot_model="dimsim")
 
 __all__ = ["sim_basic"]
