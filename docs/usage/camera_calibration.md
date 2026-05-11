@@ -31,35 +31,38 @@ A practical default is **8 by 6 inner corners** on **A4**: enough intersections 
 Example after you have calibration images in `./capture`:
 
 ```bash
-uv run dimos cameracalibrate --source folder --images ./capture --cols 8 --rows 6 --square-size-m 0.02485 --out ./camera_info.yaml
+uv run dimos cameracalibrate --source folder --images ./capture --cols 8 --rows 6 --square-size-m 0.02485 --out ./camera_info.yaml ./camera_info.preview.png
 ```
 
 Wrong `--square-size-m` skews metric geometry even when reprojection error looks good.
 
 ## Run `dimos cameracalibrate`
 
-Run from the repo or any directory where `uv run dimos` resolves (same pattern as other `dimos` CLIs). Required flags are always `--source`, `--cols`, `--rows`, `--square-size-m`, and `--out`. Folder mode also requires `--images`.
+Run from the repo or any directory where `uv run dimos` resolves (same pattern as other `dimos` CLIs). Required flags are always `--source`, `--cols`, `--rows`, and `--square-size-m`. Folder mode also requires `--images`.
 
-**Webcam (interactive).** Open a live preview on device `--device-index`. When inner corners are detected, the board is drawn on the preview; press **Space** to accept the current frame. The CLI collects `--target-count` accepted frames (default 20) then solves. Press **q** to quit early (that aborts unless enough frames were already accepted).
+**Webcam (interactive).** Open a live preview on device `--device-index`. When inner corners are detected, the board is drawn on the preview; press **Space** to accept the current frame. The CLI collects `--target-count` accepted frames (default 20) then solves. Press **q** to quit early (that aborts unless enough frames were already accepted). The detector first tries `--cols` and `--rows` as inner-corner counts, then also accepts the common square-count form (for example a 12 by 8 square board is detected as 11 by 7 inner corners).
 
 ```bash
-uv run dimos cameracalibrate --source webcam --device-index 0 --cols 8 --rows 6 --square-size-m 0.02485 --out ./camera_info.yaml
+uv run dimos cameracalibrate --source webcam --device-index 0 --cols 8 --rows 6 --square-size-m 0.02485 --out ./camera_info.yaml ./camera_info.preview.png
 ```
 
 **Folder (stills).** Load every `*.png`, `*.jpg`, and `*.jpeg` in the directory, sorted by filename. Each image should show the full board with detectable inner corners.
 
 ```bash
-uv run dimos cameracalibrate --source folder --images ./capture/ --cols 8 --rows 6 --square-size-m 0.02485 --out ./camera_info.yaml
+uv run dimos cameracalibrate --source folder --images ./capture/ --cols 8 --rows 6 --square-size-m 0.02485 --out ./camera_info.yaml ./camera_info.preview.png
 ```
 
-Optional flags (same for both sources): `--target-count` (webcam only; default 20), `--camera-name` (default `webcam`), `--frame-id` (default `camera_optical`; accepted by the CLI but not written into the YAML, which matches the ROS CameraInfo file schema), `--no-display` (no OpenCV window; for headless or automation).
+Output files are explicit. Pass `--out ./camera_info.yaml` to write the ROS CameraInfo YAML. Pass a preview PNG path immediately after it to write a corner-overlay preview, for example `--out ./camera_info.yaml ./camera_info.preview.png`. If you omit both output paths, the command still runs calibration and prints RMS, but does not write YAML or PNG files. A preview PNG path without `--out` is rejected.
 
-On success the process prints the calibration RMS, the YAML path, and a preview PNG path (same basename as `--out`, suffix `.preview.png`). Example:
+Optional flags (same for both sources): `--target-count` (webcam only; default 20), `--camera-name` (default `webcam`), `--no-display` (no OpenCV window; for headless or automation), `--debug` (write detailed capture logs to the system temp directory).
+
+On success the process prints the calibration RMS, the detected pattern, and any output paths you requested. Example:
 
 ```text
 RMS: 0.342187 px (20 frame(s) used)
+Detected pattern: (8, 6) (requested inner corners)
 Wrote camera info YAML to camera_info.yaml
 Wrote preview overlay PNG to camera_info.preview.png
 ```
 
-Your RMS and frame count depend on the capture; paths echo the `--out` you passed (for example `./camera_info.yaml` if you used that form).
+Your RMS and frame count depend on the capture. Paths echo only the files you explicitly requested.

@@ -151,6 +151,7 @@ def test_cli_folder_with_real_opencv_fixture_writes_yaml_preview_and_camera_info
     tmp_path,
 ) -> None:
     out = tmp_path / "camera_info.yaml"
+    preview = tmp_path / "camera_info.preview.png"
     result = CliRunner().invoke(
         app,
         [
@@ -166,11 +167,10 @@ def test_cli_folder_with_real_opencv_fixture_writes_yaml_preview_and_camera_info
             "0.025",
             "--out",
             str(out),
-            "--frame-id",
-            "camera_optical",
             "--camera-name",
             "opencv_left",
             "--no-display",
+            str(preview),
         ],
     )
 
@@ -179,7 +179,6 @@ def test_cli_folder_with_real_opencv_fixture_writes_yaml_preview_and_camera_info
     assert "(9 frame(s) used)" in result.output
     assert "Wrote preview overlay PNG" in result.output
 
-    preview = tmp_path / "camera_info.preview.png"
     assert out.exists()
     assert preview.exists()
     assert preview.stat().st_size > 0
@@ -216,15 +215,15 @@ def test_cli_help_lists_cameracalibrate_flags() -> None:
         "--rows",
         "--square-size-m",
         "--out",
-        "--frame-id",
         "--camera-name",
         "--target-count",
         "--no-display",
+        "--debug",
     ]:
         assert flag in result.output
 
 
-def test_cli_folder_writes_yaml_preview_and_prints_rms(tmp_path) -> None:
+def test_cli_folder_writes_only_explicit_yaml_and_prints_rms(tmp_path) -> None:
     cols, rows = 9, 6
     frames, _K_true = _synthetic_calibration_frames(cols=cols, rows=rows)
     images = tmp_path / "fixture"
@@ -248,8 +247,6 @@ def test_cli_folder_writes_yaml_preview_and_prints_rms(tmp_path) -> None:
             "0.025",
             "--out",
             str(out),
-            "--frame-id",
-            "camera_optical",
             "--camera-name",
             "webcam",
             "--no-display",
@@ -258,15 +255,86 @@ def test_cli_folder_writes_yaml_preview_and_prints_rms(tmp_path) -> None:
 
     assert result.exit_code == 0
     assert "RMS:" in result.output
-    assert "Wrote preview overlay PNG" in result.output
+    assert "Wrote camera info YAML" in result.output
+    assert "Wrote preview overlay PNG" not in result.output
     assert out.exists()
     preview = tmp_path / "camera_info.preview.png"
-    assert preview.exists()
-    assert cv2.imread(str(preview)) is not None
+    assert not preview.exists()
     info = load_camera_info(str(out), frame_id="camera_optical")
     assert info.width == 640
     assert info.height == 480
     assert info.distortion_model == "plumb_bob"
+
+
+def test_cli_folder_writes_explicit_yaml_and_preview(tmp_path) -> None:
+    cols, rows = 9, 6
+    frames, _K_true = _synthetic_calibration_frames(cols=cols, rows=rows)
+    images = tmp_path / "fixture"
+    images.mkdir()
+    for i, frame in enumerate(frames):
+        assert cv2.imwrite(str(images / f"{i:02d}.png"), frame)
+
+    out = tmp_path / "camera_info.yaml"
+    preview = tmp_path / "camera_info.preview.png"
+    result = CliRunner().invoke(
+        app,
+        [
+            "--source",
+            "folder",
+            "--images",
+            str(images),
+            "--cols",
+            "9",
+            "--rows",
+            "6",
+            "--square-size-m",
+            "0.025",
+            "--out",
+            str(out),
+            "--no-display",
+            str(preview),
+        ],
+    )
+
+    assert result.exit_code == 0, result.output
+    assert "Wrote camera info YAML" in result.output
+    assert "Wrote preview overlay PNG" in result.output
+    assert out.exists()
+    assert preview.exists()
+    assert cv2.imread(str(preview)) is not None
+
+
+def test_cli_folder_writes_no_outputs_when_paths_are_omitted(tmp_path) -> None:
+    cols, rows = 9, 6
+    frames, _K_true = _synthetic_calibration_frames(cols=cols, rows=rows)
+    images = tmp_path / "fixture"
+    images.mkdir()
+    for i, frame in enumerate(frames):
+        assert cv2.imwrite(str(images / f"{i:02d}.png"), frame)
+
+    result = CliRunner().invoke(
+        app,
+        [
+            "--source",
+            "folder",
+            "--images",
+            str(images),
+            "--cols",
+            "9",
+            "--rows",
+            "6",
+            "--square-size-m",
+            "0.025",
+            "--no-display",
+        ],
+    )
+
+    assert result.exit_code == 0, result.output
+    assert "RMS:" in result.output
+    assert "Wrote camera info YAML" not in result.output
+    assert "Wrote preview overlay PNG" not in result.output
+    assert not (tmp_path / "camera_info.yaml").exists()
+    assert not (tmp_path / "camera_info.preview.png").exists()
 
 
 class _MockVideoCapture:
@@ -309,6 +377,20 @@ def test_capture_frames_from_webcam_mocked_space_fills_target(monkeypatch) -> No
     assert all(np.array_equal(f, bgr) for f in out)
     mock_imshow.assert_not_called()
 
+
+def test_capture_frames_from_webcam_debug_logging_is_opt_in(monkeypatch, capsys) -> None:
+    cols, rows = 9, 6
+    gray = _synthetic_chessboard_gray(640, 480, cols, rows, square_px=40)
+    bgr = cv2.cvtColor(gray, cv2.COLOR_GRAY2BGR)
+
+    monkeypatch.setattr(cv2, "VideoCapture", lambda *_a, **_k: _MockVideoCapture(bgr))
+    monkeypatch.setattr(cv2, "waitKey", lambda _delay=0: ord(" "))
+
+    capture_frames_from_webcam(0, 1, cols, rows, no_display=True)
+    assert "Writing cameracalibrate debug log" not in capsys.readouterr().out
+
+    capture_frames_from_webcam(0, 1, cols, rows, no_display=True, debug=True)
+    assert "Writing cameracalibrate debug log" in capsys.readouterr().out
 
 def test_capture_frames_from_webcam_mocked_quit_raises(monkeypatch) -> None:
     cols, rows = 9, 6
@@ -411,6 +493,17 @@ def test_calibrate_from_frames_synthetic_twelve_views_rms_and_K_near_truth() -> 
     assert np.all(rel < 0.05)
 
 
+def test_calibrate_from_frames_accepts_square_count_request() -> None:
+    """A 12x8-square printed board has 11x7 inner corners."""
+    frames, _K_true = _synthetic_calibration_frames(cols=11, rows=7, count=10)
+
+    out = calibrate_from_frames(frames, cols=12, rows=8, square_size_m=0.02)
+
+    assert out["n_used"] == 10
+    assert out["pattern_size"] == (11, 7)
+    assert out["pattern_label"] == "requested square count"
+
+
 def test_write_camera_info_yaml_round_trip_matches_k_d_size_and_model() -> None:
     K = np.array([[500.0, 0.0, 320.0], [0.0, 510.0, 240.0], [0.0, 0.0, 1.0]])
     D = np.array([-0.1, 0.05, 0.0, 0.0, 0.0])
@@ -422,7 +515,6 @@ def test_write_camera_info_yaml_round_trip_matches_k_d_size_and_model() -> None:
             image_width=640,
             image_height=480,
             camera_name="test_cam",
-            frame_id="camera_optical_frame",
             K=K,
             D=D,
             distortion_model="plumb_bob",
@@ -461,7 +553,6 @@ def test_write_camera_info_yaml_round_trip_load_camera_info_and_opencv() -> None
             image_width=800,
             image_height=600,
             camera_name="synthetic",
-            frame_id="camera_optical",
             K=K,
             D=D,
             R=R,
@@ -508,7 +599,6 @@ def test_write_camera_info_yaml_custom_r_p_and_distortion_model() -> None:
             image_width=320,
             image_height=240,
             camera_name="narrow",
-            frame_id="cam0",
             K=K,
             D=D,
             R=R,

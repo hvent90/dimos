@@ -16,6 +16,7 @@
 
 from __future__ import annotations
 
+from dataclasses import dataclass
 from enum import Enum
 from pathlib import Path
 
@@ -23,6 +24,8 @@ import cv2
 import numpy as np
 import typer
 import yaml
+
+from dimos.utils.cli.cameracalibrate.debug import setup_debug_logger
 
 _IMAGE_EXTS = frozenset({".png", ".jpg", ".jpeg"})
 
@@ -46,7 +49,6 @@ def write_camera_info_yaml(
     image_width: int,
     image_height: int,
     camera_name: str,
-    frame_id: str,
     K: np.ndarray,
     D: np.ndarray,
     R: np.ndarray | None = None,
@@ -56,9 +58,7 @@ def write_camera_info_yaml(
     """Write ROS-style CameraInfo YAML loadable by dimos CameraInfo helpers.
 
     The emitted schema is accepted by ``CameraInfo.from_yaml``,
-    ``load_camera_info``, and ``load_camera_info_opencv``. ``frame_id`` is part
-    of the keyword API for call-site clarity; the ROS YAML schema does not store
-    it.
+    ``load_camera_info``, and ``load_camera_info_opencv``.
     """
     k = np.asarray(K, dtype=np.float64).reshape(3, 3)
     d = np.asarray(D, dtype=np.float64).ravel()
@@ -118,14 +118,118 @@ def load_frames_from_folder(path: str) -> list[np.ndarray]:
 _CAMERACALIBRATE_WINDOW = "dimos cameracalibrate"
 
 
-def capture_frames_from_webcam(
+@dataclass(frozen=True)
+class _ChessboardDetection:
+    corners: np.ndarray
+    cols: int
+    rows: int
+    label: str
+
+
+@dataclass(frozen=True)
+class _WebcamCapture:
+    frames: list[np.ndarray]
+    image_points: list[np.ndarray]
+    pattern: tuple[int, int, str] | None
+
+
+def _pattern_candidates(cols: int, rows: int) -> list[tuple[int, int, str]]:
+    """Return plausible inner-corner pattern sizes, exact request first."""
+    candidates = [
+        (cols, rows, "requested inner corners"),
+        (rows, cols, "requested inner corners, rotated"),
+    ]
+    if cols > 1 and rows > 1:
+        candidates.extend(
+            [
+                (cols - 1, rows - 1, "requested square count"),
+                (rows - 1, cols - 1, "requested square count, rotated"),
+            ]
+        )
+
+    out: list[tuple[int, int, str]] = []
+    seen: set[tuple[int, int]] = set()
+    for cand_cols, cand_rows, label in candidates:
+        if cand_cols < 1 or cand_rows < 1:
+            continue
+        key = (cand_cols, cand_rows)
+        if key in seen:
+            continue
+        seen.add(key)
+        out.append((cand_cols, cand_rows, label))
+    return out
+
+
+def _as_grayscale_uint8(gray: np.ndarray) -> np.ndarray:
+    g = np.asarray(gray)
+    if g.ndim == 3:
+        g = cv2.cvtColor(g, cv2.COLOR_BGR2GRAY)
+    if g.dtype != np.uint8:
+        g = cv2.normalize(g, None, 0, 255, cv2.NORM_MINMAX).astype(np.uint8)
+    return np.ascontiguousarray(g)
+
+
+def _find_chessboard_corners_exact(gray: np.ndarray, cols: int, rows: int) -> np.ndarray | None:
+    g = _as_grayscale_uint8(gray)
+    pattern_size = (cols, rows)
+    flags = cv2.CALIB_CB_ADAPTIVE_THRESH + cv2.CALIB_CB_NORMALIZE_IMAGE
+    ok, corners = cv2.findChessboardCorners(g, pattern_size, flags)
+    if ok and corners is not None:
+        criteria = (cv2.TERM_CRITERIA_EPS + cv2.TERM_CRITERIA_MAX_ITER, 30, 0.001)
+        return cv2.cornerSubPix(g, corners, (11, 11), (-1, -1), criteria)
+
+    find_sb = getattr(cv2, "findChessboardCornersSB", None)
+    if find_sb is None:
+        return None
+
+    sb_flags = cv2.CALIB_CB_NORMALIZE_IMAGE
+    if hasattr(cv2, "CALIB_CB_EXHAUSTIVE"):
+        sb_flags |= cv2.CALIB_CB_EXHAUSTIVE
+    if hasattr(cv2, "CALIB_CB_ACCURACY"):
+        sb_flags |= cv2.CALIB_CB_ACCURACY
+    ok, corners = find_sb(g, pattern_size, sb_flags)
+    if not ok or corners is None:
+        return None
+    return np.asarray(corners, dtype=np.float32).reshape(cols * rows, 1, 2)
+
+
+def _find_chessboard_detection(gray: np.ndarray, cols: int, rows: int) -> _ChessboardDetection | None:
+    for cand_cols, cand_rows, label in _pattern_candidates(cols, rows):
+        corners = _find_chessboard_corners_exact(gray, cand_cols, cand_rows)
+        if corners is not None:
+            return _ChessboardDetection(corners, cand_cols, cand_rows, label)
+    return None
+
+
+def _draw_capture_status(
+    preview: np.ndarray,
+    *,
+    detection: _ChessboardDetection | None,
+    accepted_count: int,
+    target_count: int,
+) -> None:
+    status = f"Accepted {accepted_count}/{target_count}"
+    if detection is None:
+        detail = "No chessboard detected - SPACE ignored"
+        color = (0, 0, 255)
+    else:
+        detail = f"Detected {detection.cols}x{detection.rows} ({detection.label}) - SPACE saves"
+        color = (0, 180, 0)
+
+    cv2.rectangle(preview, (0, 0), (preview.shape[1], 58), (0, 0, 0), thickness=-1)
+    cv2.putText(preview, status, (12, 22), cv2.FONT_HERSHEY_SIMPLEX, 0.6, (255, 255, 255), 2)
+    cv2.putText(preview, detail, (12, 48), cv2.FONT_HERSHEY_SIMPLEX, 0.55, color, 2)
+
+
+def _capture_frames_from_webcam(
     device_index: int,
     target_count: int,
     cols: int,
     rows: int,
     *,
     no_display: bool = False,
-) -> list[np.ndarray]:
+    debug: bool = False,
+) -> _WebcamCapture:
     """Capture ``target_count`` BGR frames from a webcam when the board is visible.
 
     Shows a live preview (unless ``no_display`` is True, for headless runs and CI).
@@ -138,46 +242,122 @@ def capture_frames_from_webcam(
     if target_count < 1:
         raise ValueError("target_count must be >= 1")
 
+    logger, log_path = setup_debug_logger(debug)
+    if log_path is not None:
+        typer.echo(f"Writing cameracalibrate debug log to {log_path}")
+    logger.info(
+        "capture start device_index=%s target_count=%s requested_cols=%s requested_rows=%s no_display=%s",
+        device_index,
+        target_count,
+        cols,
+        rows,
+        no_display,
+    )
+    logger.info("pattern candidates=%s", _pattern_candidates(cols, rows))
+
     accepted: list[np.ndarray] = []
+    accepted_corners: list[np.ndarray] = []
     cap: cv2.VideoCapture | None = None
+    frame_count = 0
+    last_detected: tuple[int, int, str] | None = None
+    locked_pattern: tuple[int, int, str] | None = None
 
     try:
         cap = cv2.VideoCapture(device_index)
         if not cap.isOpened():
+            logger.error("failed to open camera")
             raise RuntimeError(f"Failed to open camera device_index={device_index!r}")
 
         while len(accepted) < target_count:
             ok, frame = cap.read()
             if not ok or frame is None:
+                logger.warning("frame read failed")
                 continue
 
+            frame_count += 1
             if frame.ndim == 3:
                 gray = cv2.cvtColor(frame, cv2.COLOR_BGR2GRAY)
             else:
                 gray = frame
 
-            corners = find_chessboard_corners(gray, cols, rows)
+            if locked_pattern is None:
+                detection = _find_chessboard_detection(gray, cols, rows)
+                if detection is not None:
+                    locked_pattern = (detection.cols, detection.rows, detection.label)
+                    logger.info(
+                        "locked pattern cols=%s rows=%s label=%s",
+                        detection.cols,
+                        detection.rows,
+                        detection.label,
+                    )
+            else:
+                locked_cols, locked_rows, locked_label = locked_pattern
+                corners = find_chessboard_corners(gray, locked_cols, locked_rows)
+                detection = (
+                    _ChessboardDetection(corners, locked_cols, locked_rows, locked_label)
+                    if corners is not None
+                    else None
+                )
             preview = np.asarray(frame).copy()
-            if corners is not None:
-                cv2.drawChessboardCorners(preview, (cols, rows), corners, True)
+            if detection is not None:
+                detected = (detection.cols, detection.rows, detection.label)
+                if detected != last_detected:
+                    logger.info(
+                        "detected pattern cols=%s rows=%s label=%s frame_shape=%s",
+                        detection.cols,
+                        detection.rows,
+                        detection.label,
+                        frame.shape,
+                    )
+                    last_detected = detected
+                cv2.drawChessboardCorners(
+                    preview,
+                    (detection.cols, detection.rows),
+                    detection.corners,
+                    True,
+                )
+            elif frame_count == 1 or frame_count % 30 == 0:
+                logger.info("no detection frame=%s frame_shape=%s", frame_count, frame.shape)
+
+            _draw_capture_status(
+                preview,
+                detection=detection,
+                accepted_count=len(accepted),
+                target_count=target_count,
+            )
 
             if not no_display:
                 cv2.imshow(_CAMERACALIBRATE_WINDOW, preview)
 
             key = cv2.waitKey(1) & 0xFF
             if key == ord(" "):
-                if corners is not None:
+                if detection is not None:
                     accepted.append(np.asarray(frame).copy())
+                    accepted_corners.append(np.asarray(detection.corners, dtype=np.float32).copy())
+                    logger.info(
+                        "accepted frame accepted=%s/%s pattern=%sx%s label=%s",
+                        len(accepted),
+                        target_count,
+                        detection.cols,
+                        detection.rows,
+                        detection.label,
+                    )
+                else:
+                    logger.info("space ignored because no pattern was detected")
             elif key == ord("q"):
+                logger.info("quit requested accepted=%s/%s", len(accepted), target_count)
                 break
 
         if len(accepted) < target_count:
+            logger.error("capture ended accepted=%s target=%s", len(accepted), target_count)
+            log_hint = f" Debug log: {log_path}" if log_path is not None else ""
             raise RuntimeError(
                 f"Capture ended with {len(accepted)} of {target_count} frames "
-                "(quit early, missing detections on SPACE, or read failures)."
+                f"(quit early, missing detections on SPACE, or read failures).{log_hint}"
             )
 
-        return accepted
+        logger.info("capture complete accepted=%s target=%s", len(accepted), target_count)
+        return _WebcamCapture(accepted, accepted_corners, locked_pattern)
 
     finally:
         if cap is not None:
@@ -190,6 +370,26 @@ def capture_frames_from_webcam(
             cv2.waitKey(1)
 
 
+def capture_frames_from_webcam(
+    device_index: int,
+    target_count: int,
+    cols: int,
+    rows: int,
+    *,
+    no_display: bool = False,
+    debug: bool = False,
+) -> list[np.ndarray]:
+    """Capture ``target_count`` BGR frames from a webcam when the board is visible."""
+    return _capture_frames_from_webcam(
+        device_index,
+        target_count,
+        cols,
+        rows,
+        no_display=no_display,
+        debug=debug,
+    ).frames
+
+
 def find_chessboard_corners(gray: np.ndarray, cols: int, rows: int) -> np.ndarray | None:
     """Detect inner chessboard corners and refine them with sub-pixel accuracy.
 
@@ -199,16 +399,29 @@ def find_chessboard_corners(gray: np.ndarray, cols: int, rows: int) -> np.ndarra
     Returns:
         Float array of shape ``(cols * rows, 1, 2)`` on success, else ``None``.
     """
-    g = np.asarray(gray)
-    pattern_size = (cols, rows)
-    flags = cv2.CALIB_CB_ADAPTIVE_THRESH + cv2.CALIB_CB_NORMALIZE_IMAGE
-    ok, corners = cv2.findChessboardCorners(g, pattern_size, flags)
-    if not ok or corners is None:
-        return None
+    return _find_chessboard_corners_exact(gray, cols, rows)
 
-    criteria = (cv2.TERM_CRITERIA_EPS + cv2.TERM_CRITERIA_MAX_ITER, 30, 0.001)
-    refined = cv2.cornerSubPix(g, corners, (11, 11), (-1, -1), criteria)
-    return refined
+
+def _select_calibration_pattern(
+    frames: list[np.ndarray],
+    cols: int,
+    rows: int,
+) -> tuple[int, int, str]:
+    best_cols, best_rows, best_label = cols, rows, "requested inner corners"
+    best_count = -1
+    for cand_cols, cand_rows, label in _pattern_candidates(cols, rows):
+        count = 0
+        for frame in frames:
+            corners = find_chessboard_corners(frame, cand_cols, cand_rows)
+            if corners is not None:
+                count += 1
+        if count > best_count:
+            best_cols, best_rows, best_label = cand_cols, cand_rows, label
+            best_count = count
+
+    if best_count <= 0:
+        raise ValueError("Chessboard not found in any frame.")
+    return best_cols, best_rows, best_label
 
 
 def calibrate_from_frames(
@@ -216,6 +429,9 @@ def calibrate_from_frames(
     cols: int,
     rows: int,
     square_size_m: float,
+    *,
+    pattern_hint: tuple[int, int, str] | None = None,
+    image_points_hint: list[np.ndarray] | None = None,
 ) -> dict[str, object]:
     """Calibrate intrinsics from grayscale or BGR frames containing a chessboard.
 
@@ -230,8 +446,13 @@ def calibrate_from_frames(
     if not frames:
         raise ValueError("frames must be non-empty")
 
-    objp = np.zeros((rows * cols, 3), dtype=np.float32)
-    objp[:, :2] = np.mgrid[0:cols, 0:rows].T.reshape(-1, 2).astype(np.float32)
+    if pattern_hint is None:
+        actual_cols, actual_rows, pattern_label = _select_calibration_pattern(frames, cols, rows)
+    else:
+        actual_cols, actual_rows, pattern_label = pattern_hint
+
+    objp = np.zeros((actual_rows * actual_cols, 3), dtype=np.float32)
+    objp[:, :2] = np.mgrid[0:actual_cols, 0:actual_rows].T.reshape(-1, 2).astype(np.float32)
     objp *= float(square_size_m)
 
     objpoints: list[np.ndarray] = []
@@ -240,17 +461,28 @@ def calibrate_from_frames(
     first = np.asarray(frames[0])
     h0, w0 = first.shape[:2]
 
-    for frame in frames:
+    if image_points_hint is not None and len(image_points_hint) != len(frames):
+        raise ValueError("image_points_hint length must match frames length.")
+
+    for i, frame in enumerate(frames):
         f = np.asarray(frame)
         if f.shape[:2] != (h0, w0):
             raise ValueError("All frames must have the same shape.")
-        if f.ndim == 3:
-            gray = cv2.cvtColor(f, cv2.COLOR_BGR2GRAY)
+
+        if image_points_hint is not None:
+            corners = np.asarray(image_points_hint[i], dtype=np.float32).reshape(
+                actual_rows * actual_cols,
+                1,
+                2,
+            )
         else:
-            gray = f
-        corners = find_chessboard_corners(gray, cols, rows)
-        if corners is None:
-            continue
+            if f.ndim == 3:
+                gray = cv2.cvtColor(f, cv2.COLOR_BGR2GRAY)
+            else:
+                gray = f
+            corners = find_chessboard_corners(gray, actual_cols, actual_rows)
+            if corners is None:
+                continue
         objpoints.append(objp)
         imgpoints.append(corners.astype(np.float32))
 
@@ -273,6 +505,8 @@ def calibrate_from_frames(
         "rms": float(rms),
         "image_size": (int(w0), int(h0)),
         "n_used": len(objpoints),
+        "pattern_size": (int(actual_cols), int(actual_rows)),
+        "pattern_label": pattern_label,
     }
 
 
@@ -308,11 +542,12 @@ def run_calibration(
     cols: int,
     rows: int,
     square_size_m: float,
-    out: Path,
-    frame_id: str,
+    out: Path | None,
+    preview_out: Path | None,
     camera_name: str,
     target_count: int,
     no_display: bool,
+    debug: bool = False,
 ) -> dict[str, object]:
     """Run calibration from the requested frame source and write CameraInfo YAML."""
     source_value = Source(source)
@@ -327,30 +562,49 @@ def run_calibration(
         if images is None:
             raise ValueError("--images is required when --source folder")
         frames = load_frames_from_folder(str(images))
+        pattern_hint = None
+        image_points_hint = None
     else:
-        frames = capture_frames_from_webcam(
+        capture = _capture_frames_from_webcam(
             device_index,
             target_count,
             cols,
             rows,
             no_display=no_display,
+            debug=debug,
         )
+        frames = capture.frames
+        pattern_hint = capture.pattern
+        image_points_hint = capture.image_points
 
-    result = calibrate_from_frames(frames, cols, rows, square_size_m)
-    image_width, image_height = result["image_size"]
-    out.parent.mkdir(parents=True, exist_ok=True)
-    write_camera_info_yaml(
-        str(out),
-        image_width=int(image_width),
-        image_height=int(image_height),
-        camera_name=camera_name,
-        frame_id=frame_id,
-        K=np.asarray(result["K"], dtype=np.float64),
-        D=np.asarray(result["D"], dtype=np.float64),
+    result = calibrate_from_frames(
+        frames,
+        cols,
+        rows,
+        square_size_m,
+        pattern_hint=pattern_hint,
+        image_points_hint=image_points_hint,
     )
-    preview_path = out.with_suffix(".preview.png")
-    write_preview_overlay_png(frames, cols, rows, preview_path)
-    result["preview_path"] = preview_path
+    image_width, image_height = result["image_size"]
+
+    if out is not None:
+        out.parent.mkdir(parents=True, exist_ok=True)
+        write_camera_info_yaml(
+            str(out),
+            image_width=int(image_width),
+            image_height=int(image_height),
+            camera_name=camera_name,
+            K=np.asarray(result["K"], dtype=np.float64),
+            D=np.asarray(result["D"], dtype=np.float64),
+        )
+        result["out_path"] = out
+
+    if preview_out is not None:
+        preview_out.parent.mkdir(parents=True, exist_ok=True)
+        pattern_cols, pattern_rows = result.get("pattern_size", (cols, rows))
+        write_preview_overlay_png(frames, int(pattern_cols), int(pattern_rows), preview_out)
+        result["preview_path"] = preview_out
+
     return result
 
 
@@ -366,13 +620,19 @@ def calibrate(
     square_size_m: float = typer.Option(
         ..., "--square-size-m", help="Chessboard square size in meters"
     ),
-    out: Path = typer.Option(..., "--out", help="Output ROS CameraInfo YAML path"),
-    frame_id: str = typer.Option("camera_optical", "--frame-id", help="Camera optical frame id"),
+    out: Path | None = typer.Option(None, "--out", help="Optional ROS CameraInfo YAML output path"),
+    preview_out: Path | None = typer.Argument(
+        None, help="Optional preview PNG output path. Requires --out."
+    ),
     camera_name: str = typer.Option("webcam", "--camera-name", help="Camera name in YAML"),
     target_count: int = typer.Option(20, "--target-count", help="Accepted webcam frame count"),
     no_display: bool = typer.Option(False, "--no-display", help="Disable OpenCV preview windows"),
+    debug: bool = typer.Option(False, "--debug", help="Write debug logs to the system temp dir"),
 ) -> None:
     """Calibrate camera intrinsics and write ROS CameraInfo YAML."""
+    if preview_out is not None and out is None:
+        raise typer.BadParameter("preview output requires --out")
+
     try:
         result = run_calibration(
             source=source,
@@ -382,17 +642,24 @@ def calibrate(
             rows=rows,
             square_size_m=square_size_m,
             out=out,
-            frame_id=frame_id,
+            preview_out=preview_out,
             camera_name=camera_name,
             target_count=target_count,
             no_display=no_display,
+            debug=debug,
         )
     except ValueError as exc:
         raise typer.BadParameter(str(exc)) from exc
 
     typer.echo(f"RMS: {float(result['rms']):.6f} px ({int(result['n_used'])} frame(s) used)")
-    typer.echo(f"Wrote camera info YAML to {out}")
-    typer.echo(f"Wrote preview overlay PNG to {result['preview_path']}")
+    typer.echo(
+        f"Detected pattern: {tuple(result.get('pattern_size', (cols, rows)))} "
+        f"({result.get('pattern_label', 'requested inner corners')})"
+    )
+    if out is not None:
+        typer.echo(f"Wrote camera info YAML to {out}")
+    if preview_out is not None:
+        typer.echo(f"Wrote preview overlay PNG to {preview_out}")
 
 
 def main(args: list[str] | None = None) -> None:

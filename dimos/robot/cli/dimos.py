@@ -677,16 +677,22 @@ def cameracalibrate(
     square_size_m: float = typer.Option(
         ..., "--square-size-m", help="Chessboard square size in meters"
     ),
-    out: Path = typer.Option(..., "--out", help="Output ROS CameraInfo YAML path"),
-    frame_id: str = typer.Option("camera_optical", "--frame-id", help="Camera optical frame id"),
+    out: Path | None = typer.Option(None, "--out", help="Optional ROS CameraInfo YAML output path"),
+    preview_out: Path | None = typer.Argument(
+        None, help="Optional preview PNG output path. Requires --out."
+    ),
     camera_name: str = typer.Option("webcam", "--camera-name", help="Camera name in YAML"),
     target_count: int = typer.Option(20, "--target-count", help="Accepted webcam frame count"),
     no_display: bool = typer.Option(
         False, "--no-display", help="Disable OpenCV preview windows"
     ),
+    debug: bool = typer.Option(False, "--debug", help="Write debug logs to the system temp dir"),
 ) -> None:
     """Calibrate camera intrinsics and write ROS CameraInfo YAML."""
     from dimos.utils.cli.cameracalibrate.cameracalibrate import run_calibration
+
+    if preview_out is not None and out is None:
+        raise typer.BadParameter("preview output requires --out")
 
     try:
         result = run_calibration(
@@ -697,17 +703,24 @@ def cameracalibrate(
             rows=rows,
             square_size_m=square_size_m,
             out=out,
-            frame_id=frame_id,
+            preview_out=preview_out,
             camera_name=camera_name,
             target_count=target_count,
             no_display=no_display,
+            debug=debug,
         )
     except ValueError as exc:
         raise typer.BadParameter(str(exc)) from exc
 
     typer.echo(f"RMS: {float(result['rms']):.6f} px ({int(result['n_used'])} frame(s) used)")
-    typer.echo(f"Wrote camera info YAML to {out}")
-    typer.echo(f"Wrote preview overlay PNG to {result['preview_path']}")
+    typer.echo(
+        f"Detected pattern: {tuple(result.get('pattern_size', (cols, rows)))} "
+        f"({result.get('pattern_label', 'requested inner corners')})"
+    )
+    if out is not None:
+        typer.echo(f"Wrote camera info YAML to {out}")
+    if preview_out is not None:
+        typer.echo(f"Wrote preview overlay PNG to {preview_out}")
 
 
 @main.command()
