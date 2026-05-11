@@ -99,6 +99,71 @@ def find_chessboard_corners(gray: np.ndarray, cols: int, rows: int) -> np.ndarra
     return refined
 
 
+def calibrate_from_frames(
+    frames: list[np.ndarray],
+    cols: int,
+    rows: int,
+    square_size_m: float,
+) -> dict[str, object]:
+    """Calibrate intrinsics from grayscale or BGR frames containing a chessboard.
+
+    Each frame where ``find_chessboard_corners`` succeeds contributes one view.
+    All frames must share the same resolution.
+
+    Returns:
+        ``{"K", "D", "rms", "image_size", "n_used"}`` with ``K`` (3x3) and ``D`` (1-d),
+        ``rms`` reprojection RMSE from OpenCV, ``image_size`` ``(width, height)``, and
+        ``n_used`` the number of frames that yielded detections.
+    """
+    if not frames:
+        raise ValueError("frames must be non-empty")
+
+    objp = np.zeros((rows * cols, 3), dtype=np.float32)
+    objp[:, :2] = np.mgrid[0:cols, 0:rows].T.reshape(-1, 2).astype(np.float32)
+    objp *= float(square_size_m)
+
+    objpoints: list[np.ndarray] = []
+    imgpoints: list[np.ndarray] = []
+
+    first = np.asarray(frames[0])
+    h0, w0 = first.shape[:2]
+
+    for frame in frames:
+        f = np.asarray(frame)
+        if f.shape[:2] != (h0, w0):
+            raise ValueError("All frames must have the same shape.")
+        if f.ndim == 3:
+            gray = cv2.cvtColor(f, cv2.COLOR_BGR2GRAY)
+        else:
+            gray = f
+        corners = find_chessboard_corners(gray, cols, rows)
+        if corners is None:
+            continue
+        objpoints.append(objp)
+        imgpoints.append(corners.astype(np.float32))
+
+    if not objpoints:
+        raise ValueError("Chessboard not found in any frame.")
+
+    rms, camera_matrix, dist_coeffs, _rvecs, _tvecs = cv2.calibrateCamera(
+        objpoints,
+        imgpoints,
+        (w0, h0),
+        None,
+        None,
+    )
+    K = np.asarray(camera_matrix, dtype=np.float64)
+    D = np.asarray(dist_coeffs, dtype=np.float64).reshape(-1)
+
+    return {
+        "K": K,
+        "D": D,
+        "rms": float(rms),
+        "image_size": (int(w0), int(h0)),
+        "n_used": len(objpoints),
+    }
+
+
 def main() -> None:
     """CLI entry point (stub)."""
     pass
