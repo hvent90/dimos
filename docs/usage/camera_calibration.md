@@ -20,6 +20,14 @@ A practical default is **8 by 6 inner corners** on **A4**: enough intersections 
 
 3. **Measure one printed square with calipers.** Use the edge length of a single black or white square on the **printed** sheet, not the value from the generator unless you verified the print. Convert to meters for `--square-size-m` (for example 24.85 mm becomes `0.02485`).
 
+## Capture practice
+
+- Aim for 15-25 frames with the board fully in view and inner corners detected in each; keep a few spares so you can drop outliers.
+- Cover the full image over the set: include poses where the board reaches toward the frame edges and corners, not only the center.
+- Vary tilt and camera-to-board distance between frames so the solver sees diverse rigid poses.
+- Lock exposure and use fixed white balance when the camera or capture app allows it, so brightness does not drift across the sequence.
+- Avoid motion blur: mount or brace the camera, use enough light, and only save frames when the preview is sharp (same for stills saved to a folder).
+
 Example after you have calibration images in `./capture`:
 
 ```bash
