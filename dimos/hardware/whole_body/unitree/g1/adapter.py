@@ -201,6 +201,16 @@ class UnitreeG1LowLevelAdapter:
                 for i in range(_NUM_MOTORS)
             ]
 
+    def has_motor_states(self) -> bool:
+        """True once we've received the first ``LowState_`` message.
+
+        ``ConnectedWholeBody`` uses this to defer publishing joint_state
+        until real data is on the wire (vs. the zero-default ``MotorState()``
+        list ``read_motor_states`` returns during the ramp-up window).
+        """
+        with self._lock:
+            return self._connected and self._low_state is not None
+
     def read_imu(self) -> IMUState:
         """Read IMU state."""
         with self._lock:
@@ -215,17 +225,35 @@ class UnitreeG1LowLevelAdapter:
             )
 
     def read_odom(self) -> PoseStamped | None:
-        """Real G1 odom — not yet wired.
+        """Synthesize a stationary-standing pelvis pose at identity.
 
-        The unitree_sdk2py LowState only carries IMU + motor data, not a
-        base-frame pose; the production pipeline computes odometry by
-        fusing IMU integration with leg kinematics in a separate node.
-        Returning None keeps the coordinator's Out[odom] silent on real
-        hardware.  Wire this up by either (a) subscribing to the DDS
-        odometry topic published by the onboard estimator if available,
-        or (b) running a small estimator inside this adapter.
+        No real estimator yet. For stationary tasks (pointing etc.) the
+        cleanest convention is: targets are expressed in the robot's
+        local frame, pelvis pose is identity. That way "y > 0" always
+        means "robot's left" regardless of the robot's actual yaw in the
+        room, and `pick_arm_side` selects correctly.
+
+        Returns None until the first LowState arrives (so the rest of
+        the stack knows the adapter is live).
         """
-        return None
+        from dimos.msgs.geometry_msgs.PoseStamped import PoseStamped
+
+        with self._lock:
+            if self._low_state is None:
+                return None
+
+        pose = PoseStamped(ts=time.time(), frame_id="map")
+        # Pelvis at the standing height with identity orientation.
+        # Replace with a real estimator before walking + pointing — the
+        # position will drift the moment the robot translates.
+        pose.position.x = 0.0
+        pose.position.y = 0.0
+        pose.position.z = 0.793
+        pose.orientation.w = 1.0
+        pose.orientation.x = 0.0
+        pose.orientation.y = 0.0
+        pose.orientation.z = 0.0
+        return pose
 
     # =========================================================================
     # Control

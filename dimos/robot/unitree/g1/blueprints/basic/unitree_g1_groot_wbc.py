@@ -62,10 +62,12 @@ from dimos.control.coordinator import ControlCoordinator, TaskConfig
 from dimos.core.coordination.blueprints import autoconnect
 from dimos.core.transport import LCMTransport
 from dimos.hardware.whole_body.spec import WholeBodyConfig
+from dimos.msgs.geometry_msgs.PointStamped import PointStamped
 from dimos.msgs.geometry_msgs.PoseStamped import PoseStamped
 from dimos.msgs.geometry_msgs.Twist import Twist
 from dimos.msgs.sensor_msgs.JointState import JointState
 from dimos.msgs.std_msgs.Bool import Bool as DimosBool
+from dimos.robot.catalog.g1 import g1_left_arm, g1_right_arm
 from dimos.robot.unitree.g1.blueprints.basic._groot_wbc_common import (
     ARM_DEFAULT_POSE,
     G1_GROOT_KD,
@@ -74,8 +76,14 @@ from dimos.robot.unitree.g1.blueprints.basic._groot_wbc_common import (
     g1_joints,
     g1_legs_waist,
 )
+from dimos.robot.unitree.g1.g1_manipulation import G1ManipulationModule
 from dimos.utils.data import get_data
 from dimos.web.websocket_vis.websocket_vis_module import WebsocketVisModule
+
+# Per-arm catalog entries — shared Drake URDF parse (manipulation_module
+# dedupes by model_path so the two arms share one plant).
+_g1_left_arm_cfg = g1_left_arm()
+_g1_right_arm_cfg = g1_right_arm()
 
 _g1_coordinator = ControlCoordinator.blueprint(
     tick_rate=500.0,
@@ -109,14 +117,14 @@ _g1_coordinator = ControlCoordinator.blueprint(
             auto_dry_run=True,
             default_ramp_seconds=10.0,
         ),
-        TaskConfig(
-            name="servo_arms",
-            type="servo",
-            joint_names=g1_arms,
-            priority=10,
-            default_positions=ARM_DEFAULT_POSE,
-            auto_start=True,
-        ),
+        # NOTE: no `servo_arms` task — matches the sim blueprint. After a
+        # pointing trajectory completes and the trajectory task releases its
+        # claim, nothing else commands the arm joints, so the motors hold
+        # the last commanded position (kd damping) instead of snapping back
+        # to ARM_DEFAULT_POSE. Sending another point_goal preempts and the
+        # reset-then-point cycle drives the arm fresh from the held pose.
+        _g1_left_arm_cfg.task_config,
+        _g1_right_arm_cfg.task_config,
     ],
 ).transports(
     {
@@ -140,6 +148,31 @@ _g1_ws_vis = WebsocketVisModule.blueprint().transports(
     },
 )
 
-unitree_g1_groot_wbc = autoconnect(_g1_coordinator, _g1_ws_vis)
+# Manipulation: Drake-IK planner driving both G1 arms via the
+# coordinator's per-arm trajectory tasks. Subscribes to
+# /coordinator/joint_state for state sync, /odom for the Drake
+# floating-base pose, and /point_goal as the interactive pointing
+# trigger (any publisher writing a PointStamped here drives the full
+# reset-both-arms-then-point cycle defined in G1ManipulationModule).
+_g1_manipulation = G1ManipulationModule.blueprint(
+    robots=[
+        _g1_left_arm_cfg.robot_model_config,
+        _g1_right_arm_cfg.robot_model_config,
+    ],
+    planning_timeout=10.0,
+    kinematics_name="drake_optimization",
+    # Meshcat at localhost:7000 — shows the URDF + planned trajectories
+    # + obstacles Drake sees. Useful for verifying commands look sane
+    # before flipping dry-run off on the real hardware.
+    enable_viz=True,
+).transports(
+    {
+        ("joint_state", JointState): LCMTransport("/coordinator/joint_state", JointState),
+        ("odom", PoseStamped): LCMTransport("/odom", PoseStamped),
+        ("point_goal", PointStamped): LCMTransport("/point_goal", PointStamped),
+    }
+)
+
+unitree_g1_groot_wbc = autoconnect(_g1_coordinator, _g1_ws_vis, _g1_manipulation)
 
 __all__ = ["unitree_g1_groot_wbc"]
