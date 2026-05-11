@@ -67,14 +67,14 @@ def test_find_chessboard_corners_synthetic_board_returns_expected_count() -> Non
     assert corners.shape == (cols * rows, 1, 2)
 
 
-def test_calibrate_from_frames_recovers_K_within_five_percent_on_synthetic_views() -> None:
-    """Synthetic views from a known intrinsics matrix; recovered ``K`` within 5% (T3.5)."""
+def test_calibrate_from_frames_synthetic_twelve_views_rms_and_K_near_truth() -> None:
+    """T3.6: 12 OpenCV-synthesized chessboard views from known ``K``; ``rms`` < 1 px; ``K`` ~ truth."""
     cols, rows = 9, 6
     width, height = 640, 480
     square_size_m = 0.025
     square_px = 40
 
-    # Zero skew; comparing skew ratio vs near-zero truth is ill-conditioned (T3.5 checks fx, fy, cx, cy).
+    # Zero skew; comparing skew ratio vs near-zero truth is ill-conditioned (check fx, fy, cx, cy).
     K_true = np.array(
         [[512.0, 0.0, 318.5], [0.0, 508.0, 242.3], [0.0, 0.0, 1.0]],
         dtype=np.float64,
@@ -92,7 +92,9 @@ def test_calibrate_from_frames_recovers_K_within_five_percent_on_synthetic_views
 
     rng = np.random.default_rng(42)
     frames: list[np.ndarray] = []
-    for _ in range(18):
+    for _ in range(400):
+        if len(frames) >= 12:
+            break
         rvec = rng.uniform(-0.22, 0.22, size=3).astype(np.float64)
         tvec = np.array(
             [
@@ -112,12 +114,14 @@ def test_calibrate_from_frames_recovers_K_within_five_percent_on_synthetic_views
         if corners_w is not None:
             frames.append(warped)
 
-    assert len(frames) >= 8
+    assert len(frames) >= 12
+    frames = frames[:12]
 
     out = calibrate_from_frames(frames, cols, rows, square_size_m)
-    assert out["n_used"] == len(frames)
+    assert out["n_used"] == 12
     assert out["image_size"] == (width, height)
     assert isinstance(out["rms"], float)
+    assert out["rms"] < 1.0
 
     K_est = np.asarray(out["K"], dtype=np.float64).reshape(3, 3)
     denom = np.maximum(np.abs(K_true), 1e-9)
