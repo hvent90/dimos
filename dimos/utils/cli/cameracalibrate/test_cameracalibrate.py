@@ -399,6 +399,7 @@ def test_calibrate_from_frames_synthetic_twelve_views_rms_and_K_near_truth() -> 
     rel = np.abs(K_est - K_true) / denom
     assert np.all(rel < 0.05)
 
+
 def test_write_camera_info_yaml_round_trip_matches_k_d_size_and_model() -> None:
     K = np.array([[500.0, 0.0, 320.0], [0.0, 510.0, 240.0], [0.0, 0.0, 1.0]])
     D = np.array([-0.1, 0.05, 0.0, 0.0, 0.0])

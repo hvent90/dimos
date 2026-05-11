@@ -103,11 +103,7 @@ def load_frames_from_folder(path: str) -> list[np.ndarray]:
     if not root.is_dir():
         raise ValueError(f"Not a directory: {path}")
 
-    paths = sorted(
-        p
-        for p in root.iterdir()
-        if p.is_file() and p.suffix.lower() in _IMAGE_EXTS
-    )
+    paths = sorted(p for p in root.iterdir() if p.is_file() and p.suffix.lower() in _IMAGE_EXTS)
     out: list[np.ndarray] = []
     for p in paths:
         img = cv2.imread(str(p))
@@ -292,11 +288,7 @@ def write_preview_overlay_png(
         if corners is None:
             continue
 
-        preview = (
-            cv2.cvtColor(f, cv2.COLOR_GRAY2BGR)
-            if f.ndim == 2
-            else np.asarray(frame).copy()
-        )
+        preview = cv2.cvtColor(f, cv2.COLOR_GRAY2BGR) if f.ndim == 2 else np.asarray(frame).copy()
         cv2.drawChessboardCorners(preview, (cols, rows), corners, True)
         path.parent.mkdir(parents=True, exist_ok=True)
         if not cv2.imwrite(str(path), preview):
@@ -376,9 +368,7 @@ def calibrate(
     frame_id: str = typer.Option("camera_optical", "--frame-id", help="Camera optical frame id"),
     camera_name: str = typer.Option("webcam", "--camera-name", help="Camera name in YAML"),
     target_count: int = typer.Option(20, "--target-count", help="Accepted webcam frame count"),
-    no_display: bool = typer.Option(
-        False, "--no-display", help="Disable OpenCV preview windows"
-    ),
+    no_display: bool = typer.Option(False, "--no-display", help="Disable OpenCV preview windows"),
 ) -> None:
     """Calibrate camera intrinsics and write ROS CameraInfo YAML."""
     try:
