@@ -80,7 +80,7 @@ _MJCF_PATH = LfsPath("mujoco_sim/g1_gear_wbc.xml")
 _adapter_address: str | Path
 
 if global_config.simulation:
-    # --- Sim backend: MuJoCo engine via SHM ---
+    # Sim backend: MuJoCo engine via SHM.
     _backend = MujocoSimModule.blueprint(
         address=_MJCF_PATH,
         headless=True,
@@ -105,7 +105,7 @@ if global_config.simulation:
     # servo task needed.
     _arm_holder: TaskConfig | None = None
 else:
-    # --- Real-hw backend: DDS connection module + transport_lcm adapter ---
+    # Real-hw backend: DDS connection module + transport_lcm adapter.
     _backend = G1WholeBodyConnection.blueprint(release_sport_mode=True)
     _adapter_type = "transport_lcm"
     _adapter_address = ""

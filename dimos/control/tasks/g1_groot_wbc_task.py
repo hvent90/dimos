@@ -54,7 +54,6 @@ if TYPE_CHECKING:
 logger = setup_logger()
 
 
-# === G1 joint layout & gain tables ===
 # The 29 DDS motor names + their kp/kd for the GR00T-trained policies.
 # Lifted verbatim from g1-control-api/configs/g1_groot_wbc.yaml, which
 # itself copies GR00T-WBC's g1_29dof_gear_wbc.yaml. Diverging from these
@@ -704,10 +703,10 @@ class G1GrootWBCTask(BaseControlTask):
 
 __all__ = [
     "ARM_DEFAULT_POSE",
-    "G1GrootWBCTask",
-    "G1GrootWBCTaskConfig",
     "G1_GROOT_KD",
     "G1_GROOT_KP",
+    "G1GrootWBCTask",
+    "G1GrootWBCTaskConfig",
     "g1_arms",
     "g1_joints",
     "g1_legs_waist",

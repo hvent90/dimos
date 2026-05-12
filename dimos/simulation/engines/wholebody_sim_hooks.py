@@ -77,8 +77,6 @@ class WholeBodySimHooks:
         self._latest_pd_kd: np.ndarray | None = None
         self._latest_pd_tau: np.ndarray | None = None
 
-    # === Hook entry points (engine calls these via on_before_step / on_after_step) ===
-
     def pre_step(self, engine: MujocoEngine) -> None:
         """Pull command targets from SHM into the engine."""
         shm = self._shm
@@ -143,8 +141,6 @@ class WholeBodySimHooks:
             positions = engine.joint_positions
             if self._gripper_idx < len(positions):
                 shm.write_gripper_state(positions[self._gripper_idx])
-
-    # === Helpers ===
 
     def _gripper_joint_to_ctrl(self, joint_position: float) -> float:
         """Map joint-space gripper position to actuator control value."""

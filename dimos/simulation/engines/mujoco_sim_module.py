@@ -241,7 +241,7 @@ class MujocoSimModule(
             self._start_subprocess(shm_key)
             return
 
-        # === Thread mode (default) ===
+        # Thread mode is the default engine path.
         self._shm = ManipShmWriter(shm_key)
 
         # Build engine with SHM hooks installed.
