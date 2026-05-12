@@ -70,13 +70,14 @@ def _convert_navigation_costmap(grid: Any) -> Any:
     )
 
 
-def _static_base_link(rr: Any) -> list[Any]:
+def _static_body(rr: Any) -> list[Any]:
+    # Robot box, parented to TF frame "body" (FRAME_BODY in nav_stack).
     return [
         rr.Boxes3D(
             half_sizes=[0.35, 0.155, 0.2],
             colors=[(0, 255, 127)],
         ),
-        rr.Transform3D(parent_frame="tf#/base_link"),
+        rr.Transform3D(parent_frame="tf#/body"),
     ]
 
 
@@ -89,7 +90,7 @@ rerun_config = {
         "world/navigation_costmap": _convert_navigation_costmap,
     },
     "static": {
-        "world/tf/base_link": _static_base_link,
+        "world/tf/body": _static_body,
         "world/tf/camera_optical": DimSimBridge.rerun_static_pinhole,
     },
 }

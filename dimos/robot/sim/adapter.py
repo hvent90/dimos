@@ -207,6 +207,18 @@ class DimSimAdapter(Module):
                 rotation=Quaternion(0.0, 0.0, 0.0, 1.0),
             )
         )
+        # DimSim labels its lidar/odom messages with ``frame_id="world"``
+        # (see DimSim's bridge/physics.ts + lidar.ts). Publish an identity
+        # transform so anything tagged ``world`` can be looked up against
+        # ``map`` — otherwise TerrainAnalysis / costmap construction fails
+        # to project points into the planner's frame.
+        self.tf.publish(
+            Transform(
+                ts=ps.ts, frame_id="map", child_frame_id="world",
+                translation=Vector3(0.0, 0.0, 0.0),
+                rotation=Quaternion(0.0, 0.0, 0.0, 1.0),
+            )
+        )
 
     def _caminfo_loop(self) -> None:
         period = 1.0 / max(self.config.caminfo_rate_hz, 0.01)
