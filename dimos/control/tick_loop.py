@@ -224,14 +224,12 @@ class TickLoop:
             timestamp=time.time(),
         )
 
-    def _read_all_imu(self) -> dict[str, "IMUState"]:
+    def _read_all_imu(self) -> dict[str, IMUState]:
         """Poll IMU from every whole-body hardware in the pool.
 
         Tasks read this through ``CoordinatorState.imu[hardware_id]``
-        instead of reaching into the adapter directly — decouples
-        ``G1GrootWBCTask`` (and any future obs-building task) from
-        the WholeBodyAdapter Protocol. Hardware that doesn't have an
-        IMU is silently absent from the dict.
+        instead of reaching into adapters directly. Hardware without
+        IMU support is absent from the dict.
         """
         from dimos.control.hardware_interface import ConnectedWholeBody
 
@@ -416,5 +414,6 @@ class TickLoop:
         )
         if self._publish_callback:
             self._publish_callback(msg)
+
 
 __all__ = ["TickLoop"]

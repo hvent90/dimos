@@ -332,22 +332,15 @@ __all__ = [
 ]
 
 
-def register(registry: Any) -> None:
-    """Self-registration hook called by the task registry on discovery."""
-
-    def _factory(cfg: Any, hardware: Any) -> CartesianIKTask:
-        if cfg.model_path is None:
-            raise ValueError(
-                f"CartesianIKTask {cfg.name!r} requires model_path in TaskConfig"
-            )
-        return CartesianIKTask(
-            cfg.name,
-            CartesianIKTaskConfig(
-                joint_names=cfg.joint_names,
-                model_path=cfg.model_path,
-                ee_joint_id=cfg.ee_joint_id,
-                priority=cfg.priority,
-            ),
-        )
-
-    registry.register("cartesian_ik", _factory)
+def create_task(cfg: Any, hardware: Any) -> CartesianIKTask:
+    if cfg.model_path is None:
+        raise ValueError(f"CartesianIKTask {cfg.name!r} requires model_path in TaskConfig")
+    return CartesianIKTask(
+        cfg.name,
+        CartesianIKTaskConfig(
+            joint_names=cfg.joint_names,
+            model_path=cfg.model_path,
+            ee_joint_id=cfg.ee_joint_id,
+            priority=cfg.priority,
+        ),
+    )

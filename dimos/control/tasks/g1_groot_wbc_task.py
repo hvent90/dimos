@@ -64,18 +64,66 @@ g1_legs_waist = g1_joints[:15]  # indices 0..14 — legs (12) + waist (3)
 g1_arms = g1_joints[15:]  # indices 15..28 — left arm (7) + right arm (7)
 
 G1_GROOT_KP: list[float] = [
-    150.0, 150.0, 150.0, 200.0, 40.0, 40.0,    # left leg
-    150.0, 150.0, 150.0, 200.0, 40.0, 40.0,    # right leg
-    250.0, 250.0, 250.0,                       # waist
-    100.0, 100.0, 40.0, 40.0, 20.0, 20.0, 20.0,  # left arm
-    100.0, 100.0, 40.0, 40.0, 20.0, 20.0, 20.0,  # right arm
+    150.0,
+    150.0,
+    150.0,
+    200.0,
+    40.0,
+    40.0,  # left leg
+    150.0,
+    150.0,
+    150.0,
+    200.0,
+    40.0,
+    40.0,  # right leg
+    250.0,
+    250.0,
+    250.0,  # waist
+    100.0,
+    100.0,
+    40.0,
+    40.0,
+    20.0,
+    20.0,
+    20.0,  # left arm
+    100.0,
+    100.0,
+    40.0,
+    40.0,
+    20.0,
+    20.0,
+    20.0,  # right arm
 ]
 G1_GROOT_KD: list[float] = [
-    2.0, 2.0, 2.0, 4.0, 2.0, 2.0,    # left leg
-    2.0, 2.0, 2.0, 4.0, 2.0, 2.0,    # right leg
-    5.0, 5.0, 5.0,                   # waist
-    5.0, 5.0, 2.0, 2.0, 2.0, 2.0, 2.0,  # left arm
-    5.0, 5.0, 2.0, 2.0, 2.0, 2.0, 2.0,  # right arm
+    2.0,
+    2.0,
+    2.0,
+    4.0,
+    2.0,
+    2.0,  # left leg
+    2.0,
+    2.0,
+    2.0,
+    4.0,
+    2.0,
+    2.0,  # right leg
+    5.0,
+    5.0,
+    5.0,  # waist
+    5.0,
+    5.0,
+    2.0,
+    2.0,
+    2.0,
+    2.0,
+    2.0,  # left arm
+    5.0,
+    5.0,
+    2.0,
+    2.0,
+    2.0,
+    2.0,
+    2.0,  # right arm
 ]
 
 # Relaxed arms-down pose. From g1_control/backends/groot_wbc_backend.py
@@ -713,63 +761,47 @@ __all__ = [
 ]
 
 
-def register(registry: Any) -> None:
-    """Self-registration hook called by the task registry on discovery.
-
-    Resolves the WholeBodyAdapter and full 29-DOF joint list via
-    ``cfg.hardware_id`` so the policy can read IMU state and assemble
-    its observation across all motors (not just the 15 it commands).
-    """
-
+def create_task(cfg: Any, hardware: Any) -> G1GrootWBCTask:
     from pathlib import Path
 
-    def _factory(cfg: Any, hardware: Any) -> G1GrootWBCTask:
-        # Imports kept local so the registry's discover() doesn't pay
-        # for ConnectedWholeBody at import time.
-        from dimos.control.hardware_interface import ConnectedWholeBody
+    from dimos.control.hardware_interface import ConnectedWholeBody
 
-        if cfg.model_path is None:
-            raise ValueError(
-                f"G1GrootWBCTask {cfg.name!r} requires model_path "
-                f"(directory containing balance.onnx + walk.onnx)"
-            )
-        if cfg.hardware_id is None:
-            raise ValueError(
-                f"G1GrootWBCTask {cfg.name!r} requires hardware_id in TaskConfig"
-            )
-        hw = hardware.get(cfg.hardware_id) if hardware else None
-        if hw is None:
-            raise ValueError(
-                f"G1GrootWBCTask {cfg.name!r} references unknown hardware "
-                f"{cfg.hardware_id!r}. Declare the hardware before the task "
-                f"in the blueprint config."
-            )
-        if not isinstance(hw, ConnectedWholeBody):
-            raise TypeError(
-                f"G1GrootWBCTask {cfg.name!r} requires a WHOLE_BODY hardware "
-                f"component for {cfg.hardware_id!r}, got {type(hw).__name__}. "
-                f"Set hardware_type=HardwareType.WHOLE_BODY."
-            )
-
-        model_dir = Path(cfg.model_path)
-        kwargs: dict[str, Any] = dict(
-            balance_onnx=model_dir / "balance.onnx",
-            walk_onnx=model_dir / "walk.onnx",
-            joint_names=cfg.joint_names,
-            all_joint_names=hw.joint_names,
-            priority=cfg.priority,
-            auto_arm=cfg.auto_arm,
-            auto_dry_run=cfg.auto_dry_run,
-            default_ramp_seconds=cfg.default_ramp_seconds,
+    if cfg.model_path is None:
+        raise ValueError(
+            f"G1GrootWBCTask {cfg.name!r} requires model_path "
+            f"(directory containing balance.onnx + walk.onnx)"
         )
-        if cfg.decimation is not None:
-            kwargs["decimation"] = cfg.decimation
-        return G1GrootWBCTask(
-            cfg.name,
-            G1GrootWBCTaskConfig(**kwargs),
-            adapter=hw.adapter,
+    if cfg.hardware_id is None:
+        raise ValueError(f"G1GrootWBCTask {cfg.name!r} requires hardware_id in TaskConfig")
+    hw = hardware.get(cfg.hardware_id) if hardware else None
+    if hw is None:
+        raise ValueError(
+            f"G1GrootWBCTask {cfg.name!r} references unknown hardware "
+            f"{cfg.hardware_id!r}. Declare the hardware before the task "
+            f"in the blueprint config."
+        )
+    if not isinstance(hw, ConnectedWholeBody):
+        raise TypeError(
+            f"G1GrootWBCTask {cfg.name!r} requires a WHOLE_BODY hardware "
+            f"component for {cfg.hardware_id!r}, got {type(hw).__name__}. "
+            f"Set hardware_type=HardwareType.WHOLE_BODY."
         )
 
-    registry.register("g1_groot_wbc", _factory)
-    # Backwards-compat alias for blueprints still on the generic name.
-    registry.register("groot_wbc", _factory)
+    model_dir = Path(cfg.model_path)
+    kwargs: dict[str, Any] = dict(
+        balance_onnx=model_dir / "balance.onnx",
+        walk_onnx=model_dir / "walk.onnx",
+        joint_names=cfg.joint_names,
+        all_joint_names=hw.joint_names,
+        priority=cfg.priority,
+        auto_arm=cfg.auto_arm,
+        auto_dry_run=cfg.auto_dry_run,
+        default_ramp_seconds=cfg.default_ramp_seconds,
+    )
+    if cfg.decimation is not None:
+        kwargs["decimation"] = cfg.decimation
+    return G1GrootWBCTask(
+        cfg.name,
+        G1GrootWBCTaskConfig(**kwargs),
+        adapter=hw.adapter,
+    )

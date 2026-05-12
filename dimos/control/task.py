@@ -108,9 +108,6 @@ class CoordinatorState:
     Attributes:
         joints: Aggregated joint states from all hardware
         imu: Per-whole-body IMU readings, keyed by hardware_id.
-            Tasks like ``G1GrootWBCTask`` need IMU for the obs vector
-            and read it from here instead of reaching into the adapter
-            Protocol (which couples the task to per-vendor SDK details).
             Empty dict when no whole-body hardware exposes IMU this tick.
         t_now: Current tick time (time.perf_counter())
         dt: Time since last tick (seconds)

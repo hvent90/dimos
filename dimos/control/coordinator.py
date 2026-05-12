@@ -58,7 +58,6 @@ from dimos.hardware.whole_body.spec import WholeBodyAdapter
 from dimos.msgs.geometry_msgs.PoseStamped import PoseStamped
 from dimos.msgs.geometry_msgs.Twist import Twist
 from dimos.msgs.sensor_msgs.JointState import JointState
-from dimos.msgs.std_msgs.Bool import Bool
 from dimos.teleop.quest.quest_types import (
     Buttons,
 )
@@ -76,19 +75,16 @@ class TaskConfig:
 
     Attributes:
         name: Task name (e.g., "traj_arm")
-        type: Task type ("trajectory", "servo", "velocity", "cartesian_ik", "teleop_ik", "groot_wbc")
+        type: Registered task type name. See ``dimos.control.tasks.registry``.
         joint_names: List of joint names this task controls
         priority: Task priority (higher wins arbitration)
-        model_path: Path to URDF/MJCF for IK solver (cartesian_ik/teleop_ik)
-            or directory containing balance.onnx/walk.onnx (groot_wbc).
+        model_path: Optional model path used by task factories that need one.
         ee_joint_id: End-effector joint ID in model (cartesian_ik/teleop_ik only)
         hand: "left" or "right" controller hand (teleop_ik only)
         gripper_joint: Joint name for gripper virtual joint
         gripper_open_pos: Gripper position at trigger 0.0
         gripper_closed_pos: Gripper position at trigger 1.0
-        hardware_id: Hardware id this task reads extra state from
-            (required by groot_wbc — pulls the WholeBodyAdapter for IMU
-            and the full joint list for observation assembly).
+        hardware_id: Optional hardware dependency used by task factories.
     """
 
     name: str
@@ -103,34 +99,19 @@ class TaskConfig:
     gripper_joint: str | None = None
     gripper_open_pos: float = 0.0
     gripper_closed_pos: float = 0.0
-    # Tasks that need a hardware reference (e.g. groot_wbc for IMU + 29-DOF state)
+    # For tasks that need access to a configured hardware adapter.
     hardware_id: str | None = None
     # Servo task: optional initial target held until/unless a new one arrives.
     default_positions: list[float] | None = None
-    # Call ``task.start()`` right after registration so the task is live
-    # from the first tick (e.g. GR00T balance/walk needs to drive joints
-    # immediately).  Default False keeps the existing convention where
-    # tasks wait for an explicit activation (e.g. from teleop).
+    # Start the task immediately after registration.
     auto_start: bool = False
-    # Arm the task's policy automatically on ``start()`` (applies to
-    # tasks exposing ``arm()``, e.g. ``G1GrootWBCTask``).  Simulation
-    # blueprints set this True; real-hardware blueprints leave it False
-    # so the operator arms via dashboard button after settling.
+    # For tasks with arm()/disarm(): arm automatically on start.
     auto_arm: bool = False
-    # Start the task in dry-run mode (policy computes but output is
-    # suppressed).  For real-hardware safety checks.
+    # For tasks with dry-run support: compute but suppress output on start.
     auto_dry_run: bool = False
-    # Ramp duration (seconds) used by ``arm()`` when called without an
-    # explicit argument — applies to tasks that interpolate from the
-    # current pose toward a default on arming.
+    # Default arming ramp duration, for tasks that interpolate on arm().
     default_ramp_seconds: float = 10.0
-    # GR00T WBC only: run policy inference every N coordinator ticks.
-    # Effective policy rate = ``tick_rate / decimation``.  The model was
-    # trained at 50 Hz, so the original convention was tick_rate=500 +
-    # decimation=10.  At tick_rate=50 set decimation=1 (matches upstream
-    # `run_g1_control_loop.py` which spins the policy directly at 50 Hz).
-    # Mismatched rates make the policy hold actions for too long and
-    # the robot tips over.  ``None`` keeps the task's own default (10).
+    # Optional task-level compute decimation; ``None`` keeps the task default.
     decimation: int | None = None
 
 
@@ -205,10 +186,7 @@ class ControlCoordinator(Module):
     # Input: Teleop buttons for engage/disengage signaling
     buttons: In[Buttons]
 
-    # NOTE: arming + dry-run are deliberately *not* In[Bool] streams —
-    # they're one-shot events, not continuous signals. Use the
-    # ``set_activated(bool)`` and ``set_dry_run(bool)`` RPC methods
-    # below (the dashboard does this via its module RPC client).
+    # Arming and dry-run are one-shot RPCs, not streams.
 
     def __init__(self, *args: Any, **kwargs: Any) -> None:
         super().__init__(*args, **kwargs)
@@ -334,10 +312,8 @@ class ControlCoordinator(Module):
     def _create_task_from_config(self, cfg: TaskConfig) -> ControlTask:
         """Create a control task from config via the task registry.
 
-        Each task module self-registers a factory under its type name —
-        see ``dimos.control.tasks.registry``. Tasks that need an adapter
-        (``g1_groot_wbc`` reads IMU + 29-DOF state from the WholeBodyAdapter)
-        resolve via the ``hardware`` map keyed by ``cfg.hardware_id``.
+        Each task module self-registers a factory under its type name.
+        Factories can resolve hardware dependencies from the hardware map.
         """
         from dimos.control.tasks.registry import control_task_registry
 
@@ -575,9 +551,7 @@ class ControlCoordinator(Module):
             joint_state = JointState(name=names, velocity=velocities)
             self._on_joint_command(joint_state)
 
-        # Also route to tasks that accept a (vx, vy, yaw_rate) command —
-        # e.g. locomotion policies like G1GrootWBCTask.  Duck-typed: any
-        # task exposing set_velocity_command opts in.
+        # Velocity-capable tasks opt in with set_velocity_command().
         t_now = time.perf_counter()
         with self._task_lock:
             for task in self._tasks.values():
@@ -593,17 +567,7 @@ class ControlCoordinator(Module):
 
     @rpc
     def set_activated(self, engaged: bool) -> None:
-        """Arm/disarm every task exposing ``arm()`` / ``disarm()``.
-
-        Replaces the old streaming ``activate: In[Bool]`` port — arm and
-        disarm are one-shot events, not continuous signals, so RPC is
-        the right primitive. The dashboard's "Arm" / "Disarm" buttons
-        call this directly via the module RPC client; an operator can
-        also drive it from a Python shell.
-
-        Duck-typed to match the ``set_velocity_command`` convention used
-        by ``_on_twist_command``.
-        """
+        """Arm/disarm every task exposing ``arm()`` / ``disarm()``."""
         with self._task_lock:
             for task in self._tasks.values():
                 method_name = "arm" if engaged else "disarm"
@@ -616,12 +580,7 @@ class ControlCoordinator(Module):
 
     @rpc
     def set_dry_run(self, enabled: bool) -> None:
-        """Toggle dry-run on every task exposing ``set_dry_run``.
-
-        Replaces the old streaming ``dry_run: In[Bool]`` port for the
-        same reason as ``set_activated``: it's a one-shot configuration
-        change, not a continuous signal. Callers use the module RPC.
-        """
+        """Toggle dry-run on every task exposing ``set_dry_run``."""
         with self._task_lock:
             for task in self._tasks.values():
                 handler = getattr(task, "set_dry_run", None)
@@ -742,11 +701,7 @@ class ControlCoordinator(Module):
                     "Use task_invoke RPC or set transport via blueprint."
                 )
 
-        # Subscribe to twist commands if any twist base hardware is configured
-        # OR if any task accepts velocity commands (locomotion policies like
-        # G1GrootWBCTask duck-type with set_velocity_command).  Without the
-        # latter check, a whole-body locomotion blueprint with no BASE
-        # hardware silently drops every Twist on /cmd_vel.
+        # Twist commands drive either base hardware or velocity-capable tasks.
         has_twist_base = any(c.hardware_type == HardwareType.BASE for c in self.config.hardware)
         with self._task_lock:
             has_velocity_task = any(
@@ -769,8 +724,7 @@ class ControlCoordinator(Module):
             self._buttons_unsub = self.buttons.subscribe(self._on_buttons)
             logger.info("Subscribed to buttons for engage/disengage")
 
-        # Arming + dry-run wiring is RPC-only (see set_activated /
-        # set_dry_run @rpc methods above). No stream subscribe step.
+        # Arming + dry-run are RPC-only; no stream subscription here.
 
         logger.info(f"ControlCoordinator started at {self.config.tick_rate}Hz")
 

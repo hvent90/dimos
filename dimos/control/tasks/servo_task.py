@@ -22,12 +22,11 @@ CRITICAL: Uses t_now from CoordinatorState, never calls time.time()
 """
 
 from __future__ import annotations
-from typing import Any
-
 
 from dataclasses import dataclass
 import threading
 import time
+from typing import Any
 
 from dimos.control.task import (
     BaseControlTask,
@@ -261,19 +260,13 @@ __all__ = [
 ]
 
 
-def register(registry: Any) -> None:
-    """Self-registration hook called by the task registry on discovery."""
-
-    def _factory(cfg: Any, hardware: Any) -> JointServoTask:
-        kwargs: dict[str, object] = {
-            "joint_names": cfg.joint_names,
-            "priority": cfg.priority,
-        }
-        if cfg.default_positions is not None:
-            kwargs["default_positions"] = cfg.default_positions
-            # Zero timeout pairs naturally with default-hold — otherwise
-            # the task times out even though it's holding a valid target.
-            kwargs["timeout"] = 0.0
-        return JointServoTask(cfg.name, JointServoTaskConfig(**kwargs))  # type: ignore[arg-type]
-
-    registry.register("servo", _factory)
+def create_task(cfg: Any, hardware: Any) -> JointServoTask:
+    kwargs: dict[str, object] = {
+        "joint_names": cfg.joint_names,
+        "priority": cfg.priority,
+    }
+    if cfg.default_positions is not None:
+        kwargs["default_positions"] = cfg.default_positions
+        # Zero timeout pairs naturally with default-hold.
+        kwargs["timeout"] = 0.0
+    return JointServoTask(cfg.name, JointServoTaskConfig(**kwargs))  # type: ignore[arg-type]
