@@ -19,6 +19,7 @@ Default dictionary aligns with ``dimos apriltag`` family ``tag36h11``.
 Publishes ``world -> markers`` (identity) and ``markers -> marker_{id}`` so composed
 lookups match marker poses in ``world``. Requires ``CameraInfo`` (``plumb_bob`` or
 empty distortion supported best; refine intrinsics on hardware when needed).
+Camera calibration runbook: ``docs/usage/camera_calibration.md``.
 
 The pose chain is ``base_link -> <optical> -> marker`` where ``<optical>`` is
 ``Image.frame_id`` when set, else ``CameraInfo.frame_id``, else ``camera_optical``.
