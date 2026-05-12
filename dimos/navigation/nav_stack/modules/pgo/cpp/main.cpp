@@ -168,6 +168,45 @@ static void append_segment(nav_msgs::Path& msg,
     msg.poses.push_back(p2);
 }
 
+// Build a Path-encoded loop-closure-deltas message — one PoseStamped per
+// keyframe, where position = (post - delta @ pre) translation delta and
+// orientation = delta rotation quaternion. The Nth pose corresponds to
+// the Nth keyframe (m_key_poses[N]).
+static nav_msgs::Path build_loop_closure_deltas(
+    const std::vector<std::pair<M3D, V3D>>& pre_poses,
+    const std::vector<KeyPoseWithCloud>& post_poses,
+    double ts,
+    const std::string& frame_id) {
+    nav_msgs::Path msg;
+    msg.header = dimos::make_header(frame_id, ts);
+    size_t n = std::min(pre_poses.size(), post_poses.size());
+    msg.poses.reserve(n);
+    for (size_t i = 0; i < n; i++) {
+        const M3D& pre_r = pre_poses[i].first;
+        const V3D& pre_t = pre_poses[i].second;
+        const M3D& post_r = post_poses[i].r_global;
+        const V3D& post_t = post_poses[i].t_global;
+
+        // SE(3) delta such that post = delta * pre.
+        M3D r_delta = post_r * pre_r.transpose();
+        V3D t_delta = post_t - r_delta * pre_t;
+
+        geometry_msgs::PoseStamped ps;
+        ps.header = dimos::make_header(frame_id, ts);
+        ps.pose.position.x = t_delta.x();
+        ps.pose.position.y = t_delta.y();
+        ps.pose.position.z = t_delta.z();
+        Eigen::Quaterniond q(r_delta);
+        ps.pose.orientation.x = q.x();
+        ps.pose.orientation.y = q.y();
+        ps.pose.orientation.z = q.z();
+        ps.pose.orientation.w = q.w();
+        msg.poses.push_back(ps);
+    }
+    msg.poses_length = static_cast<int32_t>(msg.poses.size());
+    return msg;
+}
+
 // Build a Path-encoded LineSegments3D message — pose pairs form segments.
 // Odometry edges get traversability=1.0 (green); loop closures get 0.4
 // (yellow) so they stand out in the rerun rendering.
@@ -213,6 +252,7 @@ int main(int argc, char** argv)
     std::string tf_topic = mod.topic("pgo_tf");
     std::string graph_nodes_topic = mod.topic("pgo_graph_nodes");
     std::string graph_edges_topic = mod.topic("pgo_graph_edges");
+    std::string loop_closure_topic = mod.topic("pgo_loop_closure");
 
     // Config parameters
     Config config;
@@ -256,6 +296,7 @@ int main(int argc, char** argv)
     fprintf(stderr, "  pgo_tf: %s\n", tf_topic.c_str());
     fprintf(stderr, "  pgo_graph_nodes: %s\n", graph_nodes_topic.c_str());
     fprintf(stderr, "  pgo_graph_edges: %s\n", graph_edges_topic.c_str());
+    fprintf(stderr, "  pgo_loop_closure: %s\n", loop_closure_topic.c_str());
 
     double last_global_map_time = 0.0;
     int timer_period_ms = 50;  // 20 Hz, matching original
@@ -321,9 +362,30 @@ int main(int argc, char** argv)
             continue;
         }
 
-        // Keyframe added
+        // Keyframe added. Snapshot keyframe global poses BEFORE search +
+        // smooth so we can publish the delta applied by iSAM2 if a loop
+        // closure actually fires.
         pgo.searchForLoopPairs();
+        bool had_loop = pgo.hasLoop();
+
+        std::vector<std::pair<M3D, V3D>> pre_poses;
+        if (had_loop) {
+            pre_poses.reserve(pgo.keyPoses().size());
+            for (const auto& kp : pgo.keyPoses()) {
+                pre_poses.emplace_back(kp.r_global, kp.t_global);
+            }
+        }
+
         pgo.smoothAndUpdate();
+
+        if (had_loop) {
+            nav_msgs::Path lc_msg = build_loop_closure_deltas(
+                pre_poses, pgo.keyPoses(), cur_time, world_frame);
+            lcm.publish(loop_closure_topic, &lc_msg);
+            fprintf(stderr,
+                    "PGO: loop closure event published — %zu keyframe deltas\n",
+                    pre_poses.size());
+        }
 
         fprintf(stderr, "PGO: keyframe %zu at (%.1f, %.1f, %.1f)\n",
                 pgo.keyPoses().size(),
