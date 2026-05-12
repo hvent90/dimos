@@ -180,23 +180,29 @@ class DimSimAdapter(Module):
         self.odometry.publish(
             Odometry(
                 ts=ps.ts,
-                frame_id="world",
-                child_frame_id="base_link",
+                frame_id="map",
+                child_frame_id="body",
                 pose=pose,
                 twist=odom_twist,
             )
         )
 
+        # Frames are map/body/sensor to match the nav_stack defaults
+        # (FRAME_MAP, FRAME_BODY, FRAME_SENSOR in dimos/navigation/nav_stack/frames.py).
+        # NB: Transform's constructor parameter is ``frame_id`` (parent),
+        # not ``parent_frame_id`` — a kwarg-name mismatch silently defaults
+        # to ``frame_id="world"`` and is how the OLD bridge accidentally
+        # published the wrong frames for ages.
         self.tf.publish(
             Transform(
-                ts=ps.ts, parent_frame_id="world", child_frame_id="base_link",
+                ts=ps.ts, frame_id="map", child_frame_id="body",
                 translation=Vector3(x, y, z),
                 rotation=Quaternion(qx, qy, qz, qw),
             )
         )
         self.tf.publish(
             Transform(
-                ts=ps.ts, parent_frame_id="base_link", child_frame_id="sensor",
+                ts=ps.ts, frame_id="body", child_frame_id="sensor",
                 translation=Vector3(self.config.camera_offset_x, 0.0, 0.0),
                 rotation=Quaternion(0.0, 0.0, 0.0, 1.0),
             )

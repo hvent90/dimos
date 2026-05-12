@@ -24,11 +24,9 @@ from typing import Any
 from dimos.core.coordination.blueprints import autoconnect
 from dimos.core.global_config import global_config
 from dimos.core.transport import JpegLcmTransport
-from dimos.mapping.costmapper import CostMapper
-from dimos.mapping.voxels import VoxelGridMapper
 from dimos.msgs.sensor_msgs.Image import Image
 from dimos.navigation.movement_manager.movement_manager import MovementManager
-from dimos.navigation.replanning_a_star.module import ReplanningAStarPlanner
+from dimos.navigation.nav_stack.main import create_nav_stack
 from dimos.robot.sim.adapter import DimSimAdapter
 from dimos.robot.sim.bridge import DimSimBridge
 from dimos.robot.sim.jpeg_lcm import SimJpegLCM
@@ -116,13 +114,26 @@ unitree_go2_dimsim = (
             vehicle_height=0.3,
         ),
         DimSimAdapter.blueprint(),
-        VoxelGridMapper.blueprint(voxel_size=0.1),
-        CostMapper.blueprint(),
-        ReplanningAStarPlanner.blueprint(),
-        # Relays planner.nav_cmd_vel → bridge.cmd_vel.
+        # Full nav stack: TerrainAnalysis + LocalPlanner + PathFollower +
+        # SimplePlanner + PGO + TerrainMapExt. The local planner produces
+        # cmd_vel from the path it gets from SimplePlanner.
+        create_nav_stack(
+            planner="simple",
+            vehicle_height=0.3,
+            max_speed=1.0,
+        ),
+        # Relays planner cmd_vel through to bridge.cmd_vel.
         MovementManager.blueprint(),
     )
-    .global_config(n_workers=8, robot_model="unitree_go2", simulation=True)
+    .remappings(
+        [
+            # nav_stack expects the persistent terrain map as DimSim's input.
+            (DimSimBridge, "terrain_map", "terrain_map_ext"),
+            # SimplePlanner owns way_point — disconnect MovementManager's relay.
+            (MovementManager, "way_point", "_mgr_way_point_unused"),
+        ]
+    )
+    .global_config(n_workers=10, robot_model="unitree_go2", simulation=True)
 )
 
 __all__ = ["unitree_go2_dimsim"]

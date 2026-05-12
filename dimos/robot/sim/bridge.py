@@ -160,15 +160,17 @@ def _find_local_cli() -> Path | None:
     return home_cli if home_cli.exists() else None
 
 
-# DimSim's pub/sub uses these internal channel names. Port names below
-# are picked to match these so the default LCM topic resolution lands on
-# the same channels — no --topic-remap needed for the typical blueprint.
-# If a blueprint explicitly remaps a port, the override mechanism below
-# generates a --topic-remap entry for it.
+# DimSim's pub/sub uses these internal channel names. Bridge port names
+# below match what nav-stack consumers expect (e.g. TerrainAnalysis +
+# VoxelGridMapper both subscribe to ``registered_scan: In[PointCloud2]``).
+# Where the bridge port name differs from DimSim's internal channel, the
+# blueprint-resolved port topic is propagated to DimSim via the auto-
+# generated --topic-remap arg, so DimSim publishes on the channel the
+# rest of the stack expects.
 _PORT_TO_INTERNAL: dict[str, str] = {
     "cmd_vel": "/cmd_vel",
     "odom": "/odom",
-    "lidar": "/lidar",
+    "registered_scan": "/lidar",
     "color_image": "/color_image",
     "depth_image": "/depth_image",
 }
@@ -238,7 +240,8 @@ class DimSimBridge(NativeModule):
     blueprint explicitly assigns a different topic):
         cmd_vel (In[Twist]): velocity commands.
         odom (Out[PoseStamped]): raw pose from DimSim's physics step.
-        lidar (Out[PointCloud2]): lidar pointcloud.
+        registered_scan (Out[PointCloud2]): lidar pointcloud (DimSim's
+            internal channel is /lidar; auto-remapped via --topic-remap).
         color_image (Out[Image]): RGB camera frame; wire format is JPEG, so
             subscribers must use ``JpegLcmTransport`` (set in the blueprint
             via ``.transports({...})``).
@@ -249,7 +252,7 @@ class DimSimBridge(NativeModule):
 
     cmd_vel: In[Twist]
     odom: Out[PoseStamped]
-    lidar: Out[PointCloud2]
+    registered_scan: Out[PointCloud2]
     # JPEG-encoded on the wire; consumers use JpegLcmTransport to decode.
     color_image: Out[Image]
     depth_image: Out[Image]
