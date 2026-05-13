@@ -306,6 +306,8 @@ def nav_stack_rerun_config(
         visual_override.setdefault("world/obstacle_cloud", _obstacle_cloud_colors)
         visual_override.setdefault("world/costmap_cloud", _costmap_cloud_colors)
         visual_override.setdefault("world/free_paths", _free_paths_colors)
+        visual_override.setdefault("world/octomap", _global_map_colors)
+        visual_override.setdefault("world/projected_2d_grid", _global_map_colors)
     resolved["visual_override"] = visual_override
     static_entries = dict(resolved["static"])
     static_entries.setdefault("world/floor", _static_floor)
@@ -328,8 +330,19 @@ _AGENTIC_DEBUG_BOUNDARY_LIFT = _AGENTIC_DEBUG_LIFT - 1.0  # boundary below marke
 def _default_rerun_blueprint() -> Any:
     import rerun.blueprint as rrb
 
+    # Top-down camera locked over the world origin. Useful for eyeballing
+    # the OctoMap / global map / trajectory while a SLAM module is running
+    # in sim. Users can still orbit the view manually in the Rerun GUI.
     return rrb.Blueprint(
-        rrb.Spatial3DView(origin="world", name="3D"),
+        rrb.Spatial3DView(
+            origin="world",
+            name="Top-down",
+            eye_controls=rrb.archetypes.EyeControls3D(
+                position=[0.0, 0.0, 25.0],
+                look_target=[0.0, 0.0, 0.0],
+                eye_up=[0.0, 1.0, 0.0],
+            ),
+        ),
     )
 
 
