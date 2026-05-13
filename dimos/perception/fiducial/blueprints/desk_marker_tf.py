@@ -15,6 +15,7 @@
 from __future__ import annotations
 
 from pathlib import Path
+import threading
 import time
 
 from dimos.core.coordination.blueprints import autoconnect
@@ -26,9 +27,12 @@ from dimos.msgs.geometry_msgs.Quaternion import Quaternion
 from dimos.msgs.geometry_msgs.Transform import Transform
 from dimos.msgs.geometry_msgs.Vector3 import Vector3
 from dimos.msgs.sensor_msgs.CameraInfo import CameraInfo
-
+from dimos.perception.fiducial.marker_tf_module import MarkerTfModule
 
 DESK_CAMERA_FRAME_ID = "camera_optical"
+DESK_MARKER_NAMESPACE_PREFIX = "marker_tf"
+DESK_MARKER_ARUCO_DICTIONARY = "DICT_APRILTAG_36h11"
+DESK_MARKER_LENGTH_M = 0.05
 DEFAULT_DESK_CAMERA_INFO_YAML = Path(__file__).resolve().parent / "assets" / "camera_info.yaml"
 
 
@@ -58,6 +62,9 @@ class DeskStaticTfModuleConfig(ModuleConfig):
         0.15,
     )
     camera_rotation_rpy_rad: tuple[float, float, float] = (0.0, 0.0, 0.0)
+    #: Republish fixed transforms at this rate so TF lookups at image timestamps stay
+    #: within MarkerTfModule tf_lookup_tolerance (single-shot stamps fall out of tolerance).
+    static_tf_republish_hz: float = 10.0
 
 
 class DeskStaticTfModule(Module):
@@ -65,11 +72,39 @@ class DeskStaticTfModule(Module):
 
     config: DeskStaticTfModuleConfig
     _last_publish_ts: float | None = None
+    _republish_stop: threading.Event | None = None
+    _republish_thread: threading.Thread | None = None
 
     @rpc
     def start(self) -> None:
         super().start()
         self.publish_static_chain()
+        hz = self.config.static_tf_republish_hz
+        if hz > 0.0:
+            self._republish_stop = threading.Event()
+            period = 1.0 / hz
+
+            def _republish_loop() -> None:
+                assert self._republish_stop is not None
+                while not self._republish_stop.wait(period):
+                    self.publish_static_chain()
+
+            self._republish_thread = threading.Thread(
+                target=_republish_loop,
+                name="desk_static_tf_republish",
+                daemon=True,
+            )
+            self._republish_thread.start()
+
+    @rpc
+    def stop(self) -> None:
+        if self._republish_stop is not None:
+            self._republish_stop.set()
+        if self._republish_thread is not None:
+            self._republish_thread.join(timeout=2.0)
+            self._republish_thread = None
+        self._republish_stop = None
+        super().stop()
 
     def publish_static_chain(self) -> None:
         ts = time.time()
@@ -100,5 +135,10 @@ desk_marker_tf = autoconnect(
     CameraModule.blueprint(
         hardware=create_desk_webcam,
         transform=None,
+    ),
+    MarkerTfModule.blueprint(
+        marker_length_m=DESK_MARKER_LENGTH_M,
+        aruco_dictionary=DESK_MARKER_ARUCO_DICTIONARY,
+        marker_namespace_prefix=DESK_MARKER_NAMESPACE_PREFIX,
     ),
 )

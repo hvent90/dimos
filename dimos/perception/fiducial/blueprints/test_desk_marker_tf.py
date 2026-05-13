@@ -19,10 +19,14 @@ from dimos.hardware.sensors.camera.module import CameraModule
 from dimos.hardware.sensors.camera.webcam import Webcam
 from dimos.perception.fiducial.blueprints.desk_marker_tf import (
     DESK_CAMERA_FRAME_ID,
+    DESK_MARKER_ARUCO_DICTIONARY,
+    DESK_MARKER_LENGTH_M,
+    DESK_MARKER_NAMESPACE_PREFIX,
     DeskStaticTfModule,
     create_desk_webcam,
     desk_marker_tf,
 )
+from dimos.perception.fiducial.marker_tf_module import MarkerTfModule
 
 
 def test_desk_marker_tf_blueprint_declares_static_tf_module() -> None:
@@ -31,6 +35,13 @@ def test_desk_marker_tf_blueprint_declares_static_tf_module() -> None:
     assert desk_marker_tf.blueprints[1].module is CameraModule
     assert desk_marker_tf.blueprints[1].kwargs["hardware"] is create_desk_webcam
     assert desk_marker_tf.blueprints[1].kwargs["transform"] is None
+    assert desk_marker_tf.blueprints[2].module is MarkerTfModule
+    assert desk_marker_tf.blueprints[2].kwargs["marker_length_m"] == DESK_MARKER_LENGTH_M
+    assert desk_marker_tf.blueprints[2].kwargs["aruco_dictionary"] == DESK_MARKER_ARUCO_DICTIONARY
+    assert (
+        desk_marker_tf.blueprints[2].kwargs["marker_namespace_prefix"]
+        == DESK_MARKER_NAMESPACE_PREFIX
+    )
 
 
 def test_create_desk_webcam_loads_camera_info_yaml(tmp_path: Path) -> None:
