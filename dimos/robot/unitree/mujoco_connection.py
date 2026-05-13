@@ -135,15 +135,19 @@ class MujocoConnection:
             executable = sys.executable if sys.platform != "darwin" else "mjpython"
             env = os.environ.copy()
             if sys.platform == "darwin":
-                # on some systems mujoco looks in the wrong place for shared libraries. So we force it look in the right place
+                # LOCAL DEV: use FALLBACK so we don't shadow Apple's Accelerate with conda's stale libblas
                 libdir = Path(sysconfig.get_config_var("LIBDIR") or "")
                 if libdir.is_dir():
-                    existing = env.get("DYLD_LIBRARY_PATH", "")
-                    env["DYLD_LIBRARY_PATH"] = f"{libdir}:{existing}" if existing else str(libdir)
+                    existing = env.get("DYLD_FALLBACK_LIBRARY_PATH", "")
+                    env["DYLD_FALLBACK_LIBRARY_PATH"] = f"{libdir}:{existing}" if existing else str(libdir)
 
+            # LOCAL DEV: redirect to file instead of PIPE to avoid deadlock when parent doesn't drain stderr
+            _mj_stderr = open("/tmp/mjpython_stderr.log", "w")
+            _mj_stdout = open("/tmp/mjpython_stdout.log", "w")
             self.process = subprocess.Popen(
                 [executable, str(LAUNCHER_PATH), config_pickle, shm_names_json],
-                stderr=subprocess.PIPE,
+                stderr=_mj_stderr,
+                stdout=_mj_stdout,
                 env=env,
             )
 
