@@ -273,6 +273,11 @@ drone = [
     "pymavlink"
 ]
 
+parrot = [
+    "dimos[base]",
+    "pyparrot-sdk>=1.5.24",
+]
+
 dds = [
     "cyclonedds>=0.10.5",
 ]
