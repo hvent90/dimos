@@ -107,7 +107,8 @@ async def _run_cross_wall_test(blueprint: Blueprint, *, label: str, max_z: float
         try:
             lcm.handle()
         except Exception:
-            logger.exception("LCM handle failed")
+            logger.exception("LCM handle failed; removing reader to stop further polling")
+            loop.remove_reader(lcm_fd)
 
     loop.add_reader(lcm_fd, _on_lcm_readable)
 
