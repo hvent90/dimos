@@ -38,10 +38,9 @@ from dimos.utils.logging_config import setup_logger
 
 logger = setup_logger()
 
-# Reject accidental clicks far outside the local planning area.
+# without this you can (basically) click into infinity in rerun (not good for the planner)
 MAX_CLICK_HORIZONTAL_M = 500.0
 MAX_CLICK_VERTICAL_M = 50.0
-TELEOP_EPS = 1e-6
 
 
 class MovementManagerConfig(ModuleConfig):
@@ -50,7 +49,7 @@ class MovementManagerConfig(ModuleConfig):
 
 
 class MovementManager(Module):
-    """Mux teleop and navigation velocity commands into cmd_vel."""
+    """Combine tele_cmd_vel (keyboard controls) and nav_cmd_vel in a sane way, output cmd_vel"""
 
     config: MovementManagerConfig
 
@@ -100,6 +99,9 @@ class MovementManager(Module):
 
     def _cancel_goal(self) -> None:
         self.stop_movement.publish(Bool(data=True))
+        # NOTE: this NaN goal is more of a safety fallback.
+        # It can be REALLY bad if a robot is supposed to stop moving but wont
+        # we should probably think a more robust/strict requirement on planners
         cancel = PointStamped(
             ts=time.time(), frame_id="map", x=float("nan"), y=float("nan"), z=float("nan")
         )
@@ -110,6 +112,7 @@ class MovementManager(Module):
     def _on_nav(self, msg: Twist) -> None:
         with self._lock:
             if self._teleop_active:
+                # check if cooldown has expired
                 elapsed = time.monotonic() - self._last_teleop_time
                 if elapsed < self.config.tele_cooldown_sec:
                     return
@@ -117,26 +120,11 @@ class MovementManager(Module):
             self.cmd_vel.publish(msg)
 
     def _on_teleop(self, msg: Twist) -> None:
-        is_zero = (
-            abs(msg.linear.x) < TELEOP_EPS
-            and abs(msg.linear.y) < TELEOP_EPS
-            and abs(msg.linear.z) < TELEOP_EPS
-            and abs(msg.angular.x) < TELEOP_EPS
-            and abs(msg.angular.y) < TELEOP_EPS
-            and abs(msg.angular.z) < TELEOP_EPS
-        )
-
         with self._lock:
-            was_active = self._teleop_active
-            if is_zero:
-                if not was_active:
-                    return
-            else:
-                self._teleop_active = True
-                self._last_teleop_time = time.monotonic()
+            self._teleop_active = True
+            self._last_teleop_time = time.monotonic()
 
-        if not is_zero and not was_active:
-            self._cancel_goal()
+        self._cancel_goal()
 
         scale = self.config.tele_cmd_vel_scaling
         scaled = Twist(
