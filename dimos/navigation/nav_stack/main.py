@@ -250,8 +250,9 @@ def nav_stack_rerun_config(
             "world/sensor_scan",
             "world/terrain_map",
             "world/terrain_map_ext",
-            "world/global_map",
-            "world/global_map_pgo",
+            "world/global_map",  # raw terrain/global_map from terrain analysis
+            # NOTE: world/global_map_pgo is the RtabMap remapped global_map
+            # output — leave it visible.
             "world/global_map_fastlio",
             "world/registered_scan",
             "world/explored_areas",
@@ -270,6 +271,10 @@ def nav_stack_rerun_config(
         ):
             visual_override.setdefault(hidden, _hide)
         # Keep these on (the actual RTAB outputs + robot trajectory).
+        # RtabMap's `global_map` Out gets remapped to topic `global_map_pgo`
+        # by create_nav_stack (the topic name is shared with PGO so the rest
+        # of the stack doesn't have to know who the SLAM provider is).
+        visual_override.setdefault("world/global_map_pgo", _global_map_colors)
         visual_override.setdefault("world/octomap", _global_map_colors)
         visual_override.setdefault("world/projected_2d_grid", _global_map_colors)
         visual_override.setdefault("world/trajectory", _trajectory_colors)

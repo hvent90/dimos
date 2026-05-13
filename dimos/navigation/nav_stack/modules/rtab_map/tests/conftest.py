@@ -22,7 +22,7 @@ and reads back what the binary publishes. Skips if the binary isn't built.
 from __future__ import annotations
 
 from collections.abc import Iterator
-from dataclasses import dataclass, field
+from dataclasses import dataclass
 from pathlib import Path
 import threading
 import time
@@ -64,7 +64,6 @@ class RtabHarness:
     rtab_tf: LcmCollector
     octomap: LcmCollector
     proj2d: LcmCollector
-    _topic_prefix: str = field(default="")
 
     def publish_scan(self, points: np.ndarray, ts: float) -> None:
         msg = make_pointcloud_msg(points, ts, frame_id="map")
@@ -159,7 +158,6 @@ def rtab_harness() -> Iterator[RtabHarness]:
         rtab_tf=rtab_tf,
         octomap=octomap,
         proj2d=proj2d,
-        _topic_prefix=prefix,
     )
     try:
         yield harness
@@ -169,7 +167,7 @@ def rtab_harness() -> Iterator[RtabHarness]:
         handle_thread.join(timeout=2.0)
 
 
-def square_room_scan(centered_at_origin: bool = True) -> np.ndarray:
+def square_room_scan() -> np.ndarray:
     """Body-frame scan of four walls of a 3m x 3m room, with floor points."""
     grid = np.linspace(-1.5, 1.5, 24)
     walls = np.concatenate(
@@ -185,8 +183,6 @@ def square_room_scan(centered_at_origin: bool = True) -> np.ndarray:
     floor = np.stack([xx.ravel(), yy.ravel(), np.full(xx.size, -0.5)], axis=1)
     cloud = np.concatenate([walls, floor], axis=0)
     intensities = np.ones(len(cloud), dtype=np.float32)
-    if not centered_at_origin:
-        cloud = cloud + np.array([0.1, 0.0, 0.0])
     return np.column_stack([cloud.astype(np.float32), intensities])
 
 
