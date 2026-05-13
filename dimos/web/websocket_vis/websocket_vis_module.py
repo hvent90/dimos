@@ -173,26 +173,26 @@ class WebsocketVisModule(Module):
                         logger.debug(f"Failed to open browser: {e}")
 
         try:
-            unsubscribe = self.odom.subscribe(self._on_robot_pose)
-            self.register_disposable(Disposable(unsubscribe))
+            unsub = self.odom.subscribe(self._on_robot_pose)
+            self.register_disposable(Disposable(unsub))
         except Exception:
             ...
 
         try:
-            unsubscribe = self.gps_location.subscribe(self._on_gps_location)
-            self.register_disposable(Disposable(unsubscribe))
+            unsub = self.gps_location.subscribe(self._on_gps_location)
+            self.register_disposable(Disposable(unsub))
         except Exception:
             ...
 
         try:
-            unsubscribe = self.path.subscribe(self._on_path)
-            self.register_disposable(Disposable(unsubscribe))
+            unsub = self.path.subscribe(self._on_path)
+            self.register_disposable(Disposable(unsub))
         except Exception:
             ...
 
         try:
-            unsubscribe = self.global_costmap.subscribe(self._on_global_costmap)
-            self.register_disposable(Disposable(unsubscribe))
+            unsub = self.global_costmap.subscribe(self._on_global_costmap)
+            self.register_disposable(Disposable(unsub))
         except Exception:
             ...
 
@@ -204,6 +204,13 @@ class WebsocketVisModule(Module):
 
         if self._uvicorn_server:
             self._uvicorn_server.should_exit = True
+
+        if self.sio and self._broadcast_loop and not self._broadcast_loop.is_closed():
+
+            async def _disconnect_all() -> None:
+                await self.sio.disconnect()
+
+            asyncio.run_coroutine_threadsafe(_disconnect_all(), self._broadcast_loop)
 
         if self._broadcast_loop and not self._broadcast_loop.is_closed():
             self._broadcast_loop.call_soon_threadsafe(self._broadcast_loop.stop)
