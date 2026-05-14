@@ -65,6 +65,20 @@ class RtabMapConfig(NativeModuleConfig):
     grid_ground_is_obstacle: bool = False
     grid_flat_obstacle_detected: bool = True
 
+    # Additional rtabmap Grid/* params surfaced so callers can tune
+    # ground/obstacle segmentation, max range, and keyframe admission.
+    # Defaults mirror the C++ binary's defaults.
+    grid_normals_segmentation: bool = False
+    grid_max_obstacle_height: float = 2.0
+    grid_max_ground_height: float = 0.05
+    grid_range_max: float = 8.0
+
+    # Permissive defaults so short synthetic test trajectories admit
+    # keyframes; production callers will want to tighten these.
+    rtabmap_detection_rate: float = 0.0
+    rgbd_linear_update: float = 0.0
+    rgbd_angular_update: float = 0.0
+
     # Publishing cadence.
     octomap_publish_period: float = 0.5
     global_map_publish_period: float = 1.0
