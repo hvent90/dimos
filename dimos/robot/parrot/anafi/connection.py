@@ -41,28 +41,17 @@ logger = setup_logger()
 
 class AnafiConnectionConfig(ModuleConfig):
     ip_address: str = "192.168.42.1"
-
     num_retries: int = 10
     replay: bool = False
-
-    # m/s → fly_direct percentage. 50 means "1 m/s commanded = 50% stick".
     velocity_gain: float = 50.0
-
-    # rad/s → fly_direct yaw percentage.
     yaw_rate_gain: float = 50.0
-
     video_buffer_size: int = 30
-
     camera_frame_id: str = "camera_optical"
 
 
-_ANAFI_INTRINSICS = (933.0, 933.0, 640.0, 360.0)
-_ANAFI_RESOLUTION = (1280, 720)
-
-
 def _camera_info_static(config: AnafiConnectionConfig) -> CameraInfo:
-    fx, fy, cx, cy = _ANAFI_INTRINSICS
-    width, height = _ANAFI_RESOLUTION
+    fx, fy, cx, cy = (933.0, 933.0, 640.0, 360.0)
+    width, height = (1280, 720)
 
     return CameraInfo.from_intrinsics(
         fx=fx,

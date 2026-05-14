@@ -57,7 +57,7 @@ class AnafiConnectionProtocol(Protocol):
 class AnafiConnection:
     def __init__(
         self,
-        ip_address: str = "192.168.42.1",
+        ip_address: str,
         num_retries: int = 10,
         velocity_gain: float = 50.0,
         yaw_rate_gain: float = 50.0,
@@ -127,7 +127,7 @@ class AnafiConnection:
             try:
                 self._anafi.disconnect()
             except Exception as exc:
-                logger.debug("AnafiConnection: disconnect error: %s", exc)
+                logger.debug(f"{self.__class__.__name__}: disconnect error: {exc}")
         self.connected = False
         self._odom_subject.on_completed()
         self._video_subject.on_completed()
@@ -158,7 +158,7 @@ class AnafiConnection:
                 duration=duration if duration > 0 else None,
             )
         except Exception as exc:
-            logger.warning("AnafiConnection: fly_direct failed: %s", exc)
+            logger.warning(f"{self.__class__.__name__}: fly_direct failed: {exc}")
             return False
         return True
 
@@ -168,7 +168,7 @@ class AnafiConnection:
         try:
             self._anafi.move_relative(dx=dx, dy=dy, dz=dz, dradians=dradians)
         except Exception as exc:
-            logger.warning("AnafiConnection: move_relative failed: %s", exc)
+            logger.warning(f"{self.__class__.__name__}: move_relative failed: {exc}")
             return False
         return True
 
@@ -188,7 +188,7 @@ class AnafiConnection:
         try:
             self._anafi.emergency()
         except Exception as exc:
-            logger.warning("AnafiConnection: emergency stop failed: %s", exc)
+            logger.warning(f"{self.__class__.__name__}: emergency stop failed: {exc}")
             return False
         return True
 
