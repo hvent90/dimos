@@ -34,7 +34,7 @@ from dimos.utils.cli.cameracalibrate.cameracalibrate import (
     write_camera_info_yaml,
 )
 
-_OPENCV_FIXTURE_DIR = Path(__file__).with_name("assets")
+_OPENCV_FIXTURE_DIR = Path(__file__).with_name("fixtures")
 _OPENCV_FIXTURE_SHA256 = {
     "left01.jpg": "9621899098adffa1440c8264606bb7be535ccfd9ad126ae8e0bd9b0c5a5b8676",
     "left02.jpg": "052e700bbcc865c112958ec2ea105cb1bce4deca50ac8d6efae13adca9df7a2c",

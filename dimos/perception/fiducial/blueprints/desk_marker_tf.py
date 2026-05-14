@@ -33,7 +33,7 @@ DESK_CAMERA_FRAME_ID = "camera_optical"
 DESK_MARKER_NAMESPACE_PREFIX = "marker_tf"
 DESK_MARKER_ARUCO_DICTIONARY = "DICT_APRILTAG_36h11"
 DESK_MARKER_LENGTH_M = 0.05
-DEFAULT_DESK_CAMERA_INFO_YAML = Path(__file__).resolve().parent / "assets" / "camera_info.yaml"
+DEFAULT_DESK_CAMERA_INFO_YAML = Path(__file__).resolve().parent / "fixtures" / "camera_info.yaml"
 
 
 def create_desk_webcam(
