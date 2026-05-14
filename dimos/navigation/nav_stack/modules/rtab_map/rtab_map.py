@@ -117,10 +117,6 @@ class RtabMap(NativeModule):
         )
         logger.info("RtabMap native module started (C++ librtabmap + LCM)")
 
-    @rpc
-    def stop(self) -> None:
-        super().stop()
-
     def _on_tf_correction(self, msg: Odometry) -> None:
         self._publish_tf(
             translation=(msg.pose.position.x, msg.pose.position.y, msg.pose.position.z),
