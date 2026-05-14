@@ -64,14 +64,6 @@ struct ScanFrame {
     double timestamp = 0.0;
 };
 
-std::mutex g_buffer_mutex;
-std::queue<ScanFrame> g_buffer;
-
-std::mutex g_odom_mutex;
-rtabmap::Transform g_latest_odom;
-bool g_has_odom = false;
-double g_latest_odom_ts = 0.0;
-
 rtabmap::Transform odom_from_lcm(const nav_msgs::Odometry& msg) {
     return rtabmap::Transform(
         msg.pose.pose.position.x,
@@ -115,10 +107,10 @@ public:
         const std::string&,
         const nav_msgs::Odometry* msg) {
         double ts = msg->header.stamp.sec + msg->header.stamp.nsec / 1e9;
-        std::lock_guard<std::mutex> lock(g_odom_mutex);
-        g_latest_odom = odom_from_lcm(*msg);
-        g_latest_odom_ts = ts;
-        g_has_odom = true;
+        std::lock_guard<std::mutex> lock(odom_mutex_);
+        latest_odom_ = odom_from_lcm(*msg);
+        latest_odom_ts_ = ts;
+        has_odom_ = true;
     }
 
     void on_registered_scan(
@@ -128,10 +120,10 @@ public:
         rtabmap::Transform odom_pose;
         double odom_ts = 0.0;
         {
-            std::lock_guard<std::mutex> lock(g_odom_mutex);
-            if (!g_has_odom) return;
-            odom_pose = g_latest_odom;
-            odom_ts = g_latest_odom_ts;
+            std::lock_guard<std::mutex> lock(odom_mutex_);
+            if (!has_odom_) return;
+            odom_pose = latest_odom_;
+            odom_ts = latest_odom_ts_;
         }
 
         ScanFrame frame;
@@ -149,11 +141,29 @@ public:
             frame.cloud_body = body;
         }
 
-        std::lock_guard<std::mutex> lock(g_buffer_mutex);
-        g_buffer.push(frame);
+        std::lock_guard<std::mutex> lock(buffer_mutex_);
+        buffer_.push(frame);
+    }
+
+    // Pop one buffered frame; returns false if the buffer is empty.
+    bool try_pop(ScanFrame& out) {
+        std::lock_guard<std::mutex> lock(buffer_mutex_);
+        if (buffer_.empty()) return false;
+        out = std::move(buffer_.front());
+        buffer_.pop();
+        return true;
     }
 
     bool unregister_input_ = true;
+
+private:
+    std::mutex buffer_mutex_;
+    std::queue<ScanFrame> buffer_;
+
+    std::mutex odom_mutex_;
+    rtabmap::Transform latest_odom_;
+    bool has_odom_ = false;
+    double latest_odom_ts_ = 0.0;
 };
 
 cv::Mat scan_to_cv_mat(const CloudType& cloud) {
@@ -284,17 +294,7 @@ int main(int argc, char** argv) {
         while (lcm.handleTimeout(0) > 0) {}
 
         ScanFrame frame;
-        bool have_frame = false;
-        {
-            std::lock_guard<std::mutex> lock(g_buffer_mutex);
-            if (!g_buffer.empty()) {
-                frame = std::move(g_buffer.front());
-                g_buffer.pop();
-                have_frame = true;
-            }
-        }
-
-        if (!have_frame) {
+        if (!handlers.try_pop(frame)) {
             std::this_thread::sleep_for(std::chrono::milliseconds(timer_period_ms));
             continue;
         }
