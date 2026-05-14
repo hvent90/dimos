@@ -14,6 +14,8 @@
 
 from pathlib import Path
 
+from reactivex.disposable import Disposable
+
 from dimos.core.coordination.blueprints import autoconnect
 from dimos.core.core import rpc
 from dimos.core.stream import In, Out
@@ -47,7 +49,7 @@ class FastlioMemory(Recorder):
         def _on_odom(msg: Odometry) -> None:
             self.tf.publish(Transform.from_odometry(msg))
 
-        self.odometry.subscribe(_on_odom)
+        self.register_disposable(Disposable(self.odometry.subscribe(_on_odom)))
 
 
 class FastlioReplayConfig(MemoryModuleConfig):
