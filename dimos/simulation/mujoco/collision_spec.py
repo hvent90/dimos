@@ -41,17 +41,22 @@ include for the prim.
 
 from __future__ import annotations
 
+from typing import Any, Literal
+
 from dataclasses import dataclass, field
 import fnmatch
 import json
-import logging
 from pathlib import Path
-from typing import Literal
 
 import numpy as np
 from scipy.spatial import ConvexHull, QhullError  # type: ignore[import-untyped]
 
-logger = logging.getLogger(__name__)
+from dimos.utils.logging_config import setup_logger
+
+logger = setup_logger()
+
+PrimitiveFit = dict[str, Any]
+OverrideConfig = dict[str, Any]
 
 
 # --------------------------------------------------------------------------- #
@@ -131,7 +136,7 @@ class CollisionSpec:
     sheet_prism_max_scene_prims: int = 2500
 
     #: ``USD-path-glob -> override-dict``.  See class docstring.
-    prim_overrides: dict[str, dict] = field(default_factory=dict)
+    prim_overrides: dict[str, OverrideConfig] = field(default_factory=dict)
 
     @classmethod
     def from_json(cls, path: Path | str) -> CollisionSpec:
@@ -165,7 +170,7 @@ class CollisionSpec:
             return cls.from_json(sidecar)
         return cls()
 
-    def resolve(self, prim_path: str) -> dict:
+    def resolve(self, prim_path: str) -> OverrideConfig:
         """Find the matching override for ``prim_path`` (USD path).
 
         Returns a dict with at least ``"type"``.  Falls back to
@@ -301,7 +306,7 @@ _SHEET_PRISM_MIN_FOOTPRINT_AREA_M2 = 2.0
 _SHEET_PRISM_MAX_TRIANGLES = 1024
 
 
-def _fit_aabb_box(vertices: np.ndarray) -> dict:
+def _fit_aabb_box(vertices: np.ndarray) -> PrimitiveFit:
     """Axis-aligned bounding box.  Identity quat."""
     mn, mx = vertices.min(0), vertices.max(0)
     half_ext = np.maximum((mx - mn) / 2.0, _MIN_SIZE_M)
@@ -315,7 +320,7 @@ def _fit_aabb_box(vertices: np.ndarray) -> dict:
     }
 
 
-def _fit_obb_box(vertices: np.ndarray) -> dict:
+def _fit_obb_box(vertices: np.ndarray) -> PrimitiveFit:
     """Oriented bounding box via PCA.  Tighter than AABB when the prim
     is rotated relative to world axes (most UE props are world-aligned,
     so OBB ≈ AABB, but rotated assets benefit)."""
@@ -340,7 +345,7 @@ def _fit_obb_box(vertices: np.ndarray) -> dict:
     }
 
 
-def _fit_sphere(vertices: np.ndarray) -> dict:
+def _fit_sphere(vertices: np.ndarray) -> PrimitiveFit:
     """Centroid + farthest-vertex.  Looser than Welzl/Ritter but fine for
     fill-ratio comparison."""
     centroid = vertices.mean(0)
@@ -354,7 +359,7 @@ def _fit_sphere(vertices: np.ndarray) -> dict:
     }
 
 
-def _fit_cylinder(vertices: np.ndarray) -> dict:
+def _fit_cylinder(vertices: np.ndarray) -> PrimitiveFit:
     """Cylinder along PCA principal axis."""
     centroid = vertices.mean(0)
     centered = vertices - centroid
@@ -377,7 +382,7 @@ def _fit_cylinder(vertices: np.ndarray) -> dict:
     }
 
 
-def _fit_capsule(vertices: np.ndarray) -> dict:
+def _fit_capsule(vertices: np.ndarray) -> PrimitiveFit:
     """Capsule along PCA principal axis.  MuJoCo capsule half-height is
     the *cylindrical* portion only; total length = 2*(half_h + r)."""
     cyl = _fit_cylinder(vertices)
@@ -416,7 +421,7 @@ def _best_primitive_fit(
     vertices: np.ndarray,
     hull_vol: float,
     candidates: tuple[str, ...] = ("box", "cylinder", "sphere", "capsule"),
-) -> dict | None:
+) -> PrimitiveFit | None:
     """Try every primitive in ``candidates``; return the one with the
     highest fill ratio.  Returns ``None`` if no fit succeeds (e.g. < 4
     points)."""
@@ -426,7 +431,7 @@ def _best_primitive_fit(
         "cylinder": _fit_cylinder,
         "capsule": _fit_capsule,
     }
-    fits: list[dict] = []
+    fits: list[PrimitiveFit] = []
     for kind in candidates:
         try:
             f = fitters[kind](vertices)
@@ -590,7 +595,7 @@ class PrimDecision:
 
     #: For ``"primitive"``: the fit dict (``type``, ``size``, ``pos``,
     #: ``quat``, ``volume``, ``fill_ratio``).
-    primitive: dict | None = None
+    primitive: PrimitiveFit | None = None
 
     #: For ``"hulls"``: list of ``(vertices, triangles)`` ready to write.
     hulls: list[tuple[np.ndarray, np.ndarray]] = field(default_factory=list)
@@ -698,15 +703,15 @@ def decide_for_prim(
         return PrimDecision(mode="skip", reason="degenerate (qhull rejected)", friction=friction)
 
     # 4c. Try primitive auto-fit.
-    fit = _best_primitive_fit(vertices, hull_vol)
-    if fit is not None and 0.0 < fit["fill_ratio"] <= 1.5:
+    auto_fit = _best_primitive_fit(vertices, hull_vol)
+    if auto_fit is not None and 0.0 < auto_fit["fill_ratio"] <= 1.5:
         # fill_ratio > 1 happens for non-closed hulls; cap to keep this
         # finite when reporting.  Accept if within tolerance.
-        if fit["fill_ratio"] >= spec.fill_threshold:
+        if auto_fit["fill_ratio"] >= spec.fill_threshold:
             return PrimDecision(
                 mode="primitive",
-                primitive=fit,
-                reason=f"auto:{fit['type']}({fit['fill_ratio']:.2f})",
+                primitive=auto_fit,
+                reason=f"auto:{auto_fit['type']}({auto_fit['fill_ratio']:.2f})",
                 friction=friction,
             )
 
@@ -748,8 +753,8 @@ def decide_for_prim(
 def _resolve_explicit_primitive(
     vertices: np.ndarray,
     kind: str,
-    override: dict,
-) -> dict:
+    override: OverrideConfig,
+) -> PrimitiveFit:
     """Build a primitive fit dict from a sidecar override.
 
     If the override supplies ``size`` (and optionally ``pos`` / ``quat``),
@@ -800,7 +805,7 @@ def _coacd_decompose(
     CoACD is imported lazily — it ships its own C library and we don't
     want every import of ``collision_spec`` to pay that cost.
     """
-    import coacd  # type: ignore[import-untyped]
+    import coacd  # type: ignore[import-not-found, import-untyped]
 
     # CoACD's C lib prints a lot per invocation; quiet it once per process.
     if not getattr(_coacd_decompose, "_silenced", False):

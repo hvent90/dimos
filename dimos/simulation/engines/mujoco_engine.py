@@ -22,7 +22,7 @@ import math
 from pathlib import Path
 import threading
 import time
-from typing import TYPE_CHECKING
+from typing import TYPE_CHECKING, cast
 import xml.etree.ElementTree as ET
 
 import mujoco
@@ -150,7 +150,7 @@ class MujocoEngine(SimulationEngine):
 
     def _load_model(self, xml_path: Path, *, meshdir: str | Path | None) -> mujoco.MjModel:
         if xml_path.suffix.lower() == ".mjb":
-            return mujoco.MjModel.from_binary_path(str(xml_path))
+            return self._load_binary_model(xml_path)
 
         if meshdir is None:
             return mujoco.MjModel.from_xml_path(str(xml_path))
@@ -166,6 +166,14 @@ class MujocoEngine(SimulationEngine):
             if include_file and not Path(include_file).is_absolute():
                 include.set("file", str((xml_path.parent / include_file).resolve()))
         return mujoco.MjModel.from_xml_string(ET.tostring(root, encoding="unicode"))
+
+    @staticmethod
+    def _load_binary_model(model_path: Path) -> mujoco.MjModel:
+        load_binary_model = cast(
+            Callable[[str], mujoco.MjModel],
+            getattr(mujoco.MjModel, "from_binary_path"),
+        )
+        return load_binary_model(str(model_path))
 
     def _current_position(self, mapping: JointMapping) -> float:
         if mapping.joint_id is not None and mapping.qpos_adr is not None:

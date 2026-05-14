@@ -60,6 +60,7 @@ recommended entry point -- it handles a three-tier cache:
 from __future__ import annotations
 
 import argparse
+from collections.abc import Callable
 from concurrent.futures import ProcessPoolExecutor, as_completed
 from dataclasses import asdict, dataclass, replace
 import hashlib
@@ -67,7 +68,7 @@ import multiprocessing
 import os
 from pathlib import Path
 import time
-from typing import Any
+from typing import Any, cast
 
 import numpy as np
 import open3d as o3d  # type: ignore[import-untyped]
@@ -76,7 +77,11 @@ from dimos.simulation.mujoco.collision_spec import (
     CollisionSpec,
     decide_for_prim,
 )
-from dimos.simulation.mujoco.mesh_scene import SceneMeshAlignment, load_scene_prims
+from dimos.simulation.mujoco.mesh_scene import (
+    SceneMeshAlignment,
+    ScenePrimMesh,
+    load_scene_prims,
+)
 from dimos.utils.logging_config import setup_logger
 
 logger = setup_logger()
@@ -348,6 +353,14 @@ def load_or_bake(
 
     scene_mesh_path = _resolve_existing_file(scene_mesh_path, "scene mesh")
     robot_mjcf_path = _resolve_existing_file(robot_mjcf_path, "robot MJCF")
+    load_binary_model = cast(
+        Callable[[str], Any],
+        getattr(mujoco.MjModel, "from_binary_path"),
+    )
+    save_model = cast(
+        Callable[[Any, str], None],
+        getattr(mujoco, "mj_saveModel"),
+    )
 
     if not rebake:
         # Compute the cache key without baking, so we can probe for an
@@ -372,7 +385,7 @@ def load_or_bake(
         ):
             logger.info(f"load_or_bake: loading compiled binary {mjb}")
             t0 = time.time()
-            model = mujoco.MjModel.from_binary_path(str(mjb))
+            model = load_binary_model(str(mjb))
             logger.info(
                 f"  loaded in {time.time() - t0:.1f}s "
                 f"(nbody={model.nbody} ngeom={model.ngeom} nmesh={model.nmesh})"
@@ -387,7 +400,7 @@ def load_or_bake(
                 f"  compiled in {time.time() - t0:.1f}s "
                 f"(nbody={model.nbody} ngeom={model.ngeom} nmesh={model.nmesh})"
             )
-            mujoco.mj_saveModel(model, str(mjb))
+            save_model(model, str(mjb))
             logger.info(f"  saved compiled binary: {mjb} ({mjb.stat().st_size / 1e6:.1f} MB)")
             return model, wrapper
 
@@ -410,7 +423,7 @@ def load_or_bake(
         f"(nbody={model.nbody} ngeom={model.ngeom} nmesh={model.nmesh})"
     )
     mjb = wrapper.with_name("compiled.mjb")
-    mujoco.mj_saveModel(model, str(mjb))
+    save_model(model, str(mjb))
     logger.info(f"  saved compiled binary: {mjb} ({mjb.stat().st_size / 1e6:.1f} MB)")
     return model, wrapper
 
@@ -470,7 +483,7 @@ def _cache_hit(wrapper_path: Path) -> bool:
 
 
 def _process_one_prim(
-    args: tuple[object, Path, CollisionSpec, bool],
+    args: tuple[ScenePrimMesh, Path, CollisionSpec, bool],
 ) -> tuple[list[str], list[str], str, str, dict[str, int]]:
     """Worker entry-point -- must be picklable.
 
@@ -556,7 +569,7 @@ def _process_one_prim(
 
 
 def _bake_prims(
-    prims: list[Any],
+    prims: list[ScenePrimMesh],
     cache_dir: Path,
     *,
     spec: CollisionSpec,
@@ -650,7 +663,11 @@ def _native_thread_count() -> int:
 # --------------------------------------------------------------------------- #
 
 
-def _emit_primitive_geom(prim_name: str, fit: dict | None, friction_attr: str) -> str | None:
+def _emit_primitive_geom(
+    prim_name: str,
+    fit: dict[str, Any] | None,
+    friction_attr: str,
+) -> str | None:
     """Render one ``PrimDecision.primitive`` dict to MJCF text.
 
     Returns ``None`` if ``fit`` is missing required fields (defensive --
@@ -799,7 +816,7 @@ def _fmt_vec(values: np.ndarray) -> str:
     return " ".join(f"{float(v):.9g}" for v in values)
 
 
-def _scene_bounds(prims: list[Any]) -> tuple[np.ndarray, float]:
+def _scene_bounds(prims: list[ScenePrimMesh]) -> tuple[np.ndarray, float]:
     """Return a viewer-friendly center and extent for the aligned scene.
 
     MuJoCo's viewer uses ``statistic.center`` / ``statistic.extent`` for
