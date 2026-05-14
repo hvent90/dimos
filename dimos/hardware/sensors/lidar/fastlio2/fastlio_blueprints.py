@@ -13,6 +13,7 @@
 # limitations under the License.
 
 from pathlib import Path
+from typing import TYPE_CHECKING
 
 from reactivex.disposable import Disposable
 
@@ -27,6 +28,9 @@ from dimos.msgs.nav_msgs.Odometry import Odometry
 from dimos.msgs.sensor_msgs.PointCloud2 import PointCloud2
 from dimos.utils.testing.replay import timed_playback
 from dimos.visualization.vis_module import vis_module
+
+if TYPE_CHECKING:
+    from rerun._baseclasses import Archetype
 
 
 class FastlioMemoryConfig(RecorderConfig):
@@ -95,7 +99,7 @@ class FastlioReplay(MemoryModule):
         )
 
 
-def _convert_global_map(msg: PointCloud2):
+def _convert_global_map(msg: PointCloud2) -> "Archetype":
     return msg.to_rerun(voxel_size=voxel_size)
 
 
