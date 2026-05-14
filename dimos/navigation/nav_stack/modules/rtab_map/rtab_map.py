@@ -78,6 +78,9 @@ class RtabMapConfig(NativeModuleConfig):
     rtabmap_detection_rate: float = 0.0
     rgbd_linear_update: float = 0.0
     rgbd_angular_update: float = 0.0
+    # rtabmap's one-to-many proximity detection neighbor count; enables
+    # geometric (scan-based) loop closure in lidar-only mode.
+    rgbd_proximity_path_max_neighbors: int = 10
 
     # Publishing cadence.
     octomap_publish_period: float = 0.5

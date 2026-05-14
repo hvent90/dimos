@@ -302,6 +302,12 @@ int main(int argc, char** argv) {
     // FastLIO2 odom dominates.
     params["Reg/Force3DoF"] = "false";
     params["RGBD/CreateOccupancyGrid"] = "true";
+    // One-to-many proximity detection (compare current keyframe against
+    // merged neighbor scans). Without this, lidar-only mode only triggers
+    // closure via visual bag-of-words, which we don't have. 10 neighbors
+    // is rtabmap's recommended starting point for LiDAR.
+    params["RGBD/ProximityPathMaxNeighbors"] =
+        mod.arg("rgbd_proximity_path_max_neighbors", "10");
     // Be permissive about admitting frames. Defaults gate keyframes by
     // motion/time which makes synthetic short-trajectory test scenes never
     // produce any local grids. These can be overridden via CLI args if a

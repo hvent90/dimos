@@ -12,14 +12,20 @@
 # See the License for the specific language governing permissions and
 # limitations under the License.
 
-"""Binary-driven loop closure check.
+"""Binary-driven loop-closure check.
 
-Drives the rtab_map binary through a closed-loop trajectory of the same
-synthetic scene, expecting more `corrected_odometry` messages on a returning
-trajectory than on a monotonic-forward one (loop closures jolt the map
-correction, which we see as additional published TF/corrected_odom messages)
-AND a non-identity `rtab_tf` correction at some point in the closed-loop
-run.
+Asserts the loop-closure machinery doesn't fire spuriously: a monotonic
+forward trajectory through a feature-rich scene must keep the published
+``rtab_tf`` correction at identity (no revisit, no closure, no map shift).
+
+Note: an aspirational "closure fires on revisit and produces a non-identity
+correction" test was attempted but couldn't be made deterministic on
+synthetic identical-scan input. rtabmap's lidar-only proximity detection
+needs real per-frame geometric variation to admit a closure hypothesis;
+hand-crafted scans don't reliably reproduce. The real coverage for that
+direction is the cross-wall E2E sim test
+(``test_cross_wall_planning_rtab.py``), which drives the binary through
+the full Unity sim and verifies the robot actually navigates.
 """
 
 from __future__ import annotations
@@ -36,33 +42,28 @@ from dimos.navigation.nav_stack.modules.rtab_map.tests.conftest import (
 pytestmark = [pytest.mark.self_hosted]
 
 
-def test_closed_loop_produces_correction(rtab_harness: RtabHarness) -> None:
+def _tf_offset_norm(tf_msg) -> float:
+    p = tf_msg.pose.position
+    return float(np.linalg.norm([p.x, p.y, p.z]))
+
+
+def test_monotonic_forward_keeps_identity_correction(rtab_harness: RtabHarness) -> None:
+    """No revisit → no closure → rtab_tf must stay at identity for the
+    entire run. A spurious closure would show up as a non-zero translation
+    in the published rtab_tf messages."""
     scan = square_room_scan()
-    waypoints = [
-        (0.0, 0.0),
-        (0.6, 0.0),
-        (1.2, 0.4),
-        (1.2, 1.0),
-        (0.6, 1.4),
-        (0.0, 1.4),
-        (0.0, 0.6),
-        (0.0, 0.0),  # back to start; loop-closure candidate
-    ]
-    for i, (x, y) in enumerate(waypoints):
-        ts = float(i) * 0.6
-        rtab_harness.publish_odom(np.array([x, y, 0.0]), identity_quat(), ts)
+    for i in range(8):
+        ts = float(i) * 0.5
+        rtab_harness.publish_odom(np.array([0.5 * i, 0.0, 0.0]), identity_quat(), ts)
         rtab_harness.publish_scan(scan, ts)
         rtab_harness.drain(seconds=0.15)
 
-    rtab_harness.drain(seconds=3.0)
+    rtab_harness.drain(seconds=2.0)
 
     tf_msgs = rtab_harness.rtab_tf.messages
     assert tf_msgs, "rtab_tf channel received no messages"
-    # The correction may stay identity if rtabmap's loop closure can't fire
-    # on a 3m-square scene with so few features. Don't hard-require a
-    # non-identity correction; require that the channel is active AND that
-    # corrected_odometry was produced consistently.
-    assert len(rtab_harness.corrected.messages) >= 3, (
-        f"expected multiple corrected_odometry messages on a closed loop; "
-        f"got {len(rtab_harness.corrected.messages)}"
+    max_offset = max(_tf_offset_norm(m) for m in tf_msgs)
+    assert max_offset < 1e-3, (
+        f"expected rtab_tf to stay at identity on a monotonic-forward run; "
+        f"max norm was {max_offset:.6e}"
     )
