@@ -195,14 +195,14 @@ def create_nav_stack(
         from dimos.navigation.nav_stack.modules.nav_record.nav_record import NavRecord
 
         modules.append(NavRecord.blueprint(**(nav_record or {})))
-        record_remappings.append((NavRecord, "global_map", "global_map_pgo"))
+        record_remappings.append((NavRecord, "global_map", "global_map_slam"))
 
     slam_class: type[ModuleBase] = PGO if slam_choice == "pgo" else RtabMap
     remappings: list[tuple[type[ModuleBase], str, str | type[ModuleBase] | type[Spec]]] = [
         (PathFollower, "cmd_vel", "nav_cmd_vel"),
         (TerrainAnalysis, "odometry", "corrected_odometry"),
         (TerrainMapExt, "odometry", "corrected_odometry"),
-        (slam_class, "global_map", "global_map_pgo"),
+        (slam_class, "global_map", "global_map_slam"),
         *record_remappings,
     ]
     if planner == "far":
@@ -251,7 +251,7 @@ def nav_stack_rerun_config(
             "world/terrain_map",
             "world/terrain_map_ext",
             "world/global_map",  # raw terrain/global_map from terrain analysis
-            # NOTE: world/global_map_pgo is the RtabMap remapped global_map
+            # NOTE: world/global_map_slam is the RtabMap remapped global_map
             # output — leave it visible.
             "world/global_map_fastlio",
             "world/registered_scan",
@@ -271,10 +271,10 @@ def nav_stack_rerun_config(
         ):
             visual_override.setdefault(hidden, _hide)
         # Keep these on (the actual RTAB outputs + robot trajectory).
-        # RtabMap's `global_map` Out gets remapped to topic `global_map_pgo`
+        # RtabMap's `global_map` Out gets remapped to topic `global_map_slam`
         # by create_nav_stack (the topic name is shared with PGO so the rest
         # of the stack doesn't have to know who the SLAM provider is).
-        visual_override.setdefault("world/global_map_pgo", _global_map_colors)
+        visual_override.setdefault("world/global_map_slam", _global_map_colors)
         visual_override.setdefault("world/octomap", _global_map_colors)
         visual_override.setdefault("world/projected_2d_grid", _global_map_colors)
         visual_override.setdefault("world/trajectory", _trajectory_colors)
@@ -283,7 +283,7 @@ def nav_stack_rerun_config(
         visual_override.setdefault("world/terrain_map", _terrain_map_colors)
         visual_override.setdefault("world/terrain_map_ext", _terrain_map_colors)
         visual_override.setdefault("world/global_map", _global_map_colors)
-        visual_override.setdefault("world/global_map_pgo", _global_map_colors)
+        visual_override.setdefault("world/global_map_slam", _global_map_colors)
         visual_override.setdefault("world/global_map_fastlio", _global_map_colors)
         visual_override.setdefault(
             "world/registered_scan", _registered_scan_colors if show_registered_scan else _hide
