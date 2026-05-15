@@ -169,16 +169,20 @@ def test_marker_tf_deploy_lcm_tf_integration() -> None:
     coord = ModuleCoordinator()
     coord.start()
     host_tf = LCMTF()
+    color_transport: LCMTransport[Image] | None = None
+    info_transport: LCMTransport[CameraInfo] | None = None
     try:
         cam = coord.deploy(ManualFrameCameraModule)
-        cam.color_image.transport = LCMTransport(
+        color_transport = LCMTransport(
             "/integration_marker_tf/color_image",
             Image,
         )
-        cam.camera_info.transport = LCMTransport(
+        info_transport = LCMTransport(
             "/integration_marker_tf/camera_info",
             CameraInfo,
         )
+        cam.color_image.transport = color_transport
+        cam.camera_info.transport = info_transport
 
         deploy(
             coord,
@@ -194,7 +198,8 @@ def test_marker_tf_deploy_lcm_tf_integration() -> None:
         w_markers: Transform | None = None
         for _ in range(40):
             host_tf.publish(t_world_base, t_base_optical)
-            cam.publish_frame(image, cam_info)
+            info_transport.publish(cam_info)
+            color_transport.publish(image)
             time.sleep(0.08)
             w_markers = host_tf.get("world", "marker_tf/markers", ts, 1.0)
             w_m = host_tf.get("world", "marker_tf/marker_0", ts, 1.0)
@@ -228,5 +233,9 @@ def test_marker_tf_deploy_lcm_tf_integration() -> None:
             atol=0.02,
         )
     finally:
+        if info_transport is not None:
+            info_transport.stop()
+        if color_transport is not None:
+            color_transport.stop()
         host_tf.stop()
         coord.stop()
