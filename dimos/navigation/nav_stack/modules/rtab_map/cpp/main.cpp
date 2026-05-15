@@ -398,8 +398,12 @@ int main(int argc, char** argv) {
     fprintf(stderr, "  octomap: %s\n", octomap_topic.c_str());
     fprintf(stderr, "  projected_2d_grid: %s\n", proj2d_topic.c_str());
 
-    const double octomap_publish_period = std::stod(mod.arg("octomap_publish_period", "0.5"));
-    const double global_map_publish_period = std::stod(mod.arg("global_map_publish_period", "1.0"));
+    // Lowered defaults so a fast-moving robot sees the map refresh quickly
+    // (max @ ~2 Hz). Each publish is bounded by the cost of the per-signature
+    // world-cloud cache concat + voxel downsample — fine at this rate even
+    // with hundreds of poses.
+    const double octomap_publish_period = std::stod(mod.arg("octomap_publish_period", "0.3"));
+    const double global_map_publish_period = std::stod(mod.arg("global_map_publish_period", "0.5"));
 
     double last_octomap_publish = 0.0;
     double last_global_map_publish = 0.0;
@@ -434,26 +438,22 @@ int main(int argc, char** argv) {
         data.setStamp(frame.timestamp);
 
         bool processed = rtab.process(data, frame.odom_pose);
-        if (!processed) {
-            // Frame rejected by rtabmap (e.g. too close to last keyframe).
-            if (debug) {
-                fprintf(stderr,
-                        "[rtab DEBUG] frame #%d rejected by rtab.process (not a keyframe)\n",
-                        frame_id);
-            }
-            continue;
-        }
         if (debug) {
-            fprintf(stderr,
-                    "[rtab DEBUG] frame #%d processed — odom_pos=(%.2f,%.2f,%.2f) ts=%.3f\n",
-                    frame_id, frame.odom_pose.x(), frame.odom_pose.y(),
-                    frame.odom_pose.z(), frame.timestamp);
+            if (processed) {
+                fprintf(stderr,
+                        "[rtab DEBUG] frame #%d processed — odom_pos=(%.2f,%.2f,%.2f) ts=%.3f\n",
+                        frame_id, frame.odom_pose.x(), frame.odom_pose.y(),
+                        frame.odom_pose.z(), frame.timestamp);
+            } else {
+                fprintf(stderr,
+                        "[rtab DEBUG] frame #%d non-keyframe (motion gate)\n", frame_id);
+            }
         }
 
-        // Push the just-processed keyframe's local grid into the OctoMap cache.
-        const rtabmap::Signature* sig = rtab.getMemory()
-            ? rtab.getMemory()->getLastWorkingSignature()
-            : nullptr;
+        // Push the just-processed keyframe's local grid into the OctoMap cache
+        // — but only when rtabmap admitted the frame as a new keyframe.
+        const rtabmap::Signature* sig =
+            processed && rtab.getMemory() ? rtab.getMemory()->getLastWorkingSignature() : nullptr;
         if (sig) {
             // Compute the local occupancy grid ourselves. In lidar-only
             // mode rtabmap doesn't populate gridGround/Obstacle/EmptyCells
@@ -478,10 +478,11 @@ int main(int argc, char** argv) {
             }
         }
 
-        // Update OctoMap against current optimized poses.
+        // Update OctoMap against current optimized poses (only on keyframes
+        // — new poses can't appear without one).
         const std::map<int, rtabmap::Transform>& opt_poses =
             rtab.getLocalOptimizedPoses();
-        if (!opt_poses.empty()) {
+        if (processed && !opt_poses.empty()) {
             octomap.update(opt_poses);
         }
 
