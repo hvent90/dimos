@@ -21,7 +21,7 @@ Verifies that the PCT (point cloud tomography) planner can:
 4. Actually drive the robot to each goal in sequence
 
 Modeled after test_cross_wall_planning.py but swaps FAR → PCT via the
-`use_pct_planner` flag on `smart_nav(...)`.
+`planner="pct"` on `smart_nav(...)`.
 
 Run:
     DISPLAY=:1 uv run pytest dimos/navigation/smart_nav/tests/test_pct_planning.py -v -s -m slow
@@ -115,7 +115,7 @@ class TestPCTPlanning:
                     vehicle_height=1.24,
                 ),
                 smart_nav(
-                    use_pct_planner=True,
+                    planner="pct",
                     terrain_analysis={
                         "obstacle_height_threshold": 0.1,
                         "ground_height_threshold": 0.05,

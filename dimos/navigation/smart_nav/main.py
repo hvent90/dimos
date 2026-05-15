@@ -105,8 +105,7 @@ def smart_nav(
     *,
     use_tare: bool = False,
     use_terrain_map_ext: bool = True,
-    use_simple_planner: bool = False,
-    use_pct_planner: bool = False,
+    planner: PlannerChoice = "far",
     vehicle_height: float | None = None,
     terrain_analysis: dict[str, Any] | None = None,
     terrain_map_ext: dict[str, Any] | None = None,
@@ -170,14 +169,7 @@ def smart_nav(
             local_planner_threshold,
         )
 
-    if use_simple_planner and use_pct_planner:
-        raise ValueError(
-            "smart_nav(): use_simple_planner and use_pct_planner are mutually "
-            "exclusive. Pass at most one."
-        )
-    planner_choice: PlannerChoice = (
-        "simple" if use_simple_planner else "pct" if use_pct_planner else "far"
-    )
+    planner_choice: PlannerChoice = planner
 
     modules: list[Blueprint] = [
         TerrainAnalysis.blueprint(

@@ -21,7 +21,7 @@ for the local planner.
 
 Upstream requirement: PCTPlanner consumes the accumulated explored-areas
 point cloud published by ``PreloadedMapTracker``. A blueprint that sets
-``use_pct_planner=True`` on ``smart_nav(...)`` picks up PreloadedMapTracker
+``planner="pct"`` on ``smart_nav(...)`` picks up PreloadedMapTracker
 automatically.
 """
 

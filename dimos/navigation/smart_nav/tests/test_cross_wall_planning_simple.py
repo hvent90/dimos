@@ -79,7 +79,7 @@ class TestCrossWallPlanningSimple:
                     vehicle_height=1.24,
                 ),
                 smart_nav(
-                    use_simple_planner=True,
+                    planner="simple",
                     terrain_analysis={
                         "obstacle_height_threshold": 0.1,
                         "ground_height_threshold": 0.05,

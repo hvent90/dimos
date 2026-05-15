@@ -64,7 +64,7 @@ unitree_g1_nav_onboard = (
             config="lio_autonomy.yaml",
         ),
         smart_nav(
-            use_simple_planner=True,
+            planner="simple",
             vehicle_height=G1.height_clearance,
             # path_follower={"omni_dir_goal_threshold": 0.0},
             terrain_analysis={
