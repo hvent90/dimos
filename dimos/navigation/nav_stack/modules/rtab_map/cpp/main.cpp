@@ -341,6 +341,15 @@ int main(int argc, char** argv) {
     params["Grid/MaxGroundHeight"] =
         mod.arg("grid_max_ground_height", "0.05");
     params["Grid/RangeMax"] = mod.arg("grid_range_max", "8.0");
+    // Project the cloud into the world's gravity-aligned frame (z translated
+    // by pose.z) before segmentation. rtabmap's default is false, which
+    // applies the height threshold in the sensor's local frame — wrong for
+    // any robot whose body origin sits above the floor (e.g., G1 pose.z ~=
+    // 1.2 m). With this enabled, MaxGroundHeight=0.05 is measured from the
+    // world's z=0 (floor), so short obstacles like chairs aren't lumped in
+    // with the ground.
+    params["Grid/MapFrameProjection"] =
+        mod.arg("grid_map_frame_projection", "true");
     // Lidar-only mode.
     params["RGBD/Enabled"] = "true";
     params["Reg/Strategy"] = "1";  // ICP

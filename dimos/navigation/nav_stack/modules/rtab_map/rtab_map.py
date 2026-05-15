@@ -59,6 +59,17 @@ class RtabMapConfig(NativeModuleConfig):
     grid_max_obstacle_height: float = 2.0
     grid_max_ground_height: float = 0.05
     grid_range_max: float = 8.0
+    # Project the cloud into the world's gravity-aligned frame before
+    # ground/obstacle segmentation. rtabmap defaults this to false (height
+    # threshold applied in the sensor's local frame, where z=0 is the
+    # sensor mount). For a tall robot like the G1 — whose pose.z is ~1.2 m
+    # above ground — that misclassifies the floor and anything shorter
+    # than the sensor (chairs, tables) as "ground", which then never
+    # appears in the obstacle-only OctoMap output. Setting this to true
+    # makes segmentation happen in world-z so MaxGroundHeight=0.05 is
+    # measured from the actual floor. **Assumes the pose passed to rtabmap
+    # is gravity-aligned and z=0 of the world frame is at floor level.**
+    grid_map_frame_projection: bool = True
 
     # Permissive defaults so short synthetic test trajectories admit
     # keyframes; production callers will want to tighten these.
