@@ -50,7 +50,7 @@ def test_create_desk_webcam_loads_camera_info_yaml(tmp_path: Path) -> None:
         """
 image_width: 1920
 image_height: 1080
-camera_name: webcam
+camera_name: macbook_pro_14_2025_center_stage
 distortion_model: plumb_bob
 camera_matrix:
   rows: 3
