@@ -29,12 +29,14 @@
 #include <pcl/point_types.h>
 #include <pcl/common/transforms.h>
 
+#include <rtabmap/core/Compression.h>
 #include <rtabmap/core/LaserScan.h>
 #include <rtabmap/core/LocalGrid.h>
-#include <rtabmap/core/LocalGridMaker.h>
+#include <rtabmap/core/Memory.h>
 #include <rtabmap/core/Parameters.h>
 #include <rtabmap/core/Rtabmap.h>
 #include <rtabmap/core/SensorData.h>
+#include <rtabmap/core/Signature.h>
 #include <rtabmap/core/Transform.h>
 #include <rtabmap/core/global_map/OctoMap.h>
 
@@ -239,6 +241,51 @@ void publish_pointcloud(
     lcm.publish(topic, &msg);
 }
 
+// Extract local grids from any new signatures in rtabmap's optimized
+// poses set, push them into `cache` keyed by signature id so `OctoMap::
+// update(poses)` can look them up. rtabmap stores grids on each
+// Signature's SensorData; they're populated by Memory when
+// `RGBD/CreateOccupancyGrid=true`. Raw fields may be cleared after
+// compression on insert, so we fall back to uncompressing when raw is
+// empty.
+//
+// `max_synced_id` is the highest signature id we've already pulled into
+// the cache. rtabmap assigns ids monotonically, so we can iterate
+// opt_poses from the upper_bound of that id rather than walking every
+// pose every scan — the latter would scale linearly with map size and
+// dominate the per-scan cost on long runs.
+void sync_signature_grids(
+    const rtabmap::Rtabmap& rtab,
+    rtabmap::LocalGridCache& cache,
+    int& max_synced_id) {
+    const rtabmap::Memory* memory = rtab.getMemory();
+    if (!memory) return;
+    const auto& poses = rtab.getLocalOptimizedPoses();
+    for (auto it = poses.upper_bound(max_synced_id); it != poses.end(); ++it) {
+        int id = it->first;
+        if (id <= 0) continue;
+        max_synced_id = std::max(max_synced_id, id);
+        const rtabmap::Signature* sig = memory->getSignature(id);
+        if (!sig) continue;
+        const rtabmap::SensorData& sd = sig->sensorData();
+        if (sd.gridCellSize() <= 0.0f) continue;
+        cv::Mat ground = sd.gridGroundCellsRaw();
+        cv::Mat obstacles = sd.gridObstacleCellsRaw();
+        cv::Mat empty_cells = sd.gridEmptyCellsRaw();
+        if (ground.empty() && obstacles.empty() && empty_cells.empty()) {
+            // setOccupancyGrid auto-compresses and may clear the raw
+            // mats. Decompress to recover them.
+            ground = rtabmap::uncompressData(sd.gridGroundCellsCompressed());
+            obstacles = rtabmap::uncompressData(sd.gridObstacleCellsCompressed());
+            empty_cells = rtabmap::uncompressData(sd.gridEmptyCellsCompressed());
+        }
+        if (ground.empty() && obstacles.empty() && empty_cells.empty()) continue;
+        cache.add(
+            id, ground, obstacles, empty_cells,
+            sd.gridCellSize(), sd.gridViewPoint());
+    }
+}
+
 }  // namespace
 
 int main(int argc, char** argv) {
@@ -266,7 +313,12 @@ int main(int argc, char** argv) {
     rtabmap::ParametersMap params;
     params["Grid/3D"] = mod.arg("grid_3d", "true");
     params["Grid/RayTracing"] = mod.arg("grid_ray_tracing", "true");
-    params["Grid/FromDepth"] = mod.arg("grid_from_depth", "false");
+    // Grid/Sensor: 0=laser scan, 1=depth, 2=both. rtabmap's default is 1
+    // (depth); we feed only laser scans, so it must be 0 or rtabmap's
+    // internal LocalGridMaker silently skips every scan and signatures
+    // get no attached grids. (The legacy `Grid/FromDepth` knob was
+    // removed in rtabmap 0.20.15 — set this directly.)
+    params["Grid/Sensor"] = mod.arg("grid_sensor", "0");
     params["Grid/CellSize"] = mod.arg("grid_cell_size", "0.1");
     params["Grid/MaxGroundAngle"] = mod.arg("grid_max_ground_angle", "45");
     params["Grid/GroundIsObstacle"] = mod.arg("grid_ground_is_obstacle", "false");
@@ -318,52 +370,50 @@ int main(int argc, char** argv) {
     // is rtabmap's recommended starting point for LiDAR.
     params["RGBD/ProximityPathMaxNeighbors"] =
         mod.arg("rgbd_proximity_path_max_neighbors", "10");
-    // Keyframe admission gate. Default to 10cm linear / ~6° angular —
-    // plenty fine for real-time mapping on a 0.6 m/s robot while
-    // letting per-frame rtabmap work (ICP, OctoMap update) run faster
-    // than the scan rate. Synthetic tests with stationary input override
-    // these to 0 so every frame admits.
-    params["Rtabmap/DetectionRate"] =
-        mod.arg("rtabmap_detection_rate", "0");  // 0 = motion-gated, not time-gated
-    params["RGBD/LinearUpdate"] = mod.arg("rgbd_linear_update", "0.1");
-    params["RGBD/AngularUpdate"] = mod.arg("rgbd_angular_update", "0.1");
-    params["Mem/NotLinkedNodesKept"] = "false";
+    // Keyframe admission. We bypass rtabmap's motion gate (LinearUpdate=0)
+    // because for the dynamic-clearing use case we want keyframes to keep
+    // arriving even on a stationary robot — so the OctoMap keeps getting
+    // empty-cell evidence to probabilistically clear stale obstacles.
+    //
+    // Rtabmap/DetectionRate is only consumed by RtabmapThread (we call
+    // Rtabmap::process directly), so we apply our own time gate at the
+    // main-loop level: see `rtabmap_process_period` further down. Setting
+    // the rtabmap-side knob to 0 here just to keep its internal state
+    // matching ours.
+    params["Rtabmap/DetectionRate"] = "0";
+    params["RGBD/LinearUpdate"] = mod.arg("rgbd_linear_update", "0");
+    params["RGBD/AngularUpdate"] = mod.arg("rgbd_angular_update", "0");
+    // Keep signatures around so their local grids stay in memory and can
+    // be re-assembled into the OctoMap after loop closures shift their
+    // poses. The wrapper used to disable this and maintain a parallel
+    // cache; the parallel cache wasn't getting pose corrections, so old
+    // map regions stayed at pre-closure poses forever. With this true,
+    // `rtab.getLocalOptimizedPoses()` returns the up-to-date pose for
+    // every kept signature, and `OctoMap::update` propagates corrections
+    // via its fullUpdateNeeded → clear-and-rebuild path.
+    params["Mem/NotLinkedNodesKept"] =
+        mod.arg("mem_not_linked_nodes_kept", "true");
 
     rtabmap::Rtabmap rtab;
     rtab.init(params);
 
-    // Single persistent global OctoMap. Every scan's local grid is added
-    // with a monotonically increasing id, so OctoMap's internal log-odds
-    // accumulator handles both occupancy AND clearing:
-    //   - Cells hit repeatedly accumulate +log-odds (saturated occupied).
-    //   - When something moves out of view (chair rolls away), the empty
-    //     cells produced by LocalGridMaker for subsequent scans pass
-    //     through that location → -log-odds → eventually flips to free.
+    // Persistent OctoMap driven by rtabmap's pose-graph-optimized poses.
     //
-    // We snapshot `mapCorrection * odom_pose` once per scan at capture
-    // time. That pose never updates afterward, so OctoMap's
-    // fullUpdateNeeded never fires and we don't pay full rebuild cost on
-    // every loop closure. Trade-off: octomap drifts slightly relative to
-    // current rtabmap state, but on minute-scale operation drift is well
-    // within the cell size.
-    rtabmap::LocalGridCache global_grid_cache;
-    rtabmap::OctoMap global_octomap(&global_grid_cache, params);
-    std::map<int, rtabmap::Transform> octomap_poses;
-    // Per-scan captured grid kept in a private copy so we can rebuild
-    // the LocalGridCache after eviction (rtabmap's cache has no
-    // per-id remove). Stores everything OctoMap needs to re-assemble
-    // the scan, plus the capture timestamp used by the eviction window.
-    struct ScanEntry {
-        cv::Mat ground;
-        cv::Mat obstacles;
-        cv::Mat empty;
-        cv::Point3f view_point;
-        float cell_size;
-        double timestamp;
-    };
-    std::map<int, ScanEntry> scan_history;
-    int octomap_next_id = 1;
-    rtabmap::LocalGridMaker grid_maker(params);
+    // Each call to `OctoMap::update(rtab.getLocalOptimizedPoses())`:
+    //   - Picks up new signatures that rtabmap admitted as keyframes
+    //     since last call (and grabs their grids from our cache below).
+    //   - When a loop closure shifts pre-existing signature poses,
+    //     rtabmap's `fullUpdateNeeded` fires and the octree is wiped and
+    //     re-assembled at the corrected poses — single coherent map,
+    //     no leftover ghost chunks from pre-closure pose frames.
+    //
+    // `octomap_grid_cache` mirrors rtabmap's per-signature local grids
+    // because rtabmap stores them on each Signature (raw or compressed),
+    // not in a directly-shareable LocalGridCache. We populate the cache
+    // by walking signatures whenever we see new ids in opt_poses.
+    rtabmap::LocalGridCache octomap_grid_cache;
+    rtabmap::OctoMap global_octomap(&octomap_grid_cache, params);
+    int max_synced_id = 0;
 
     lcm::LCM lcm;
     if (!lcm.good()) {
@@ -410,14 +460,18 @@ int main(int argc, char** argv) {
     // with hundreds of poses.
     const double octomap_publish_period = std::stod(mod.arg("octomap_publish_period", "0.3"));
     const double global_map_publish_period = std::stod(mod.arg("global_map_publish_period", "0.5"));
-    const double octomap_max_age_seconds =
-        std::stod(mod.arg("octomap_max_age_seconds", "5.0"));
-    const double octomap_rebuild_period =
-        std::stod(mod.arg("octomap_rebuild_period", "1.0"));
+    // How often we let rtabmap admit a new keyframe. With RGBD/LinearUpdate=0
+    // every call to rtab.process() admits a keyframe; gating at our level
+    // here keeps the keyframe rate sane on a stationary robot (and the
+    // ICP / signature-creation cost bounded) while still giving regular
+    // OctoMap empty-cell observations for dynamic clearing. Set to 0 to
+    // process every scan as a keyframe — only useful for synthetic tests.
+    const double rtabmap_process_period =
+        std::stod(mod.arg("rtabmap_process_period", "0.5"));
 
     double last_octomap_publish = 0.0;
     double last_global_map_publish = 0.0;
-    double last_octomap_rebuild = 0.0;
+    double last_rtab_process = -1.0;  // -1 sentinel forces the first frame through
     int frame_id = 0;
     const int timer_period_ms = 30;
 
@@ -434,6 +488,32 @@ int main(int argc, char** argv) {
             continue;
         }
 
+        // Time-gate rtab.process at the main-loop level. rtabmap's own
+        // Rtabmap/DetectionRate is consumed by RtabmapThread, not by
+        // Rtabmap::process directly, so we do the rate-limiting here.
+        // With LinearUpdate=0 every call admits a keyframe; this gate is
+        // what bounds the keyframe rate (and ICP / Memory cost) on
+        // stationary robots. Tests can set period=0 to drop the gate.
+        const bool gate_open =
+            rtabmap_process_period <= 0.0
+            || last_rtab_process < 0.0
+            || frame.timestamp - last_rtab_process >= rtabmap_process_period;
+        if (!gate_open) {
+            // Still publish corrected_odometry + rtab_tf for this frame
+            // using the last-known correction (jumps to that section
+            // below via a flag).
+            rtabmap::Transform correction = rtab.getMapCorrection();
+            rtabmap::Transform corrected_pose = correction * frame.odom_pose;
+            auto corrected_msg = odom_to_lcm(
+                corrected_pose, frame.timestamp, world_frame, body_frame);
+            lcm.publish(corrected_topic, &corrected_msg);
+            auto tf_msg = odom_to_lcm(
+                correction, frame.timestamp, world_frame, local_frame);
+            lcm.publish(tf_topic, &tf_msg);
+            continue;
+        }
+        last_rtab_process = frame.timestamp;
+
         // Build SensorData with the lidar scan. rtabmap has no scan-only
         // ctor — the canonical lidar-only setup is an empty SensorData with
         // setLaserScan(scan); using one of the RGB-D+scan ctors with empty
@@ -447,98 +527,24 @@ int main(int argc, char** argv) {
         data.setId(++frame_id);
         data.setStamp(frame.timestamp);
 
+        // rtab.process internally calls LocalGridMaker (via Memory, when
+        // RGBD/CreateOccupancyGrid=true), so the scan's local grid ends up
+        // attached to the new Signature's SensorData. Pulled out below in
+        // sync_signature_grids. No duplicate external createLocalMap call.
         bool processed = rtab.process(data, frame.odom_pose);
-        if (debug) {
-            if (processed) {
-                fprintf(stderr,
-                        "[rtab DEBUG] frame #%d processed — odom_pos=(%.2f,%.2f,%.2f) ts=%.3f\n",
-                        frame_id, frame.odom_pose.x(), frame.odom_pose.y(),
-                        frame.odom_pose.z(), frame.timestamp);
-            } else {
-                fprintf(stderr,
-                        "[rtab DEBUG] frame #%d non-keyframe (motion gate)\n", frame_id);
-            }
-        }
-
-        // Compute a local occupancy grid for every scan (keyframe or not).
-        // Pass the *map-frame* pose (mapCorrection * odom) so that
-        // segmentation's MapFrameProjection translation uses the same
-        // z that the cells will be placed at by OctoMap::assemble. With
-        // raw odom_pose, after a loop closure shifts mapCorrection.z
-        // the segmentation reference plane drifts from the placement
-        // plane and ground/obstacle classification disagrees with where
-        // cells actually land.
-        cv::Mat ground, obstacles, empty;
-        cv::Point3f view_point(0, 0, 0);
-        const rtabmap::Transform map_pose =
-            rtab.getMapCorrection() * frame.odom_pose;
-        grid_maker.createLocalMap(
-            laser_scan, map_pose, ground, obstacles, empty, view_point);
-        const float cell_size = grid_maker.getCellSize();
-
-        // Add the scan's local grid to the rtabmap cache + our private
-        // history with a fresh monotonically-increasing id. Pose is
-        // `mapCorrection * odom_pose` at capture time and frozen — we
-        // deliberately do not re-stamp old scans with updated corrections,
-        // which would force OctoMap's fullUpdateNeeded → clear-and-rebuild
-        // path on every loop closure.
-        if (!ground.empty() || !obstacles.empty() || !empty.empty()) {
-            int id = octomap_next_id++;
-            global_grid_cache.add(id, ground, obstacles, empty, cell_size, view_point);
-            octomap_poses[id] = map_pose;
-            scan_history[id] = ScanEntry{
-                ground, obstacles, empty, view_point, cell_size, frame.timestamp,
-            };
-        }
+        sync_signature_grids(rtab, octomap_grid_cache, max_synced_id);
         if (debug) {
             fprintf(stderr,
-                    "[rtab DEBUG]   localmap kf=%d g=%d o=%d e=%d cellSize=%.3f cache=%zu\n",
-                    processed ? 1 : 0, ground.cols, obstacles.cols, empty.cols,
-                    cell_size, global_grid_cache.size());
+                    "[rtab DEBUG] frame #%d %s ts=%.3f odom_pos=(%.2f,%.2f,%.2f) opt_poses=%zu cache=%zu\n",
+                    frame_id, processed ? "processed" : "rejected",
+                    frame.timestamp,
+                    frame.odom_pose.x(), frame.odom_pose.y(), frame.odom_pose.z(),
+                    rtab.getLocalOptimizedPoses().size(), octomap_grid_cache.size());
         }
 
-        // Time-based eviction. Drop scans older than `max_age` and rebuild
-        // the OctoMap from the surviving window. Without this, a cell hit
-        // once stays occupied forever (drift + LiDAR angular gaps mean
-        // many cells never get a clearing ray in subsequent scans). With
-        // this, walls re-observed every scan stay in the map; trails
-        // observed only during a brief walk-past fall out of the window
-        // and disappear after ~max_age seconds.
-        if (frame.timestamp - last_octomap_rebuild >= octomap_rebuild_period
-            && !scan_history.empty()) {
-            last_octomap_rebuild = frame.timestamp;
-            const double cutoff = frame.timestamp - octomap_max_age_seconds;
-            size_t evicted = 0;
-            for (auto it = scan_history.begin(); it != scan_history.end();) {
-                if (it->second.timestamp < cutoff) {
-                    octomap_poses.erase(it->first);
-                    it = scan_history.erase(it);
-                    ++evicted;
-                } else {
-                    ++it;
-                }
-            }
-            if (evicted > 0) {
-                // Wipe both rtabmap's grid cache and the OctoMap's octree
-                // state, then re-add the surviving scans. `update()`
-                // below will re-assemble them.
-                global_grid_cache.clear();
-                global_octomap.clear();
-                for (const auto& kv : scan_history) {
-                    const ScanEntry& e = kv.second;
-                    global_grid_cache.add(
-                        kv.first, e.ground, e.obstacles, e.empty,
-                        e.cell_size, e.view_point);
-                }
-                if (debug) {
-                    fprintf(stderr,
-                            "[rtab DEBUG] evicted %zu scans older than %.1fs; window now %zu scans\n",
-                            evicted, octomap_max_age_seconds, scan_history.size());
-                }
-            }
-        }
-
-        // Publish corrected odometry and map->odom correction every frame.
+        // Publish corrected odometry and map->odom correction every
+        // processed frame. (Unprocessed frames already published via the
+        // continue branch above.)
         rtabmap::Transform correction = rtab.getMapCorrection();
         rtabmap::Transform corrected_pose = correction * frame.odom_pose;
 
@@ -550,30 +556,30 @@ int main(int argc, char** argv) {
             correction, frame.timestamp, world_frame, local_frame);
         lcm.publish(tf_topic, &tf_msg);
 
-        // Periodically integrate pending scans into the global OctoMap.
-        // OctoMap::update only processes ids it hasn't seen, so calling
-        // this with the accumulated poses map cheaply picks up everything
-        // added since last call. We gate on the octomap publish period so
-        // we batch multiple scans per update instead of paying the
-        // per-cell octree-write cost on every frame.
+        // Periodically integrate the latest optimized poses into the
+        // global OctoMap. Passing `rtab.getLocalOptimizedPoses()` means:
+        //   - New keyframes from rtab.process above get added.
+        //   - When a loop closure shifts existing keyframe poses,
+        //     OctoMap::fullUpdateNeeded triggers a clear-and-rebuild so
+        //     all cells land at corrected world coordinates.
+        // No frozen poses, no parallel id space.
         //
         // Reset last_*_publish if the frame timestamp went backward —
         // can happen on FastLIO2 restart, NTP correction, or a stream
-        // that starts on wall-clock and then switches to relative. Without
-        // this, a single forward-from-now ts would gate all future
-        // publishes for the duration of the regression.
+        // that starts on wall-clock and then switches to relative.
         if (frame.timestamp < last_octomap_publish) last_octomap_publish = 0.0;
         if (frame.timestamp < last_global_map_publish) last_global_map_publish = 0.0;
         bool octomap_due =
             frame.timestamp - last_octomap_publish >= octomap_publish_period;
         bool global_map_due =
             frame.timestamp - last_global_map_publish >= global_map_publish_period;
-        if ((octomap_due || global_map_due) && !octomap_poses.empty()) {
-            global_octomap.update(octomap_poses);
+        const auto& opt_poses = rtab.getLocalOptimizedPoses();
+        if ((octomap_due || global_map_due) && !opt_poses.empty()) {
+            global_octomap.update(opt_poses);
         }
 
         // Publish OctoMap-derived outputs (throttled).
-        if (octomap_due && !octomap_poses.empty()) {
+        if (octomap_due && !opt_poses.empty()) {
             last_octomap_publish = frame.timestamp;
 
             // Occupied voxels.
@@ -615,7 +621,7 @@ int main(int argc, char** argv) {
             if (debug) {
                 fprintf(stderr,
                         "[rtab DEBUG] published octomap — voxels=%zu proj2d=%zu poses=%zu\n",
-                        octo_points.size(), proj_points.size(), octomap_poses.size());
+                        octo_points.size(), proj_points.size(), opt_poses.size());
             }
         }
 
@@ -626,7 +632,7 @@ int main(int argc, char** argv) {
         // the ray-traced clearing applies to the global map too — when
         // a chair rolls away, its old hits get probabilistically cleared
         // by subsequent scans' rays, so no permanent ghost points.
-        if (global_map_due && !octomap_poses.empty()) {
+        if (global_map_due && !opt_poses.empty()) {
             last_global_map_publish = frame.timestamp;
 
             std::vector<int> obstacleIndices;
@@ -651,7 +657,7 @@ int main(int argc, char** argv) {
                 fprintf(stderr,
                         "[rtab DEBUG] published global_map — obstacles=%zu ground=%zu poses=%zu topic=%s\n",
                         obstacleIndices.size(), groundIndices.size(),
-                        octomap_poses.size(), global_map_topic.c_str());
+                        opt_poses.size(), global_map_topic.c_str());
             }
         }
     }

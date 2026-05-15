@@ -124,11 +124,14 @@ def rtab_harness() -> Iterator[RtabHarness]:
             "--global_map_publish_period",
             "0.2",
             # Synthetic tests with stationary input — disable the motion
-            # keyframe gate, the input-buffer drop, and the time-window
-            # closure filter so every frame admits.
+            # keyframe gate, our main-loop time gate, the input-buffer
+            # drop, and the time-window closure filter so every frame
+            # admits.
             "--rgbd_linear_update",
             "0",
             "--rgbd_angular_update",
+            "0",
+            "--rtabmap_process_period",
             "0",
             "--drop_stale_scans",
             "false",

@@ -46,7 +46,11 @@ class RtabMapConfig(NativeModuleConfig):
     # OctoMap / Grid defaults (the six required by the locked spec).
     grid_3d: bool = True
     grid_ray_tracing: bool = True
-    grid_from_depth: bool = False
+    # 0 = laser scan, 1 = depth, 2 = both. We feed only laser scans;
+    # default must be 0 or rtabmap's internal LocalGridMaker skips every
+    # signature and the OctoMap stays empty. Supersedes the
+    # rtabmap-pre-0.20.15 `grid_from_depth: bool` knob.
+    grid_sensor: int = 0
     grid_cell_size: float = 0.1
     grid_max_ground_angle: float = 45.0
     grid_ground_is_obstacle: bool = False
@@ -88,15 +92,27 @@ class RtabMapConfig(NativeModuleConfig):
     # is gravity-aligned and z=0 of the world frame is at floor level.**
     grid_map_frame_projection: bool = True
 
-    # Permissive defaults so short synthetic test trajectories admit
-    # keyframes; production callers will want to tighten these.
-    rtabmap_detection_rate: float = 0.0
-    # 10 cm / ~6° motion gate by default. Real-robot scan rates are higher
-    # than per-frame rtabmap processing can sustain; this gate stops the
-    # input buffer from accumulating stale frames. Synthetic stationary
-    # tests override these to 0 so every frame admits.
-    rgbd_linear_update: float = 0.1
-    rgbd_angular_update: float = 0.1
+    # Keyframe admission rate. With rgbd_linear_update=0 (no motion gate),
+    # rtab.process admits every scan as a keyframe; this gate bounds the
+    # keyframe rate at the main-loop level (rtabmap's own
+    # Rtabmap/DetectionRate is consumed by RtabmapThread, not by direct
+    # process() calls). 0.5 s = 2 Hz keyframes — enough for dynamic
+    # clearing (a ghost trail clears in ~3 misses ≈ 1.5 s with the default
+    # ClampingMax=0.75) without paying ICP/Memory cost at 10 Hz scan rate.
+    # Set to 0 to process every scan (synthetic tests).
+    rtabmap_process_period: float = 0.5
+    # Motion-gate keyframe admission. Default 0 = let the time gate above
+    # do the rate limiting. A non-zero value gates *additionally* on
+    # spatial motion, which is wrong for a stationary robot watching a
+    # dynamic scene (no motion → no keyframes → no dynamic clearing).
+    rgbd_linear_update: float = 0.0
+    rgbd_angular_update: float = 0.0
+    # Keep signatures (and their local grids) around after rtabmap thinks
+    # they're disconnected. The OctoMap reads grids out of Memory's
+    # signatures, so they must stay accessible across loop-closure-driven
+    # graph reshuffles. Default true; only set false if you understand
+    # the memory-lifecycle implications.
+    mem_not_linked_nodes_kept: bool = True
     # If true (default), the scan callback drops any older queued scans
     # when a new one arrives — keep only the latest. Protects against the
     # buffer growing unboundedly when per-frame processing is slower than
@@ -122,30 +138,6 @@ class RtabMapConfig(NativeModuleConfig):
     octomap_publish_period: float = 0.5
     global_map_publish_period: float = 1.0
     global_map_voxel_size: float = 0.15
-
-    # Time-based eviction window. The persistent OctoMap accumulates
-    # every scan's local grid, so a cell hit even once stays occupied
-    # until a clearing ray happens to pass through it. In practice the
-    # combination of FastLIO2 z-drift (~3 cm over a few minutes) and
-    # the Mid360's non-uniform angular density means some cells never
-    # get a clearing ray and persist as "ghost" obstacles forever
-    # (chair sat there 30 s ago, person walked past 1 min ago, etc.).
-    #
-    # Fix: drop scans older than ``octomap_max_age_seconds`` and rebuild
-    # the OctoMap from the surviving window every ``octomap_rebuild_period``
-    # seconds. Walls that are constantly re-observed always have fresh
-    # scans contributing — they persist. Cells whose only supporting
-    # scans rolled off the window get evicted regardless of whether a
-    # clearing ray ever passed through them.
-    #
-    # Worst-case ghost-clear latency = max_age + rebuild_period. With
-    # the defaults below that's ~6 s. The Mid360 has 360° horizontal
-    # FoV so walls in any direction get hit every scan and stay solidly
-    # in the window even at 5 s. Caller can crank max_age up for
-    # stable long-term mapping, or down (e.g. 2 s) for near-instant
-    # decay of anything not currently in view.
-    octomap_max_age_seconds: float = 5.0
-    octomap_rebuild_period: float = 1.0
 
     # Input handling.
     # Input scans arrive in the world (map) frame; the binary undoes the
