@@ -23,6 +23,8 @@ from dimos.core.core import rpc
 from dimos.core.module import Module, ModuleConfig
 from dimos.core.stream import In, Out
 from dimos.msgs.geometry_msgs.PoseStamped import PoseStamped
+from dimos.msgs.geometry_msgs.Quaternion import Quaternion
+from dimos.msgs.geometry_msgs.Transform import Transform
 from dimos.msgs.geometry_msgs.Twist import Twist
 from dimos.msgs.geometry_msgs.Vector3 import Vector3
 from dimos.msgs.sensor_msgs.CameraInfo import CameraInfo
@@ -102,7 +104,7 @@ class AnafiConnectionModule(Module, Camera):
             )
             return
 
-        self.register_disposable(self.connection.odom_stream().subscribe(self.odom.publish))
+        self.register_disposable(self.connection.odom_stream().subscribe(self._on_odometry))
         self.register_disposable(self.connection.video_stream().subscribe(self._on_color_image))
         self.register_disposable(self.connection.telemetry_stream().subscribe(self._on_telemetry))
         self.register_disposable(Disposable(self.cmd_vel.subscribe(self.move)))
@@ -195,6 +197,22 @@ class AnafiConnectionModule(Module, Camera):
     def get_telemetry(self) -> dict[str, Any] | None:
         """Return the most recent raw telemetry batch from pyparrot."""
         return self._latest_telemetry
+
+    def _on_odometry(self, odom: PoseStamped) -> None:
+        camera_link = Transform(
+            translation=Vector3(0.08, 0.0, 0.0),
+            frame_id="base_link",
+            child_frame_id="camera_link",
+            ts=odom.ts,
+        )
+        camera_optical = Transform(
+            rotation=Quaternion(-0.5, 0.5, -0.5, 0.5),
+            frame_id="camera_link",
+            child_frame_id="camera_optical",
+            ts=odom.ts,
+        )
+        self.tf.publish(Transform.from_pose("base_link", odom), camera_link, camera_optical)
+        self.odom.publish(odom)
 
     def _on_color_image(self, frame: Image) -> None:
         self._latest_video_frame = frame
