@@ -127,16 +127,31 @@ class AnafiConnectionModule(Module, Camera):
         """Land the drone safely at its current position."""
         return self.connection is not None and self.connection.land(timeout)
 
-    @skill
+    @rpc
     def move(self, twist: Twist, duration: float = 0.0) -> bool:
+        """Send a velocity command to the drone."""
+        return self.connection is not None and self.connection.move(twist, duration)
+
+    @skill
+    def move_velocity(
+        self,
+        vx: float = 0.0,
+        vy: float = 0.0,
+        vz: float = 0.0,
+        vyaw: float = 0.0,
+        duration: float = 0.0,
+    ) -> bool:
         """Send a velocity command to the drone.
 
         Args:
-            twist: Linear/angular velocity in ROS conventions
-                (x = forward, y = left, z = up; angular.z = yaw rate).
+            vx: Forward velocity (positive = forward).
+            vy: Lateral velocity (positive = left).
+            vz: Vertical velocity (positive = up).
+            vyaw: Yaw rate (positive = counter-clockwise).
             duration: Seconds to hold the command (0 = single shot).
         """
-        return self.connection is not None and self.connection.move(twist, duration)
+        twist = Twist(linear=Vector3(vx, vy, vz), angular=Vector3(0, 0, vyaw))
+        return self.move(twist, duration)
 
     @skill
     def move_relative(
