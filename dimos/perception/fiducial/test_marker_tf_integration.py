@@ -21,11 +21,9 @@ under test). A flat synthetic marker image keeps detection reliable; depth is
 whatever ``solvePnP`` recovers for that view, and we assert the running module
 matches that same OpenCV reference on the same pixels.
 
-Default pytest addopts skip ``slow`` tests; run explicitly, for example:
+Marked ``slow``. Run with::
 
-    uv run pytest dimos/perception/fiducial/test_marker_tf_integration.py -m slow -v
-
-or override addopts for a one-off run.
+    uv run pytest dimos/perception/fiducial/test_marker_tf_integration.py -m slow -v --import-mode=prepend
 """
 
 from __future__ import annotations

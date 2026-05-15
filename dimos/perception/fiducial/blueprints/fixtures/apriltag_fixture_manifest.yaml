@@ -1,13 +1,4 @@
 schema_version: dimos.apriltag_fixture_verification.v1
-experiment_id: apriltag_fixture_verification
-filename_spec: fixture-image-filename-spec-v1.2
-created_at: '2026-05-15T13:52:39Z'
-repo_root: https://github.com/dimensionalOS/dimos
-pdf_path: /private/tmp/tag36h11_50mm.pdf
-generator:
-  command: uv run dimos apriltag --out /private/tmp/tag36h11_50mm.pdf --family tag36h11
-    --ids 0-11 --size-mm 50 --page-size a4 --pack
-  layout_source: dimos/utils/cli/apriltag.py::_grid_layout
 fixture:
   family: tag36h11
   opencv_dictionary: DICT_APRILTAG_36h11
@@ -30,12 +21,6 @@ fixture:
   layout_cols: 3
   layout_rows: 4
   ruler_mm: 100.0
-print_check:
-  printed_ruler_mm: null
-  printed_tag_edge_mm: null
-  measured_with: null
-  print_scaling: actual_size
-  passed: null
 camera:
   camera_name: macbook_pro_14_2025_center_stage
   calibration_file: dimos/perception/fiducial/blueprints/fixtures/camera_info.yaml
@@ -65,16 +50,9 @@ camera:
     - -0.03351506321703973
     - -0.10786678290448087
     - 212.1609935197354
-capture:
-  mode: images
-  images_root: dimos/perception/fiducial/blueprints/fixtures
-  recorder: rerun
-  rerun_recording_path: null
 frames:
 - frame_id: 000001_op-near_partial_bottom_v000000111111_am-none_ae-none_rrd-out_tag36h11
   image_path: dimos/perception/fiducial/blueprints/fixtures/000001_op-near_partial_bottom_v000000111111_am-none_ae-none_rrd-out_tag36h11.png
-  source_video: null
-  timestamp_sec: null
   operator_planned_class: near_partial_bottom
   partial_reason: null
   expected_visible_ids:
@@ -94,16 +72,8 @@ frames:
   allowed_missing_max: 0
   allowed_missing_ids: []
   allowed_extra_ids: []
-  rerun_recording_stem: out_tag36h11
-  computed_class: null
-  detected_ids: null
-  metrics: null
-  accepted: null
-  reject_reasons: null
 - frame_id: 000002_op-near_partial_top_v111111000000_am-none_ae-none_rrd-out_tag36h11
   image_path: dimos/perception/fiducial/blueprints/fixtures/000002_op-near_partial_top_v111111000000_am-none_ae-none_rrd-out_tag36h11.png
-  source_video: null
-  timestamp_sec: null
   operator_planned_class: near_partial_top
   partial_reason: null
   expected_visible_ids:
@@ -123,16 +93,8 @@ frames:
   allowed_missing_max: 0
   allowed_missing_ids: []
   allowed_extra_ids: []
-  rerun_recording_stem: out_tag36h11
-  computed_class: null
-  detected_ids: null
-  metrics: null
-  accepted: null
-  reject_reasons: null
 - frame_id: 000003_op-near_partial_left_v100100100100_am-none_ae-none_rrd-out_tag36h11
   image_path: dimos/perception/fiducial/blueprints/fixtures/000003_op-near_partial_left_v100100100100_am-none_ae-none_rrd-out_tag36h11.png
-  source_video: null
-  timestamp_sec: null
   operator_planned_class: near_partial_left
   partial_reason: null
   expected_visible_ids:
@@ -152,16 +114,8 @@ frames:
   allowed_missing_max: 0
   allowed_missing_ids: []
   allowed_extra_ids: []
-  rerun_recording_stem: out_tag36h11
-  computed_class: null
-  detected_ids: null
-  metrics: null
-  accepted: null
-  reject_reasons: null
 - frame_id: 000004_op-near_partial_right_v001001001001_am-none_ae-none_rrd-out_tag36h11
   image_path: dimos/perception/fiducial/blueprints/fixtures/000004_op-near_partial_right_v001001001001_am-none_ae-none_rrd-out_tag36h11.png
-  source_video: null
-  timestamp_sec: null
   operator_planned_class: near_partial_right
   partial_reason: null
   expected_visible_ids:
@@ -181,16 +135,8 @@ frames:
   allowed_missing_max: 0
   allowed_missing_ids: []
   allowed_extra_ids: []
-  rerun_recording_stem: out_tag36h11
-  computed_class: null
-  detected_ids: null
-  metrics: null
-  accepted: null
-  reject_reasons: null
 - frame_id: 000005_op-near_partial_bottom_v000000000111_am-none_ae-none_rrd-out_tag36h11
   image_path: dimos/perception/fiducial/blueprints/fixtures/000005_op-near_partial_bottom_v000000000111_am-none_ae-none_rrd-out_tag36h11.png
-  source_video: null
-  timestamp_sec: null
   operator_planned_class: near_partial_bottom
   partial_reason: null
   expected_visible_ids:
@@ -210,16 +156,8 @@ frames:
   allowed_missing_max: 0
   allowed_missing_ids: []
   allowed_extra_ids: []
-  rerun_recording_stem: out_tag36h11
-  computed_class: null
-  detected_ids: null
-  metrics: null
-  accepted: null
-  reject_reasons: null
 - frame_id: 000006_op-near_full_v111111111111_am-none_ae-none_rrd-out_tag36h11
   image_path: dimos/perception/fiducial/blueprints/fixtures/000006_op-near_full_v111111111111_am-none_ae-none_rrd-out_tag36h11.png
-  source_video: null
-  timestamp_sec: null
   operator_planned_class: near_full
   partial_reason: null
   expected_visible_ids:
@@ -239,16 +177,8 @@ frames:
   allowed_missing_max: 0
   allowed_missing_ids: []
   allowed_extra_ids: []
-  rerun_recording_stem: out_tag36h11
-  computed_class: null
-  detected_ids: null
-  metrics: null
-  accepted: null
-  reject_reasons: null
 - frame_id: 000007_op-near_partial_bottom_v000111111111_am-none_ae-none_rrd-out_tag36h11
   image_path: dimos/perception/fiducial/blueprints/fixtures/000007_op-near_partial_bottom_v000111111111_am-none_ae-none_rrd-out_tag36h11.png
-  source_video: null
-  timestamp_sec: null
   operator_planned_class: near_partial_bottom
   partial_reason: null
   expected_visible_ids:
@@ -268,16 +198,8 @@ frames:
   allowed_missing_max: 0
   allowed_missing_ids: []
   allowed_extra_ids: []
-  rerun_recording_stem: out_tag36h11
-  computed_class: null
-  detected_ids: null
-  metrics: null
-  accepted: null
-  reject_reasons: null
 - frame_id: 000008_op-near_partial_left_v000000000100_am-none_ae-none_rrd-out_tag36h11
   image_path: dimos/perception/fiducial/blueprints/fixtures/000008_op-near_partial_left_v000000000100_am-none_ae-none_rrd-out_tag36h11.png
-  source_video: null
-  timestamp_sec: null
   operator_planned_class: near_partial_left
   partial_reason: null
   expected_visible_ids:
@@ -297,16 +219,8 @@ frames:
   allowed_missing_max: 0
   allowed_missing_ids: []
   allowed_extra_ids: []
-  rerun_recording_stem: out_tag36h11
-  computed_class: null
-  detected_ids: null
-  metrics: null
-  accepted: null
-  reject_reasons: null
 - frame_id: 000009_op-near_partial_left_v000100100100_am-none_ae-none_rrd-out_tag36h11
   image_path: dimos/perception/fiducial/blueprints/fixtures/000009_op-near_partial_left_v000100100100_am-none_ae-none_rrd-out_tag36h11.png
-  source_video: null
-  timestamp_sec: null
   operator_planned_class: near_partial_left
   partial_reason: null
   expected_visible_ids:
@@ -326,16 +240,8 @@ frames:
   allowed_missing_max: 0
   allowed_missing_ids: []
   allowed_extra_ids: []
-  rerun_recording_stem: out_tag36h11
-  computed_class: null
-  detected_ids: null
-  metrics: null
-  accepted: null
-  reject_reasons: null
 - frame_id: 0000010_op-near_partial_left_v001111011011_am-none_ae-none_rrd-out_tag36h11
   image_path: dimos/perception/fiducial/blueprints/fixtures/0000010_op-near_partial_left_v001111011011_am-none_ae-none_rrd-out_tag36h11.png
-  source_video: null
-  timestamp_sec: null
   operator_planned_class: near_partial_left
   partial_reason: null
   expected_visible_ids:
@@ -355,16 +261,8 @@ frames:
   allowed_missing_max: 0
   allowed_missing_ids: []
   allowed_extra_ids: []
-  rerun_recording_stem: out_tag36h11
-  computed_class: null
-  detected_ids: null
-  metrics: null
-  accepted: null
-  reject_reasons: null
 - frame_id: 0000011_op-mid_full_v111111111111_am-none_ae-none_rrd-out_tag36h11
   image_path: dimos/perception/fiducial/blueprints/fixtures/0000011_op-mid_full_v111111111111_am-none_ae-none_rrd-out_tag36h11.png
-  source_video: null
-  timestamp_sec: null
   operator_planned_class: mid_full
   partial_reason: null
   expected_visible_ids:
@@ -384,16 +282,8 @@ frames:
   allowed_missing_max: 0
   allowed_missing_ids: []
   allowed_extra_ids: []
-  rerun_recording_stem: out_tag36h11
-  computed_class: null
-  detected_ids: null
-  metrics: null
-  accepted: null
-  reject_reasons: null
 - frame_id: 0000012_op-mid_full_v111111111111_am-none_ae-none_rrd-out_tag36h11
   image_path: dimos/perception/fiducial/blueprints/fixtures/0000012_op-mid_full_v111111111111_am-none_ae-none_rrd-out_tag36h11.png
-  source_video: null
-  timestamp_sec: null
   operator_planned_class: mid_full
   partial_reason: null
   expected_visible_ids:
@@ -413,16 +303,8 @@ frames:
   allowed_missing_max: 0
   allowed_missing_ids: []
   allowed_extra_ids: []
-  rerun_recording_stem: out_tag36h11
-  computed_class: null
-  detected_ids: null
-  metrics: null
-  accepted: null
-  reject_reasons: null
 - frame_id: 0000013_op-none_v000000000000_am-none_ae-none_rrd-out_tag36h11
   image_path: dimos/perception/fiducial/blueprints/fixtures/0000013_op-none_v000000000000_am-none_ae-none_rrd-out_tag36h11.png
-  source_video: null
-  timestamp_sec: null
   operator_planned_class: none
   partial_reason: null
   expected_visible_ids: []
@@ -442,16 +324,8 @@ frames:
   allowed_missing_max: 0
   allowed_missing_ids: []
   allowed_extra_ids: []
-  rerun_recording_stem: out_tag36h11
-  computed_class: null
-  detected_ids: null
-  metrics: null
-  accepted: null
-  reject_reasons: null
 - frame_id: 0000014_op-mid_full_v111111111111_am-none_ae-none_rrd-out_tag36h11
   image_path: dimos/perception/fiducial/blueprints/fixtures/0000014_op-mid_full_v111111111111_am-none_ae-none_rrd-out_tag36h11.png
-  source_video: null
-  timestamp_sec: null
   operator_planned_class: mid_full
   partial_reason: null
   expected_visible_ids:
@@ -471,16 +345,8 @@ frames:
   allowed_missing_max: 0
   allowed_missing_ids: []
   allowed_extra_ids: []
-  rerun_recording_stem: out_tag36h11
-  computed_class: null
-  detected_ids: null
-  metrics: null
-  accepted: null
-  reject_reasons: null
 - frame_id: 000015_op-mid_partial_bottom_v001111111111_am-none_ae-none_rrd-out_tag36h11
   image_path: dimos/perception/fiducial/blueprints/fixtures/000015_op-mid_partial_bottom_v001111111111_am-none_ae-none_rrd-out_tag36h11.png
-  source_video: null
-  timestamp_sec: null
   operator_planned_class: mid_partial_bottom
   partial_reason: null
   expected_visible_ids:
@@ -500,16 +366,8 @@ frames:
   allowed_missing_max: 0
   allowed_missing_ids: []
   allowed_extra_ids: []
-  rerun_recording_stem: out_tag36h11
-  computed_class: null
-  detected_ids: null
-  metrics: null
-  accepted: null
-  reject_reasons: null
 - frame_id: 000016_op-mid_partial_top_v111111000000_am-none_ae-none_rrd-out_tag36h11
   image_path: dimos/perception/fiducial/blueprints/fixtures/000016_op-mid_partial_top_v111111000000_am-none_ae-none_rrd-out_tag36h11.png
-  source_video: null
-  timestamp_sec: null
   operator_planned_class: mid_partial_top
   partial_reason: null
   expected_visible_ids:
@@ -529,16 +387,8 @@ frames:
   allowed_missing_max: 0
   allowed_missing_ids: []
   allowed_extra_ids: []
-  rerun_recording_stem: out_tag36h11
-  computed_class: null
-  detected_ids: null
-  metrics: null
-  accepted: null
-  reject_reasons: null
 - frame_id: 000017_op-mid_partial_top_v111000000000_am-none_ae-none_rrd-out_tag36h11
   image_path: dimos/perception/fiducial/blueprints/fixtures/000017_op-mid_partial_top_v111000000000_am-none_ae-none_rrd-out_tag36h11.png
-  source_video: null
-  timestamp_sec: null
   operator_planned_class: mid_partial_top
   partial_reason: null
   expected_visible_ids:
@@ -558,16 +408,8 @@ frames:
   allowed_missing_max: 0
   allowed_missing_ids: []
   allowed_extra_ids: []
-  rerun_recording_stem: out_tag36h11
-  computed_class: null
-  detected_ids: null
-  metrics: null
-  accepted: null
-  reject_reasons: null
 - frame_id: 000018_op-far_full_v111111111111_am-6_ae-none_rrd-out_tag36h11
   image_path: dimos/perception/fiducial/blueprints/fixtures/000018_op-far_full_v111111111111_am-6_ae-none_rrd-out_tag36h11.png
-  source_video: null
-  timestamp_sec: null
   operator_planned_class: far_full
   partial_reason: null
   expected_visible_ids:
@@ -587,16 +429,8 @@ frames:
   allowed_missing_max: 6
   allowed_missing_ids: []
   allowed_extra_ids: []
-  rerun_recording_stem: out_tag36h11
-  computed_class: null
-  detected_ids: null
-  metrics: null
-  accepted: null
-  reject_reasons: null
 - frame_id: 000019_op-far_full_v111111111111_am-1_ae-none_rrd-out_tag36h11
   image_path: dimos/perception/fiducial/blueprints/fixtures/000019_op-far_full_v111111111111_am-1_ae-none_rrd-out_tag36h11.png
-  source_video: null
-  timestamp_sec: null
   operator_planned_class: far_full
   partial_reason: null
   expected_visible_ids:
@@ -616,16 +450,8 @@ frames:
   allowed_missing_max: 1
   allowed_missing_ids: []
   allowed_extra_ids: []
-  rerun_recording_stem: out_tag36h11
-  computed_class: null
-  detected_ids: null
-  metrics: null
-  accepted: null
-  reject_reasons: null
 - frame_id: 000020_op-far_partial_left_v100100100100_am-2_ae-none_rrd-out_tag36h11
   image_path: dimos/perception/fiducial/blueprints/fixtures/000020_op-far_partial_left_v100100100100_am-2_ae-none_rrd-out_tag36h11.png
-  source_video: null
-  timestamp_sec: null
   operator_planned_class: far_partial_left
   partial_reason: null
   expected_visible_ids:
@@ -645,16 +471,8 @@ frames:
   allowed_missing_max: 2
   allowed_missing_ids: []
   allowed_extra_ids: []
-  rerun_recording_stem: out_tag36h11
-  computed_class: null
-  detected_ids: null
-  metrics: null
-  accepted: null
-  reject_reasons: null
 - frame_id: 000021_op-far_partial_top_v111111111000_am-3_ae-none_rrd-out_tag36h11
   image_path: dimos/perception/fiducial/blueprints/fixtures/000021_op-far_partial_top_v111111111000_am-3_ae-none_rrd-out_tag36h11.png
-  source_video: null
-  timestamp_sec: null
   operator_planned_class: far_partial_top
   partial_reason: null
   expected_visible_ids:
@@ -674,16 +492,8 @@ frames:
   allowed_missing_max: 3
   allowed_missing_ids: []
   allowed_extra_ids: []
-  rerun_recording_stem: out_tag36h11
-  computed_class: null
-  detected_ids: null
-  metrics: null
-  accepted: null
-  reject_reasons: null
-- frame_id: 000022_op-far_partial_top_v111111000000_am-3_ae-none_rrd-out_tag36h11
-  image_path: dimos/perception/fiducial/blueprints/fixtures/000022_op-far_partial_top_v111111000000_am-3_ae-none_rrd-out_tag36h11.png
-  source_video: null
-  timestamp_sec: null
+- frame_id: 000022_op-far_partial_top_v111111000000_am-4_ae-none_rrd-out_tag36h11
+  image_path: dimos/perception/fiducial/blueprints/fixtures/000022_op-far_partial_top_v111111000000_am-4_ae-none_rrd-out_tag36h11.png
   operator_planned_class: far_partial_top
   partial_reason: null
   expected_visible_ids:
@@ -700,19 +510,11 @@ frames:
   - 9
   - 10
   - 11
-  allowed_missing_max: 3
+  allowed_missing_max: 4
   allowed_missing_ids: []
   allowed_extra_ids: []
-  rerun_recording_stem: out_tag36h11
-  computed_class: null
-  detected_ids: null
-  metrics: null
-  accepted: null
-  reject_reasons: null
 - frame_id: 000023_op-far_full_v111111111111_am-1_ae-none_rrd-out_tag36h11
   image_path: dimos/perception/fiducial/blueprints/fixtures/000023_op-far_full_v111111111111_am-1_ae-none_rrd-out_tag36h11.png
-  source_video: null
-  timestamp_sec: null
   operator_planned_class: far_full
   partial_reason: null
   expected_visible_ids:
@@ -732,16 +534,8 @@ frames:
   allowed_missing_max: 1
   allowed_missing_ids: []
   allowed_extra_ids: []
-  rerun_recording_stem: out_tag36h11
-  computed_class: null
-  detected_ids: null
-  metrics: null
-  accepted: null
-  reject_reasons: null
 - frame_id: 000024_op-far_partial_right_v011011001001_am-3_ae-none_rrd-out_tag36h11
   image_path: dimos/perception/fiducial/blueprints/fixtures/000024_op-far_partial_right_v011011001001_am-3_ae-none_rrd-out_tag36h11.png
-  source_video: null
-  timestamp_sec: null
   operator_planned_class: far_partial_right
   partial_reason: null
   expected_visible_ids:
@@ -761,16 +555,8 @@ frames:
   allowed_missing_max: 3
   allowed_missing_ids: []
   allowed_extra_ids: []
-  rerun_recording_stem: out_tag36h11
-  computed_class: null
-  detected_ids: null
-  metrics: null
-  accepted: null
-  reject_reasons: null
 - frame_id: 000025_op-far_full_v111111111111_am-11_ae-none_rrd-out_tag36h11
   image_path: dimos/perception/fiducial/blueprints/fixtures/000025_op-far_full_v111111111111_am-11_ae-none_rrd-out_tag36h11.png
-  source_video: null
-  timestamp_sec: null
   operator_planned_class: far_full
   partial_reason: null
   expected_visible_ids:
@@ -790,9 +576,3 @@ frames:
   allowed_missing_max: 11
   allowed_missing_ids: []
   allowed_extra_ids: []
-  rerun_recording_stem: out_tag36h11
-  computed_class: null
-  detected_ids: null
-  metrics: null
-  accepted: null
-  reject_reasons: null
