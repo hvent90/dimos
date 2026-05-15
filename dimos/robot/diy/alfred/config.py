@@ -25,7 +25,7 @@ DEFAULT_ADDRESS = "172.6.2.20:11323"
 # just as a starting point. May re-compute these later. In principle robot-specific
 LOCAL_PLANNER_PRECOMPUTED_PATHS = G1_LOCAL_PLANNER_PRECOMPUTED_PATHS
 
-FLOWBASE = RobotConfig(
+ALFRED = RobotConfig(
     name="alfred",
     height_clearance=2.0,  # meters
     width_clearance=1.0,
