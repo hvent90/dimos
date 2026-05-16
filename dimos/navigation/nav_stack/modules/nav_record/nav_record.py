@@ -35,9 +35,10 @@ from dimos.msgs.std_msgs.Int8 import Int8
 
 class NavRecordConfig(RecorderConfig):
     db_path: str = "nav_recording.db"
-    # Unstamped messages (Twist, Int8, …) carry no frame_id; route them to
-    # the robot body frame, which is in the nav-stack tf tree.
+    # Robot body frame, for unstamped messages.
     default_frame_id: str = "current_point"
+    # Generous so PGO iSAM2 stalls (~500ms) don't cause lookup misses.
+    tf_tolerance: float = 3.0
 
 
 class NavRecord(Recorder):

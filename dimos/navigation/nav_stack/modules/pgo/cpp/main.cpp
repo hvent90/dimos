@@ -451,7 +451,7 @@ int main(int argc, char** argv)
         M3D corr_r = pgo.offsetR() * cp.pose.r;
         V3D corr_t = pgo.offsetR() * cp.pose.t + pgo.offsetT();
         nav_msgs::Odometry corrected = build_odometry(
-            corr_r, corr_t, cur_time, world_frame, "base_link");
+            corr_r, corr_t, cur_time, world_frame, body_frame);
         lcm.publish(corrected_odom_topic, &corrected);
 
         auto tf_msg = build_tf_message(
