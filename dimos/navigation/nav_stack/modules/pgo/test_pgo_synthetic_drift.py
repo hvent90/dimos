@@ -79,11 +79,6 @@ POST_FEED_DRAIN_SEC = 3.0
 POLL_INTERVAL_SEC = 0.25
 
 
-# ---------------------------------------------------------------------------
-# Trajectory + scan-cloud generators (test-private)
-# ---------------------------------------------------------------------------
-
-
 def _make_room_points(half_size: float = 20.0, density: float = 0.15) -> np.ndarray:
     """Sample points on the inside of a 4-wall square room."""
     points: list[np.ndarray] = []
@@ -230,11 +225,6 @@ def _trajectory_payload(
     return rows
 
 
-# ---------------------------------------------------------------------------
-# Modules
-# ---------------------------------------------------------------------------
-
-
 class SyntheticDriftPlaybackConfig(ModuleConfig):
     trajectory: list[list[float]]
     inter_frame_sleep_sec: float = INTER_FRAME_SLEEP_SEC
@@ -337,11 +327,6 @@ class LoopClosureCounterModule(Module):
     @rpc
     def count(self) -> int:
         return self._count
-
-
-# ---------------------------------------------------------------------------
-# Runner
-# ---------------------------------------------------------------------------
 
 
 def _run_pgo(
