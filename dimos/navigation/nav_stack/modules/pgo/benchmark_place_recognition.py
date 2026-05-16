@@ -12,35 +12,22 @@
 # See the License for the specific language governing permissions and
 # limitations under the License.
 
-"""Place-recognition AP evaluator for the Scan Context descriptor.
+"""How well can Scan Context tell "I've been here before" on KITTI-360?
 
-A head-to-head comparison with the original Scan Context paper, which
-reports an AP of 0.65-0.78 on KITTI-360 sequence 02. We strip the SLAM
-pipeline back to just the place-recognition descriptor — no factor
-graph, no ICP refinement — so what we're measuring is whether the
-descriptor alone can tell "I've been here before" reliably. This is
-exactly how the academic papers run their numbers (the LCDNet Protocol
-1 setup), which is what makes our results directly comparable to theirs.
+Replays a real driven trajectory, and for every frame asks the
+descriptor: of all the places I saw a while ago, which one looks most
+like where I am now? If that "most similar" old place is actually
+within a few metres of where I am, that's a correct revisit detection.
 
-The test itself works like this: walk through the trajectory frame by
-frame. For each frame, ask "out of every old frame I saw at least
-MIN_FRAME_GAP frames ago, which one looks the most like where I am
-right now?" We use a cheap ring-key kd-tree pre-filter to narrow the
-candidates down to the top 10 (matching Kim & Kim), then do a full
-column-shifted cosine match against those to pick the best one. It's a
-true positive if that best match was actually within MAX_LOOP_DISTANCE_M
-of the query, and the confidence score is the negated descriptor
-distance (high = confident match). Sweep the score threshold, plot
-precision vs. recall, integrate via
-``sklearn.metrics.average_precision_score`` and you get Average
-Precision — one number per sequence. We also print precision/recall at
-a few fixed thresholds for sanity.
+The score we report is Average Precision (AP): a single 0-1 number
+summarising how well the descriptor separates correct revisits from
+wrong guesses across every confidence threshold. Higher = better
+place recognition. The published Scan Context paper gets 0.65-0.78
+on this sequence, so that's the bar.
 
-One important detail: the Python descriptor used here is a faithful
-copy of ``cpp/scan_context.cpp`` — same polar bins, same
-``lidar_height_m=2.0`` shift, same column-cosine distance over all
-sector shifts. So we're measuring the real descriptor, not a clean-room
-reimplementation that might quietly disagree.
+We use the same Python copy of the descriptor that ships with PGO
+(``cpp/scan_context.cpp``), so the number reflects what the deployed
+loop-closure pipeline actually sees.
 
 Usage:
     uv run python -m dimos.navigation.nav_stack.modules.pgo.benchmark_place_recognition \\
