@@ -35,7 +35,7 @@ struct Config
 {
     double key_pose_delta_deg = 10;
     double key_pose_delta_trans = 1.0;
-    double loop_search_radius = 1.0;  // kept for back-compat; unused by SC search
+    double loop_search_radius = 1.0;
     double loop_time_thresh = 60.0;
     double loop_score_thresh = 0.15;
     int loop_submap_half_range = 5;

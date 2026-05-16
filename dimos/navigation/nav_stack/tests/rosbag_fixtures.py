@@ -22,6 +22,7 @@ then capturing and comparing outputs with deviation scores.
 from __future__ import annotations
 
 from dataclasses import dataclass, field
+import itertools
 import os
 from pathlib import Path
 import subprocess
@@ -166,22 +167,22 @@ def lcm_handle_loop(lcm: lcmlib.LCM, stop_event: threading.Event, timeout_ms: in
         lcm.handle_timeout(timeout_ms)
 
 
+_isolated_lcm_url_counter = itertools.count()
+
+
 def make_isolated_lcm_url() -> str:
     """Return an LCM URL that should not collide with concurrent runs.
 
     Uses the standard multicast group with TTL=0 (so traffic never escapes
-    the local host) and a port picked from the high ephemeral range plus the
-    OS-supplied PID. This is the same approach the LCM project recommends for
-    test isolation: keep the group address standard (so existing tools can
-    still see the traffic if needed) and vary the port. Concurrent CI workers
-    on the same host pick disjoint ports because their PIDs differ; the same
-    test re-run in the same process is also fine because each call generates
-    a fresh URL.
+    the local host) and a port picked from the high ephemeral range. The
+    monotonic counter guarantees back-to-back calls in the same process get
+    distinct ports; mixing in the PID disjoint-ifies concurrent CI workers.
     """
     # ports 49152..65535 are the IANA "dynamic/private" range
-    port = 49152 + (os.getpid() % 16000) + (int(time.time() * 1000) % 384)
-    if port > 65535:
-        port = 49152 + (port % 16000)
+    span = 16000
+    pid_offset = os.getpid() % span
+    call_offset = next(_isolated_lcm_url_counter)
+    port = 49152 + ((pid_offset + call_offset) % span)
     return f"udpm://239.255.76.67:{port}?ttl=0"
 
 

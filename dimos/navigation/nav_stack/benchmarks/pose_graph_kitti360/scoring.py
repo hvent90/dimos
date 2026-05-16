@@ -41,8 +41,12 @@ from dimos.core.module import Module, ModuleConfig
 from dimos.core.stream import In
 from dimos.msgs.nav_msgs.Path import Path as NavPath
 
-LOOP_CLOSURE_TRAVERSABILITY = 0.4
-TRAVERSABILITY_TOLERANCE = 0.05
+# Default tag value used by the PGO publisher to mark loop-closure edges in
+# the orientation.w field of pose_graph_edges PoseStamped pairs (odometry
+# edges use 1.0). Both knobs are exposed on PoseGraphScoringConfig so any
+# other pose-graph producer can dial in its own marker.
+DEFAULT_LOOP_CLOSURE_TRAVERSABILITY = 0.4
+DEFAULT_TRAVERSABILITY_TOLERANCE = 0.05
 
 
 @dataclass
@@ -75,6 +79,12 @@ class PoseGraphScoringConfig(ModuleConfig):
     # JSON-friendly form of LoopGroundtruth.valid_loops_per_query:
     # frame_id → list of frame_ids that form valid loop pairs.
     valid_loops_per_query: dict[int, list[int]] = field(default_factory=dict)
+    # Tag value the publisher writes into orientation.w to mark a
+    # pose_graph_edges PoseStamped pair as a loop closure (vs the
+    # odometry-edge default of 1.0). Both fields are config-driven so
+    # different pose-graph SLAM producers can plug in their own marker.
+    loop_closure_traversability: float = DEFAULT_LOOP_CLOSURE_TRAVERSABILITY
+    traversability_tolerance: float = DEFAULT_TRAVERSABILITY_TOLERANCE
 
 
 class PoseGraphScoringModule(Module):
@@ -114,7 +124,10 @@ class PoseGraphScoringModule(Module):
             start_pose = message.poses[pose_index]
             end_pose = message.poses[pose_index + 1]
             traversability = float(start_pose.orientation.w)
-            if abs(traversability - LOOP_CLOSURE_TRAVERSABILITY) < TRAVERSABILITY_TOLERANCE:
+            if (
+                abs(traversability - self.config.loop_closure_traversability)
+                < self.config.traversability_tolerance
+            ):
                 start_frame_id = self._timestamp_to_frame(start_pose.ts)
                 end_frame_id = self._timestamp_to_frame(end_pose.ts)
                 if start_frame_id is not None and end_frame_id is not None:

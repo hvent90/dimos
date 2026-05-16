@@ -12,12 +12,7 @@
 # See the License for the specific language governing permissions and
 # limitations under the License.
 
-"""KITTI-360 benchmark wrapper that runs the generic pose-graph benchmark against PGO.
-
-The actual evaluation lives at
-``dimos/navigation/nav_stack/benchmarks/pose_graph_kitti360/``. This thin
-wrapper just supplies the PGO blueprint as the module-under-test so the
-generic benchmark can plug in any other pose-graph SLAM impl the same way.
+"""evaluate PGO against KITTI-360
 
 Usage:
     uv run python -m dimos.navigation.nav_stack.modules.pgo.run_kitti360 \\

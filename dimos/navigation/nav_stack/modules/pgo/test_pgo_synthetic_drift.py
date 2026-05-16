@@ -83,6 +83,15 @@ LOOP_SEARCH_RADIUS_M = 1.0
 LOOP_TIME_THRESH_S = 5.0
 MIN_LOOP_DETECT_DURATION_S = 1.0
 
+# How long to wait after the PGO subprocess starts before publishing the
+# first scan — gives LCM/GTSAM init time to settle.
+PROCESS_STARTUP_SEC = 1.5
+# Per-step pause between published frames.
+INTER_FRAME_SLEEP_SEC = 0.15
+# Drain time after the last frame so PGO can flush any pending loop
+# closure events before we tear the subprocess down.
+POST_FEED_DRAIN_SEC = 3.0
+
 
 def _make_room_points(half_size: float = 20.0, density: float = 0.15) -> np.ndarray:
     """Sample points on the inside of a 4-wall square room.
@@ -352,7 +361,7 @@ def _run_pgo(
     stderr_data = b""
     try:
         runner.start(capture_stderr=True, env={"LCM_DEFAULT_URL": lcm_url})
-        time.sleep(1.5)
+        time.sleep(PROCESS_STARTUP_SEC)
         assert runner.is_running, "PGO failed to start"
 
         for (
@@ -365,9 +374,9 @@ def _run_pgo(
             body_points = _world_to_body(room_points, true_position, true_yaw)
             _publish_odom(lcm_instance, (drifted_position, drifted_yaw), timestamp)
             _publish_scan(lcm_instance, body_points, (drifted_position, drifted_yaw), timestamp)
-            time.sleep(0.15)
+            time.sleep(INTER_FRAME_SLEEP_SEC)
 
-        time.sleep(3.0)
+        time.sleep(POST_FEED_DRAIN_SEC)
 
         # Read stderr while process is still alive
         if runner.process is not None and runner.process.stderr is not None:

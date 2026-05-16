@@ -16,8 +16,7 @@
 
 Drop this into any blueprint that expects ``registered_scan: In[PointCloud2]``
 and ``odometry: In[Odometry]`` (e.g. a pose-graph SLAM module). The blueprint
-auto-connects the streams by name. No LCM-specific code lives here — the
-transport is whatever the blueprint configures (defaults to LCM).
+auto-connects the streams by name.
 """
 
 from __future__ import annotations

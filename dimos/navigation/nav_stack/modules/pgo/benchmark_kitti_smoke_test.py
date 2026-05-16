@@ -12,254 +12,142 @@
 # See the License for the specific language governing permissions and
 # limitations under the License.
 
-"""
-Fast PGO liveness probe: feed a small KITTI-360 slice, listen to every
-PGO publish topic, capture stderr, report per-topic message counts.
+"""PGO liveness probe via the DimOS module framework.
+
+Spins up a blueprint with PGO, the KITTI-360 playback module, and a
+TopicCounter module that subscribes to every PGO output. Reports per-topic
+message counts and a one-line verdict so you can tell quickly whether PGO
+is alive at the graph, edges, and loop-closure layers — without any
+direct LCM calls in this file.
 """
 
 from __future__ import annotations
 
 import argparse
-from collections import Counter
-from collections.abc import Callable
-import os
 from pathlib import Path
-import subprocess
-import threading
 import time
+from typing import Any
 
-import lcm as lcmlib
-import numpy as np
+from reactivex.disposable import Disposable
 
-from dimos.navigation.nav_stack.benchmarks.pose_graph_kitti360.kitti360_loader import (
-    load_kitti360_sequence,
+from dimos.core.coordination.blueprints import autoconnect
+from dimos.core.coordination.module_coordinator import ModuleCoordinator
+from dimos.core.core import rpc
+from dimos.core.module import Module, ModuleConfig
+from dimos.core.stream import In
+from dimos.msgs.nav_msgs.Odometry import Odometry
+from dimos.msgs.nav_msgs.Path import Path as NavPath
+from dimos.msgs.sensor_msgs.PointCloud2 import PointCloud2
+from dimos.navigation.nav_stack.benchmarks.pose_graph_kitti360.playback import (
+    Kitti360PlaybackModule,
 )
-from dimos.navigation.nav_stack.tests.rosbag_fixtures import (
-    NativeProcessRunner,
-    lcm_handle_loop,
-    make_isolated_lcm_url,
-    make_odometry_msg,
-    make_pointcloud_msg,
-)
-
-PGO_BIN = Path(__file__).resolve().parent.parent / "cpp" / "result" / "bin" / "pgo"
-
-OUTPUT_TOPICS = [
-    ("corrected_odometry", "nav_msgs.Odometry"),
-    ("global_map", "sensor_msgs.PointCloud2"),
-    ("corrected_tf", "nav_msgs.Odometry"),
-    ("pose_graph_nodes", "nav_msgs.Path"),
-    ("pose_graph_edges", "nav_msgs.Path"),
-    ("loop_closure", "nav_msgs.Path"),
-]
+from dimos.navigation.nav_stack.modules.pgo.pgo import PGO
 
 
-def _matrix_to_quaternion(rotation: np.ndarray) -> np.ndarray:
-    trace = rotation.trace()
-    if trace > 0.0:
-        s = np.sqrt(trace + 1.0) * 2.0
-        w = 0.25 * s
-        x = (rotation[2, 1] - rotation[1, 2]) / s
-        y = (rotation[0, 2] - rotation[2, 0]) / s
-        z = (rotation[1, 0] - rotation[0, 1]) / s
-    elif rotation[0, 0] > rotation[1, 1] and rotation[0, 0] > rotation[2, 2]:
-        s = np.sqrt(1.0 + rotation[0, 0] - rotation[1, 1] - rotation[2, 2]) * 2.0
-        w = (rotation[2, 1] - rotation[1, 2]) / s
-        x = 0.25 * s
-        y = (rotation[0, 1] + rotation[1, 0]) / s
-        z = (rotation[0, 2] + rotation[2, 0]) / s
-    elif rotation[1, 1] > rotation[2, 2]:
-        s = np.sqrt(1.0 + rotation[1, 1] - rotation[0, 0] - rotation[2, 2]) * 2.0
-        w = (rotation[0, 2] - rotation[2, 0]) / s
-        x = (rotation[0, 1] + rotation[1, 0]) / s
-        y = 0.25 * s
-        z = (rotation[1, 2] + rotation[2, 1]) / s
-    else:
-        s = np.sqrt(1.0 + rotation[2, 2] - rotation[0, 0] - rotation[1, 1]) * 2.0
-        w = (rotation[1, 0] - rotation[0, 1]) / s
-        x = (rotation[0, 2] + rotation[2, 0]) / s
-        y = (rotation[1, 2] + rotation[2, 1]) / s
-        z = 0.25 * s
-    return np.array([x, y, z, w], dtype=np.float64)
+class TopicCounterConfig(ModuleConfig):
+    pass
 
 
-def _build_runner(prefix: str, loop_search_radius_m: float) -> NativeProcessRunner:
-    args = [
-        "--registered_scan",
-        f"/{prefix}_scan#sensor_msgs.PointCloud2",
-        "--odometry",
-        f"/{prefix}_odom#nav_msgs.Odometry",
-    ]
-    for name, type_name in OUTPUT_TOPICS:
-        args.extend([f"--{name}", f"/{prefix}_{name}#{type_name}"])
-    args.extend(
-        [
-            "--key_pose_delta_deg",
-            "10.0",
-            "--key_pose_delta_trans",
-            "1.0",
-            "--loop_search_radius",
-            str(loop_search_radius_m),
-            "--loop_time_thresh",
-            "10.0",
-            "--loop_score_thresh",
-            "0.5",
-            "--loop_submap_half_range",
-            "10",
-            "--submap_resolution",
-            "0.5",
-            "--min_loop_detect_duration",
-            "1.0",
-            "--global_map_voxel_size",
-            "0.5",
-            "--global_map_publish_rate",
-            "0.5",
-            "--unregister_input",
-            "true",
-            "--use_scan_context",
-            "true",
-            "--scan_context_max_range_m",
-            "60.0",
-            "--scan_context_match_threshold",
-            "0.4",
-            "--world_frame",
-            "map",
-            "--local_frame",
-            "odom",
-        ]
-    )
-    return NativeProcessRunner(binary_path=str(PGO_BIN), args=args)
+class TopicCounterModule(Module):
+    """Subscribes to every PGO output stream and counts arrivals per topic."""
+
+    config: TopicCounterConfig
+
+    corrected_odometry: In[Odometry]
+    global_map: In[PointCloud2]
+    corrected_tf: In[Odometry]
+    pose_graph_nodes: In[NavPath]
+    pose_graph_edges: In[NavPath]
+    loop_closure: In[NavPath]
+
+    def __init__(self, **kwargs: Any) -> None:
+        super().__init__(**kwargs)
+        self._counts: dict[str, int] = {
+            "corrected_odometry": 0,
+            "global_map": 0,
+            "corrected_tf": 0,
+            "pose_graph_nodes": 0,
+            "pose_graph_edges": 0,
+            "loop_closure": 0,
+        }
+
+    @rpc
+    def start(self) -> None:
+        super().start()
+        for stream_name in self._counts:
+            stream = getattr(self, stream_name)
+            self.register_disposable(Disposable(stream.subscribe(self._make_counter(stream_name))))
+
+    def _make_counter(self, name: str) -> Any:
+        def _on_message(_message: Any) -> None:
+            self._counts[name] += 1
+
+        return _on_message
+
+    @rpc
+    def counts(self) -> dict[str, int]:
+        return dict(self._counts)
 
 
 def main() -> None:
-    parser = argparse.ArgumentParser(description="PGO liveness smoke test")
+    parser = argparse.ArgumentParser(description="PGO liveness probe via DimOS modules")
     parser.add_argument("--kitti360-root", type=Path, required=True)
     parser.add_argument("--sequence", type=int, default=2)
     parser.add_argument("--num-scans", type=int, default=200)
     parser.add_argument(
-        "--loop-search-radius",
+        "--loop-search-radius-m",
         type=float,
         default=4.0,
-        help="m; default 4.0 matches groundtruth radius (vs runner's 1.0)",
+        help="m; default 4.0 matches groundtruth radius",
     )
     parser.add_argument("--publish-interval-sec", type=float, default=0.02)
     parser.add_argument("--drain-sec", type=float, default=5.0)
+    parser.add_argument("--poll-interval-sec", type=float, default=0.5)
     args = parser.parse_args()
 
-    if not PGO_BIN.exists():
-        raise SystemExit(f"PGO binary missing: {PGO_BIN}")
-
-    print(f"loading KITTI-360 sequence {args.sequence} from {args.kitti360_root}")
-    sequence = load_kitti360_sequence(args.kitti360_root, args.sequence)
-    frame_ids = sequence.frame_ids[: args.num_scans]
-    positions = np.array([sequence.lidar_pose(frame_id)[:3, 3] for frame_id in frame_ids])
-    travelled = float(np.linalg.norm(positions[-1] - positions[0]))
-    print(f"playing {len(frame_ids)} scans, ~{travelled:.1f}m of trajectory")
-
-    message_counts: Counter[str] = Counter()
-    topic_prefix = "pgo_smoke"
-
-    # Isolate the smoke test's LCM bus from other traffic on the host.
-    lcm_url = make_isolated_lcm_url()
-    lcm_instance = lcmlib.LCM(lcm_url)
-    subscriptions = []
-
-    def make_handler(topic_name: str) -> Callable[[str, bytes], None]:
-        def handler(_channel: str, _data: bytes) -> None:
-            message_counts.update([topic_name])
-
-        return handler
-
-    for output_name, output_type in OUTPUT_TOPICS:
-        topic = f"/{topic_prefix}_{output_name}#{output_type}"
-        subscriptions.append(lcm_instance.subscribe(topic, make_handler(output_name)))
-
-    stop_event = threading.Event()
-    handle_thread = threading.Thread(
-        target=lcm_handle_loop, args=(lcm_instance, stop_event), daemon=True
+    playback_blueprint = Kitti360PlaybackModule.blueprint(
+        kitti360_root=str(args.kitti360_root),
+        sequence_id=args.sequence,
+        max_scans=args.num_scans,
+        publish_interval_sec=args.publish_interval_sec,
     )
-    handle_thread.start()
-
-    runner = _build_runner(topic_prefix, args.loop_search_radius)
-    # Capture stderr ourselves so we get the binary's own diagnostics.
-    # Pass the isolated LCM URL through env so the subprocess joins the same bus.
-    runner.process = subprocess.Popen(
-        [runner.binary_path, *runner.args],
-        stdout=subprocess.DEVNULL,
-        stderr=subprocess.PIPE,
-        start_new_session=True,
-        env={**os.environ, "LCM_DEFAULT_URL": lcm_url},
+    pgo_blueprint = PGO.blueprint(
+        loop_search_radius=args.loop_search_radius_m,
     )
+    counter_blueprint = TopicCounterModule.blueprint()
 
+    blueprint = autoconnect(playback_blueprint, pgo_blueprint, counter_blueprint)
+    coordinator = ModuleCoordinator.build(blueprint)
     try:
-        time.sleep(2.0)
-        if not runner.is_running:
-            raise SystemExit("PGO subprocess died before playback started")
-
-        scan_topic = f"/{topic_prefix}_scan#sensor_msgs.PointCloud2"
-        odom_topic = f"/{topic_prefix}_odom#nav_msgs.Odometry"
-        first_timestamp = max(sequence.timestamps.get(frame_ids[0], 1.0), 1.0)
-
-        for index, frame_id in enumerate(frame_ids):
-            pose = sequence.lidar_pose(frame_id)
-            position = pose[:3, 3]
-            quaternion = _matrix_to_quaternion(pose[:3, :3])
-            timestamp = max(
-                sequence.timestamps.get(frame_id, float(index)),
-                first_timestamp + index * 0.001,
-            )
-
-            scan_xyz = sequence.scan_xyz(frame_id)
-            world_xyz = (pose[:3, :3] @ scan_xyz[:, :3].T).T + position
-            cloud = np.column_stack([world_xyz, scan_xyz[:, 3:4]]).astype(np.float32)
-
-            lcm_instance.publish(
-                odom_topic,
-                make_odometry_msg(position, quaternion, ts=timestamp).lcm_encode(),
-            )
-            lcm_instance.publish(scan_topic, make_pointcloud_msg(cloud, ts=timestamp).lcm_encode())
-
-            if args.publish_interval_sec > 0:
-                time.sleep(args.publish_interval_sec)
-
+        playback = coordinator.get_instance(Kitti360PlaybackModule)
+        counter = coordinator.get_instance(TopicCounterModule)
+        while not playback.is_finished():
+            time.sleep(args.poll_interval_sec)
         time.sleep(args.drain_sec)
+        counts = counter.counts()
     finally:
-        stderr_bytes = b""
-        if runner.process is not None:
-            runner.process.terminate()
-            try:
-                _, stderr_bytes = runner.process.communicate(timeout=3.0)
-            except subprocess.TimeoutExpired:
-                runner.process.kill()
-                _, stderr_bytes = runner.process.communicate()
-            runner.process = None
-        stop_event.set()
-        handle_thread.join(timeout=2.0)
-        for subscription in subscriptions:
-            lcm_instance.unsubscribe(subscription)
+        coordinator.stop()
 
     print("\n=== PGO topic message counts ===")
-    for name, _ in OUTPUT_TOPICS:
-        print(f"  {name:<24} {message_counts.get(name, 0):>6}")
-
-    stderr_text = stderr_bytes.decode("utf-8", errors="replace").strip()
-    if stderr_text:
-        lines = stderr_text.splitlines()
-        print(f"\n=== PGO stderr ({len(lines)} lines, last 30) ===")
-        for line in lines[-30:]:
-            print(f"  {line}")
-    else:
-        print("\n=== PGO stderr: (empty) ===")
+    for name in (
+        "corrected_odometry",
+        "global_map",
+        "corrected_tf",
+        "pose_graph_nodes",
+        "pose_graph_edges",
+        "loop_closure",
+    ):
+        print(f"  {name:<24} {counts.get(name, 0):>6}")
 
     print("\nverdict:")
-    if message_counts.get("pose_graph_nodes", 0) == 0:
+    if counts.get("pose_graph_nodes", 0) == 0:
         print("  ⚠ no graph nodes — PGO never promoted a keyframe. Check --key_pose_delta_*.")
-    elif message_counts.get("pose_graph_edges", 0) == 0:
+    elif counts.get("pose_graph_edges", 0) == 0:
         print("  ⚠ nodes but no edges — graph isn't being assembled.")
-    elif message_counts.get("loop_closure", 0) == 0:
+    elif counts.get("loop_closure", 0) == 0:
         print(
             "  ⚠ graph builds, no loop closure events — try wider --loop-search-radius "
-            "or lower --sc-match-threshold."
+            "or lower --scan-context-match-threshold."
         )
     else:
         print("  ✓ all topics firing — PGO is alive end-to-end.")
