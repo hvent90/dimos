@@ -29,6 +29,7 @@ from __future__ import annotations
 
 import argparse
 from collections import Counter
+from collections.abc import Callable
 from pathlib import Path
 import subprocess
 import threading
@@ -166,9 +167,16 @@ def main() -> None:
 
     lcm_instance = lcmlib.LCM()
     subs = []
+
+    def make_handler(topic_name: str) -> Callable[[str, bytes], None]:
+        def handler(_ch: str, _data: bytes) -> None:
+            counts.update([topic_name])
+
+        return handler
+
     for name, type_name in OUTPUT_TOPICS:
         topic = f"/{prefix}_{name}#{type_name}"
-        subs.append(lcm_instance.subscribe(topic, lambda _ch, _data, n=name: counts.update([n])))
+        subs.append(lcm_instance.subscribe(topic, make_handler(name)))
 
     stop_event = threading.Event()
     handle_thread = threading.Thread(
