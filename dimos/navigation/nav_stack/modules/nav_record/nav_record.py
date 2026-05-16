@@ -80,7 +80,6 @@ class NavRecord(Recorder):
     terrain_map_ext: In[PointCloud2]
 
     # PGO outputs
-    registered_scan: In[PointCloud2]
     corrected_odometry: In[Odometry]
     global_map: In[PointCloud2]
     pgo_tf: In[Odometry]
@@ -93,3 +92,7 @@ class NavRecord(Recorder):
     odometry: In[Odometry]
     registered_scan: In[PointCloud2]
     global_map_fastlio: In[PointCloud2]
+
+    # External inputs to the nav stack (recorded for context)
+    clicked_point: In[PointStamped]  # from rerun click-to-drive
+    tele_cmd_vel: In[Twist]  # from keyboard / quest / phone teleop
