@@ -84,10 +84,17 @@ def load_robot_meshes(
     ``assets`` is an optional ``{filename: bytes}`` map for mesh files
     referenced by bare name in the MJCF (e.g. menagerie meshes).
     Pass ``dimos.simulation.mujoco.model.get_assets()`` for G1.
+    When omitted, meshes are resolved from disk relative to ``mjcf_path``
+    (the MJCF's own ``meshdir`` attribute, if present, applies normally).
     """
-    with open(mjcf_path) as f:
-        xml = f.read()
-    model = mujoco.MjModel.from_xml_string(xml, assets or {})
+    if assets is None:
+        # Disk-based: mujoco resolves <mesh file="..."/> relative to the
+        # MJCF's meshdir. Works for any robot that ships meshes on disk.
+        model = mujoco.MjModel.from_xml_path(str(mjcf_path))
+    else:
+        with open(mjcf_path) as f:
+            xml = f.read()
+        model = mujoco.MjModel.from_xml_string(xml, assets)
     data = mujoco.MjData(model)
 
     geoms: list[GeomInstance] = []

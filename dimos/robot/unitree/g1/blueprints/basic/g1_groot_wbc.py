@@ -389,6 +389,7 @@ def _sim_support_blueprints(
 
     babylon_stack: tuple[Blueprint, ...] = ()
     if _env_bool("DIMOS_ENABLE_BABYLON", False):
+        from dimos.simulation.mujoco.model import get_assets
         from dimos.visualization.babylon_scene_viewer import BabylonSceneViewerModule
 
         scene_visual_override = os.environ.get("DIMOS_SCENE_VISUAL_PATH") or None
@@ -396,6 +397,7 @@ def _sim_support_blueprints(
         babylon_stack = (
             BabylonSceneViewerModule.blueprint(
                 mjcf_path=mujoco_mjcf_path,
+                assets=get_assets(),
                 port=_env_int("DIMOS_BABYLON_PORT", _DEFAULT_BABYLON_PORT),
                 scene_path=scene_visual_path,
                 scene_scale=_env_float("DIMOS_SCENE_VISUAL_SCALE", scene_mesh_scale),

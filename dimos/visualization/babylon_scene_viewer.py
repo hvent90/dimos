@@ -15,6 +15,7 @@
 from __future__ import annotations
 
 import asyncio
+from contextlib import asynccontextmanager
 import mimetypes
 from pathlib import Path
 import threading
@@ -39,6 +40,7 @@ from dimos.msgs.geometry_msgs.PoseStamped import PoseStamped
 from dimos.msgs.geometry_msgs.Twist import Twist
 from dimos.msgs.geometry_msgs.Vector3 import Vector3
 from dimos.msgs.nav_msgs.Path import Path as PathMsg
+from dimos.msgs.sensor_msgs.Image import Image, ImageFormat
 from dimos.msgs.sensor_msgs.JointState import JointState
 from dimos.msgs.sensor_msgs.PointCloud2 import PointCloud2, _get_colormap_lut
 from dimos.spec.utils import Spec
@@ -56,6 +58,10 @@ _DEFAULT_BROADCAST_HZ = 20.0
 _DEFAULT_PORT = 8091
 _DEFAULT_POINTCLOUD_HZ = 2.0
 _DEFAULT_POINTCLOUD_MAX_POINTS = 70000
+_DEFAULT_CAMERA_HZ = 15.0
+_DEFAULT_CAMERA_JPEG_QUALITY = 75
+# Binary websocket message tag for a camera frame.
+_WS_MSG_CAMERA = 0x01
 
 
 class MujocoRespawnSpec(Spec, Protocol):
@@ -106,6 +112,7 @@ class BabylonSceneViewerModule(Module):
     odom: In[PoseStamped]
     path: In[PathMsg]
     pointcloud_overlay: In[PointCloud2]
+    camera_image: In[Image]
     clicked_point: Out[PointStamped]
     point_goal: Out[PointStamped]
     cmd_vel: Out[Twist]
@@ -116,6 +123,7 @@ class BabylonSceneViewerModule(Module):
         mjcf_path: str | Path,
         *,
         port: int = _DEFAULT_PORT,
+        assets: dict[str, bytes] | None = None,
         scene_path: str | Path | None = None,
         scene_scale: float = 1.0,
         scene_translation: tuple[float, float, float] = (0.0, 0.0, 0.0),
@@ -124,10 +132,14 @@ class BabylonSceneViewerModule(Module):
         broadcast_hz: float = _DEFAULT_BROADCAST_HZ,
         pointcloud_hz: float = _DEFAULT_POINTCLOUD_HZ,
         pointcloud_max_points: int = _DEFAULT_POINTCLOUD_MAX_POINTS,
+        camera_hz: float = _DEFAULT_CAMERA_HZ,
+        camera_jpeg_quality: int = _DEFAULT_CAMERA_JPEG_QUALITY,
+        camera_name: str = "camera",
         **kwargs: Any,
     ) -> None:
         super().__init__(**kwargs)
         self._mjcf_path = Path(mjcf_path)
+        self._assets = assets
         self._port = port
         self._scene_path = Path(scene_path) if scene_path else None
         self._scene_scale = scene_scale
@@ -137,6 +149,9 @@ class BabylonSceneViewerModule(Module):
         self._broadcast_dt = 1.0 / float(broadcast_hz)
         self._pointcloud_min_dt = 1.0 / float(pointcloud_hz)
         self._pointcloud_max_points = pointcloud_max_points
+        self._camera_min_dt = 1.0 / float(camera_hz)
+        self._camera_jpeg_quality = int(camera_jpeg_quality)
+        self._camera_name = camera_name
 
         self._state_lock = threading.Lock()
         self._latest_joints: dict[str, float] = {}
@@ -146,6 +161,13 @@ class BabylonSceneViewerModule(Module):
         self._pointcloud_lock = threading.Lock()
         self._latest_pointcloud_payload: dict[str, Any] | None = None
         self._last_pointcloud_sent = 0.0
+
+        # Camera state. _turbo_jpeg is lazy-initialised so the viewer still
+        # imports cleanly on machines without PyTurboJPEG (it's an optional
+        # dep). Only the encode path requires it.
+        self._camera_lock = threading.Lock()
+        self._last_camera_sent = 0.0
+        self._turbo_jpeg: Any = None
 
         self._robot: RobotMeshes | None = None
         self._uvicorn_server: uvicorn.Server | None = None
@@ -159,9 +181,7 @@ class BabylonSceneViewerModule(Module):
     def start(self) -> None:
         super().start()
 
-        from dimos.simulation.mujoco.model import get_assets
-
-        self._robot = load_robot_meshes(self._mjcf_path, assets=get_assets())
+        self._robot = load_robot_meshes(self._mjcf_path, assets=self._assets)
         app = self._create_app()
         config = uvicorn.Config(app, host="0.0.0.0", port=self._port, log_level="warning")
         self._uvicorn_server = uvicorn.Server(config)
@@ -177,6 +197,9 @@ class BabylonSceneViewerModule(Module):
         self.register_disposable(Disposable(self.path.subscribe(self._on_path)))
         self.register_disposable(
             Disposable(self.pointcloud_overlay.subscribe(self._on_pointcloud_overlay))
+        )
+        self.register_disposable(
+            Disposable(self.camera_image.subscribe(self._on_camera_image))
         )
 
         self._broadcast_thread = threading.Thread(
@@ -199,6 +222,11 @@ class BabylonSceneViewerModule(Module):
         super().stop()
 
     def _create_app(self) -> Starlette:
+        @asynccontextmanager
+        async def _lifespan(_app: Starlette) -> Any:
+            self._server_loop = asyncio.get_running_loop()
+            yield
+
         return Starlette(
             routes=[
                 Route("/", self._index),
@@ -207,11 +235,8 @@ class BabylonSceneViewerModule(Module):
                 Route("/assets/{asset_name:path}", self._asset),
                 WebSocketRoute("/ws", self._websocket),
             ],
-            on_startup=[self._capture_server_loop],
+            lifespan=_lifespan,
         )
-
-    async def _capture_server_loop(self) -> None:
-        self._server_loop = asyncio.get_running_loop()
 
     async def _index(self, request: Request) -> HTMLResponse:
         return HTMLResponse(_HTML)
@@ -428,6 +453,80 @@ class BabylonSceneViewerModule(Module):
             self._last_pointcloud_sent = now
         self._broadcast_from_thread(payload)
 
+    def _on_camera_image(self, msg: Image) -> None:
+        # Rate-limit to avoid saturating the websocket with multi-MB frames
+        # when the publisher pushes at 30+ Hz.
+        now = time.monotonic()
+        with self._camera_lock:
+            if now - self._last_camera_sent < self._camera_min_dt:
+                return
+            self._last_camera_sent = now
+
+        try:
+            jpeg = self._encode_jpeg(msg)
+        except Exception as exc:
+            logger.warning("BabylonViewer: camera JPEG encode failed: %s", exc)
+            return
+        if jpeg is None:
+            return
+
+        # Binary frame layout:
+        #   byte 0:      _WS_MSG_CAMERA (0x01)
+        #   bytes 1-2:   name length (big-endian uint16)
+        #   bytes 3..:   utf-8 camera name, then JPEG payload
+        name = self._camera_name.encode("utf-8")[:65535]
+        header = bytes([_WS_MSG_CAMERA]) + len(name).to_bytes(2, "big") + name
+        self._broadcast_bytes_from_thread(header + jpeg)
+
+    def _encode_jpeg(self, msg: Image) -> bytes | None:
+        if self._turbo_jpeg is None:
+            from turbojpeg import TurboJPEG
+
+            self._turbo_jpeg = TurboJPEG()
+
+        from turbojpeg import TJPF_BGR, TJPF_GRAY, TJPF_RGB
+
+        data = msg.data
+        if data is None:
+            return None
+        match msg.format:
+            case ImageFormat.RGB:
+                pixel_format = TJPF_RGB
+            case ImageFormat.BGR:
+                pixel_format = TJPF_BGR
+            case ImageFormat.GRAY:
+                pixel_format = TJPF_GRAY
+            case _:
+                # RGBA/BGRA: drop alpha to keep encode cheap.
+                if data.ndim == 3 and data.shape[2] == 4:
+                    data = data[:, :, :3]
+                    pixel_format = TJPF_BGR if msg.format == ImageFormat.BGRA else TJPF_RGB
+                else:
+                    return None
+
+        encoded: bytes = self._turbo_jpeg.encode(
+            np.ascontiguousarray(data),
+            quality=self._camera_jpeg_quality,
+            pixel_format=pixel_format,
+        )
+        return encoded
+
+    def _broadcast_bytes_from_thread(self, payload: bytes) -> None:
+        loop = self._server_loop
+        if loop is None or not self._clients:
+            return
+        asyncio.run_coroutine_threadsafe(self._broadcast_bytes(payload), loop)
+
+    async def _broadcast_bytes(self, payload: bytes) -> None:
+        dead: list[WebSocket] = []
+        for websocket in tuple(self._clients):
+            try:
+                await websocket.send_bytes(payload)
+            except Exception:
+                dead.append(websocket)
+        for websocket in dead:
+            self._clients.discard(websocket)
+
     def _make_pointcloud_payload(self, msg: PointCloud2) -> dict[str, Any] | None:
         points = msg.points_f32()
         if points.size == 0:
@@ -524,10 +623,70 @@ _HTML = r"""<!doctype html>
         min-width: 160px;
         padding: 0 10px;
       }
+
+      #cameraPanel {
+        position: fixed;
+        right: 16px;
+        bottom: 16px;
+        width: 360px;
+        max-width: calc(100vw - 32px);
+        border: 1px solid rgb(255 255 255 / 12%);
+        border-radius: 8px;
+        background: rgb(17 20 26 / 82%);
+        backdrop-filter: blur(10px);
+        overflow: hidden;
+        display: flex;
+        flex-direction: column;
+      }
+
+      #cameraPanel[data-active="false"] {
+        display: none;
+      }
+
+      #cameraHeader {
+        padding: 6px 10px;
+        font-size: 12px;
+        color: rgb(255 255 255 / 70%);
+        border-bottom: 1px solid rgb(255 255 255 / 8%);
+      }
+
+      #cameraImg {
+        width: 100%;
+        display: block;
+        aspect-ratio: 16 / 9;
+        object-fit: cover;
+        background: #000;
+      }
+
+      #cameraPanel[data-has-frame="false"] #cameraImg {
+        display: none;
+      }
+
+      #cameraEmpty {
+        padding: 30px;
+        text-align: center;
+        color: rgb(255 255 255 / 50%);
+        font-size: 12px;
+        aspect-ratio: 16 / 9;
+        display: flex;
+        align-items: center;
+        justify-content: center;
+      }
+
+      #cameraPanel[data-has-frame="true"] #cameraEmpty {
+        display: none;
+      }
     </style>
   </head>
   <body>
     <canvas id="renderCanvas"></canvas>
+    <div id="cameraPanel" data-active="true" data-has-frame="false">
+      <div id="cameraHeader">
+        <span id="cameraLabel">camera</span>
+      </div>
+      <img id="cameraImg" alt="" />
+      <div id="cameraEmpty">waiting for frames…</div>
+    </div>
     <div id="hud">
       <button id="toggleScene" data-active="true">Scene</button>
       <button id="loadScene">Load</button>
@@ -535,6 +694,7 @@ _HTML = r"""<!doctype html>
       <button id="toggleDrive" data-active="false">Drive</button>
       <button id="respawnRobot">Respawn</button>
       <button id="toggleLidar" data-active="true">Lidar</button>
+      <button id="toggleCamera" data-active="true">Camera</button>
       <button id="navClick" data-active="false">Nav</button>
       <button id="pointClick" data-active="false">Point</button>
       <button id="toggleDepth" data-active="true">Depth</button>
@@ -1025,6 +1185,7 @@ _HTML = r"""<!doctype html>
       function connectWebSocket(socketRef) {
         const protocol = window.location.protocol === "https:" ? "wss:" : "ws:";
         const socket = new WebSocket(`${protocol}//${window.location.host}/ws`);
+        socket.binaryType = "arraybuffer";
         socketRef.current = socket;
         socket.onopen = () => setStatus("live");
         socket.onclose = () => {
@@ -1033,11 +1194,43 @@ _HTML = r"""<!doctype html>
         };
         socket.onerror = () => setStatus("socket error");
         socket.onmessage = (event) => {
-          const payload = JSON.parse(event.data);
-          if (payload.type === "state") updateState(payload);
-          if (payload.type === "pointcloud") updatePointCloud(payload);
+          if (typeof event.data === "string") {
+            const payload = JSON.parse(event.data);
+            if (payload.type === "state") updateState(payload);
+            if (payload.type === "pointcloud") updatePointCloud(payload);
+          } else {
+            handleBinaryMessage(event.data);
+          }
         };
         return socket;
+      }
+
+      // Binary websocket frame layout:
+      //   byte 0:      message type (0x01 = camera)
+      //   bytes 1-2:   name length (big-endian uint16)
+      //   bytes 3..n:  utf-8 camera name
+      //   bytes n..:   payload (JPEG bytes for camera)
+      let _lastCameraURL = null;
+      function handleBinaryMessage(buffer) {
+        const view = new DataView(buffer);
+        const msgType = view.getUint8(0);
+        if (msgType !== 0x01) return; // unknown — ignore
+        const nameLen = view.getUint16(1, false);
+        const nameBytes = new Uint8Array(buffer, 3, nameLen);
+        const cameraName = new TextDecoder().decode(nameBytes);
+        const jpegBytes = new Uint8Array(buffer, 3 + nameLen);
+        const blob = new Blob([jpegBytes], { type: "image/jpeg" });
+        const url = URL.createObjectURL(blob);
+        const img = document.getElementById("cameraImg");
+        const label = document.getElementById("cameraLabel");
+        if (img) {
+          img.src = url;
+          if (_lastCameraURL) URL.revokeObjectURL(_lastCameraURL);
+          _lastCameraURL = url;
+        }
+        if (label) label.textContent = cameraName;
+        const panel = document.getElementById("cameraPanel");
+        if (panel) panel.dataset.hasFrame = "true";
       }
 
       function installClickPublisher(socketRef) {
@@ -1131,6 +1324,13 @@ _HTML = r"""<!doctype html>
         setStatus("respawn requested");
       };
       document.getElementById("toggleLidar").onclick = () => setLidarVisibility(!lidarVisible);
+      document.getElementById("toggleCamera").onclick = () => {
+        const btn = document.getElementById("toggleCamera");
+        const panel = document.getElementById("cameraPanel");
+        const active = btn.dataset.active !== "true";
+        btn.dataset.active = active ? "true" : "false";
+        if (panel) panel.dataset.active = active ? "true" : "false";
+      };
       document.getElementById("navClick").onclick = () => setClickMode("nav");
       document.getElementById("pointClick").onclick = () => setClickMode("point");
       document.getElementById("toggleDepth").onclick = () => setSceneDepthWrite(!sceneDepthEnabled);

@@ -13,7 +13,7 @@
 # limitations under the License.
 
 from abc import ABC, abstractmethod
-from threading import Thread
+from threading import Lock, Thread
 import time
 from typing import Any
 
@@ -32,6 +32,7 @@ from dimos.msgs.geometry_msgs.Vector3 import Vector3
 from dimos.msgs.sensor_msgs.CameraInfo import CameraInfo
 from dimos.msgs.sensor_msgs.Image import Image, ImageFormat
 from dimos.msgs.sensor_msgs.Imu import Imu
+from dimos.msgs.sensor_msgs.JointState import JointState
 from dimos.msgs.sensor_msgs.PointCloud2 import PointCloud2
 from dimos.spec.perception import IMU, Camera, Lidar, Pointcloud
 from dimos.utils.logging_config import setup_logger
@@ -46,7 +47,29 @@ _TOPIC_RGB_CAM_INFO = "/aima/hal/sensor/rgbd_head_front/rgb_camera_info"
 _TOPIC_LIDAR = "/aima/hal/sensor/lidar_chest_front/lidar_pointcloud"
 _TOPIC_IMU = "/aima/hal/imu/chest/state"
 _TOPIC_VELOCITY = "/aima/mc/locomotion/velocity"
+_TOPIC_JOINT_ARM = "/aima/hal/joint/arm/state"
+_TOPIC_JOINT_LEG = "/aima/hal/joint/leg/state"
+_TOPIC_JOINT_WAIST = "/aima/hal/joint/waist/state"
+_TOPIC_JOINT_HEAD = "/aima/hal/joint/head/state"
 _SVC_INPUT_SOURCE = "/aimdk_5Fmsgs/srv/SetMcInputSource"
+
+# Joint name ordering per the AgiBot X2 SDK docs (Interface > Control > Joint Control).
+# Names match the X2 URDF/MJCF (sans the "_joint" suffix, which the viewer adds).
+# JointStateArray.joints[] is positionally indexed in this exact order.
+_ARM_JOINT_NAMES: tuple[str, ...] = (
+    "left_shoulder_pitch", "left_shoulder_roll", "left_shoulder_yaw",
+    "left_elbow", "left_wrist_yaw", "left_wrist_pitch", "left_wrist_roll",
+    "right_shoulder_pitch", "right_shoulder_roll", "right_shoulder_yaw",
+    "right_elbow", "right_wrist_yaw", "right_wrist_pitch", "right_wrist_roll",
+)
+_LEG_JOINT_NAMES: tuple[str, ...] = (
+    "left_hip_pitch", "left_hip_roll", "left_hip_yaw",
+    "left_knee", "left_ankle_pitch", "left_ankle_roll",
+    "right_hip_pitch", "right_hip_roll", "right_hip_yaw",
+    "right_knee", "right_ankle_pitch", "right_ankle_roll",
+)
+_WAIST_JOINT_NAMES: tuple[str, ...] = ("waist_yaw", "waist_pitch", "waist_roll")
+_HEAD_JOINT_NAMES: tuple[str, ...] = ("head_yaw", "head_pitch")
 
 # Velocity limits from the SDK
 _MAX_FORWARD = 1.0
@@ -237,6 +260,8 @@ class X2Connection(X2ConnectionBase, Camera, Pointcloud, IMU, Lidar):
       pointcloud   — depth point cloud from head RGBD camera
       lidar        — chest LiDAR point cloud
       imu          — chest IMU
+      joint_state  — combined arm/leg/waist/head joint positions (names match URDF/MJCF
+                     without the "_joint" suffix)
 
     Inputs:
       cmd_vel — geometry_msgs/Twist: linear.x=forward, linear.y=lateral, angular.z=yaw
@@ -251,6 +276,7 @@ class X2Connection(X2ConnectionBase, Camera, Pointcloud, IMU, Lidar):
     pointcloud: Out[PointCloud2]
     lidar: Out[PointCloud2]
     imu: Out[Imu]
+    joint_state: Out[JointState]
 
     _ros_node: Any = None
     _ros_thread: Thread | None = None
@@ -261,6 +287,10 @@ class X2Connection(X2ConnectionBase, Camera, Pointcloud, IMU, Lidar):
     def __init__(self, **kwargs: Any) -> None:
         super().__init__(**kwargs)
         self._latest_video_frame = None
+        # Joint positions aggregated across the 4 per-bodypart topics.
+        # Locked because each subtopic callback writes its slice independently.
+        self._joint_lock = Lock()
+        self._joint_positions: dict[str, float] = {}
         self._input_source_registered = False
 
     @rpc
@@ -280,8 +310,16 @@ class X2Connection(X2ConnectionBase, Camera, Pointcloud, IMU, Lidar):
             import rclpy
 
             os.environ.setdefault("ROS_DOMAIN_ID", str(self.config.ros_domain_id))
-            if not rclpy.ok():
+            # rclpy.ok() can disagree with the context's actual init state when a
+            # worker process is reused (forkserver) or a prior crash left state
+            # behind. Swallow the well-known "must only be called once" — any
+            # other init error still bubbles.
+            try:
                 rclpy.init()
+            except RuntimeError as init_exc:
+                if "must only be called once" not in str(init_exc):
+                    raise
+                logger.info("X2Connection: rclpy context already initialized; reusing")
         except Exception as e:
             logger.error("X2Connection: failed to init rclpy: %s", e)
             raise
@@ -325,6 +363,31 @@ class X2Connection(X2ConnectionBase, Camera, Pointcloud, IMU, Lidar):
             self._import_msg("sensor_msgs.msg", "Imu"),
             _TOPIC_IMU,
             self._on_imu,
+            sensor_qos,
+        )
+
+        # Joint state subscriptions (one per body part, all aimdk_msgs/JointStateArray).
+        # Each callback updates its slice of self._joint_positions and emits the merged
+        # JointState on self.joint_state — viewer subscribers see one unified stream.
+        joint_state_msg = self._import_msg("aimdk_msgs.msg", "JointStateArray")
+        node.create_subscription(
+            joint_state_msg, _TOPIC_JOINT_ARM,
+            lambda m: self._on_joint_state_array(m, _ARM_JOINT_NAMES),
+            sensor_qos,
+        )
+        node.create_subscription(
+            joint_state_msg, _TOPIC_JOINT_LEG,
+            lambda m: self._on_joint_state_array(m, _LEG_JOINT_NAMES),
+            sensor_qos,
+        )
+        node.create_subscription(
+            joint_state_msg, _TOPIC_JOINT_WAIST,
+            lambda m: self._on_joint_state_array(m, _WAIST_JOINT_NAMES),
+            sensor_qos,
+        )
+        node.create_subscription(
+            joint_state_msg, _TOPIC_JOINT_HEAD,
+            lambda m: self._on_joint_state_array(m, _HEAD_JOINT_NAMES),
             sensor_qos,
         )
 
@@ -454,6 +517,34 @@ class X2Connection(X2ConnectionBase, Camera, Pointcloud, IMU, Lidar):
 
     def _on_camera_info(self, msg: Any) -> None:
         self.camera_info.publish(_ros_camera_info_to_dimos(msg))
+
+    def _on_joint_state_array(self, msg: Any, joint_names: tuple[str, ...]) -> None:
+        """Merge one body-part slice into the unified joint_positions and publish.
+
+        AgiBot publishes per-bodypart JointStateArray messages with positionally
+        indexed joints; we map them to names via the SDK's documented ordering
+        and emit the merged set on every update.
+        """
+        joints = list(msg.joints)
+        if len(joints) != len(joint_names):
+            logger.warning(
+                "X2Connection: joint topic %s len=%d != expected %d (skipping)",
+                joint_names[0] if joint_names else "?",
+                len(joints),
+                len(joint_names),
+            )
+            return
+
+        ts = msg.header.stamp.sec + msg.header.stamp.nanosec * 1e-9
+        with self._joint_lock:
+            for name, joint in zip(joint_names, joints, strict=True):
+                self._joint_positions[name] = float(joint.position)
+            names = list(self._joint_positions.keys())
+            positions = list(self._joint_positions.values())
+
+        self.joint_state.publish(
+            JointState(ts=ts, frame_id="pelvis", name=names, position=positions)
+        )
 
     # --- Motion control ---
 

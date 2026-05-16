@@ -97,3 +97,6 @@ recording_*.db-wal
 perception2_*.db
 perception2_*.db-shm
 perception2_*.db-wal
+
+# Large STL meshes for AgiBot X2 — committing via LFS or asset-package is a separate decision
+dimos/robot/agibot/x2_ultra/meshes/
