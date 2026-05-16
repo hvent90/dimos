@@ -574,6 +574,15 @@ int main(int argc, char** argv) {
     // raise this to find loop closures further back in the graph.
     params["RGBD/ProximityMaxGraphDepth"] =
         mod.arg("rgbd_proximity_max_graph_depth", "50");
+    // Short-term memory size. rtabmap default 10 hides only the last 10
+    // keyframes from proximity search; on a slow-moving robot the next
+    // 50-100 keyframes are still spatially inside the search radius,
+    // forming one giant "current trajectory" candidate path that always
+    // wins ICP. Increasing this widens the "ignore-recent" buffer so
+    // proximity has to find genuinely-older spatial revisits. 50 means
+    // at scan rate 10 Hz with 1 keyframe per scan, the last ~5 seconds
+    // of trajectory are excluded from candidate selection.
+    params["Mem/STMSize"] = mod.arg("mem_stm_size", "30");
     // ICP correspondence distance — rtabmap's default 0.05m is very tight
     // for outdoor LiDAR (~10cm voxelization is common). 0.5m is forgiving.
     params["Icp/MaxCorrespondenceDistance"] =
