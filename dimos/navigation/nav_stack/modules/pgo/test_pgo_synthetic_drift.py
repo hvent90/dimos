@@ -77,10 +77,7 @@ INTER_FRAME_SLEEP_SEC = 0.15
 POST_FEED_DRAIN_SEC = 3.0
 # Poll period when waiting for the playback module to drain.
 POLL_INTERVAL_SEC = 0.25
-# Wait this long inside the playback main() before publishing the first
-# frame. PGO's native C++ binary needs a moment to subscribe to its
-# LCM topics after start(); without this delay, the playback can race
-# ahead and publish all frames into the void before PGO is listening.
+# Timing can be sensitive for testing
 PLAYBACK_STARTUP_DELAY_SEC = 2.0
 
 
