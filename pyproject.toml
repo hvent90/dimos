@@ -574,6 +574,8 @@ module = [
     "unitree_webrtc_connect.*",
     "websocket",
     "xarm.*",
+    "zenoh",
+    "zenoh.*",
     "ament_index_python.*",
 ]
 ignore_missing_imports = true
