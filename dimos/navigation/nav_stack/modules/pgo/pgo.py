@@ -20,22 +20,15 @@ Uses GTSAM iSAM2 for pose graph optimization and PCL ICP for loop closure.
 from __future__ import annotations
 
 from pathlib import Path
-import time
-
-from reactivex.disposable import Disposable
 
 from dimos.core.core import rpc
 from dimos.core.native_module import NativeModule, NativeModuleConfig
 from dimos.core.stream import In, Out
-from dimos.msgs.geometry_msgs.Quaternion import Quaternion
-from dimos.msgs.geometry_msgs.Transform import Transform
-from dimos.msgs.geometry_msgs.Vector3 import Vector3
 from dimos.msgs.nav_msgs.GraphNodes3D import GraphNodes3D
 from dimos.msgs.nav_msgs.LineSegments3D import LineSegments3D
 from dimos.msgs.nav_msgs.Odometry import Odometry
 from dimos.msgs.nav_msgs.Path import Path as NavPath
 from dimos.msgs.sensor_msgs.PointCloud2 import PointCloud2
-from dimos.navigation.nav_stack.frames import FRAME_MAP, FRAME_ODOM
 from dimos.utils.logging_config import setup_logger
 
 logger = setup_logger()
@@ -46,9 +39,17 @@ class PGOConfig(NativeModuleConfig):
     executable: str = "result/bin/pgo"
     build_command: str | None = "nix build .#default --no-write-lock-file"
 
-    # Frame names
-    world_frame: str = FRAME_MAP
-    local_frame: str = FRAME_ODOM
+    frame_id: str = "map"
+    child_frame_id: str = "start_point"
+    parent_frame: str = "world"
+    body_frame: str = "current_point"
+    tf_channel: str = "/tf#tf2_msgs.TFMessage"
+
+    # The C++ binary's CLI args use the legacy frame names.
+    cli_name_override: dict[str, str] = {
+        "frame_id": "world_frame",
+        "child_frame_id": "local_frame",
+    }
 
     # Keyframe detection
     key_pose_delta_deg: float = 10.0
@@ -79,7 +80,6 @@ class PGO(NativeModule):
     odometry: In[Odometry]
     corrected_odometry: Out[Odometry]
     global_map: Out[PointCloud2]
-    pgo_tf: Out[Odometry]
     pgo_graph_nodes: Out[GraphNodes3D]
     pgo_graph_edges: Out[LineSegments3D]
     pgo_loop_closure: Out[NavPath]
@@ -87,49 +87,8 @@ class PGO(NativeModule):
     @rpc
     def start(self) -> None:
         super().start()
-        self.register_disposable(
-            Disposable(self.pgo_tf.transport.subscribe(self._on_tf_correction, self.pgo_tf))
-        )
-        # Seed identity TF so consumers can query map->body immediately.
-        self._publish_tf(
-            translation=(0.0, 0.0, 0.0),
-            rotation=(0.0, 0.0, 0.0, 1.0),
-            ts=time.time(),
-        )
         logger.info("PGO native module started (C++ iSAM2 + PCL ICP)")
 
     @rpc
     def stop(self) -> None:
         super().stop()
-
-    def _on_tf_correction(self, msg: Odometry) -> None:
-        self._publish_tf(
-            translation=(
-                msg.pose.position.x,
-                msg.pose.position.y,
-                msg.pose.position.z,
-            ),
-            rotation=(
-                msg.pose.orientation.x,
-                msg.pose.orientation.y,
-                msg.pose.orientation.z,
-                msg.pose.orientation.w,
-            ),
-            ts=msg.ts or time.time(),
-        )
-
-    def _publish_tf(
-        self,
-        translation: tuple[float, float, float],
-        rotation: tuple[float, float, float, float],
-        ts: float,
-    ) -> None:
-        self.tf.publish(
-            Transform(
-                frame_id=self.config.world_frame,
-                child_frame_id=self.config.local_frame,
-                translation=Vector3(*translation),
-                rotation=Quaternion(*rotation),
-                ts=ts,
-            )
-        )

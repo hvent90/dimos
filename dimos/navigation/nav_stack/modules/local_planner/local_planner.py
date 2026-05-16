@@ -38,7 +38,8 @@ class LocalPlannerConfig(NativeModuleConfig):
     cwd: str | None = str(Path(__file__).resolve().parent)
     executable: str = "result/bin/local_planner"
     build_command: str | None = (
-        "nix build github:dimensionalOS/dimos-module-local-planner/v0.6.0 --no-write-lock-file"
+        "nix build github:dimensionalOS/dimos-module-local-planner/feat/configurable-body-frame"
+        " --no-write-lock-file"
     )
 
     # C++ binary uses camelCase CLI args.
@@ -94,6 +95,8 @@ class LocalPlannerConfig(NativeModuleConfig):
     }
 
     paths_dir: str = ""
+
+    body_frame: str = "current_point"
 
     vehicle_length: float = 0.5  # m
     vehicle_width: float = 0.5  # m

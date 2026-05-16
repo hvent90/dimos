@@ -67,7 +67,7 @@ SCAN_LCM = "/sdpgo_scan#sensor_msgs.PointCloud2"
 ODOM_LCM = "/sdpgo_odom#nav_msgs.Odometry"
 CORRECTED_ODOM_LCM = "/sdpgo_corrected#nav_msgs.Odometry"
 GLOBAL_MAP_LCM = "/sdpgo_global_map#sensor_msgs.PointCloud2"
-TF_LCM = "/sdpgo_tf#nav_msgs.Odometry"
+TF_LCM = "/sdpgo_tf#tf2_msgs.TFMessage"
 GRAPH_NODES_LCM = "/sdpgo_graph_nodes#nav_msgs.GraphNodes3D"
 GRAPH_EDGES_LCM = "/sdpgo_graph_edges#nav_msgs.LineSegments3D"
 LOOP_CLOSURE_LCM = "/sdpgo_loop_closure#nav_msgs.Path"
@@ -255,7 +255,7 @@ def _run_pgo(use_scan_context: bool) -> int:
             CORRECTED_ODOM_LCM,
             "--global_map",
             GLOBAL_MAP_LCM,
-            "--pgo_tf",
+            "--tf_channel",
             TF_LCM,
             "--pgo_graph_nodes",
             GRAPH_NODES_LCM,

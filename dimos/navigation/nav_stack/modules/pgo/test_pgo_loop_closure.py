@@ -60,7 +60,7 @@ SCAN_LCM = "/lcpgo_scan#sensor_msgs.PointCloud2"
 ODOM_LCM = "/lcpgo_odom#nav_msgs.Odometry"
 CORRECTED_ODOM_LCM = "/lcpgo_corrected#nav_msgs.Odometry"
 GLOBAL_MAP_LCM = "/lcpgo_global_map#sensor_msgs.PointCloud2"
-TF_LCM = "/lcpgo_tf#nav_msgs.Odometry"
+TF_LCM = "/lcpgo_tf#tf2_msgs.TFMessage"
 GRAPH_NODES_LCM = "/lcpgo_graph_nodes#nav_msgs.GraphNodes3D"
 GRAPH_EDGES_LCM = "/lcpgo_graph_edges#nav_msgs.LineSegments3D"
 LOOP_CLOSURE_LCM = "/lcpgo_loop_closure#nav_msgs.Path"
@@ -168,7 +168,7 @@ class TestPGOLoopClosure:
                 CORRECTED_ODOM_LCM,
                 "--global_map",
                 GLOBAL_MAP_LCM,
-                "--pgo_tf",
+                "--tf_channel",
                 TF_LCM,
                 "--pgo_graph_nodes",
                 GRAPH_NODES_LCM,

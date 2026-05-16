@@ -35,6 +35,9 @@ from dimos.msgs.std_msgs.Int8 import Int8
 
 class NavRecordConfig(RecorderConfig):
     db_path: str = "nav_recording.db"
+    # Unstamped messages (Twist, Int8, …) carry no frame_id; route them to
+    # the robot body frame, which is in the nav-stack tf tree.
+    default_frame_id: str = "current_point"
 
 
 class NavRecord(Recorder):
@@ -82,7 +85,6 @@ class NavRecord(Recorder):
     # PGO outputs
     corrected_odometry: In[Odometry]
     global_map: In[PointCloud2]
-    pgo_tf: In[Odometry]
     pgo_graph_nodes: In[GraphNodes3D]
     pgo_graph_edges: In[LineSegments3D]
     pgo_loop_closure: In[NavPath]

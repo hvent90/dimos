@@ -27,6 +27,7 @@ import pytest
 from dimos.constants import DEFAULT_THREAD_JOIN_TIMEOUT
 from dimos.msgs.nav_msgs.Odometry import Odometry
 from dimos.msgs.sensor_msgs.PointCloud2 import PointCloud2
+from dimos.msgs.tf2_msgs.TFMessage import TFMessage
 from dimos.navigation.nav_stack.tests.rosbag_fixtures import (
     LcmCollector,
     NativeProcessRunner,
@@ -50,7 +51,7 @@ SCAN_LCM = "/rbpgo_scan#sensor_msgs.PointCloud2"
 ODOM_LCM = "/rbpgo_odom#nav_msgs.Odometry"
 CORRECTED_ODOM_LCM = "/rbpgo_corr_odom#nav_msgs.Odometry"
 GLOBAL_MAP_LCM = "/rbpgo_global_map#sensor_msgs.PointCloud2"
-TF_LCM = "/rbpgo_tf#nav_msgs.Odometry"
+TF_LCM = "/rbpgo_tf#tf2_msgs.TFMessage"
 
 
 class TestPGORosbag:
@@ -76,7 +77,7 @@ class TestPGORosbag:
 
         corrected_odom_collector = LcmCollector(topic=CORRECTED_ODOM_LCM, msg_type=Odometry)
         global_map_collector = LcmCollector(topic=GLOBAL_MAP_LCM, msg_type=PointCloud2)
-        tf_collector = LcmCollector(topic=TF_LCM, msg_type=Odometry)
+        tf_collector = LcmCollector(topic=TF_LCM, msg_type=TFMessage)
 
         corrected_odom_collector.start(lcm_instance)
         global_map_collector.start(lcm_instance)
@@ -99,7 +100,7 @@ class TestPGORosbag:
                 CORRECTED_ODOM_LCM,
                 "--global_map",
                 GLOBAL_MAP_LCM,
-                "--pgo_tf",
+                "--tf_channel",
                 TF_LCM,
                 # Config params matching pgo_unity_sim.yaml
                 "--key_pose_delta_deg",
@@ -209,14 +210,15 @@ class TestPGORosbag:
         )
         last_map_points = global_map_point_counts[-1] if global_map_point_counts else 0
 
-        # TF should be near-identity for a short recording without loop closures
-        last_tf = tf_collector.messages[-1]
+        # Each TFMessage carries [anchor world->map, correction map->start_point].
+        # Check the correction transform — should be near-identity without loop closures.
+        last_correction = tf_collector.messages[-1].transforms[1]
         tf_translation_norm = float(
             np.linalg.norm(
                 [
-                    last_tf.pose.position.x,
-                    last_tf.pose.position.y,
-                    last_tf.pose.position.z,
+                    last_correction.translation.x,
+                    last_correction.translation.y,
+                    last_correction.translation.z,
                 ]
             )
         )

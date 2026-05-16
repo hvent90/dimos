@@ -48,6 +48,10 @@ def create_nav_stack(
     terrain_voxel_size: float = 0.2,
     replan_rate: float = 0.5,
     record: bool = False,
+    world_frame: str = "world",
+    map_frame: str = "map",
+    start_point_frame: str = "start_point",
+    current_point_frame: str = "current_point",
     terrain_analysis: dict[str, Any] | None = None,
     terrain_map_ext: dict[str, Any] | None = None,
     local_planner: dict[str, Any] | None = None,
@@ -61,15 +65,17 @@ def create_nav_stack(
     """Compose a nav stack Blueprint.
 
     Per-module config dicts (``terrain_analysis``, ``local_planner``, etc.)
-    override defaults. ``vehicle_height`` and ``max_speed`` propagate to
-    the relevant modules automatically.
+    override defaults. ``vehicle_height``, ``max_speed`` and the ``*_frame``
+    parameters propagate to the relevant modules automatically.
     """
     far_planner_config = {**(far_planner or {})}
     far_planner_config.setdefault("is_static_env", False)
+    far_planner_config.setdefault("frame_id", map_frame)
     if vehicle_height is not None:
         far_planner_config.setdefault("vehicle_height", vehicle_height)
 
     local_planner_config = {**(local_planner or {})}
+    local_planner_config.setdefault("body_frame", current_point_frame)
     path_follower_config = {**(path_follower or {})}
     simple_planner_config = {**(simple_planner or {})}
     if waypoint_threshold is not None:
@@ -77,7 +83,15 @@ def create_nav_stack(
         path_follower_config.setdefault("goal_tolerance", waypoint_threshold)
         simple_planner_config.setdefault("goal_reached_threshold", waypoint_threshold)
 
-    pgo_module: Blueprint = PGO.blueprint(**(pgo or {}))
+    pgo_module: Blueprint = PGO.blueprint(
+        **{
+            "parent_frame": world_frame,
+            "frame_id": map_frame,
+            "child_frame_id": start_point_frame,
+            "body_frame": current_point_frame,
+            **(pgo or {}),
+        }
+    )
 
     modules: list[Blueprint] = [
         TerrainAnalysis.blueprint(
@@ -144,7 +158,11 @@ def create_nav_stack(
         pgo_module,
     ]
     if planner == "simple":
-        merged_simple_planner_config: dict[str, Any] = {"replan_rate": replan_rate}
+        merged_simple_planner_config: dict[str, Any] = {
+            "replan_rate": replan_rate,
+            "frame_id": map_frame,
+            "body_frame": current_point_frame,
+        }
         if vehicle_height is not None:
             merged_simple_planner_config["ground_offset_below_robot"] = vehicle_height
         merged_simple_planner_config.update(simple_planner_config)
@@ -158,6 +176,7 @@ def create_nav_stack(
         modules.append(
             TerrainMapExt.blueprint(
                 **{
+                    "frame_id": map_frame,
                     "scan_voxel_size": 0.1,
                     "decay_time": 4.0,
                     "use_sorting": True,
@@ -175,7 +194,14 @@ def create_nav_stack(
         # Lazy: breaks on G1 onboard (linux-aarch64 TLS allocation failure)
         from dimos.navigation.nav_stack.modules.nav_record.nav_record import NavRecord
 
-        modules.append(NavRecord.blueprint(**(nav_record or {})))
+        modules.append(
+            NavRecord.blueprint(
+                **{
+                    "default_frame_id": current_point_frame,
+                    **(nav_record or {}),
+                }
+            )
+        )
         record_remappings.append((NavRecord, "global_map", "global_map_pgo"))
 
     remappings: list[tuple[type[ModuleBase], str, str | type[ModuleBase] | type[Spec]]] = [

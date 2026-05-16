@@ -25,6 +25,9 @@
 #include "geometry_msgs/PoseStamped.hpp"
 #include "geometry_msgs/Quaternion.hpp"
 #include "geometry_msgs/Point.hpp"
+#include "geometry_msgs/Transform.hpp"
+#include "geometry_msgs/TransformStamped.hpp"
+#include "tf2_msgs/TFMessage.hpp"
 
 static std::atomic<bool> g_running{true};
 static void signal_handler(int) { g_running.store(false); }
@@ -92,6 +95,40 @@ public:
         g_cloud_buffer.push(cp);
     }
 };
+
+static geometry_msgs::TransformStamped build_tf(const M3D& r, const V3D& t, double ts,
+                                                  const std::string& frame_id,
+                                                  const std::string& child_frame_id) {
+    geometry_msgs::TransformStamped ts_msg;
+    ts_msg.header = dimos::make_header(frame_id, ts);
+    ts_msg.child_frame_id = child_frame_id;
+    Eigen::Quaterniond q(r);
+    ts_msg.transform.translation.x = t.x();
+    ts_msg.transform.translation.y = t.y();
+    ts_msg.transform.translation.z = t.z();
+    ts_msg.transform.rotation.x = q.x();
+    ts_msg.transform.rotation.y = q.y();
+    ts_msg.transform.rotation.z = q.z();
+    ts_msg.transform.rotation.w = q.w();
+    return ts_msg;
+}
+
+static tf2_msgs::TFMessage build_tf_message(const M3D& correction_r,
+                                              const V3D& correction_t,
+                                              double ts,
+                                              const std::string& parent_frame,
+                                              const std::string& world_frame,
+                                              const std::string& local_frame) {
+    tf2_msgs::TFMessage msg;
+    // Identity anchor parent_frame -> world_frame.
+    msg.transforms.push_back(
+        build_tf(M3D::Identity(), V3D::Zero(), ts, parent_frame, world_frame));
+    // SLAM correction world_frame -> local_frame.
+    msg.transforms.push_back(
+        build_tf(correction_r, correction_t, ts, world_frame, local_frame));
+    msg.transforms_length = static_cast<int32_t>(msg.transforms.size());
+    return msg;
+}
 
 static nav_msgs::Odometry build_odometry(const M3D& r, const V3D& t, double ts,
                                           const std::string& frame_id,
@@ -248,7 +285,7 @@ int main(int argc, char** argv)
     std::string odom_topic = mod.topic("odometry");
     std::string corrected_odom_topic = mod.topic("corrected_odometry");
     std::string global_map_topic = mod.topic("global_map");
-    std::string tf_topic = mod.topic("pgo_tf");
+    std::string tf_channel = mod.arg("tf_channel", "/tf#tf2_msgs.TFMessage");
     std::string graph_nodes_topic = mod.topic("pgo_graph_nodes");
     std::string graph_edges_topic = mod.topic("pgo_graph_edges");
     std::string loop_closure_topic = mod.topic("pgo_loop_closure");
@@ -271,8 +308,10 @@ int main(int argc, char** argv)
     config.sc_match_threshold = mod.arg_float("sc_match_threshold", 0.4f);
 
     // Node-level config
+    std::string parent_frame = mod.arg("parent_frame", "world");
     std::string world_frame = mod.arg("world_frame", "map");
     std::string local_frame = mod.arg("local_frame", "odom");
+    std::string body_frame = mod.arg("body_frame", "base_link");
     float global_map_voxel_size = mod.arg_float("global_map_voxel_size", 0.1f);
     float global_map_publish_rate = mod.arg_float("global_map_publish_rate", 1.0f);
     double global_map_interval = global_map_publish_rate > 0
@@ -298,10 +337,22 @@ int main(int argc, char** argv)
     fprintf(stderr, "  odometry: %s\n", odom_topic.c_str());
     fprintf(stderr, "  corrected_odometry: %s\n", corrected_odom_topic.c_str());
     fprintf(stderr, "  global_map: %s\n", global_map_topic.c_str());
-    fprintf(stderr, "  pgo_tf: %s\n", tf_topic.c_str());
+    fprintf(stderr, "  tf channel: %s\n", tf_channel.c_str());
     fprintf(stderr, "  pgo_graph_nodes: %s\n", graph_nodes_topic.c_str());
     fprintf(stderr, "  pgo_graph_edges: %s\n", graph_edges_topic.c_str());
     fprintf(stderr, "  pgo_loop_closure: %s\n", loop_closure_topic.c_str());
+
+    // Seed identity TF so consumers can query the chain before the first
+    // odom message arrives.
+    {
+        double seed_ts =
+            std::chrono::duration<double>(
+                std::chrono::system_clock::now().time_since_epoch())
+                .count();
+        auto seed = build_tf_message(M3D::Identity(), V3D::Zero(), seed_ts,
+                                     parent_frame, world_frame, local_frame);
+        lcm.publish(tf_channel, &seed);
+    }
 
     double last_global_map_time = 0.0;
     int timer_period_ms = 50;  // 20 Hz, matching original
@@ -356,12 +407,12 @@ int main(int argc, char** argv)
             V3D corr_t = pgo.offsetR() * cp.pose.t + pgo.offsetT();
 
             nav_msgs::Odometry corrected = build_odometry(
-                corr_r, corr_t, cur_time, world_frame, "base_link");
+                corr_r, corr_t, cur_time, world_frame, body_frame);
             lcm.publish(corrected_odom_topic, &corrected);
 
-            nav_msgs::Odometry tf_msg = build_odometry(
-                pgo.offsetR(), pgo.offsetT(), cur_time, world_frame, local_frame);
-            lcm.publish(tf_topic, &tf_msg);
+            auto tf_msg = build_tf_message(
+                pgo.offsetR(), pgo.offsetT(), cur_time, parent_frame, world_frame, local_frame);
+            lcm.publish(tf_channel, &tf_msg);
 
             std::this_thread::sleep_for(std::chrono::milliseconds(timer_period_ms));
             continue;
@@ -403,10 +454,9 @@ int main(int argc, char** argv)
             corr_r, corr_t, cur_time, world_frame, "base_link");
         lcm.publish(corrected_odom_topic, &corrected);
 
-        // Publish TF correction (map -> odom offset)
-        nav_msgs::Odometry tf_msg = build_odometry(
-            pgo.offsetR(), pgo.offsetT(), cur_time, world_frame, local_frame);
-        lcm.publish(tf_topic, &tf_msg);
+        auto tf_msg = build_tf_message(
+            pgo.offsetR(), pgo.offsetT(), cur_time, parent_frame, world_frame, local_frame);
+        lcm.publish(tf_channel, &tf_msg);
 
         // Publish pose-graph nodes + edges (on every keyframe — iSAM2
         // may have re-optimized prior poses on loop closure).
