@@ -197,6 +197,7 @@ def nav_stack_rerun_config(
     agentic_debug: bool = False,
     show_registered_scan: bool = False,
     vis_throttle: float = 1.0,
+    default_max_hz: int = 60,
 ) -> dict[str, Any]:
     """Return a rerun config dict with nav stack visualization defaults.
 
@@ -206,10 +207,6 @@ def nav_stack_rerun_config(
     Use ``vis_throttle`` (make smaller) if there is crashing related to Rerun/Dimos-Viewer.
     """
     resolved = dict(user_config or {})
-    if vis_throttle != 1.0 and "max_hz" in resolved:
-        resolved["max_hz"] = {
-            entity: hz * vis_throttle for entity, hz in resolved["max_hz"].items()
-        }
     resolved.setdefault("blueprint", _default_rerun_blueprint)
     resolved.setdefault("pubsubs", [LCM()])
     resolved.setdefault("visual_override", {})
@@ -236,6 +233,8 @@ def nav_stack_rerun_config(
         visual_override.setdefault("world/contour_polygons", _contour_polygons_colors_debug)
         visual_override.setdefault("world/graph_nodes", _graph_nodes_colors_debug)
         visual_override.setdefault("world/graph_edges", _graph_edges_colors_debug)
+        visual_override.setdefault("world/pgo_graph_nodes", _pgo_graph_nodes_colors_debug)
+        visual_override.setdefault("world/pgo_graph_edges", _pgo_graph_edges_colors_debug)
     else:
         visual_override.setdefault("world/way_point", _waypoint_colors)
         visual_override.setdefault("world/goal", _goal_colors)
@@ -251,6 +250,13 @@ def nav_stack_rerun_config(
     static_entries = dict(resolved["static"])
     static_entries.setdefault("world/floor", _static_floor)
     resolved["static"] = static_entries
+    # scale/limit rendering (mostly preveting rerun from crashing)
+    resolved.setdefault("max_hz", {})
+    resolved["max_hz"] = {
+        each_entity: resolved["max_hz"].get(each_entity, default_max_hz) * vis_throttle
+        for each_entity in visual_override
+    }
+
     return resolved
 
 
