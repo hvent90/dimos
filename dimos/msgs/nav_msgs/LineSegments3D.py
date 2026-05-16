@@ -23,9 +23,22 @@ from __future__ import annotations
 import time
 from typing import TYPE_CHECKING, BinaryIO
 
+from dimos_lcm.geometry_msgs import (
+    Point as LCMPoint,
+    Pose as LCMPose,
+    PoseStamped as LCMPoseStamped,
+    Quaternion as LCMQuaternion,
+)
 from dimos_lcm.nav_msgs import Path as LCMPath
+from dimos_lcm.std_msgs import Header as LCMHeader, Time as LCMTime
 
 from dimos.types.timestamped import Timestamped
+
+
+def _sec_nsec(ts: float) -> list[int]:
+    s = int(ts)
+    return [s, int((ts - s) * 1_000_000_000)]
+
 
 if TYPE_CHECKING:
     from rerun._baseclasses import Archetype
@@ -57,7 +70,33 @@ class LineSegments3D(Timestamped):
         self._traversability = traversability or [1.0] * len(self._segments)
 
     def lcm_encode(self) -> bytes:
-        raise NotImplementedError("Encoded on C++ side")
+        lcm_msg = LCMPath()
+        lcm_msg.poses = []
+
+        header_sec_nsec = _sec_nsec(self.ts)
+        for idx, (p1, p2) in enumerate(self._segments):
+            trav = self._traversability[idx] if idx < len(self._traversability) else 1.0
+            for endpoint, w_field in ((p1, trav), (p2, 0.0)):
+                pose = LCMPoseStamped()
+                pose.header = LCMHeader()
+                pose.header.stamp = LCMTime()
+                [pose.header.stamp.sec, pose.header.stamp.nsec] = header_sec_nsec
+                pose.header.frame_id = self.frame_id
+                pose.pose = LCMPose()
+                pose.pose.position = LCMPoint()
+                pose.pose.position.x = endpoint[0]
+                pose.pose.position.y = endpoint[1]
+                pose.pose.position.z = endpoint[2]
+                pose.pose.orientation = LCMQuaternion()
+                pose.pose.orientation.w = float(w_field)
+                lcm_msg.poses.append(pose)
+
+        lcm_msg.poses_length = len(lcm_msg.poses)
+        lcm_msg.header = LCMHeader()
+        lcm_msg.header.stamp = LCMTime()
+        [lcm_msg.header.stamp.sec, lcm_msg.header.stamp.nsec] = header_sec_nsec
+        lcm_msg.header.frame_id = self.frame_id
+        return lcm_msg.lcm_encode()  # type: ignore[no-any-return]
 
     @classmethod
     def lcm_decode(cls, data: bytes | BinaryIO) -> LineSegments3D:
