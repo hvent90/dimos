@@ -333,6 +333,11 @@ int main(int argc, char** argv)
     pcl::console::setVerbosityLevel(
         debug ? pcl::console::L_INFO : pcl::console::L_ERROR);
 
+    bool debug = mod.arg_bool("debug", false);
+
+    pcl::console::setVerbosityLevel(
+        debug ? pcl::console::L_INFO : pcl::console::L_ERROR);
+
     SimplePGO pgo(config);
 
     lcm::LCM lcm;
