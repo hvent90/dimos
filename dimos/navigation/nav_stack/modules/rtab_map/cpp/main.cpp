@@ -367,12 +367,18 @@ void publish_pointcloud(
 // This mirrors PGO's `build_pose_graph_edges` wire contract:
 //   orientation.w == 1.0 → odometry edge
 //   orientation.w == 0.4 → loop closure (the value the scorer checks for)
+//   orientation.x       → per-detection confidence in [0, 1]. 0 means
+//                         "no score provided" (back-compat with PGO);
+//                         the scorer falls back to "all detections
+//                         equal weight" in that case. > 0 enables
+//                         precision-recall sweep + max-F1 computation.
 nav_msgs::Path build_loop_edge(
     const rtabmap::Transform& start_pose,
     double start_ts,
     const rtabmap::Transform& end_pose,
     double end_ts,
     double traversability,
+    double score,
     const std::string& frame_id) {
     nav_msgs::Path msg;
     msg.header = dimos::make_header(frame_id, end_ts);
@@ -382,7 +388,7 @@ nav_msgs::Path build_loop_edge(
         p.pose.position.x = tf.x();
         p.pose.position.y = tf.y();
         p.pose.position.z = tf.z();
-        p.pose.orientation.x = 0.0;
+        p.pose.orientation.x = score;
         p.pose.orientation.y = 0.0;
         p.pose.orientation.z = 0.0;
         p.pose.orientation.w = traversability;
@@ -928,10 +934,22 @@ int main(int argc, char** argv) {
                             mem->getSignature(target_id);
                         if (!loop_sig) continue;
                         const double loop_ts = loop_sig->getStamp();
+                        // Confidence score from ICP-derived translation
+                        // variance. Lower variance = tighter ICP fit =
+                        // higher confidence. Map to (0, 1] via
+                        // score = 1 / (1 + transVariance). Variances we
+                        // observe on KITTI-360 proximity matches sit
+                        // around 0.001-0.1, giving scores 0.91-0.999.
+                        // Distinct enough across detections to drive a
+                        // useful precision-recall sweep downstream.
+                        const double trans_var = link.transVariance();
+                        const double score =
+                            trans_var >= 0.0 ? 1.0 / (1.0 + trans_var) : 0.0;
                         auto edge = build_loop_edge(
                             loop_it->second, loop_ts,
                             curr_it->second, curr_ts,
                             /*traversability=*/0.4,
+                            /*score=*/score,
                             world_frame);
                         lcm.publish(pose_graph_edges_topic, &edge);
                         nav_msgs::Path lc;
@@ -941,9 +959,9 @@ int main(int argc, char** argv) {
                         ++published_this_frame;
                         if (debug) {
                             fprintf(stderr,
-                                    "[rtab DEBUG] LOOP CLOSURE published — curr_id=%d (ts=%.3f) ↔ target=%d (ts=%.3f) link_type=%d\n",
+                                    "[rtab DEBUG] LOOP CLOSURE published — curr_id=%d (ts=%.3f) ↔ target=%d (ts=%.3f) link_type=%d score=%.3f (transVar=%.4f)\n",
                                     curr_id, curr_ts, target_id, loop_ts,
-                                    static_cast<int>(type));
+                                    static_cast<int>(type), score, trans_var);
                         }
                     }
                     if (debug && published_this_frame > 1) {
