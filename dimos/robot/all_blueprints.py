@@ -64,6 +64,7 @@ all_blueprints = {
     "mid360": "dimos.hardware.sensors.lidar.livox.livox_blueprints:mid360",
     "mid360-fastlio": "dimos.hardware.sensors.lidar.fastlio2.fastlio_blueprints:mid360_fastlio",
     "mid360-fastlio-memory": "dimos.hardware.sensors.lidar.fastlio2.fastlio_blueprints:mid360_fastlio_memory",
+    "mid360-fastlio-ray-trace": "dimos.hardware.sensors.lidar.fastlio2.fastlio_blueprints:mid360_fastlio_ray_trace",
     "mid360-fastlio-ray-trace-replay": "dimos.hardware.sensors.lidar.fastlio2.fastlio_blueprints:mid360_fastlio_ray_trace_replay",
     "mid360-fastlio-replay": "dimos.hardware.sensors.lidar.fastlio2.fastlio_blueprints:mid360_fastlio_replay",
     "mid360-fastlio-replay-voxels": "dimos.hardware.sensors.lidar.fastlio2.fastlio_blueprints:mid360_fastlio_replay_voxels",
