@@ -57,10 +57,11 @@ std::pair<float, int> best_distance(const Descriptor& query,
                                     const Descriptor& candidate);
 
 // Convert sector shift to yaw rotation (radians).
+// shift comes from best_distance, which scans [0, n_sectors-1], so
+// the raw yaw lies in (-2pi, 0]; wrap into [-pi, pi].
 inline double yaw_from_shift(int shift, int n_sectors) {
     double yaw = -2.0 * M_PI * static_cast<double>(shift) /
                  static_cast<double>(n_sectors);
-    if (yaw > M_PI) yaw -= 2.0 * M_PI;
     if (yaw < -M_PI) yaw += 2.0 * M_PI;
     return yaw;
 }
