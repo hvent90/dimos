@@ -885,57 +885,67 @@ int main(int argc, char** argv) {
         bool processed = rtab.process(data, frame.odom_pose);
         sync_signature_grids(rtab, octomap_grid_cache, max_synced_id);
 
-        // Loop-closure detection. rtabmap exposes TWO loop-target ids:
-        //   * getLoopClosureId() — Bayes-filter (visual bag-of-words) hit
-        //   * statistics.proximityDetectionId() — spatial proximity (ICP)
-        // In lidar-only mode the visual path is disabled (Kp/DetectorStrategy
-        // = -1), so all real loop closures come through the proximity path.
-        // Treat either as "loop closure detected".
+        // Loop-closure detection. rtabmap can add multiple loop-closure
+        // links in a single process() call (one per spatially-close path),
+        // but its public APIs report only one target: getLoopClosureId()
+        // (Bayes-filter / visual hit) or Statistics::proximityDetectionId()
+        // (the *last* proximity-ICP success in the iteration).
         //
-        // Filter by signature-ID gap before publishing: rtabmap's proximity
-        // path adds ICP edges to keyframes ~10 ids behind current (just out
-        // of STM) as trajectory-smoothing — those aren't real revisits in
-        // the KITTI-360 GT sense (min frame gap 50). `loop_min_id_gap` lets
-        // the caller require a minimum gap; default 30 keeps the "loop
-        // closure" semantic distinct from the proximity-smoothing edges.
+        // To surface every distinct loop closure for downstream scoring,
+        // iterate the just-processed signature's links and emit one
+        // pose_graph_edges + loop_closure event per fresh kLocalSpaceClosure
+        // / kGlobalClosure link whose other end satisfies loop_min_id_gap.
+        // (Trajectory-neighbor links use kNeighbor and are filtered out.)
         if (processed) {
-            const int loop_id = rtab.getLoopClosureId();
-            const int prox_id = static_cast<int>(rtab.getStatistics().proximityDetectionId());
-            const int target_id = loop_id > 0 ? loop_id : prox_id;
-            const int curr_loc_id = rtab.getLastLocationId();
-            const bool gap_ok = (curr_loc_id - target_id) >= loop_min_id_gap;
-            if (target_id > 0 && gap_ok) {
-                const int loop_id_publish = target_id;
-                const rtabmap::Memory* mem = rtab.getMemory();
-                const int curr_id = rtab.getLastLocationId();
+            const rtabmap::Memory* mem = rtab.getMemory();
+            const int curr_id = rtab.getLastLocationId();
+            const rtabmap::Signature* curr_sig =
+                mem ? mem->getSignature(curr_id) : nullptr;
+            if (curr_sig) {
                 const auto& opt = rtab.getLocalOptimizedPoses();
                 const auto curr_it = opt.find(curr_id);
-                const auto loop_it = opt.find(loop_id_publish);
-                const rtabmap::Signature* curr_sig =
-                    mem ? mem->getSignature(curr_id) : nullptr;
-                const rtabmap::Signature* loop_sig =
-                    mem ? mem->getSignature(loop_id_publish) : nullptr;
-                if (curr_it != opt.end() && loop_it != opt.end()
-                    && curr_sig && loop_sig) {
+                if (curr_it != opt.end()) {
                     const double curr_ts = curr_sig->getStamp();
-                    const double loop_ts = loop_sig->getStamp();
-                    auto edge = build_loop_edge(
-                        loop_it->second, loop_ts,
-                        curr_it->second, curr_ts,
-                        /*traversability=*/0.4,
-                        world_frame);
-                    lcm.publish(pose_graph_edges_topic, &edge);
-                    // Empty-poses Path is a sufficient event signal for
-                    // the scoring module's `_on_loop_closure` counter.
-                    nav_msgs::Path lc;
-                    lc.header = dimos::make_header(world_frame, frame.timestamp);
-                    lc.poses_length = 0;
-                    lcm.publish(loop_closure_topic, &lc);
-                    if (debug) {
+                    int published_this_frame = 0;
+                    for (const auto& link_kv : curr_sig->getLinks()) {
+                        const rtabmap::Link& link = link_kv.second;
+                        const auto type = link.type();
+                        if (type != rtabmap::Link::kLocalSpaceClosure
+                            && type != rtabmap::Link::kGlobalClosure) {
+                            continue;
+                        }
+                        const int target_id =
+                            link.to() == curr_id ? link.from() : link.to();
+                        if (target_id <= 0 || target_id == curr_id) continue;
+                        if ((curr_id - target_id) < loop_min_id_gap) continue;
+                        const auto loop_it = opt.find(target_id);
+                        if (loop_it == opt.end()) continue;
+                        const rtabmap::Signature* loop_sig =
+                            mem->getSignature(target_id);
+                        if (!loop_sig) continue;
+                        const double loop_ts = loop_sig->getStamp();
+                        auto edge = build_loop_edge(
+                            loop_it->second, loop_ts,
+                            curr_it->second, curr_ts,
+                            /*traversability=*/0.4,
+                            world_frame);
+                        lcm.publish(pose_graph_edges_topic, &edge);
+                        nav_msgs::Path lc;
+                        lc.header = dimos::make_header(world_frame, frame.timestamp);
+                        lc.poses_length = 0;
+                        lcm.publish(loop_closure_topic, &lc);
+                        ++published_this_frame;
+                        if (debug) {
+                            fprintf(stderr,
+                                    "[rtab DEBUG] LOOP CLOSURE published — curr_id=%d (ts=%.3f) ↔ target=%d (ts=%.3f) link_type=%d\n",
+                                    curr_id, curr_ts, target_id, loop_ts,
+                                    static_cast<int>(type));
+                        }
+                    }
+                    if (debug && published_this_frame > 1) {
                         fprintf(stderr,
-                                "[rtab DEBUG] LOOP CLOSURE detected — curr_id=%d (ts=%.3f) ↔ loop_id=%d (ts=%.3f) score=%.3f\n",
-                                curr_id, curr_ts, loop_id_publish, loop_ts,
-                                rtab.getLoopClosureValue());
+                                "[rtab DEBUG] curr_id=%d published %d loop edges\n",
+                                curr_id, published_this_frame);
                     }
                 }
             }
