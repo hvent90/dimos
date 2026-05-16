@@ -120,7 +120,9 @@ def score_detected_loops(
     valid loop. (We don't count "valid pairs missed" because a single
     correct detection per query is enough to count.)
     """
-    true_positives = 0
+    # TP/FP/FN are all query-level: a query with N correct detections
+    # contributes 1 TP. Otherwise the recall denominator (TP + FN) mixes
+    # edge counts and query counts and the metric inflates.
     false_positives = 0
     seen_queries_with_hit: set[int] = set()
     queries_with_any_groundtruth = {
@@ -130,16 +132,14 @@ def score_detected_loops(
     }
 
     for source_frame_id, target_frame_id in detected_pairs:
-        # Order-agnostic: PGO may report (target, source) or (source, target).
         source_valid = groundtruth.valid_loops_per_query.get(source_frame_id, set())
         target_valid = groundtruth.valid_loops_per_query.get(target_frame_id, set())
         if target_frame_id in source_valid or source_frame_id in target_valid:
-            true_positives += 1
-            # For per-query recall, mark whichever side was the "later" query.
             seen_queries_with_hit.add(max(source_frame_id, target_frame_id))
         else:
             false_positives += 1
 
+    true_positives = len(seen_queries_with_hit)
     false_negatives = len(queries_with_any_groundtruth - seen_queries_with_hit)
     return LoopMetrics(
         true_positive=true_positives,

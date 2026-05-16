@@ -117,6 +117,9 @@ def main() -> None:
         counter = coordinator.get_instance(TopicCounterModule)
         while not playback.is_finished():
             time.sleep(args.poll_interval_sec)
+        playback_error = playback.playback_error()
+        if playback_error is not None:
+            raise RuntimeError(f"Kitti360 playback aborted: {playback_error}")
         time.sleep(args.drain_sec)
         counts = counter.counts()
     finally:

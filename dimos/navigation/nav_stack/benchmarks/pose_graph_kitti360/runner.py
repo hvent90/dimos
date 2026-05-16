@@ -123,6 +123,13 @@ def run_benchmark(
             )
             time.sleep(poll_interval_sec)
 
+        playback_error = playback.playback_error()
+        if playback_error is not None:
+            raise RuntimeError(
+                f"Kitti360PlaybackModule aborted at frame "
+                f"{playback.frames_published()}/{len(frame_ids)}: {playback_error}"
+            )
+
         # Drain remaining loop-closure / edge messages from PGO's backlog.
         logger.info(f"playback done, draining for {drain_sec:.1f}s")
         time.sleep(drain_sec)

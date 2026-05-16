@@ -24,6 +24,7 @@ from __future__ import annotations
 import asyncio
 from collections.abc import AsyncIterator
 from pathlib import Path
+from typing import Any
 
 import numpy as np
 from scipy.spatial.transform import Rotation
@@ -57,12 +58,13 @@ class Kitti360PlaybackModule(Module):
     registered_scan: Out[PointCloud2]
     odometry: Out[Odometry]
 
-    def __init__(self, **kwargs: object) -> None:
+    def __init__(self, **kwargs: Any) -> None:
         super().__init__(**kwargs)
         self._frame_ids: list[int] = []
         self._send_timestamps: list[float] = []
         self._frames_published: int = 0
         self._playback_finished: bool = False
+        self._playback_error: str | None = None
 
     async def main(self) -> AsyncIterator[None]:
         # Index-only loader work — no per-scan file IO yet. The scans get
@@ -82,29 +84,37 @@ class Kitti360PlaybackModule(Module):
         self._playback_task.cancel()
 
     async def _run_playback(self) -> None:
-        for index, frame_id in enumerate(self._frame_ids):
-            # ``scan_xyz`` is a blocking np.fromfile — push it to a thread so
-            # the event loop (and any concurrent RPC) keeps spinning.
-            scan_xyz = await asyncio.to_thread(self._sequence.scan_xyz, frame_id)
-            pose = self._sequence.lidar_pose(frame_id)
-            position = pose[:3, 3]
-            quaternion = Rotation.from_matrix(pose[:3, :3]).as_quat()
-            timestamp = self._send_timestamps[index]
+        # finally guarantees is_finished() flips to True even if a frame
+        # fails to load (e.g. partial KITTI-360 download missing a .bin).
+        # Without this, runner.py's `while not playback.is_finished()`
+        # poll loop would spin forever and the coordinator would never
+        # be torn down.
+        try:
+            for index, frame_id in enumerate(self._frame_ids):
+                scan_xyz = await asyncio.to_thread(self._sequence.scan_xyz, frame_id)
+                pose = self._sequence.lidar_pose(frame_id)
+                position = pose[:3, 3]
+                quaternion = Rotation.from_matrix(pose[:3, :3]).as_quat()
+                timestamp = self._send_timestamps[index]
 
-            odometry_message = make_odometry_msg(position, quaternion, ts=timestamp)
-            world_xyz = (pose[:3, :3] @ scan_xyz[:, :3].T).T + position
-            cloud_array = np.column_stack([world_xyz, scan_xyz[:, 3:4]]).astype(np.float32)
-            cloud_message = make_pointcloud_msg(cloud_array, ts=timestamp)
+                odometry_message = make_odometry_msg(position, quaternion, ts=timestamp)
+                world_xyz = (pose[:3, :3] @ scan_xyz[:, :3].T).T + position
+                cloud_array = np.column_stack([world_xyz, scan_xyz[:, 3:4]]).astype(np.float32)
+                cloud_message = make_pointcloud_msg(cloud_array, ts=timestamp)
 
-            # Odometry first so the receiver can stash the latest pose before
-            # the matching scan arrives.
-            self.odometry.publish(odometry_message)
-            self.registered_scan.publish(cloud_message)
+                # Odometry first so the receiver can stash the latest pose
+                # before the matching scan arrives.
+                self.odometry.publish(odometry_message)
+                self.registered_scan.publish(cloud_message)
 
-            self._frames_published = index + 1
-            if self.config.publish_interval_sec > 0:
-                await asyncio.sleep(self.config.publish_interval_sec)
-        self._playback_finished = True
+                self._frames_published = index + 1
+                if self.config.publish_interval_sec > 0:
+                    await asyncio.sleep(self.config.publish_interval_sec)
+        except Exception as exc:
+            self._playback_error = f"{type(exc).__name__}: {exc}"
+            raise
+        finally:
+            self._playback_finished = True
 
     @rpc
     def frames_published(self) -> int:
@@ -113,6 +123,10 @@ class Kitti360PlaybackModule(Module):
     @rpc
     def is_finished(self) -> bool:
         return self._playback_finished
+
+    @rpc
+    def playback_error(self) -> str | None:
+        return self._playback_error
 
     @rpc
     def send_timestamps(self) -> list[float]:
