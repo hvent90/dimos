@@ -81,12 +81,12 @@ class NavRecord(Recorder):
 
     # PGO outputs
     registered_scan: In[PointCloud2]
-    corrected_odometry: Out[Odometry]
-    global_map: Out[PointCloud2]
-    pgo_tf: Out[Odometry]
-    pgo_graph_nodes: Out[GraphNodes3D]
-    pgo_graph_edges: Out[LineSegments3D]
-    pgo_loop_closure: Out[NavPath]
+    corrected_odometry: In[Odometry]
+    global_map: In[PointCloud2]
+    pgo_tf: In[Odometry]
+    pgo_graph_nodes: In[GraphNodes3D]
+    pgo_graph_edges: In[LineSegments3D]
+    pgo_loop_closure: In[NavPath]
 
     # FastLio2 outputs (SLAM source; blueprints typically remap FastLio2's
     # "lidar" -> "registered_scan" and "global_map" -> "global_map_fastlio")
