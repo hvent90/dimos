@@ -46,7 +46,9 @@
 #include "dimos_native_module.hpp"
 #include "point_cloud_utils.hpp"
 
+#include "geometry_msgs/PoseStamped.hpp"
 #include "nav_msgs/Odometry.hpp"
+#include "nav_msgs/Path.hpp"
 #include "sensor_msgs/Image.hpp"
 #include "sensor_msgs/PointCloud2.hpp"
 
@@ -356,6 +358,41 @@ void publish_pointcloud(
     lcm.publish(topic, &msg);
 }
 
+// Build a single-edge pose_graph_edges message — two PoseStamped entries
+// (start, end) whose orientation.w encodes edge type. The KITTI scorer
+// matches edges back to source-frame ids via the PoseStamped timestamps,
+// so we copy each signature's scan timestamp into the header.
+//
+// This mirrors PGO's `build_pose_graph_edges` wire contract:
+//   orientation.w == 1.0 → odometry edge
+//   orientation.w == 0.4 → loop closure (the value the scorer checks for)
+nav_msgs::Path build_loop_edge(
+    const rtabmap::Transform& start_pose,
+    double start_ts,
+    const rtabmap::Transform& end_pose,
+    double end_ts,
+    double traversability,
+    const std::string& frame_id) {
+    nav_msgs::Path msg;
+    msg.header = dimos::make_header(frame_id, end_ts);
+    auto pack = [&](const rtabmap::Transform& tf, double ts) {
+        geometry_msgs::PoseStamped p;
+        p.header = dimos::make_header(frame_id, ts);
+        p.pose.position.x = tf.x();
+        p.pose.position.y = tf.y();
+        p.pose.position.z = tf.z();
+        p.pose.orientation.x = 0.0;
+        p.pose.orientation.y = 0.0;
+        p.pose.orientation.z = 0.0;
+        p.pose.orientation.w = traversability;
+        return p;
+    };
+    msg.poses.push_back(pack(start_pose, start_ts));
+    msg.poses.push_back(pack(end_pose, end_ts));
+    msg.poses_length = static_cast<int32_t>(msg.poses.size());
+    return msg;
+}
+
 // Extract local grids from any new signatures in rtabmap's optimized
 // poses set, push them into `cache` keyed by signature id so `OctoMap::
 // update(poses)` can look them up. rtabmap stores grids on each
@@ -418,6 +455,8 @@ int main(int argc, char** argv) {
     const std::string tf_topic = mod.topic("rtab_tf");
     const std::string octomap_topic = mod.topic("octomap");
     const std::string proj2d_topic = mod.topic("projected_2d_grid");
+    const std::string pose_graph_edges_topic = mod.topic("pose_graph_edges");
+    const std::string loop_closure_topic = mod.topic("loop_closure");
     // Optional RGB input. Only present if the Python wrapper connected
     // an Image source to color_image — when unconnected, NativeModule's
     // _collect_topics skips emitting --color_image, so `has("color_image")`
@@ -607,6 +646,8 @@ int main(int argc, char** argv) {
     fprintf(stderr, "  rtab_tf: %s\n", tf_topic.c_str());
     fprintf(stderr, "  octomap: %s\n", octomap_topic.c_str());
     fprintf(stderr, "  projected_2d_grid: %s\n", proj2d_topic.c_str());
+    fprintf(stderr, "  pose_graph_edges: %s\n", pose_graph_edges_topic.c_str());
+    fprintf(stderr, "  loop_closure: %s\n", loop_closure_topic.c_str());
     if (rgb_active) {
         fprintf(stderr,
                 "  color_image: %s (fx=%.2f fy=%.2f cx=%.2f cy=%.2f size=%dx%d max_dt=%.2fs)\n",
@@ -744,6 +785,51 @@ int main(int argc, char** argv) {
         // sync_signature_grids. No duplicate external createLocalMap call.
         bool processed = rtab.process(data, frame.odom_pose);
         sync_signature_grids(rtab, octomap_grid_cache, max_synced_id);
+
+        // Loop-closure detection. rtab.getLoopClosureId() returns the
+        // target signature id when this iteration triggered closure (0
+        // otherwise). Pair (current, target) → publish edge marked
+        // w=0.4 (the value the KITTI scorer matches on) plus a
+        // loop_closure event so external listeners can react. PoseStamped
+        // header timestamps mirror each signature's scan stamp so the
+        // scorer can map back to frame ids via its send-time cache.
+        if (processed) {
+            const int loop_id = rtab.getLoopClosureId();
+            if (loop_id > 0) {
+                const rtabmap::Memory* mem = rtab.getMemory();
+                const int curr_id = rtab.getLastLocationId();
+                const auto& opt = rtab.getLocalOptimizedPoses();
+                const auto curr_it = opt.find(curr_id);
+                const auto loop_it = opt.find(loop_id);
+                const rtabmap::Signature* curr_sig =
+                    mem ? mem->getSignature(curr_id) : nullptr;
+                const rtabmap::Signature* loop_sig =
+                    mem ? mem->getSignature(loop_id) : nullptr;
+                if (curr_it != opt.end() && loop_it != opt.end()
+                    && curr_sig && loop_sig) {
+                    const double curr_ts = curr_sig->getStamp();
+                    const double loop_ts = loop_sig->getStamp();
+                    auto edge = build_loop_edge(
+                        loop_it->second, loop_ts,
+                        curr_it->second, curr_ts,
+                        /*traversability=*/0.4,
+                        world_frame);
+                    lcm.publish(pose_graph_edges_topic, &edge);
+                    // Empty-poses Path is a sufficient event signal for
+                    // the scoring module's `_on_loop_closure` counter.
+                    nav_msgs::Path lc;
+                    lc.header = dimos::make_header(world_frame, frame.timestamp);
+                    lc.poses_length = 0;
+                    lcm.publish(loop_closure_topic, &lc);
+                    if (debug) {
+                        fprintf(stderr,
+                                "[rtab DEBUG] LOOP CLOSURE detected — curr_id=%d (ts=%.3f) ↔ loop_id=%d (ts=%.3f) score=%.3f\n",
+                                curr_id, curr_ts, loop_id, loop_ts,
+                                rtab.getLoopClosureValue());
+                    }
+                }
+            }
+        }
         // Canary for the stationary-robot keyframe-accumulation issue.
         // rtabmap doesn't dedup redundant keyframes in lidar-only mode,
         // so an idle robot with motion gate disabled accumulates ~2

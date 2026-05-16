@@ -29,6 +29,7 @@ from dimos.core.coordination.blueprints import Blueprint, BlueprintAtom
 from dimos.core.module import Module
 from dimos.core.stream import In, Out
 from dimos.msgs.nav_msgs.Odometry import Odometry
+from dimos.msgs.nav_msgs.Path import Path as NavPath
 from dimos.msgs.sensor_msgs.Image import Image
 from dimos.msgs.sensor_msgs.PointCloud2 import PointCloud2
 from dimos.navigation.nav_stack.main import create_nav_stack
@@ -123,6 +124,16 @@ def test_rtab_tf_is_odometry(module: RtabMap) -> None:
     """rtab_tf publishes the map->odom correction as an Odometry message, the
     same shape PGO uses for pgo_tf so the TF bridge can consume it identically."""
     assert module.outputs["rtab_tf"].type is Odometry
+
+
+def test_pose_graph_outputs_declared(module: RtabMap) -> None:
+    """Pose-graph outputs match PGO's contract — required for autoconnect
+    against the KITTI-360 scoring module and for the Rerun bridge."""
+    outputs = module.outputs
+    for port_name in ("pose_graph_edges", "loop_closure"):
+        assert port_name in outputs, f"missing pose-graph output: {port_name}"
+        assert isinstance(outputs[port_name], Out)
+        assert outputs[port_name].type is NavPath
 
 
 def test_color_image_input_declared(module: RtabMap) -> None:

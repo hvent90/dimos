@@ -26,6 +26,7 @@ from dimos.msgs.geometry_msgs.Quaternion import Quaternion
 from dimos.msgs.geometry_msgs.Transform import Transform
 from dimos.msgs.geometry_msgs.Vector3 import Vector3
 from dimos.msgs.nav_msgs.Odometry import Odometry
+from dimos.msgs.nav_msgs.Path import Path as NavPath
 from dimos.msgs.sensor_msgs.Image import Image
 from dimos.msgs.sensor_msgs.PointCloud2 import PointCloud2
 from dimos.navigation.nav_stack.frames import FRAME_BODY, FRAME_MAP, FRAME_ODOM
@@ -206,6 +207,14 @@ class RtabMap(NativeModule):
     rtab_tf: Out[Odometry]
     octomap: Out[PointCloud2]
     projected_2d_grid: Out[PointCloud2]
+    # Pose-graph outputs — same wire contract as PGO so the existing
+    # KITTI-360 benchmark + Rerun bridge consume RtabMap unchanged.
+    # `pose_graph_edges` carries (start, end) PoseStamped pairs whose
+    # orientation.w encodes edge type (1.0 = odom, 0.4 = loop closure).
+    # `loop_closure` fires once per detected closure (empty Path payload
+    # is fine — scorers count events).
+    pose_graph_edges: Out[NavPath]
+    loop_closure: Out[NavPath]
 
     @rpc
     def start(self) -> None:
