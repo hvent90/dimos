@@ -124,6 +124,22 @@ class RtabMapConfig(NativeModuleConfig):
     # rtabmap's one-to-many proximity detection neighbor count; enables
     # geometric (scan-based) loop closure in lidar-only mode.
     rgbd_proximity_path_max_neighbors: int = 10
+    # Spatial proximity detection — search the local pose-graph for
+    # candidates within rgbd_local_radius of the current keyframe. Must
+    # be on for lidar-only loop closure (visual BoW is unavailable).
+    rgbd_proximity_by_space: bool = True
+    # Spatial search radius (m) for proximity candidate selection.
+    # rtabmap default 10m; KITTI-360-style outdoor scenes use ≥10, tight
+    # indoor scenes use 2-3.
+    rgbd_local_radius: float = 10.0
+    # Max pose-graph depth for the proximity candidate search. Default 50;
+    # raise to look further back in the graph (more loop closures, more
+    # cost per process call).
+    rgbd_proximity_max_graph_depth: int = 50
+    # ICP correspondence distance threshold (m). rtabmap default 0.05m is
+    # very tight for outdoor LiDAR; 0.5m is forgiving and gives proximity
+    # ICP a chance at slightly-misaligned candidates.
+    icp_max_correspondence_distance: float = 0.5
 
     # Verbose per-frame stderr diagnostics from the C++ binary. Useful for
     # debugging things like "global_map_slam isn't updating": surfaces

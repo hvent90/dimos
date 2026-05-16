@@ -531,6 +531,24 @@ int main(int argc, char** argv) {
     // is rtabmap's recommended starting point for LiDAR.
     params["RGBD/ProximityPathMaxNeighbors"] =
         mod.arg("rgbd_proximity_path_max_neighbors", "10");
+    // Spatial proximity detection: search the local pose-graph for
+    // candidates within RGBD/LocalRadius of the current keyframe. ON by
+    // default in rtabmap, but explicit here so it's tunable.
+    params["RGBD/ProximityBySpace"] =
+        mod.arg("rgbd_proximity_by_space", "true");
+    // Spatial search radius around the current keyframe — rtabmap default
+    // is 10m. For KITTI-360-style outdoor scenes with 4m GT loops, this is
+    // already generous; for tight indoor use, drop to 2-3m.
+    params["RGBD/LocalRadius"] =
+        mod.arg("rgbd_local_radius", "10");
+    // Max pose-graph depth for proximity candidate search. Default 50;
+    // raise this to find loop closures further back in the graph.
+    params["RGBD/ProximityMaxGraphDepth"] =
+        mod.arg("rgbd_proximity_max_graph_depth", "50");
+    // ICP correspondence distance — rtabmap's default 0.05m is very tight
+    // for outdoor LiDAR (~10cm voxelization is common). 0.5m is forgiving.
+    params["Icp/MaxCorrespondenceDistance"] =
+        mod.arg("icp_max_correspondence_distance", "0.5");
     // Keyframe admission. We bypass rtabmap's motion gate (LinearUpdate=0)
     // because for the dynamic-clearing use case we want keyframes to keep
     // arriving even on a stationary robot — so the OctoMap keeps getting
@@ -848,12 +866,22 @@ int main(int argc, char** argv) {
             }
         }
         if (debug) {
+            const auto& stats = rtab.getStatistics();
             fprintf(stderr,
-                    "[rtab DEBUG] frame #%d %s ts=%.3f odom_pos=(%.2f,%.2f,%.2f) opt_poses=%zu cache=%zu\n",
+                    "[rtab DEBUG] frame #%d %s ts=%.3f odom_pos=(%.2f,%.2f,%.2f) "
+                    "opt_poses=%zu cache=%zu | "
+                    "loop_id=%d loop_score=%.3f highest_hyp_id=%d "
+                    "wm_size=%zu refImageId=%d loopId=%d proxId=%d\n",
                     frame_id, processed ? "processed" : "rejected",
                     frame.timestamp,
                     frame.odom_pose.x(), frame.odom_pose.y(), frame.odom_pose.z(),
-                    rtab.getLocalOptimizedPoses().size(), octomap_grid_cache.size());
+                    rtab.getLocalOptimizedPoses().size(), octomap_grid_cache.size(),
+                    rtab.getLoopClosureId(), rtab.getLoopClosureValue(),
+                    rtab.getHighestHypothesisId(),
+                    rtab.getMemory() ? rtab.getMemory()->getWorkingMem().size() : 0,
+                    stats.refImageId(),
+                    static_cast<int>(stats.loopClosureId()),
+                    static_cast<int>(stats.proximityDetectionId()));
         }
 
         // Publish corrected odometry and map->odom correction every
