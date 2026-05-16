@@ -243,6 +243,15 @@ def test_board_completeness_uses_generated_layout_area_percent(layout: BoardLayo
     assert board_completeness_class(layout, []) == "no_board"
 
 
+def test_board_completeness_ignores_spurious_detected_ids(layout: BoardLayout) -> None:
+    assert visible_board_layout_area_percent(layout, [999]) == 0.0
+    assert visible_board_layout_area_percent(layout, [0, 1, 999]) == pytest.approx(
+        visible_board_layout_area_percent(layout, [0, 1])
+    )
+    assert board_completeness_class(layout, [*range(12), 999]) == "full_board"
+    assert board_completeness_class(layout, [999]) == "no_board"
+
+
 def test_board_layout_geometry_rejects_swapped_detected_ids(layout: BoardLayout) -> None:
     corners_by_id = _layout_image_corners(layout, list(range(12)))
     corners_by_id[0], corners_by_id[1] = corners_by_id[1], corners_by_id[0]

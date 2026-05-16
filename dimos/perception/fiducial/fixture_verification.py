@@ -224,12 +224,17 @@ def visible_image_hull_area_percent(
 
 
 def visible_board_layout_area_percent(layout: BoardLayout, visible_ids: list[int]) -> float:
-    """Convex hull area of generated visible tag corners divided by the full layout hull."""
-    if not visible_ids:
+    """Convex hull area of generated visible tag corners divided by the full layout hull.
+
+    IDs not present in ``layout.tags`` are ignored so detector false positives cannot
+    raise ``KeyError`` when building ``visible_points``.
+    """
+    visible_layout_ids = [tag_id for tag_id in visible_ids if tag_id in layout.tags]
+    if not visible_layout_ids:
         return 0.0
     full_points = np.concatenate([tag.corners_m[:, :2] for tag in layout.tags.values()], axis=0)
     visible_points = np.concatenate(
-        [layout.tags[tag_id].corners_m[:, :2] for tag_id in visible_ids], axis=0
+        [layout.tags[tag_id].corners_m[:, :2] for tag_id in visible_layout_ids], axis=0
     )
     full_area = _convex_hull_area(full_points.astype(np.float32))
     return _convex_hull_area(visible_points.astype(np.float32)) / full_area * 100.0
@@ -256,8 +261,9 @@ def image_footprint_bin(visible_hull_area_percent: float) -> str:
 
 
 def board_completeness_class(layout: BoardLayout, visible_ids: list[int]) -> str:
-    area_percent = visible_board_layout_area_percent(layout, visible_ids)
-    visible_count = len(visible_ids)
+    visible_layout_ids = [tag_id for tag_id in visible_ids if tag_id in layout.tags]
+    area_percent = visible_board_layout_area_percent(layout, visible_layout_ids)
+    visible_count = len(visible_layout_ids)
     if visible_count == 0:
         return "no_board"
     if visible_count == len(layout.tags) and area_percent >= 95.0:
@@ -357,6 +363,8 @@ def verify_fixture_frame(
         if detection.ids
         else None
     )
+    # AprilTag may report IDs outside the PDF layout - board metrics must not KeyError.
+    detected_ids_in_layout = [tag_id for tag_id in detection.ids if tag_id in layout.tags]
     metrics = FrameMetrics(
         image_width_px=detection.image_width_px,
         image_height_px=detection.image_height_px,
@@ -365,7 +373,9 @@ def verify_fixture_frame(
             detection.corners_by_id,
             image_size,
         ),
-        visible_board_layout_area_percent=visible_board_layout_area_percent(layout, detection.ids),
+        visible_board_layout_area_percent=visible_board_layout_area_percent(
+            layout, detected_ids_in_layout
+        ),
         board_layout_error_px_p50=(
             board_layout_geometry.layout_error_px_p50 if board_layout_geometry else 0.0
         ),
@@ -381,7 +391,7 @@ def verify_fixture_frame(
         reject_reasons.append(str(exc))
 
     is_positive = frame["operator_planned_class"] != "none"
-    computed_class = board_completeness_class(layout, detection.ids)
+    computed_class = board_completeness_class(layout, detected_ids_in_layout)
     if is_positive:
         if board_layout_geometry is None or not board_layout_geometry.ok:
             reject_reasons.append(

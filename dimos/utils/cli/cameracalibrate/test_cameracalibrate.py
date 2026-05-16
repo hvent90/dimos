@@ -13,8 +13,8 @@
 # limitations under the License.
 
 import os
-import re
 from pathlib import Path
+import re
 from unittest.mock import MagicMock
 
 import cv2
@@ -52,13 +52,7 @@ def _synthetic_chessboard_gray(
             color = 0 if (xi + yi) % 2 == 0 else 255
             x0 = ox + xi * square_px
             y0 = oy + yi * square_px
-            cv2.rectangle(
-                img,
-                (x0, y0),
-                (x0 + square_px - 1, y0 + square_px - 1),
-                int(color),
-                thickness=-1,
-            )
+            img[y0 : y0 + square_px, x0 : x0 + square_px] = color
     return img
 
 
@@ -116,7 +110,7 @@ def _synthetic_calibration_frames(
 
 
 def test_cli_folder_with_synthetic_images_writes_yaml_preview_and_camera_info(
-    tmp_path,
+    tmp_path: Path,
 ) -> None:
     """Folder mode end-to-end without checked-in JPEG fixtures (CI-friendly)."""
     cols, rows = 9, 6
@@ -199,7 +193,7 @@ def test_cli_help_lists_cameracalibrate_flags() -> None:
         assert flag in output_plain
 
 
-def test_cli_folder_writes_only_explicit_yaml_and_prints_rms(tmp_path) -> None:
+def test_cli_folder_writes_only_explicit_yaml_and_prints_rms(tmp_path: Path) -> None:
     cols, rows = 9, 6
     frames, _K_true = _synthetic_calibration_frames(cols=cols, rows=rows)
     images = tmp_path / "fixture"
@@ -242,7 +236,7 @@ def test_cli_folder_writes_only_explicit_yaml_and_prints_rms(tmp_path) -> None:
     assert info.distortion_model == "plumb_bob"
 
 
-def test_cli_folder_writes_explicit_yaml_and_preview(tmp_path) -> None:
+def test_cli_folder_writes_explicit_yaml_and_preview(tmp_path: Path) -> None:
     cols, rows = 9, 6
     frames, _K_true = _synthetic_calibration_frames(cols=cols, rows=rows)
     images = tmp_path / "fixture"
@@ -280,7 +274,7 @@ def test_cli_folder_writes_explicit_yaml_and_preview(tmp_path) -> None:
     assert cv2.imread(str(preview)) is not None
 
 
-def test_cli_folder_writes_no_outputs_when_paths_are_omitted(tmp_path) -> None:
+def test_cli_folder_writes_no_outputs_when_paths_are_omitted(tmp_path: Path) -> None:
     cols, rows = 9, 6
     frames, _K_true = _synthetic_calibration_frames(cols=cols, rows=rows)
     images = tmp_path / "fixture"
@@ -348,7 +342,9 @@ class _FailingVideoCapture:
         self.released = True
 
 
-def test_capture_frames_from_webcam_mocked_space_fills_target(monkeypatch) -> None:
+def test_capture_frames_from_webcam_mocked_space_fills_target(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
     """SPACE accepts frames with chessboard overlay path; ``no_display`` skips GUI."""
     cols, rows = 9, 6
     gray = _synthetic_chessboard_gray(640, 480, cols, rows, square_px=40)
@@ -372,7 +368,9 @@ def test_capture_frames_from_webcam_mocked_space_fills_target(monkeypatch) -> No
     mock_imshow.assert_not_called()
 
 
-def test_capture_frames_from_webcam_mocked_quit_raises(monkeypatch) -> None:
+def test_capture_frames_from_webcam_mocked_quit_raises(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
     cols, rows = 9, 6
     gray = _synthetic_chessboard_gray(640, 480, cols, rows, square_px=40)
     bgr = cv2.cvtColor(gray, cv2.COLOR_GRAY2BGR)
@@ -391,7 +389,9 @@ def test_capture_frames_from_webcam_mocked_quit_raises(monkeypatch) -> None:
         capture_frames_from_webcam(0, 3, cols, rows, no_display=True)
 
 
-def test_capture_frames_from_webcam_read_failures_raise(monkeypatch) -> None:
+def test_capture_frames_from_webcam_read_failures_raise(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
     cap = _FailingVideoCapture()
     monkeypatch.setattr(cv2, "VideoCapture", lambda *_a, **_k: cap)
 
@@ -402,7 +402,9 @@ def test_capture_frames_from_webcam_read_failures_raise(monkeypatch) -> None:
     assert cap.released
 
 
-def test_capture_frames_from_webcam_no_display_false_calls_imshow(monkeypatch) -> None:
+def test_capture_frames_from_webcam_no_display_false_calls_imshow(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
     cols, rows = 9, 6
     gray = _synthetic_chessboard_gray(320, 240, cols, rows, square_px=20)
     bgr = cv2.cvtColor(gray, cv2.COLOR_GRAY2BGR)
@@ -432,7 +434,7 @@ def test_opencv_video_capture_device_zero_opens_when_camera_available() -> None:
         cap.release()
 
 
-def test_load_frames_from_folder_count_order_and_pixels(tmp_path) -> None:
+def test_load_frames_from_folder_count_order_and_pixels(tmp_path: Path) -> None:
     """Sorted ``*.png`` / ``*.jpg`` / ``*.jpeg``; correct count and load order."""
     h, w = 24, 32
     # Write out of lexicographic order; expect sorted basenames: 01, 02, 03.
