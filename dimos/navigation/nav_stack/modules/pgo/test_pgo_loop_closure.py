@@ -12,42 +12,43 @@
 # See the License for the specific language governing permissions and
 # limitations under the License.
 
-"""Validate PGO publishes loop-closure delta events on the
-``loop_closure`` topic.
+"""End-to-end check that PGO publishes valid loop-closure events.
 
-Replays the ``og_nav_60s`` rosbag through the native PGO binary with
-aggressive loop-closure thresholds (low ``loop_time_thresh`` +
-``min_loop_detect_duration``, larger ``loop_search_radius``) so any
-revisit during the recorded trajectory fires a loop event. For each
-event:
+Replays the ``og_nav_60s`` rosbag through PGO with aggressive
+loop-closure thresholds and asserts each emitted ``loop_closure``
+event has positive-shape pose deltas, unit-norm quaternions, and
+finite translations. Wired with the DimOS Module + Blueprint pipeline
+so no LCM topic strings live here.
 
-* it is logged to stdout/stderr at receive time (shape + first row),
-* assertions confirm the shape (N>0 PoseStamped entries), each
-  quaternion is unit-norm, and each translation is finite.
-
-The test passes if **at least one** loop closure event is published
-with valid shape and content. If the bag doesn't trigger any loop, the
-test skips (rosbag is data-dependent — not a code defect).
+If the bag doesn't trigger any loop the test skips — the rosbag
+trajectory is data-dependent, not a code defect.
 """
 
 from __future__ import annotations
 
+import asyncio
+from collections.abc import AsyncIterator
 import math
 from pathlib import Path
-import threading
 import time
+from typing import Any
 
-import lcm as lcmlib
 import pytest
+from reactivex.disposable import Disposable
 
-from dimos.constants import DEFAULT_THREAD_JOIN_TIMEOUT
+from dimos.core.coordination.blueprints import autoconnect
+from dimos.core.coordination.module_coordinator import ModuleCoordinator
+from dimos.core.core import rpc
+from dimos.core.module import Module, ModuleConfig
+from dimos.core.stream import In, Out
+from dimos.msgs.nav_msgs.Odometry import Odometry
 from dimos.msgs.nav_msgs.Path import Path as NavPath
+from dimos.msgs.sensor_msgs.PointCloud2 import PointCloud2
+from dimos.navigation.nav_stack.modules.pgo.pgo import PGO
 from dimos.navigation.nav_stack.tests.rosbag_fixtures import (
-    NativeProcessRunner,
-    feed_at_original_timing,
-    lcm_handle_loop,
     load_rosbag_window,
-    make_isolated_lcm_url,
+    make_odometry_msg,
+    make_pointcloud_msg,
 )
 from dimos.utils.logging_config import setup_logger
 
@@ -55,47 +56,162 @@ logger = setup_logger()
 
 pytestmark = [pytest.mark.slow]
 
-PGO_BIN = Path(__file__).parent / "cpp" / "result" / "bin" / "pgo"
+POST_FEED_DRAIN_SEC = 5.0
+POLL_INTERVAL_SEC = 0.25
 
-# TODO: use modules rather than LCM directly
-SCAN_LCM = "/lc_test_scan#sensor_msgs.PointCloud2"
-ODOM_LCM = "/lc_test_odom#nav_msgs.Odometry"
-CORRECTED_ODOM_LCM = "/lc_test_corrected#nav_msgs.Odometry"
-GLOBAL_MAP_LCM = "/lc_test_global_map#sensor_msgs.PointCloud2"
-TF_LCM = "/lc_test_tf#nav_msgs.Odometry"
-GRAPH_NODES_LCM = "/lc_test_graph_nodes#nav_msgs.GraphNodes3D"
-GRAPH_EDGES_LCM = "/lc_test_graph_edges#nav_msgs.LineSegments3D"
-LOOP_CLOSURE_LCM = "/lc_test_loop_closure#nav_msgs.Path"
-
-_PROCESS_STARTUP_SEC = 2.0
-_POST_FEED_DRAIN_SEC = 5.0
-
-_QUATERNION_UNIT_TOL = 0.05
-_TRANSLATION_MAX_M = 100.0
+QUATERNION_UNIT_TOL = 0.05
+TRANSLATION_MAX_M = 100.0
 
 
-def _validate_path_message(message: NavPath, event_index: int) -> tuple[float, float]:
-    """Assert each PoseStamped's quaternion is unit + translation finite.
+# ---------------------------------------------------------------------------
+# Modules
+# ---------------------------------------------------------------------------
 
-    Returns ``(max_translation_norm, max_quat_drift)`` so the caller can
-    log aggregate stats per event.
+
+class RosbagScanOdomPlaybackConfig(ModuleConfig):
+    rosbag_path: str | None = None
+    odom_subsample: int = 4
+
+
+class RosbagScanOdomPlaybackModule(Module):
+    """Replays scan + odom from the ``og_nav_60s`` rosbag at original timing."""
+
+    config: RosbagScanOdomPlaybackConfig
+
+    registered_scan: Out[PointCloud2]
+    odometry: Out[Odometry]
+
+    def __init__(self, **kwargs: Any) -> None:
+        super().__init__(**kwargs)
+        self._frames_published: int = 0
+        self._playback_finished: bool = False
+
+    async def main(self) -> AsyncIterator[None]:
+        rosbag_path = Path(self.config.rosbag_path) if self.config.rosbag_path else None
+        self._window = load_rosbag_window(rosbag_path)
+        self._playback_task = asyncio.create_task(self._run_playback())
+        yield
+        self._playback_task.cancel()
+
+    async def _run_playback(self) -> None:
+        timeline: list[tuple[str, float, Any]] = []
+        for odom_index in range(0, len(self._window.odom), self.config.odom_subsample):
+            row = self._window.odom[odom_index]
+            timeline.append(
+                ("odom", float(row[0]), make_odometry_msg(row[1:4], row[4:8], ts=row[0]))
+            )
+        for timestamp, points in self._window.scans:
+            timeline.append(("scan", float(timestamp), make_pointcloud_msg(points, ts=timestamp)))
+        timeline.sort(key=lambda entry: entry[1])
+        if not timeline:
+            self._playback_finished = True
+            return
+
+        bag_start_time = timeline[0][1]
+        wallclock_start = time.monotonic()
+        for kind, bag_timestamp, message in timeline:
+            target_wallclock = wallclock_start + (bag_timestamp - bag_start_time)
+            now = time.monotonic()
+            if target_wallclock > now:
+                await asyncio.sleep(target_wallclock - now)
+            if kind == "odom":
+                self.odometry.publish(message)
+            else:
+                self.registered_scan.publish(message)
+            self._frames_published += 1
+        self._playback_finished = True
+
+    @rpc
+    def is_finished(self) -> bool:
+        return self._playback_finished
+
+    @rpc
+    def frames_published(self) -> int:
+        return self._frames_published
+
+
+class LoopClosureRecorderConfig(ModuleConfig):
+    pass
+
+
+class LoopClosureRecorderModule(Module):
+    """Accumulates every loop_closure event so the test can validate the shape."""
+
+    config: LoopClosureRecorderConfig
+    loop_closure: In[NavPath]
+
+    def __init__(self, **kwargs: Any) -> None:
+        super().__init__(**kwargs)
+        self._events: list[dict[str, Any]] = []
+
+    @rpc
+    def start(self) -> None:
+        super().start()
+        self.register_disposable(Disposable(self.loop_closure.subscribe(self._on_loop_closure)))
+
+    def _on_loop_closure(self, message: NavPath) -> None:
+        self._events.append(_message_to_dict(message))
+        first_pose = message.poses[0] if message.poses else None
+        first_pose_summary = (
+            f"first=t=({first_pose.position.x:.3f},{first_pose.position.y:.3f},"
+            f"{first_pose.position.z:.3f}) "
+            f"q=({first_pose.orientation.x:.3f},{first_pose.orientation.y:.3f},"
+            f"{first_pose.orientation.z:.3f},{first_pose.orientation.w:.3f})"
+            if first_pose
+            else "<empty>"
+        )
+        logger.info(
+            f"[loop_closure] event #{len(self._events) - 1} received: "
+            f"poses_length={len(message.poses)}, frame_id={message.frame_id!r}, "
+            f"ts={message.ts:.3f}, {first_pose_summary}"
+        )
+
+    @rpc
+    def events(self) -> list[dict[str, Any]]:
+        return list(self._events)
+
+
+# ---------------------------------------------------------------------------
+# Helpers
+# ---------------------------------------------------------------------------
+
+
+def _message_to_dict(message: NavPath) -> dict[str, Any]:
+    """JSON-friendly snapshot of a NavPath — Pydantic-friendly RPC return."""
+    return {
+        "frame_id": message.frame_id,
+        "ts": message.ts,
+        "poses": [
+            {
+                "position": (
+                    pose.position.x,
+                    pose.position.y,
+                    pose.position.z,
+                ),
+                "orientation": (
+                    pose.orientation.x,
+                    pose.orientation.y,
+                    pose.orientation.z,
+                    pose.orientation.w,
+                ),
+            }
+            for pose in message.poses
+        ],
+    }
+
+
+def _validate_loop_closure_event(event: dict[str, Any], event_index: int) -> tuple[float, float]:
+    """Assert each pose has unit quaternion + finite translation. Returns
+    aggregate ``(max_translation_norm, max_quaternion_drift)`` stats.
     """
-    assert len(message.poses) > 0, f"event {event_index}: loop-closure message has no poses"
+    poses = event["poses"]
+    assert len(poses) > 0, f"event {event_index}: loop-closure message has no poses"
 
     max_translation_norm = 0.0
     max_quaternion_drift = 0.0
-    for pose_index, pose in enumerate(message.poses):
-        translation_x, translation_y, translation_z = (
-            pose.position.x,
-            pose.position.y,
-            pose.position.z,
-        )
-        quaternion_x, quaternion_y, quaternion_z, quaternion_w = (
-            pose.orientation.x,
-            pose.orientation.y,
-            pose.orientation.z,
-            pose.orientation.w,
-        )
+    for pose_index, pose in enumerate(poses):
+        translation_x, translation_y, translation_z = pose["position"]
+        quaternion_x, quaternion_y, quaternion_z, quaternion_w = pose["orientation"]
         for value, name in [
             (translation_x, "translation_x"),
             (translation_y, "translation_y"),
@@ -118,9 +234,9 @@ def _validate_path_message(message: NavPath, event_index: int) -> tuple[float, f
             + translation_y * translation_y
             + translation_z * translation_z
         )
-        assert translation_norm < _TRANSLATION_MAX_M, (
+        assert translation_norm < TRANSLATION_MAX_M, (
             f"event {event_index} pose {pose_index}: |t|={translation_norm:.3f}m "
-            f"exceeds sanity cap {_TRANSLATION_MAX_M}m"
+            f"exceeds sanity cap {TRANSLATION_MAX_M}m"
         )
         quaternion_norm = math.sqrt(
             quaternion_x * quaternion_x
@@ -129,9 +245,9 @@ def _validate_path_message(message: NavPath, event_index: int) -> tuple[float, f
             + quaternion_w * quaternion_w
         )
         quaternion_drift = abs(quaternion_norm - 1.0)
-        assert quaternion_drift < _QUATERNION_UNIT_TOL, (
+        assert quaternion_drift < QUATERNION_UNIT_TOL, (
             f"event {event_index} pose {pose_index}: |q|={quaternion_norm:.6f} drifts "
-            f"from unit by {quaternion_drift:.6f} (tol {_QUATERNION_UNIT_TOL})"
+            f"from unit by {quaternion_drift:.6f} (tol {QUATERNION_UNIT_TOL})"
         )
         max_translation_norm = max(max_translation_norm, translation_norm)
         max_quaternion_drift = max(max_quaternion_drift, quaternion_drift)
@@ -139,128 +255,43 @@ def _validate_path_message(message: NavPath, event_index: int) -> tuple[float, f
     return max_translation_norm, max_quaternion_drift
 
 
+# ---------------------------------------------------------------------------
+# Test
+# ---------------------------------------------------------------------------
+
+
 class TestPGOLoopClosure:
-    """End-to-end: PGO native publishes loop-closure events with valid shape."""
+    """End-to-end: PGO publishes loop-closure events with valid shape."""
 
     def test_loop_closure_events_published(self) -> None:
-        if not PGO_BIN.exists():
-            pytest.skip(f"PGO binary not found: {PGO_BIN}")
-
-        window = load_rosbag_window()
-        assert len(window.scans) > 0, "No scans in rosbag fixture"
-        assert len(window.odom) > 0, "No odometry in rosbag fixture"
-
-        # Isolate this test's LCM bus from anything else on the host (other
-        # tests, dimos nodes, an actual robot on the LAN).
-        lcm_url = make_isolated_lcm_url()
-        lcm_instance = lcmlib.LCM(lcm_url)
-
-        received_events: list[NavPath] = []
-        events_lock = threading.Lock()
-
-        def _on_loop_closure(_channel: str, data: bytes) -> None:
-            message = NavPath.lcm_decode(data)
-            with events_lock:
-                event_index = len(received_events)
-                received_events.append(message)
-            first_pose = message.poses[0] if message.poses else None
-            first_pose_summary = (
-                f"first=t=({first_pose.position.x:.3f},{first_pose.position.y:.3f},"
-                f"{first_pose.position.z:.3f}) "
-                f"q=({first_pose.orientation.x:.3f},{first_pose.orientation.y:.3f},"
-                f"{first_pose.orientation.z:.3f},{first_pose.orientation.w:.3f})"
-                if first_pose
-                else "<empty>"
-            )
-            logger.info(
-                f"[loop_closure] event #{event_index} received: "
-                f"poses_length={len(message.poses)}, frame_id={message.frame_id!r}, "
-                f"ts={message.ts:.3f}, {first_pose_summary}"
-            )
-
-        loop_closure_subscription = lcm_instance.subscribe(LOOP_CLOSURE_LCM, _on_loop_closure)
-
-        stop_event = threading.Event()
-        handle_thread = threading.Thread(
-            target=lcm_handle_loop, args=(lcm_instance, stop_event), daemon=True
+        playback_blueprint = RosbagScanOdomPlaybackModule.blueprint()
+        # Aggressive loop-closure thresholds — bag is 60s, so we need short
+        # re-visit windows to actually fire events.
+        pgo_blueprint = PGO.blueprint(
+            key_pose_delta_trans=0.5,
+            loop_search_radius=2.0,
+            loop_time_thresh=5.0,
+            loop_score_thresh=0.5,
+            loop_submap_half_range=5,
+            submap_resolution=0.1,
+            min_loop_detect_duration=1.0,
+            global_map_voxel_size=0.1,
+            global_map_publish_rate=1.0,
+            unregister_input=True,
         )
-        handle_thread.start()
+        recorder_blueprint = LoopClosureRecorderModule.blueprint()
 
-        runner = NativeProcessRunner(
-            binary_path=str(PGO_BIN),
-            args=[
-                "--registered_scan",
-                SCAN_LCM,
-                "--odometry",
-                ODOM_LCM,
-                "--corrected_odometry",
-                CORRECTED_ODOM_LCM,
-                "--global_map",
-                GLOBAL_MAP_LCM,
-                "--corrected_tf",
-                TF_LCM,
-                "--pose_graph_nodes",
-                GRAPH_NODES_LCM,
-                "--pose_graph_edges",
-                GRAPH_EDGES_LCM,
-                "--loop_closure",
-                LOOP_CLOSURE_LCM,
-                # Aggressive loop-closure thresholds — bag is 60s, so we
-                # need short re-visit windows to actually fire events.
-                "--key_pose_delta_deg",
-                "10.0",
-                "--key_pose_delta_trans",
-                "0.5",
-                "--loop_search_radius",
-                "2.0",
-                "--loop_time_thresh",
-                "5.0",
-                "--loop_score_thresh",
-                "0.5",
-                "--loop_submap_half_range",
-                "5",
-                "--submap_resolution",
-                "0.1",
-                "--min_loop_detect_duration",
-                "1.0",
-                "--global_map_voxel_size",
-                "0.1",
-                "--global_map_publish_rate",
-                "1.0",
-                "--unregister_input",
-                "true",
-                "--world_frame",
-                "map",
-                "--local_frame",
-                "odom",
-            ],
-        )
-
+        blueprint = autoconnect(playback_blueprint, pgo_blueprint, recorder_blueprint)
+        coordinator = ModuleCoordinator.build(blueprint)
         try:
-            runner.start(capture_stderr=True, env={"LCM_DEFAULT_URL": lcm_url})
-            assert runner.is_running, "PGO binary failed to start"
-            time.sleep(_PROCESS_STARTUP_SEC)
-
-            feed_at_original_timing(
-                lcm_instance,
-                window,
-                topic_map={
-                    "odom": ODOM_LCM,
-                    "scan": SCAN_LCM,
-                },
-            )
-
-            time.sleep(_POST_FEED_DRAIN_SEC)
-
+            playback = coordinator.get_instance(RosbagScanOdomPlaybackModule)
+            recorder = coordinator.get_instance(LoopClosureRecorderModule)
+            while not playback.is_finished():
+                time.sleep(POLL_INTERVAL_SEC)
+            time.sleep(POST_FEED_DRAIN_SEC)
+            events = recorder.events()
         finally:
-            runner.stop()
-            stop_event.set()
-            handle_thread.join(timeout=DEFAULT_THREAD_JOIN_TIMEOUT)
-            lcm_instance.unsubscribe(loop_closure_subscription)
-
-        # -- Analysis --
-        with events_lock:
-            events = list(received_events)
+            coordinator.stop()
 
         logger.info(f"\n[loop_closure] total events received: {len(events)}")
 
@@ -272,15 +303,15 @@ class TestPGOLoopClosure:
                 "lines), not the on-wire payload."
             )
 
-        for event_index, message in enumerate(events):
-            max_translation_norm, max_quaternion_drift = _validate_path_message(
-                message, event_index
+        for event_index, event in enumerate(events):
+            max_translation_norm, max_quaternion_drift = _validate_loop_closure_event(
+                event, event_index
             )
             logger.info(
                 f"[loop_closure] event #{event_index} VALID: "
-                f"keyframe_count={len(message.poses)}, "
+                f"keyframe_count={len(event['poses'])}, "
                 f"max|t|={max_translation_norm:.4f}m, "
                 f"max|q|-1|={max_quaternion_drift:.6f}"
             )
 
-        assert all(len(message.poses) > 0 for message in events)
+        assert all(len(event["poses"]) > 0 for event in events)
