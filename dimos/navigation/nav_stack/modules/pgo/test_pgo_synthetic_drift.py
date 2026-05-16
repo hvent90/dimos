@@ -250,6 +250,7 @@ class SyntheticDriftPlaybackModule(Module):
         super().__init__(**kwargs)
         self._frames_published: int = 0
         self._playback_finished: bool = False
+        self._playback_error: str | None = None
 
     async def main(self) -> AsyncIterator[None]:
         self._room_points = _make_room_points(self.config.room_half_size, self.config.room_density)
@@ -258,44 +259,52 @@ class SyntheticDriftPlaybackModule(Module):
         self._playback_task.cancel()
 
     async def _run_playback(self) -> None:
-        if self.config.startup_delay_sec > 0:
-            await asyncio.sleep(self.config.startup_delay_sec)
-        for row in self.config.trajectory:
-            (
-                timestamp,
-                true_x,
-                true_y,
-                true_z,
-                true_yaw,
-                drifted_x,
-                drifted_y,
-                drifted_z,
-                drifted_yaw,
-            ) = row
-            true_position = np.array([true_x, true_y, true_z])
-            drifted_position = np.array([drifted_x, drifted_y, drifted_z])
-            body_points = _world_to_body(self._room_points, true_position, true_yaw)
-            world_points = _body_to_world(body_points, drifted_position, drifted_yaw)
-            scan_message = PointCloud2.from_numpy(
-                world_points.astype(np.float32), frame_id="map", timestamp=timestamp
-            )
-            odometry_message = Odometry(
-                ts=timestamp,
-                frame_id="odom",
-                child_frame_id="base_link",
-                pose=_make_pose(
-                    float(drifted_position[0]),
-                    float(drifted_position[1]),
-                    float(drifted_position[2]),
-                    float(drifted_yaw),
-                ),
-            )
-            self.odometry.publish(odometry_message)
-            self.registered_scan.publish(scan_message)
-            self._frames_published += 1
-            if self.config.inter_frame_sleep_sec > 0:
-                await asyncio.sleep(self.config.inter_frame_sleep_sec)
-        self._playback_finished = True
+        # finally guarantees is_finished() flips to True even if a
+        # publish raises. Without it, _run_pgo's poll loop hangs and
+        # the coordinator leaks.
+        try:
+            if self.config.startup_delay_sec > 0:
+                await asyncio.sleep(self.config.startup_delay_sec)
+            for row in self.config.trajectory:
+                (
+                    timestamp,
+                    true_x,
+                    true_y,
+                    true_z,
+                    true_yaw,
+                    drifted_x,
+                    drifted_y,
+                    drifted_z,
+                    drifted_yaw,
+                ) = row
+                true_position = np.array([true_x, true_y, true_z])
+                drifted_position = np.array([drifted_x, drifted_y, drifted_z])
+                body_points = _world_to_body(self._room_points, true_position, true_yaw)
+                world_points = _body_to_world(body_points, drifted_position, drifted_yaw)
+                scan_message = PointCloud2.from_numpy(
+                    world_points.astype(np.float32), frame_id="map", timestamp=timestamp
+                )
+                odometry_message = Odometry(
+                    ts=timestamp,
+                    frame_id="odom",
+                    child_frame_id="base_link",
+                    pose=_make_pose(
+                        float(drifted_position[0]),
+                        float(drifted_position[1]),
+                        float(drifted_position[2]),
+                        float(drifted_yaw),
+                    ),
+                )
+                self.odometry.publish(odometry_message)
+                self.registered_scan.publish(scan_message)
+                self._frames_published += 1
+                if self.config.inter_frame_sleep_sec > 0:
+                    await asyncio.sleep(self.config.inter_frame_sleep_sec)
+        except Exception as exc:
+            self._playback_error = f"{type(exc).__name__}: {exc}"
+            raise
+        finally:
+            self._playback_finished = True
 
     @rpc
     def is_finished(self) -> bool:
