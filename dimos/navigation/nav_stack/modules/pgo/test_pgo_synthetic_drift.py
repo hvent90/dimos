@@ -59,7 +59,7 @@ from dimos.utils.logging_config import setup_logger
 
 logger = setup_logger()
 
-pytestmark = [pytest.mark.slow]
+pytestmark = [pytest.mark.self_hosted]
 
 # Cross-trajectory drift injected at the revisit. Must be >> loop_search_radius
 # so position-based search cannot accidentally find the loop.

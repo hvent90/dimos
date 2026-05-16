@@ -47,7 +47,7 @@ from dimos.utils.logging_config import setup_logger
 
 logger = setup_logger()
 
-pytestmark = [pytest.mark.slow]
+pytestmark = [pytest.mark.self_hosted]
 
 POST_FEED_DRAIN_SEC = 5.0
 POLL_INTERVAL_SEC = 0.25
