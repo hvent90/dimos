@@ -26,6 +26,7 @@ from dimos.msgs.geometry_msgs.Quaternion import Quaternion
 from dimos.msgs.geometry_msgs.Transform import Transform
 from dimos.msgs.geometry_msgs.Vector3 import Vector3
 from dimos.msgs.nav_msgs.Odometry import Odometry
+from dimos.msgs.sensor_msgs.Image import Image
 from dimos.msgs.sensor_msgs.PointCloud2 import PointCloud2
 from dimos.navigation.nav_stack.frames import FRAME_BODY, FRAME_MAP, FRAME_ODOM
 from dimos.utils.logging_config import setup_logger
@@ -148,6 +149,39 @@ class RtabMapConfig(NativeModuleConfig):
     # mismatched pairs.
     scan_odom_max_dt: float = 0.2
 
+    # RGB camera support. When `color_image_enabled=True` AND camera_fx>0,
+    # the binary subscribes to the `color_image` stream and attaches the
+    # latest RGB frame (with a CameraModel built from these intrinsics) to
+    # each SensorData passed to rtab.process. rtabmap then stores the image
+    # on the signature for visualization and — when feature extraction is
+    # configured (Kp/DetectorStrategy != -1) — uses it for visual
+    # bag-of-words loop closure on top of the lidar-only ICP path.
+    #
+    # Default off: existing lidar-only setups keep working unchanged.
+    color_image_enabled: bool = False
+    # Pinhole intrinsics in pixels. fx=0 (the default) is interpreted as
+    # "no intrinsics provided"; the C++ binary will then ignore RGB frames
+    # even if the stream is connected.
+    camera_fx: float = 0.0
+    camera_fy: float = 0.0
+    camera_cx: float = 0.0
+    camera_cy: float = 0.0
+    camera_image_width: int = 0
+    camera_image_height: int = 0
+    # Rigid transform from body frame to camera optical frame
+    # (quat is xyzw, defaults to identity = camera coincides with body).
+    camera_local_x: float = 0.0
+    camera_local_y: float = 0.0
+    camera_local_z: float = 0.0
+    camera_local_qx: float = 0.0
+    camera_local_qy: float = 0.0
+    camera_local_qz: float = 0.0
+    camera_local_qw: float = 1.0
+    # Drop RGB frames whose timestamp differs from the scan's by more than
+    # this many seconds. RGB and lidar usually run at different rates;
+    # this widens to whatever your camera framerate + jitter allows.
+    rgb_max_dt: float = 0.2
+
 
 class RtabMap(NativeModule):
     """RtabMap NativeModule — librtabmap behind an LCM wrapper.
@@ -159,6 +193,13 @@ class RtabMap(NativeModule):
 
     registered_scan: In[PointCloud2]
     odometry: In[Odometry]
+    # Optional RGB feed. If left unconnected, the binary stays in
+    # lidar-only mode. Connecting an Image source and setting
+    # `color_image_enabled=True` (plus camera intrinsics) makes rtabmap
+    # store the RGB on each keyframe's signature and — when feature
+    # extraction is enabled — use it for visual loop closure on top of
+    # the lidar/ICP path.
+    color_image: In[Image]
 
     corrected_odometry: Out[Odometry]
     global_map: Out[PointCloud2]

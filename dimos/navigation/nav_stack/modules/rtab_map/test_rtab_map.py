@@ -29,6 +29,7 @@ from dimos.core.coordination.blueprints import Blueprint, BlueprintAtom
 from dimos.core.module import Module
 from dimos.core.stream import In, Out
 from dimos.msgs.nav_msgs.Odometry import Odometry
+from dimos.msgs.sensor_msgs.Image import Image
 from dimos.msgs.sensor_msgs.PointCloud2 import PointCloud2
 from dimos.navigation.nav_stack.main import create_nav_stack
 from dimos.navigation.nav_stack.modules.pgo.pgo import PGO
@@ -53,7 +54,9 @@ def test_defaults_match_spec() -> None:
     config = RtabMapConfig()
     assert config.grid_3d is True
     assert config.grid_ray_tracing is True
-    assert config.grid_from_depth is False
+    # grid_sensor=0 (laser scan) is the semantic successor of the
+    # rtabmap-pre-0.20.15 grid_from_depth=false knob.
+    assert config.grid_sensor == 0
     assert config.grid_cell_size == pytest.approx(0.1)
     assert config.grid_max_ground_angle == pytest.approx(45.0)
     assert config.grid_ground_is_obstacle is False
@@ -120,6 +123,42 @@ def test_rtab_tf_is_odometry(module: RtabMap) -> None:
     """rtab_tf publishes the map->odom correction as an Odometry message, the
     same shape PGO uses for pgo_tf so the TF bridge can consume it identically."""
     assert module.outputs["rtab_tf"].type is Odometry
+
+
+def test_color_image_input_declared(module: RtabMap) -> None:
+    """RGB feed is an optional Image input. When unconnected the C++ binary
+    stays in lidar-only mode; when connected with intrinsics set, it attaches
+    RGB frames to rtabmap's SensorData for visual loop closure / texturing."""
+    inputs = module.inputs
+    assert "color_image" in inputs
+    assert isinstance(inputs["color_image"], In)
+    assert inputs["color_image"].type is Image
+
+
+def test_color_image_defaults_disabled() -> None:
+    """RGB support is opt-in: defaults keep existing lidar-only behavior."""
+    config = RtabMapConfig()
+    assert config.color_image_enabled is False
+    # fx=0 is the "intrinsics not provided" sentinel; the binary refuses
+    # to build a CameraModel without it.
+    assert config.camera_fx == pytest.approx(0.0)
+    assert config.camera_fy == pytest.approx(0.0)
+
+
+def test_color_image_intrinsics_override() -> None:
+    """Caller can flip RGB on and pass through pinhole intrinsics."""
+    config = RtabMapConfig(
+        color_image_enabled=True,
+        camera_fx=600.0,
+        camera_fy=600.0,
+        camera_cx=320.0,
+        camera_cy=240.0,
+        camera_image_width=640,
+        camera_image_height=480,
+    )
+    assert config.color_image_enabled is True
+    assert config.camera_fx == pytest.approx(600.0)
+    assert config.camera_image_width == 640
 
 
 def test_config_accepts_overrides() -> None:

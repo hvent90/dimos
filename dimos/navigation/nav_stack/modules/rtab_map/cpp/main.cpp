@@ -25,10 +25,13 @@
 #include <Eigen/Geometry>
 #include <lcm/lcm-cpp.hpp>
 #include <opencv2/core.hpp>
+#include <opencv2/imgcodecs.hpp>
+#include <opencv2/imgproc.hpp>
 #include <pcl/point_cloud.h>
 #include <pcl/point_types.h>
 #include <pcl/common/transforms.h>
 
+#include <rtabmap/core/CameraModel.h>
 #include <rtabmap/core/Compression.h>
 #include <rtabmap/core/LaserScan.h>
 #include <rtabmap/core/LocalGrid.h>
@@ -44,6 +47,7 @@
 #include "point_cloud_utils.hpp"
 
 #include "nav_msgs/Odometry.hpp"
+#include "sensor_msgs/Image.hpp"
 #include "sensor_msgs/PointCloud2.hpp"
 
 namespace {
@@ -59,6 +63,73 @@ struct ScanFrame {
     rtabmap::Transform odom_pose;
     double timestamp = 0.0;
 };
+
+// Decode an LCM sensor_msgs::Image into a BGR cv::Mat (rtabmap's canonical
+// internal layout). Returns an empty Mat on unsupported encodings so the
+// caller can skip the frame without crashing the binary.
+cv::Mat decode_lcm_image(const sensor_msgs::Image& msg) {
+    if (msg.height <= 0 || msg.width <= 0 || msg.data.empty()) {
+        return cv::Mat();
+    }
+    const std::string& enc = msg.encoding;
+
+    if (enc == "jpeg") {
+        cv::Mat raw(1, static_cast<int>(msg.data.size()), CV_8UC1,
+                    const_cast<uint8_t*>(msg.data.data()));
+        cv::Mat decoded = cv::imdecode(raw, cv::IMREAD_COLOR);  // BGR
+        return decoded;
+    }
+
+    int cv_type = -1;
+    int channels = 0;
+    bool input_is_rgb = false;
+    bool input_is_gray = false;
+    if (enc == "bgr8") {
+        cv_type = CV_8UC3;
+        channels = 3;
+    } else if (enc == "rgb8") {
+        cv_type = CV_8UC3;
+        channels = 3;
+        input_is_rgb = true;
+    } else if (enc == "bgra8") {
+        cv_type = CV_8UC4;
+        channels = 4;
+    } else if (enc == "rgba8") {
+        cv_type = CV_8UC4;
+        channels = 4;
+        input_is_rgb = true;
+    } else if (enc == "mono8") {
+        cv_type = CV_8UC1;
+        channels = 1;
+        input_is_gray = true;
+    } else {
+        return cv::Mat();
+    }
+
+    const size_t expected = static_cast<size_t>(msg.height) *
+                            static_cast<size_t>(msg.width) *
+                            static_cast<size_t>(channels);
+    if (msg.data.size() < expected) {
+        return cv::Mat();
+    }
+
+    cv::Mat raw(msg.height, msg.width, cv_type,
+                const_cast<uint8_t*>(msg.data.data()));
+    cv::Mat bgr;
+    if (input_is_gray) {
+        cv::cvtColor(raw, bgr, cv::COLOR_GRAY2BGR);
+    } else if (channels == 4 && input_is_rgb) {
+        cv::cvtColor(raw, bgr, cv::COLOR_RGBA2BGR);
+    } else if (channels == 4) {
+        cv::cvtColor(raw, bgr, cv::COLOR_BGRA2BGR);
+    } else if (input_is_rgb) {
+        cv::cvtColor(raw, bgr, cv::COLOR_RGB2BGR);
+    } else {
+        // Already BGR — clone so we own the buffer after `msg` dies.
+        bgr = raw.clone();
+    }
+    return bgr;
+}
 
 rtabmap::Transform odom_from_lcm(const nav_msgs::Odometry& msg) {
     return rtabmap::Transform(
@@ -200,6 +271,44 @@ public:
         return true;
     }
 
+    void on_color_image(
+        const lcm::ReceiveBuffer*,
+        const std::string&,
+        const sensor_msgs::Image* msg) {
+        cv::Mat decoded = decode_lcm_image(*msg);
+        if (decoded.empty()) {
+            if (debug_) {
+                fprintf(stderr,
+                        "[rtab DEBUG] color_image dropped — unsupported encoding '%s' or empty data\n",
+                        msg->encoding.c_str());
+            }
+            return;
+        }
+        const double ts = msg->header.stamp.sec + msg->header.stamp.nsec / 1e9;
+        std::lock_guard<std::mutex> lock(rgb_mutex_);
+        latest_rgb_ = decoded;
+        latest_rgb_ts_ = ts;
+        has_rgb_ = true;
+        if (debug_ && (++rgb_count_ % 30 == 1)) {
+            fprintf(stderr,
+                    "[rtab DEBUG] color_image #%d ts=%.3f size=%dx%d enc=%s\n",
+                    rgb_count_, ts, decoded.cols, decoded.rows, msg->encoding.c_str());
+        }
+    }
+
+    // Return the latest RGB frame if its timestamp is within `max_dt` of
+    // `ref_ts`. Returns empty Mat if no RGB has arrived yet or it's too stale.
+    cv::Mat latest_rgb_within(double ref_ts, double max_dt, double* out_ts = nullptr) {
+        std::lock_guard<std::mutex> lock(rgb_mutex_);
+        if (!has_rgb_) return cv::Mat();
+        if (max_dt > 0.0 && std::abs(ref_ts - latest_rgb_ts_) > max_dt) {
+            return cv::Mat();
+        }
+        if (out_ts) *out_ts = latest_rgb_ts_;
+        // Clone so callers can mutate / hold past the next callback.
+        return latest_rgb_.clone();
+    }
+
     bool unregister_input_ = true;
     double scan_odom_max_dt_ = 0.2;  // seconds
     bool debug_ = false;
@@ -214,9 +323,15 @@ private:
     bool has_odom_ = false;
     double latest_odom_ts_ = 0.0;
 
+    std::mutex rgb_mutex_;
+    cv::Mat latest_rgb_;
+    bool has_rgb_ = false;
+    double latest_rgb_ts_ = 0.0;
+
     int odom_count_ = 0;
     int scan_count_ = 0;
     int scan_drops_ = 0;
+    int rgb_count_ = 0;
 };
 
 cv::Mat scan_to_cv_mat(const CloudType& cloud) {
@@ -303,6 +418,13 @@ int main(int argc, char** argv) {
     const std::string tf_topic = mod.topic("rtab_tf");
     const std::string octomap_topic = mod.topic("octomap");
     const std::string proj2d_topic = mod.topic("projected_2d_grid");
+    // Optional RGB input. Only present if the Python wrapper connected
+    // an Image source to color_image — when unconnected, NativeModule's
+    // _collect_topics skips emitting --color_image, so `has("color_image")`
+    // is false and we stay in lidar-only mode.
+    const bool color_image_arg_present = mod.has("color_image");
+    const std::string color_image_topic =
+        color_image_arg_present ? mod.topic("color_image") : "";
 
     // Frame names.
     const std::string world_frame = mod.arg("world_frame", "map");
@@ -437,6 +559,46 @@ int main(int argc, char** argv) {
     lcm.subscribe(odom_topic, &Handlers::on_odometry, &handlers);
     lcm.subscribe(scan_topic, &Handlers::on_registered_scan, &handlers);
 
+    // RGB plumbing. Two gates: (a) the wrapper must have wired up a
+    // color_image source (topic arg present), and (b) the user must
+    // have set non-zero fx/fy so we can build a valid CameraModel.
+    // Either missing → silently lidar-only.
+    const bool color_image_enabled = mod.arg_bool("color_image_enabled", false);
+    const double camera_fx = std::stod(mod.arg("camera_fx", "0"));
+    const double camera_fy = std::stod(mod.arg("camera_fy", "0"));
+    const double camera_cx = std::stod(mod.arg("camera_cx", "0"));
+    const double camera_cy = std::stod(mod.arg("camera_cy", "0"));
+    const int camera_image_width = std::stoi(mod.arg("camera_image_width", "0"));
+    const int camera_image_height = std::stoi(mod.arg("camera_image_height", "0"));
+    const double rgb_max_dt = std::stod(mod.arg("rgb_max_dt", "0.2"));
+    const bool rgb_intrinsics_valid = camera_fx > 0.0 && camera_fy > 0.0;
+    const bool rgb_active =
+        color_image_arg_present && color_image_enabled && rgb_intrinsics_valid;
+
+    // Camera→body rigid transform (defaults to identity).
+    rtabmap::Transform camera_local_transform(
+        static_cast<float>(std::stod(mod.arg("camera_local_x", "0"))),
+        static_cast<float>(std::stod(mod.arg("camera_local_y", "0"))),
+        static_cast<float>(std::stod(mod.arg("camera_local_z", "0"))),
+        static_cast<float>(std::stod(mod.arg("camera_local_qx", "0"))),
+        static_cast<float>(std::stod(mod.arg("camera_local_qy", "0"))),
+        static_cast<float>(std::stod(mod.arg("camera_local_qz", "0"))),
+        static_cast<float>(std::stod(mod.arg("camera_local_qw", "1"))));
+
+    rtabmap::CameraModel camera_model;
+    if (rgb_active) {
+        camera_model = rtabmap::CameraModel(
+            camera_fx, camera_fy, camera_cx, camera_cy,
+            camera_local_transform,
+            /*Tx=*/0.0,
+            cv::Size(camera_image_width, camera_image_height));
+        lcm.subscribe(color_image_topic, &Handlers::on_color_image, &handlers);
+    } else if (color_image_arg_present && color_image_enabled && !rgb_intrinsics_valid) {
+        fprintf(stderr,
+                "RtabMap: color_image stream connected but camera_fx/fy not set — "
+                "RGB frames will be ignored. Set camera_fx/fy/cx/cy in RtabMapConfig.\n");
+    }
+
     fprintf(stderr, "RtabMap native module started\n");
     fprintf(stderr, "  registered_scan: %s\n", scan_topic.c_str());
     fprintf(stderr, "  odometry: %s\n", odom_topic.c_str());
@@ -445,6 +607,16 @@ int main(int argc, char** argv) {
     fprintf(stderr, "  rtab_tf: %s\n", tf_topic.c_str());
     fprintf(stderr, "  octomap: %s\n", octomap_topic.c_str());
     fprintf(stderr, "  projected_2d_grid: %s\n", proj2d_topic.c_str());
+    if (rgb_active) {
+        fprintf(stderr,
+                "  color_image: %s (fx=%.2f fy=%.2f cx=%.2f cy=%.2f size=%dx%d max_dt=%.2fs)\n",
+                color_image_topic.c_str(), camera_fx, camera_fy, camera_cx, camera_cy,
+                camera_image_width, camera_image_height, rgb_max_dt);
+    } else if (color_image_arg_present) {
+        fprintf(stderr,
+                "  color_image: %s (connected but disabled — set color_image_enabled=True and camera_fx/fy)\n",
+                color_image_topic.c_str());
+    }
     // Echo the OctoMap log-odds params so we can verify at runtime that
     // the binary actually picked up the values we expect. Mis-passed
     // params silently fall back to rtabmap's defaults.
@@ -534,6 +706,37 @@ int main(int argc, char** argv) {
         data.setLaserScan(laser_scan);
         data.setId(++frame_id);
         data.setStamp(frame.timestamp);
+
+        // Attach the latest RGB frame if its timestamp is close enough to
+        // the scan. rtabmap stores the image on the resulting signature
+        // (visible in any rtabmap-databaseViewer dump) and — when feature
+        // extraction is enabled via Kp/* params — runs visual bag-of-words
+        // loop closure against the kept descriptors. With Reg/Strategy=1
+        // (ICP) the registration itself stays lidar-driven; RGB is purely
+        // additive for loop-closure recall and texturing.
+        if (rgb_active) {
+            double rgb_ts = 0.0;
+            cv::Mat rgb = handlers.latest_rgb_within(frame.timestamp, rgb_max_dt, &rgb_ts);
+            if (!rgb.empty()) {
+                // Empty depth tells rtabmap this is monocular; setRGBDImage
+                // leaves the laser scan in place (it only touches imageRaw,
+                // depthOrRightRaw, and cameraModels).
+                data.setRGBDImage(rgb, cv::Mat(), camera_model);
+                if (debug) {
+                    fprintf(stderr,
+                            "[rtab DEBUG] attached rgb to frame #%d — "
+                            "rgb_ts=%.3f scan_ts=%.3f dt=%.3f size=%dx%d\n",
+                            frame_id, rgb_ts, frame.timestamp,
+                            std::abs(rgb_ts - frame.timestamp),
+                            rgb.cols, rgb.rows);
+                }
+            } else if (debug) {
+                fprintf(stderr,
+                        "[rtab DEBUG] no rgb attached to frame #%d — "
+                        "no fresh frame within %.3fs of scan_ts=%.3f\n",
+                        frame_id, rgb_max_dt, frame.timestamp);
+            }
+        }
 
         // rtab.process internally calls LocalGridMaker (via Memory, when
         // RGBD/CreateOccupancyGrid=true), so the scan's local grid ends up
