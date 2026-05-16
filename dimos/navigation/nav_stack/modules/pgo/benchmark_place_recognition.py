@@ -14,20 +14,13 @@
 
 """How well can Scan Context tell "I've been here before" on KITTI-360?
 
+Score: Average Precision (AP): a single 0-1 number, Higher = better
 Replays a real driven trajectory, and for every frame asks the
 descriptor: of all the places I saw a while ago, which one looks most
 like where I am now? If that "most similar" old place is actually
 within a few metres of where I am, that's a correct revisit detection.
 
-The score we report is Average Precision (AP): a single 0-1 number
-summarising how well the descriptor separates correct revisits from
-wrong guesses across every confidence threshold. Higher = better
-place recognition. The published Scan Context paper gets 0.65-0.78
-on this sequence, so that's the bar.
-
-We use the same Python copy of the descriptor that ships with PGO
-(``cpp/scan_context.cpp``), so the number reflects what the deployed
-loop-closure pipeline actually sees.
+The published Scan Context paper gets 0.65-0.78 on this sequence, so that's the bar.
 
 Usage:
     uv run python -m dimos.navigation.nav_stack.modules.pgo.benchmark_place_recognition \\
