@@ -53,11 +53,8 @@ mid360_fastlio_voxels_native = autoconnect(
 ).global_config(n_workers=2, robot_model="mid360_fastlio2")
 
 
-# FastLio2 (with its own global voxel map disabled via map_freq=0) feeding the
-# Rust ray-tracing voxel map module.  The Rust module re-publishes on
-# `global_map`, which the rerun viewer picks up.
-mid360_fastlio_ray_tracing = autoconnect(
-    FastLio2.blueprint(voxel_size=voxel_size, map_freq=0),
+mid360_fastlio_ray_trace = autoconnect(
+    FastLio2.blueprint(voxel_size=voxel_size, map_voxel_size=voxel_size, map_freq=-1),
     RayTracingVoxelMap.blueprint(voxel_size=voxel_size),
     vis_module(
         "rerun",
@@ -67,4 +64,4 @@ mid360_fastlio_ray_tracing = autoconnect(
             },
         },
     ),
-).global_config(n_workers=3, robot_model="mid360_fastlio2_voxels")
+).global_config(n_workers=3, robot_model="mid360_fastlio2_ray_trace")
