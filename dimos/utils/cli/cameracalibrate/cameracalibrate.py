@@ -64,6 +64,24 @@ class Source(str, Enum):
     topic = "topic"
 
 
+class DistortionModel(str, Enum):
+    """Distortion model selected for ``calibrate_from_frames``.
+
+    - ``plumb_bob``: ``cv2.calibrateCamera`` with 5-coefficient radial-tangential
+      model. Good for near-pinhole lenses (narrow webcams, etc).
+    - ``fisheye``: ``cv2.fisheye.calibrate`` with the 4-coefficient
+      Kannala-Brandt model. Required for genuine fisheye / very wide-angle lenses
+      (e.g. the Go2 front camera). The YAML written for this model uses the
+      ROS-canonical name ``equidistant``.
+    """
+
+    plumb_bob = "plumb_bob"
+    fisheye = "fisheye"
+
+    def to_ros_name(self) -> str:
+        return "equidistant" if self is DistortionModel.fisheye else self.value
+
+
 app = typer.Typer(
     help="Calibrate camera intrinsics and write ROS CameraInfo YAML.",
     no_args_is_help=True,
@@ -630,6 +648,59 @@ def _select_calibration_pattern(
     return best_cols, best_rows, best_label
 
 
+def _calibrate_pinhole(
+    objpoints: list[np.ndarray],
+    imgpoints: list[np.ndarray],
+    image_size: tuple[int, int],
+) -> tuple[float, np.ndarray, np.ndarray]:
+    """Run ``cv2.calibrateCamera`` (plumb-bob)."""
+    _calibrate = cast("Callable[..., Any]", cv2.calibrateCamera)
+    rms, camera_matrix, dist_coeffs, _rvecs, _tvecs = _calibrate(
+        objpoints,
+        imgpoints,
+        image_size,
+        None,
+        None,
+    )
+    K = np.asarray(camera_matrix, dtype=np.float64)
+    D = np.asarray(dist_coeffs, dtype=np.float64).reshape(-1)
+    return float(rms), K, D
+
+
+def _calibrate_fisheye(
+    objpoints: list[np.ndarray],
+    imgpoints: list[np.ndarray],
+    image_size: tuple[int, int],
+) -> tuple[float, np.ndarray, np.ndarray]:
+    """Run ``cv2.fisheye.calibrate`` (4-coeff Kannala-Brandt).
+
+    ``objpoints`` must be a list of ``(N, 1, 3)`` arrays and ``imgpoints`` a list of
+    ``(N, 1, 2)`` arrays (the fisheye solver is strict about the extra middle axis).
+    """
+    K = np.zeros((3, 3), dtype=np.float64)
+    D = np.zeros((4, 1), dtype=np.float64)
+    n_views = len(objpoints)
+    rvecs = [np.zeros((1, 1, 3), dtype=np.float64) for _ in range(n_views)]
+    tvecs = [np.zeros((1, 1, 3), dtype=np.float64) for _ in range(n_views)]
+    flags = cv2.fisheye.CALIB_RECOMPUTE_EXTRINSIC | cv2.fisheye.CALIB_FIX_SKEW
+    criteria = (cv2.TERM_CRITERIA_EPS + cv2.TERM_CRITERIA_MAX_ITER, 30, 1e-6)
+    _calibrate = cast("Callable[..., Any]", cv2.fisheye.calibrate)
+    rms, camera_matrix, dist_coeffs, _rvecs, _tvecs = _calibrate(
+        objpoints,
+        imgpoints,
+        image_size,
+        K,
+        D,
+        rvecs,
+        tvecs,
+        flags,
+        criteria,
+    )
+    K_out = np.asarray(camera_matrix, dtype=np.float64)
+    D_out = np.asarray(dist_coeffs, dtype=np.float64).reshape(-1)
+    return float(rms), K_out, D_out
+
+
 def calibrate_from_frames(
     frames: list[np.ndarray],
     cols: int,
@@ -638,11 +709,15 @@ def calibrate_from_frames(
     *,
     pattern_hint: tuple[int, int, str] | None = None,
     image_points_hint: list[np.ndarray] | None = None,
+    distortion_model: DistortionModel | str = DistortionModel.plumb_bob,
 ) -> CalibrationResultDict:
     """Calibrate intrinsics from grayscale or BGR frames containing a chessboard.
 
     Each frame where ``find_chessboard_corners`` succeeds contributes one view.
     All frames must share the same resolution.
+
+    ``distortion_model`` picks the solver: ``plumb_bob`` (``cv2.calibrateCamera``,
+    5 coeffs) or ``fisheye`` (``cv2.fisheye.calibrate``, 4 coeffs).
 
     Returns:
         ``{"K", "D", "rms", "image_size", "n_used"}`` with ``K`` (3x3) and ``D`` (1-d),
@@ -652,15 +727,20 @@ def calibrate_from_frames(
     if not frames:
         raise ValueError("frames must be non-empty")
 
+    model = DistortionModel(distortion_model)
+
     if pattern_hint is None:
         actual_cols, actual_rows, pattern_label = _select_calibration_pattern(frames, cols, rows)
     else:
         actual_cols, actual_rows, pattern_label = pattern_hint
 
-    # Object points on Z=0 with XY spacing square_size_m; pairs with image_points from the detector.
-    objp = np.zeros((actual_rows * actual_cols, 3), dtype=np.float32)
-    objp[:, :2] = np.mgrid[0:actual_cols, 0:actual_rows].T.reshape(-1, 2).astype(np.float32)
-    objp *= float(square_size_m)
+    # Object points on Z=0 with XY spacing square_size_m. cv2.fisheye.calibrate
+    # demands an explicit middle axis on each view; cv2.calibrateCamera is fine
+    # with the flat (N, 3) shape.
+    objp_flat = np.zeros((actual_rows * actual_cols, 3), dtype=np.float32)
+    objp_flat[:, :2] = np.mgrid[0:actual_cols, 0:actual_rows].T.reshape(-1, 2).astype(np.float32)
+    objp_flat *= float(square_size_m)
+    objp_view = objp_flat.reshape(-1, 1, 3) if model is DistortionModel.fisheye else objp_flat
 
     objpoints: list[np.ndarray] = []
     imgpoints: list[np.ndarray] = []
@@ -694,22 +774,16 @@ def calibrate_from_frames(
             if corners_opt is None:
                 continue
             corners_found = corners_opt
-        objpoints.append(objp)
+        objpoints.append(objp_view)
         imgpoints.append(corners_found.astype(np.float32))
 
     if not objpoints:
         raise ValueError("Chessboard not found in any frame.")
 
-    _calibrate = cast("Callable[..., Any]", cv2.calibrateCamera)
-    rms, camera_matrix, dist_coeffs, _rvecs, _tvecs = _calibrate(
-        objpoints,
-        imgpoints,
-        (w0, h0),
-        None,
-        None,
-    )
-    K = np.asarray(camera_matrix, dtype=np.float64)
-    D = np.asarray(dist_coeffs, dtype=np.float64).reshape(-1)
+    if model is DistortionModel.fisheye:
+        rms, K, D = _calibrate_fisheye(objpoints, imgpoints, (w0, h0))
+    else:
+        rms, K, D = _calibrate_pinhole(objpoints, imgpoints, (w0, h0))
 
     return {
         "K": K,
@@ -761,9 +835,11 @@ def run_calibration(
     camera_name: str,
     target_count: int,
     no_display: bool,
+    distortion_model: DistortionModel | str = DistortionModel.plumb_bob,
 ) -> CalibrationRunResultDict:
     """Run calibration from the requested frame source and write CameraInfo YAML."""
     source_value = Source(source)
+    model = DistortionModel(distortion_model)
     if cols < 1:
         raise ValueError("cols must be >= 1")
     if rows < 1:
@@ -812,6 +888,7 @@ def run_calibration(
         square_size_m,
         pattern_hint=pattern_hint,
         image_points_hint=image_points_hint,
+        distortion_model=model,
     )
     result: CalibrationRunResultDict = {
         "K": cal["K"],
@@ -833,6 +910,7 @@ def run_calibration(
             camera_name=camera_name,
             K=np.asarray(result["K"], dtype=np.float64),
             D=np.asarray(result["D"], dtype=np.float64),
+            distortion_model=model.to_ros_name(),
         )
         result["out_path"] = out
 
@@ -877,6 +955,15 @@ def calibrate(
     camera_name: str = typer.Option("webcam", "--camera-name", help="Camera name in YAML"),
     target_count: int = typer.Option(20, "--target-count", help="Accepted webcam frame count"),
     no_display: bool = typer.Option(False, "--no-display", help="Disable OpenCV preview windows"),
+    distortion_model: DistortionModel = typer.Option(
+        DistortionModel.plumb_bob,
+        "--distortion-model",
+        help=(
+            "Lens model: 'plumb_bob' (cv2.calibrateCamera, 5 coeffs) for near-pinhole "
+            "lenses, or 'fisheye' (cv2.fisheye.calibrate, 4 coeffs) for wide-angle / "
+            "fisheye lenses. Fisheye writes ROS 'equidistant' to the YAML."
+        ),
+    ),
 ) -> None:
     """Calibrate camera intrinsics and write ROS CameraInfo YAML."""
     if preview_out is not None and out is None:
@@ -897,6 +984,7 @@ def calibrate(
             camera_name=camera_name,
             target_count=target_count,
             no_display=no_display,
+            distortion_model=distortion_model,
         )
     except (ValueError, RuntimeError) as exc:
         raise typer.BadParameter(str(exc)) from exc

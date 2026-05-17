@@ -25,6 +25,7 @@ from typer.testing import CliRunner
 from dimos.msgs.sensor_msgs.CameraInfo import CameraInfo as DimosCameraInfo
 from dimos.perception.common.utils import load_camera_info, load_camera_info_opencv
 from dimos.utils.cli.cameracalibrate.cameracalibrate import (
+    DistortionModel,
     app,
     calibrate_from_frames,
     capture_frames_from_topic,
@@ -192,6 +193,7 @@ def test_cli_help_lists_cameracalibrate_flags() -> None:
         "--camera-name",
         "--target-count",
         "--no-display",
+        "--distortion-model",
     ]:
         assert flag in output_plain
 
@@ -662,6 +664,149 @@ def test_calibrate_from_frames_accepts_square_count_request() -> None:
     assert out["n_used"] == 10
     assert out["pattern_size"] == (11, 7)
     assert out["pattern_label"] == "requested square count"
+
+
+def _synthetic_fisheye_image_points(
+    *,
+    cols: int = 9,
+    rows: int = 6,
+    width: int = 1280,
+    height: int = 720,
+    square_size_m: float = 0.025,
+    count: int = 15,
+    K_true: np.ndarray | None = None,
+    D_true: np.ndarray | None = None,
+) -> tuple[list[np.ndarray], list[np.ndarray], np.ndarray, np.ndarray]:
+    """Project a flat chessboard through a known fisheye model.
+
+    Returns ``(dummy_frames, image_points_hint, K_true, D_true)``: the frames are
+    just zeros sized correctly so ``calibrate_from_frames`` accepts them; the
+    image-point hints carry the synthetic projections so the solver can run
+    without a real corner detector.
+    """
+    if K_true is None:
+        K_true = np.array(
+            [[400.0, 0.0, width / 2.0], [0.0, 400.0, height / 2.0], [0.0, 0.0, 1.0]],
+            dtype=np.float64,
+        )
+    if D_true is None:
+        D_true = np.array([-0.05, 0.01, 0.0, 0.0], dtype=np.float64)
+
+    objp = np.zeros((rows * cols, 1, 3), dtype=np.float32)
+    objp[:, 0, :2] = np.mgrid[0:cols, 0:rows].T.reshape(-1, 2).astype(np.float32)
+    objp *= float(square_size_m)
+
+    rng = np.random.default_rng(0)
+    dummy_frames: list[np.ndarray] = []
+    image_points_hint: list[np.ndarray] = []
+    margin_px = 20  # keep projections strictly inside frame so the solver is well-conditioned
+    while len(dummy_frames) < count:
+        rvec = rng.uniform(-0.25, 0.25, size=3).astype(np.float64).reshape(1, 1, 3)
+        tvec = np.array(
+            [
+                rng.uniform(-0.03, 0.03),
+                rng.uniform(-0.03, 0.03),
+                rng.uniform(0.45, 0.65),
+            ],
+            dtype=np.float64,
+        ).reshape(1, 1, 3)
+        imgpts, _ = cv2.fisheye.projectPoints(objp, rvec, tvec, K_true, D_true)
+        pts = np.asarray(imgpts, dtype=np.float64).reshape(-1, 2)
+        if (
+            pts[:, 0].min() < margin_px
+            or pts[:, 0].max() > width - margin_px
+            or pts[:, 1].min() < margin_px
+            or pts[:, 1].max() > height - margin_px
+        ):
+            continue
+        image_points_hint.append(np.asarray(imgpts, dtype=np.float32).reshape(-1, 1, 2))
+        dummy_frames.append(np.zeros((height, width), dtype=np.uint8))
+    return dummy_frames, image_points_hint, K_true, D_true
+
+
+def test_calibrate_from_frames_fisheye_recovers_K_near_truth_and_emits_four_coeffs() -> None:
+    """Synthetic fisheye projections recover ``K`` close to truth and yield 4 dist coeffs."""
+    cols, rows = 9, 6
+    width, height = 1280, 720
+    square_size_m = 0.025
+    frames, image_points, K_true, _D_true = _synthetic_fisheye_image_points(
+        cols=cols,
+        rows=rows,
+        width=width,
+        height=height,
+        square_size_m=square_size_m,
+        count=15,
+    )
+
+    out = calibrate_from_frames(
+        frames,
+        cols,
+        rows,
+        square_size_m,
+        pattern_hint=(cols, rows, "requested inner corners"),
+        image_points_hint=image_points,
+        distortion_model=DistortionModel.fisheye,
+    )
+
+    assert out["n_used"] == 15
+    assert out["image_size"] == (width, height)
+
+    K_est = np.asarray(out["K"], dtype=np.float64).reshape(3, 3)
+    # Fisheye solve from synthetic projections should land within ~5% on fx/fy
+    # and within a couple of pixels on the principal point.
+    rel_focal = max(
+        abs(K_est[0, 0] - K_true[0, 0]) / K_true[0, 0],
+        abs(K_est[1, 1] - K_true[1, 1]) / K_true[1, 1],
+    )
+    assert rel_focal < 0.05, f"focal length recovery off by {rel_focal:.3%}"
+    assert abs(K_est[0, 2] - K_true[0, 2]) < 5.0
+    assert abs(K_est[1, 2] - K_true[1, 2]) < 5.0
+
+    D_est = np.asarray(out["D"], dtype=np.float64).ravel()
+    assert D_est.shape == (4,), "fisheye writes 4 distortion coefficients"
+
+
+def test_cli_distortion_model_fisheye_writes_equidistant_yaml_and_four_coeffs(
+    tmp_path: Path,
+) -> None:
+    """``--distortion-model fisheye`` produces a YAML with the ROS-canonical name."""
+    cols, rows = 9, 6
+    frames, image_points, _K_true, _D_true = _synthetic_fisheye_image_points(
+        cols=cols, rows=rows, count=15
+    )
+    images_dir = tmp_path / "fisheye_frames"
+    images_dir.mkdir()
+    for i, frame in enumerate(frames):
+        assert cv2.imwrite(str(images_dir / f"{i:02d}.png"), frame)
+
+    # The folder source has no chessboard corners in the synthetic dummies, so route
+    # through calibrate_from_frames directly to exercise the YAML emit path.
+    out_path = tmp_path / "fisheye.yaml"
+    cal = calibrate_from_frames(
+        frames,
+        cols,
+        rows,
+        0.025,
+        pattern_hint=(cols, rows, "requested inner corners"),
+        image_points_hint=image_points,
+        distortion_model=DistortionModel.fisheye,
+    )
+    write_camera_info_yaml(
+        str(out_path),
+        image_width=int(cal["image_size"][0]),
+        image_height=int(cal["image_size"][1]),
+        camera_name="fisheye_test",
+        K=np.asarray(cal["K"], dtype=np.float64),
+        D=np.asarray(cal["D"], dtype=np.float64),
+        distortion_model=DistortionModel.fisheye.to_ros_name(),
+    )
+
+    import yaml as _yaml
+
+    payload = _yaml.safe_load(out_path.read_text(encoding="utf-8"))
+    assert payload["distortion_model"] == "equidistant"
+    assert payload["distortion_coefficients"]["cols"] == 4
+    assert len(payload["distortion_coefficients"]["data"]) == 4
 
 
 def test_write_camera_info_yaml_round_trip_matches_k_d_size_and_model(tmp_path: Path) -> None:
