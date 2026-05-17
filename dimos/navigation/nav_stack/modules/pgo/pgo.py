@@ -78,6 +78,12 @@ class PGOConfig(NativeModuleConfig):
     scan_context_match_threshold: float = 0.4
     scan_context_lidar_height_m: float = 2.0
 
+    # Skip ICP on candidates farther than this (m). 0 disables.
+    loop_candidate_max_distance_m: float = 30.0
+
+    # True: drop stale queued scans each tick. False: strict FIFO.
+    drain_stale_scans: bool = True
+
     debug: bool = False
 
 

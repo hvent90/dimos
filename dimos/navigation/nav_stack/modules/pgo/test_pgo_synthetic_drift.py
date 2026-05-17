@@ -79,6 +79,9 @@ POST_FEED_DRAIN_SEC = 3.0
 POLL_INTERVAL_SEC = 0.25
 # After the first scan goes out, wait this long for PGO to emit anything
 PGO_FIRST_RESPONSE_TIMEOUT_SEC = 20.0
+# Floor on the republish interval while waiting for PGO's first ack,
+# so a fast inter_frame_sleep_sec doesn't spam duplicates at PGO.
+MIN_REPUBLISH_INTERVAL_SEC = 0.2
 
 
 def _make_room_points(half_size: float = 20.0, density: float = 0.15) -> np.ndarray:
@@ -306,22 +309,33 @@ class SyntheticDriftPlaybackModule(Module):
                 self.registered_scan.publish(scan_message)
                 self._frames_published += 1
                 if frame_index == 0:
-                    # Wait for PGO to publish anything (corrected_odometry)
-                    # before sending the rest of the trajectory, so we don't
-                    # race PGO's startup.
-                    try:
-                        await asyncio.wait_for(
-                            self._pgo_first_response.wait(),
-                            timeout=self.config.pgo_first_response_timeout_sec,
-                        )
-                    except asyncio.TimeoutError:
-                        raise RuntimeError(
-                            "PGO didn't start in time: no corrected_odometry "
-                            f"received within {self.config.pgo_first_response_timeout_sec:.1f}s "
-                            "of the first scan. Bump PGO_FIRST_RESPONSE_TIMEOUT_SEC "
-                            "(top of test_pgo_synthetic_drift.py) if PGO needs longer to "
-                            "start on this host."
-                        ) from None
+                    # Republish until PGO echoes corrected_odometry — a
+                    # one-shot races PGO's subscription handshake.
+                    deadline = (
+                        asyncio.get_event_loop().time() + self.config.pgo_first_response_timeout_sec
+                    )
+                    retry_interval = max(
+                        self.config.inter_frame_sleep_sec, MIN_REPUBLISH_INTERVAL_SEC
+                    )
+                    while not self._pgo_first_response.is_set():
+                        remaining = deadline - asyncio.get_event_loop().time()
+                        if remaining <= 0:
+                            raise RuntimeError(
+                                "PGO didn't start in time: no corrected_odometry "
+                                f"received within "
+                                f"{self.config.pgo_first_response_timeout_sec:.1f}s "
+                                "of the first scan. Bump PGO_FIRST_RESPONSE_TIMEOUT_SEC "
+                                "(top of test_pgo_synthetic_drift.py) if PGO needs longer to "
+                                "start on this host."
+                            )
+                        try:
+                            await asyncio.wait_for(
+                                self._pgo_first_response.wait(),
+                                timeout=min(retry_interval, remaining),
+                            )
+                        except asyncio.TimeoutError:
+                            self.odometry.publish(odometry_message)
+                            self.registered_scan.publish(scan_message)
                 if self.config.inter_frame_sleep_sec > 0:
                     await asyncio.sleep(self.config.inter_frame_sleep_sec)
         except Exception as exc:

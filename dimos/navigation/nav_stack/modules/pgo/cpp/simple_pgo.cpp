@@ -237,6 +237,17 @@ void SimplePGO::searchForLoopPairs()
     if (loop_idx < 0)
         return;
 
+    // Scan-context can false-match on similar structure (parking lots,
+    // intersections) anywhere in the trajectory. Skip if positionally
+    // implausible, so the ICP gate isn't the only filter.
+    if (m_config.loop_candidate_max_distance_m > 0.0)
+    {
+        double candidate_distance =
+            (m_key_poses[cur_idx].t_global - m_key_poses[loop_idx].t_global).norm();
+        if (candidate_distance > m_config.loop_candidate_max_distance_m)
+            return;
+    }
+
     // Use Scan Context's column shift to seed ICP with a yaw-aligned initial
     // guess, which dramatically improves convergence on revisits at
     // different headings. Both submaps are in *global* frame, so a naive

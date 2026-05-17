@@ -44,13 +44,19 @@ from dimos.navigation.nav_stack.tests.rosbag_fixtures import (
 )
 
 FIRST_RESPONSE_TIMEOUT_SEC = 120.0
+# Minimum gap between re-publishes of the first scan while waiting for
+# the SUT to ack. Lower-bound on the publish_interval_sec so a fast
+# benchmark doesn't hammer the SUT with duplicate sends.
+MIN_REPUBLISH_INTERVAL_SEC = 0.2
 
 
 class Kitti360PlaybackConfig(ModuleConfig):
     kitti360_root: str
     sequence_id: int = 2
     max_scans: int | None = None
-    publish_interval_sec: float = 0.02
+    # KITTI native lidar rate is 10Hz. SUTs with drain-and-discard
+    # ticks (e.g. PGO at 20Hz) drop scans if published faster.
+    publish_interval_sec: float = 0.1
     first_response_timeout_sec: float = FIRST_RESPONSE_TIMEOUT_SEC
 
 
@@ -113,17 +119,9 @@ class Kitti360PlaybackModule(Module):
 
                 self._frames_published = index + 1
                 if index == 0:
-                    try:
-                        await asyncio.wait_for(
-                            self._first_response_event.wait(),
-                            timeout=self.config.first_response_timeout_sec,
-                        )
-                    except asyncio.TimeoutError:
-                        raise RuntimeError(
-                            "No corrected_odometry within "
-                            f"{self.config.first_response_timeout_sec:.1f}s of "
-                            "the first scan — playback aborted"
-                        ) from None
+                    # Republish until SUT echoes corrected_odometry — a
+                    # one-shot races the SUT's subscription handshake.
+                    await self._wait_for_first_response(odometry_message, cloud_message)
                 if self.config.publish_interval_sec > 0:
                     await asyncio.sleep(self.config.publish_interval_sec)
         except Exception as exc:
@@ -131,6 +129,29 @@ class Kitti360PlaybackModule(Module):
             raise
         finally:
             self._playback_finished = True
+
+    async def _wait_for_first_response(
+        self, odometry_message: Odometry, cloud_message: PointCloud2
+    ) -> None:
+        assert self._first_response_event is not None
+        deadline = asyncio.get_event_loop().time() + self.config.first_response_timeout_sec
+        retry_interval = max(self.config.publish_interval_sec, MIN_REPUBLISH_INTERVAL_SEC)
+        while not self._first_response_event.is_set():
+            remaining = deadline - asyncio.get_event_loop().time()
+            if remaining <= 0:
+                raise RuntimeError(
+                    "No corrected_odometry within "
+                    f"{self.config.first_response_timeout_sec:.1f}s of "
+                    "the first scan — playback aborted"
+                )
+            try:
+                await asyncio.wait_for(
+                    self._first_response_event.wait(),
+                    timeout=min(retry_interval, remaining),
+                )
+            except asyncio.TimeoutError:
+                self.odometry.publish(odometry_message)
+                self.registered_scan.publish(cloud_message)
 
     @rpc
     def frames_published(self) -> int:
