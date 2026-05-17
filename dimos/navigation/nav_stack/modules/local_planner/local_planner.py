@@ -43,9 +43,6 @@ class LocalPlannerConfig(NativeModuleConfig):
         "nix build github:dimensionalOS/dimos-module-local-planner/feat/configurable-body-frame"
         " --no-write-lock-file"
     )
-    # The binary emits [DIMOS_NATIVE_READY] after LCM subscribes are live.
-    ready_timeout_sec: float = 10.0
-
     # C++ binary uses camelCase CLI args.
     cli_name_override: dict[str, str] = {
         "max_speed": "maxSpeed",

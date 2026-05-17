@@ -36,8 +36,6 @@ class FarPlannerConfig(NativeModuleConfig):
     build_command: str | None = (
         "nix build github:dimensionalOS/dimos-module-far-planner/v0.7.0 --no-write-lock-file"
     )
-    # The binary emits [DIMOS_NATIVE_READY] after LCM subscribes are live.
-    ready_timeout_sec: float = 10.0
 
     # C++ binary uses snake_case CLI args. frame_id -> --world_frame maps
     # the new Python builtin name back to the legacy C++ arg.

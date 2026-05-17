@@ -73,8 +73,6 @@ class FastLio2Config(NativeModuleConfig):
     cwd: str | None = "cpp"
     executable: str = "result/bin/fastlio2_native"
     build_command: str | None = "nix build .#fastlio2_native"
-    # The fastlio2 binary emits [DIMOS_NATIVE_READY] after Livox SDK is up.
-    ready_timeout_sec: float = 15.0
     # Livox SDK hardware config
     host_ip: str = "192.168.1.5"
     lidar_ip: str = "192.168.1.155"
