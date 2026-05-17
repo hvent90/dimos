@@ -30,7 +30,12 @@ from dimos.core.coordination.worker_manager_python import WorkerManagerPython
 from dimos.core.global_config import GlobalConfig, global_config
 from dimos.core.module import ModuleBase, ModuleSpec
 from dimos.core.resource import Resource
-from dimos.core.transport import LCMTransport, PubSubTransport, pLCMTransport
+from dimos.core.transport import (
+    LCMTransport,
+    PubSubTransport,
+    pLCMTransport,
+    pSHMTransport,
+)
 from dimos.spec.utils import is_spec, spec_annotation_compliance, spec_structural_compliance
 from dimos.utils.generic import short_id
 from dimos.utils.logging_config import setup_logger
@@ -543,7 +548,15 @@ def _get_transport_for(blueprint: Blueprint, name: str, stream_type: type) -> Pu
 
     use_pickled = getattr(stream_type, "lcm_encode", None) is None
     topic = f"/{name}" if _is_name_unique(blueprint, name) else f"/{short_id()}"
-    transport = pLCMTransport(topic) if use_pickled else LCMTransport(topic, stream_type)
+    if sys.platform == "darwin":
+        # macOS LCM is unusable (privacy monitoring + multicast pain), so route
+        # everything through shared memory. SHMTransport doesn't encode typed
+        # messages — it just passes them through to BytesSharedMemory which
+        # then rejects non-bytes — so always use pSHMTransport (pickled),
+        # which handles arbitrary message objects.
+        transport = pSHMTransport(topic)
+    else:
+        transport = pLCMTransport(topic) if use_pickled else LCMTransport(topic, stream_type)
 
     return transport
 
