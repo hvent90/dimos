@@ -274,7 +274,7 @@ class ApplyClosure(Module):
         t0 = time.monotonic()
         corrected = apply_closure_to_cloud(cloud, msg)
         corrected.ts = time.time()
-        self.corrected_global_map.publish(corrected)
+        self.map_override.publish(corrected)
         if self.config.log_each_apply:
             logger.info(
                 "ApplyClosure applied",
