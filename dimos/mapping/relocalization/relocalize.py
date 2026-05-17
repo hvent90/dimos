@@ -210,7 +210,7 @@ def relocalize(
             RERANK_DIST,
             T0,
             tukey,
-            _reg.ICPConvergenceCriteria(max_iteration=100),
+            _reg.ICPConvergenceCriteria(max_iteration=70),
         )
         polished.append((float(r.fitness), np.asarray(r.transformation)))
     best_fit, best_T = max(polished, key=lambda fT: fT[0])
