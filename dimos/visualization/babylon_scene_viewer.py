@@ -139,6 +139,9 @@ class BabylonSceneViewerModule(Module):
     path: In[PathMsg]
     pointcloud_overlay: In[PointCloud2]
     camera_image: In[Image]
+    # Optional second camera (e.g. a workspace-facing realsense). If a
+    # transport is wired, a second camera panel shows up in the HUD.
+    workspace_image: In[Image]
     clicked_point: Out[PointStamped]
     point_goal: Out[PointStamped]
     cmd_vel: Out[Twist]
@@ -163,6 +166,7 @@ class BabylonSceneViewerModule(Module):
         camera_hz: float = _DEFAULT_CAMERA_HZ,
         camera_jpeg_quality: int = _DEFAULT_CAMERA_JPEG_QUALITY,
         camera_name: str = "camera",
+        workspace_name: str = "workspace",
         **kwargs: Any,
     ) -> None:
         super().__init__(**kwargs)
@@ -180,6 +184,8 @@ class BabylonSceneViewerModule(Module):
         self._camera_min_dt = 1.0 / float(camera_hz)
         self._camera_jpeg_quality = int(camera_jpeg_quality)
         self._camera_name = camera_name
+        self._workspace_name = workspace_name
+        self._last_workspace_sent = 0.0
 
         self._state_lock = threading.Lock()
         self._latest_joints: dict[str, float] = {}
@@ -229,6 +235,12 @@ class BabylonSceneViewerModule(Module):
         self.register_disposable(
             Disposable(self.camera_image.subscribe(self._on_camera_image))
         )
+        try:
+            self.register_disposable(
+                Disposable(self.workspace_image.subscribe(self._on_workspace_image))
+            )
+        except Exception:
+            logger.debug("BabylonViewer: workspace_image not wired; skipping second camera")
 
         self._broadcast_thread = threading.Thread(
             target=self._broadcast_loop,
@@ -543,13 +555,20 @@ class BabylonSceneViewerModule(Module):
         self._broadcast_from_thread(payload)
 
     def _on_camera_image(self, msg: Image) -> None:
-        # Rate-limit to avoid saturating the websocket with multi-MB frames
-        # when the publisher pushes at 30+ Hz.
+        self._broadcast_camera(msg, self._camera_name, is_workspace=False)
+
+    def _on_workspace_image(self, msg: Image) -> None:
+        self._broadcast_camera(msg, self._workspace_name, is_workspace=True)
+
+    def _broadcast_camera(self, msg: Image, name: str, *, is_workspace: bool) -> None:
+        # Rate-limit per-camera to avoid saturating the websocket with multi-MB
+        # frames when the publisher pushes at 30+ Hz.
         now = time.monotonic()
         with self._camera_lock:
-            if now - self._last_camera_sent < self._camera_min_dt:
+            last_attr = "_last_workspace_sent" if is_workspace else "_last_camera_sent"
+            if now - getattr(self, last_attr) < self._camera_min_dt:
                 return
-            self._last_camera_sent = now
+            setattr(self, last_attr, now)
 
         try:
             jpeg = self._encode_jpeg(msg)
@@ -563,8 +582,8 @@ class BabylonSceneViewerModule(Module):
         #   byte 0:      _WS_MSG_CAMERA (0x01)
         #   bytes 1-2:   name length (big-endian uint16)
         #   bytes 3..:   utf-8 camera name, then JPEG payload
-        name = self._camera_name.encode("utf-8")[:65535]
-        header = bytes([_WS_MSG_CAMERA]) + len(name).to_bytes(2, "big") + name
+        name_bytes = name.encode("utf-8")[:65535]
+        header = bytes([_WS_MSG_CAMERA]) + len(name_bytes).to_bytes(2, "big") + name_bytes
         self._broadcast_bytes_from_thread(header + jpeg)
 
     def _encode_jpeg(self, msg: Image) -> bytes | None:
@@ -849,6 +868,40 @@ _HTML = r"""<!doctype html>
         display: none;
       }
 
+      /* Workspace camera panel (optional second feed) — same look as the
+         primary panel, stacked to the left of it. Hidden until first frame. */
+      #workspacePanel {
+        position: fixed;
+        right: 392px;     /* 360 + 16 + 16 */
+        bottom: 16px;
+        width: 360px;
+        max-width: calc(100vw - 32px);
+        border: 1px solid rgb(255 255 255 / 12%);
+        border-radius: 8px;
+        background: rgb(17 20 26 / 82%);
+        backdrop-filter: blur(10px);
+        overflow: hidden;
+        display: flex;
+        flex-direction: column;
+      }
+      #workspacePanel[data-has-frame="false"],
+      #workspacePanel[data-active="false"] {
+        display: none;
+      }
+      #workspaceHeader {
+        padding: 6px 10px;
+        font-size: 12px;
+        color: rgb(255 255 255 / 70%);
+        border-bottom: 1px solid rgb(255 255 255 / 8%);
+      }
+      #workspaceImg {
+        width: 100%;
+        display: block;
+        aspect-ratio: 4 / 3;
+        object-fit: cover;
+        background: #000;
+      }
+
       #armsPanel {
         position: fixed;
         right: 16px;
@@ -975,6 +1028,12 @@ _HTML = r"""<!doctype html>
       </div>
       <img id="cameraImg" alt="" />
       <div id="cameraEmpty">waiting for frames…</div>
+    </div>
+    <div id="workspacePanel" data-active="true" data-has-frame="false">
+      <div id="workspaceHeader">
+        <span id="workspaceLabel">workspace</span>
+      </div>
+      <img id="workspaceImg" alt="" />
     </div>
     <div id="armsPanel" data-active="false">
       <div id="armsHeader">Arm joints</div>
@@ -1531,7 +1590,27 @@ _HTML = r"""<!doctype html>
       //   bytes 1-2:   name length (big-endian uint16)
       //   bytes 3..n:  utf-8 camera name
       //   bytes n..:   payload (JPEG bytes for camera)
-      let _lastCameraURL = null;
+      // Per-camera state. Each entry tracks its <img> element, label, and
+      // the last object URL so we can revoke it after the next swap.
+      const _cameraTargets = {
+        // First camera ("camera" by default) lives in the primary panel.
+        // Any other named camera (e.g. "workspace") lives in the secondary
+        // panel. The mapping is by exact name match so dimos-side renames
+        // need to be mirrored here.
+        primary: {
+          img: () => document.getElementById("cameraImg"),
+          label: () => document.getElementById("cameraLabel"),
+          panel: () => document.getElementById("cameraPanel"),
+          lastUrl: null,
+        },
+        workspace: {
+          img: () => document.getElementById("workspaceImg"),
+          label: () => document.getElementById("workspaceLabel"),
+          panel: () => document.getElementById("workspacePanel"),
+          lastUrl: null,
+        },
+      };
+
       function handleBinaryMessage(buffer) {
         const view = new DataView(buffer);
         const msgType = view.getUint8(0);
@@ -1542,15 +1621,19 @@ _HTML = r"""<!doctype html>
         const jpegBytes = new Uint8Array(buffer, 3 + nameLen);
         const blob = new Blob([jpegBytes], { type: "image/jpeg" });
         const url = URL.createObjectURL(blob);
-        const img = document.getElementById("cameraImg");
-        const label = document.getElementById("cameraLabel");
+
+        const target = cameraName === "workspace"
+          ? _cameraTargets.workspace
+          : _cameraTargets.primary;
+        const img = target.img();
+        const label = target.label();
+        const panel = target.panel();
         if (img) {
           img.src = url;
-          if (_lastCameraURL) URL.revokeObjectURL(_lastCameraURL);
-          _lastCameraURL = url;
+          if (target.lastUrl) URL.revokeObjectURL(target.lastUrl);
+          target.lastUrl = url;
         }
         if (label) label.textContent = cameraName;
-        const panel = document.getElementById("cameraPanel");
         if (panel) panel.dataset.hasFrame = "true";
       }
 

@@ -446,6 +446,7 @@ def _babylon_blueprint(viewer_mjcf_path: str | Path, cmd_vel_topic: str) -> Blue
             ("cmd_vel", Twist): LCMTransport(cmd_vel_topic, Twist),
             ("clicked_point", PointStamped): LCMTransport("/clicked_point", PointStamped),
             ("point_goal", PointStamped): LCMTransport("/point_goal", PointStamped),
+            ("workspace_image", Image): LCMTransport("/workspace_image", Image),
         }
     )
 
@@ -469,13 +470,7 @@ def _arm_teleop_blueprint() -> Blueprint | None:
 
 
 def _camera_bridge_blueprint() -> Blueprint | None:
-    """Pull a remote v4l2 camera over JPEG-over-TCP and publish it as
-    ``/camera_image`` so the Babylon viewer picks it up.
-
-    Pairs with ``dimos.hardware.sensors.camera.tcp_jpeg_sender`` running on
-    the camera-side host (e.g. the robot's onboard computer for an arm-mounted
-    USB cam). Enabled only when ``DIMOS_ROBOT_CAMERA_HOST`` is set.
-    """
+    """Pull the forward / head-mounted v4l2 camera into ``/camera_image``."""
     host = os.environ.get("DIMOS_ROBOT_CAMERA_HOST")
     if not host:
         return None
@@ -487,6 +482,32 @@ def _camera_bridge_blueprint() -> Blueprint | None:
     ).transports(
         {
             ("video", Image): LCMTransport("/camera_image", Image),
+        }
+    )
+
+
+def _workspace_camera_bridge_blueprint() -> Blueprint | None:
+    """Pull the workspace / down-looking camera into ``/workspace_image``.
+
+    Same TCP-JPEG protocol as the forward camera, just on a different port
+    (defaults to 5001). Enabled when ``DIMOS_ROBOT_WORKSPACE_CAMERA_HOST``
+    is set; defaults the host to ``DIMOS_ROBOT_CAMERA_HOST`` since both
+    cameras almost always live on the same machine.
+    """
+    host = os.environ.get(
+        "DIMOS_ROBOT_WORKSPACE_CAMERA_HOST",
+        os.environ.get("DIMOS_ROBOT_CAMERA_HOST", ""),
+    )
+    if not host or not _env_bool("DIMOS_ENABLE_WORKSPACE_CAMERA", True):
+        return None
+    from dimos.hardware.sensors.camera.tcp_jpeg import TcpJpegCameraModule
+
+    return TcpJpegCameraModule.blueprint(
+        host=host,
+        port=_env_int("DIMOS_ROBOT_WORKSPACE_CAMERA_PORT", 5001),
+    ).transports(
+        {
+            ("video", Image): LCMTransport("/workspace_image", Image),
         }
     )
 
@@ -506,9 +527,12 @@ def _quest_teleop_blueprint(cmd_vel_topic: str) -> Blueprint | None:
             ("joint_command", JointState): LCMTransport("/g1/joint_command", JointState),
             ("cmd_vel", Twist): LCMTransport(cmd_vel_topic, Twist),
             ("buttons", Buttons): LCMTransport("/teleop/buttons", Buttons),
-            # Forward the camera bridge feed into the WebXR client so the
-            # operator sees the robot's view as a floating quad in VR.
+            # Forward the camera bridge feeds into the WebXR client so the
+            # operator sees the robot's view as floating quads in VR. The
+            # color_image goes to the in-front quad; the workspace_image
+            # goes to a lower quad (the down-looking realsense by default).
             ("color_image", Image): LCMTransport("/camera_image", Image),
+            ("workspace_image", Image): LCMTransport("/workspace_image", Image),
         }
     )
 
@@ -519,7 +543,10 @@ _babylon = _babylon_blueprint(_backend_selection.viewer_mjcf_path, _cmd_vel_topi
 _teleop = _arm_teleop_blueprint()
 _quest = _quest_teleop_blueprint(_cmd_vel_topic)
 _camera_bridge = _camera_bridge_blueprint()
-_optional = tuple(bp for bp in (_babylon, _teleop, _quest, _camera_bridge) if bp is not None)
+_workspace_camera = _workspace_camera_bridge_blueprint()
+_optional = tuple(
+    bp for bp in (_babylon, _teleop, _quest, _camera_bridge, _workspace_camera) if bp is not None
+)
 
 g1_groot_wbc = autoconnect(
     _backend_selection.blueprint,
