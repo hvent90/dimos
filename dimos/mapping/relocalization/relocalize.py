@@ -41,8 +41,10 @@ _reg = o3d.pipelines.registration
 
 # ---- Tuning knobs ----------------------------------------------------------
 VOXEL_SIZES = [0.3, 0.5, 0.8]     # coarse voxels for FPFH + RANSAC (multi-scale)
+RANSAC_RESTARTS = 3                # extra RANSAC runs per scale → more candidates to choose from
 RANSAC_ITERS = 500_000             # RANSAC iteration budget per scale
 FINE_VOXEL = 0.1                   # voxel for the final ICP refinement
+RERANK_DIST = FINE_VOXEL * 1.5     # inlier dist for fine-scale candidate scoring
 GRAVITY_TILT_MAX_DEG = 10.0        # reject candidates whose z-axis tilts more than this
 
 
@@ -95,23 +97,12 @@ def relocalize(
 ) -> np.ndarray:
     """Estimate the 4x4 transform placing ``local_map`` into ``global_map``.
 
-    Multi-scale FPFH+RANSAC → gravity-filtered best by fitness → fine ICP.
+    Multi-scale × multi-restart FPFH+RANSAC → gravity-filtered, re-ranked by
+    fine-scale inlier ratio (not RANSAC's own fitness) → fine ICP. The
+    rerank catches z-degenerate and wrong-room busts: at FINE_VOXEL a
+    5m-off candidate has ~0 inliers while RANSAC reports it as fit.
     """
-    candidates: list[tuple[float, np.ndarray]] = []  # (fitness, 4x4 T)
-
-    for vs in VOXEL_SIZES:
-        src_down, src_fpfh = _preprocess(local_map, vs)
-        tgt_down, tgt_fpfh = _preprocess(global_map, vs)
-        result = _ransac(src_down, tgt_down, src_fpfh, tgt_fpfh, vs)
-        T = np.asarray(result.transformation)
-        candidates.append((float(result.fitness), T))
-
-    # Gravity-filter, then pick best by RANSAC fitness.
-    passing = [c for c in candidates if _gravity_tilt_deg(c[1]) <= GRAVITY_TILT_MAX_DEG]
-    pool = passing if passing else candidates
-    best_T = max(pool, key=lambda c: c[0])[1]
-
-    # Fine ICP polish at FINE_VOXEL.
+    # Fine downsample once — used for both candidate scoring and the final ICP.
     src_fine = local_map.voxel_down_sample(FINE_VOXEL)
     tgt_fine = global_map.voxel_down_sample(FINE_VOXEL)
     src_fine.estimate_normals(
@@ -120,6 +111,29 @@ def relocalize(
     tgt_fine.estimate_normals(
         o3d.geometry.KDTreeSearchParamHybrid(radius=FINE_VOXEL * 2, max_nn=30)
     )
+
+    candidates: list[np.ndarray] = []  # 4x4 transforms
+    for vs in VOXEL_SIZES:
+        src_down, src_fpfh = _preprocess(local_map, vs)
+        tgt_down, tgt_fpfh = _preprocess(global_map, vs)
+        for _ in range(1 + RANSAC_RESTARTS):
+            # Successive calls advance Open3D's RNG state (seeded per-frame in
+            # run.py), so each restart explores a different sample sequence.
+            result = _ransac(src_down, tgt_down, src_fpfh, tgt_fpfh, vs)
+            candidates.append(np.asarray(result.transformation))
+
+    # Gravity filter; fall back to all if everything is tilted (degenerate clouds).
+    upright = [T for T in candidates if _gravity_tilt_deg(T) <= GRAVITY_TILT_MAX_DEG]
+    pool = upright if upright else candidates
+
+    # Re-rank by fine-scale inlier fitness. evaluate_registration runs only
+    # correspondence accounting (no refinement) — cheap and honest.
+    def fine_fitness(T: np.ndarray) -> float:
+        r = _reg.evaluate_registration(src_fine, tgt_fine, RERANK_DIST, T)
+        return float(r.fitness)
+
+    best_T = max(pool, key=fine_fitness)
+
     refined = _reg.registration_icp(
         src_fine,
         tgt_fine,
