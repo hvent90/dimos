@@ -20,8 +20,8 @@ Subscribes to two outputs that any pose-graph SLAM module exposes:
   edges are identified by ``metadata_id == EDGE_LOOP_CLOSURE``; each
   node carries the keyframe creation time in ``pose.ts``, which we map
   back to the input scan that produced it.
-* ``loop_correction_delta: In[NavPath]`` — one event per loop-closure
-  update with per-keyframe deltas.
+* ``loop_closure_event: In[GraphDelta3D]`` — one event per loop-closure
+  update, carrying per-keyframe (pre-pose, SE(3) delta) pairs.
 """
 
 from __future__ import annotations
@@ -37,7 +37,7 @@ from dimos.core.core import rpc
 from dimos.core.module import Module, ModuleConfig
 from dimos.core.stream import In
 from dimos.msgs.nav_msgs.Graph3D import Graph3D
-from dimos.msgs.nav_msgs.Path import Path as NavPath
+from dimos.msgs.nav_msgs.GraphDelta3D import GraphDelta3D
 
 # PGO edge-type enum (matches build_pose_graph in pgo/cpp/main.cpp).
 EDGE_LOOP_CLOSURE = 1
@@ -85,12 +85,12 @@ class PoseGraphScoringModule(Module):
     config: PoseGraphScoringConfig
 
     pose_graph: In[Graph3D]
-    loop_correction_delta: In[NavPath]
+    loop_closure_event: In[GraphDelta3D]
 
     def __init__(self, **kwargs: Any) -> None:
         super().__init__(**kwargs)
         self._detected_pairs: list[tuple[int, int]] = []
-        self._loop_correction_delta_events: int = 0
+        self._loop_closure_events: int = 0
         self._timestamp_ms_to_frame_id: dict[int, int] = {
             round(send_timestamp * 1e3): frame_id
             for frame_id, send_timestamp in zip(
@@ -102,13 +102,13 @@ class PoseGraphScoringModule(Module):
     def start(self) -> None:
         super().start()
         self.register_disposable(
-            Disposable(self.loop_correction_delta.subscribe(self._on_loop_correction_delta))
+            Disposable(self.loop_closure_event.subscribe(self._on_loop_closure_event))
         )
         self.register_disposable(Disposable(self.pose_graph.subscribe(self._on_pose_graph)))
 
-    def _on_loop_correction_delta(self, message: NavPath) -> None:
+    def _on_loop_closure_event(self, message: GraphDelta3D) -> None:
         del message
-        self._loop_correction_delta_events += 1
+        self._loop_closure_events += 1
 
     def _on_pose_graph(self, message: Graph3D) -> None:
         id_to_node_ts: dict[int, float] = {n.id: n.pose.ts for n in message.nodes}
@@ -149,7 +149,7 @@ class PoseGraphScoringModule(Module):
             "groundtruth_queries_with_loop": queries_with_loop,
             "groundtruth_total_loop_pairs": total_pairs,
             "detected_loop_edges": len(self._detected_pairs),
-            "loop_correction_delta_events": self._loop_correction_delta_events,
+            "loop_closure_events": self._loop_closure_events,
             "true_positive": metrics.true_positive,
             "false_positive": metrics.false_positive,
             "false_negative": metrics.false_negative,

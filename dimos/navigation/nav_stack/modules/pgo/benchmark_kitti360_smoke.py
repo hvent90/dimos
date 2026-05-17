@@ -36,8 +36,8 @@ from dimos.core.core import rpc
 from dimos.core.module import Module
 from dimos.core.stream import In
 from dimos.msgs.nav_msgs.Graph3D import Graph3D
+from dimos.msgs.nav_msgs.GraphDelta3D import GraphDelta3D
 from dimos.msgs.nav_msgs.Odometry import Odometry
-from dimos.msgs.nav_msgs.Path import Path as NavPath
 from dimos.msgs.sensor_msgs.PointCloud2 import PointCloud2
 from dimos.navigation.nav_stack.benchmarks.pose_graph_kitti360.playback import (
     Kitti360PlaybackModule,
@@ -52,7 +52,7 @@ class TopicCounterModule(Module):
     global_map: In[PointCloud2]
     corrected_tf: In[Odometry]
     pose_graph: In[Graph3D]
-    loop_correction_delta: In[NavPath]
+    loop_closure_event: In[GraphDelta3D]
 
     def __init__(self, **kwargs: Any) -> None:
         super().__init__(**kwargs)
@@ -61,7 +61,7 @@ class TopicCounterModule(Module):
             "global_map": 0,
             "corrected_tf": 0,
             "pose_graph": 0,
-            "loop_correction_delta": 0,
+            "loop_closure_event": 0,
         }
 
     @rpc
@@ -130,14 +130,14 @@ def main() -> None:
         "global_map",
         "corrected_tf",
         "pose_graph",
-        "loop_correction_delta",
+        "loop_closure_event",
     ):
         print(f"  {name:<24} {counts.get(name, 0):>6}")
 
     print("\nverdict:")
     if counts.get("pose_graph", 0) == 0:
         print("  ⚠ no pose graph — PGO never promoted a keyframe. Check --key_pose_delta_*.")
-    elif counts.get("loop_correction_delta", 0) == 0:
+    elif counts.get("loop_closure_event", 0) == 0:
         print(
             "  ⚠ graph builds, no loop closure events — try wider --loop-search-radius "
             "or lower --scan-context-match-threshold."

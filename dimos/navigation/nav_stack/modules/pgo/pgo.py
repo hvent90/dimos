@@ -31,8 +31,8 @@ from dimos.msgs.geometry_msgs.Quaternion import Quaternion
 from dimos.msgs.geometry_msgs.Transform import Transform
 from dimos.msgs.geometry_msgs.Vector3 import Vector3
 from dimos.msgs.nav_msgs.Graph3D import Graph3D
+from dimos.msgs.nav_msgs.GraphDelta3D import GraphDelta3D
 from dimos.msgs.nav_msgs.Odometry import Odometry
-from dimos.msgs.nav_msgs.Path import Path as NavPath
 from dimos.msgs.sensor_msgs.PointCloud2 import PointCloud2
 from dimos.navigation.nav_stack.frames import FRAME_MAP, FRAME_ODOM
 from dimos.navigation.nav_stack.specs import LoopClosure
@@ -93,7 +93,7 @@ class PGO(NativeModule, LoopClosure):
     # NOTE: this corrected_tf gets refactored-out in the next PR
     corrected_tf: Out[Odometry]
     pose_graph: Out[Graph3D]
-    loop_correction_delta: Out[NavPath]
+    loop_closure_event: Out[GraphDelta3D]
 
     @rpc
     def start(self) -> None:
