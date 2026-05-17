@@ -47,6 +47,28 @@ import cv2
 logger = logging.getLogger("tcp_jpeg_sender")
 
 
+def _open_cv_capture(device: str, width: int, height: int, fps: float) -> cv2.VideoCapture:
+    """Open device through cv2 + v4l2, request MJPG fourcc.
+
+    Note: even with MJPG fourcc, cv2 decodes each frame to BGR for our
+    Python code. That decode + a subsequent JPEG re-encode is the main
+    framerate bottleneck for high-res streams. ``passthrough_serve`` below
+    bypasses cv2 entirely with ffmpeg ``-c copy`` for full-rate MJPG.
+    """
+    cap_index: int | str = device
+    if device.isdigit():
+        cap_index = int(device)
+    cap = cv2.VideoCapture(cap_index, cv2.CAP_V4L2)
+    if not cap.isOpened():
+        raise RuntimeError(f"Failed to open {device} with v4l2 backend")
+    fourcc = cv2.VideoWriter_fourcc(*"MJPG")
+    cap.set(cv2.CAP_PROP_FOURCC, fourcc)
+    cap.set(cv2.CAP_PROP_FRAME_WIDTH, width)
+    cap.set(cv2.CAP_PROP_FRAME_HEIGHT, height)
+    cap.set(cv2.CAP_PROP_FPS, fps)
+    return cap
+
+
 def serve(
     device: str,
     host: str,
@@ -56,29 +78,17 @@ def serve(
     fps: float,
     quality: int,
 ) -> None:
-    cap_index: int | str = device
-    if device.isdigit():
-        cap_index = int(device)
+    """cv2-based path: decode + re-encode each frame.
 
-    # Force the v4l2 backend. The autobackend tries GStreamer first, which
-    # often fails on robot images without the gst plugins for the camera,
-    # and then falls through to a v4l2 capture that opens but never reads.
-    cap = cv2.VideoCapture(cap_index, cv2.CAP_V4L2)
-    if not cap.isOpened():
-        raise RuntimeError(f"Failed to open {device} with v4l2 backend")
-    # Request MJPG fourcc before resolution/fps. Most USB webcams (C920e,
-    # Logitech B-series, etc.) only deliver high resolutions / framerates
-    # in MJPG; YUYV is bandwidth-limited and may negotiate down to 10 fps.
-    fourcc = cv2.VideoWriter_fourcc(*"MJPG")
-    cap.set(cv2.CAP_PROP_FOURCC, fourcc)
-    cap.set(cv2.CAP_PROP_FRAME_WIDTH, width)
-    cap.set(cv2.CAP_PROP_FRAME_HEIGHT, height)
-    cap.set(cv2.CAP_PROP_FPS, fps)
+    Slower but adjustable quality. For low-CPU passthrough at native rate,
+    use ``passthrough_serve`` instead (``--passthrough``).
+    """
+    cap = _open_cv_capture(device, width, height, fps)
     actual_w = int(cap.get(cv2.CAP_PROP_FRAME_WIDTH))
     actual_h = int(cap.get(cv2.CAP_PROP_FRAME_HEIGHT))
     actual_fps = cap.get(cv2.CAP_PROP_FPS)
     logger.info(
-        "camera %s opened: %dx%d @ %.1f fps (requested %dx%d@%g)",
+        "cv2 capture %s opened: %dx%d @ %.1f fps (requested %dx%d@%g)",
         device, actual_w, actual_h, actual_fps, width, height, fps,
     )
 
@@ -153,6 +163,148 @@ def serve(
         pass
 
 
+def passthrough_serve(
+    device: str,
+    host: str,
+    port: int,
+    width: int,
+    height: int,
+    fps: float,
+) -> None:
+    """Pass v4l2 MJPG bytes through unchanged via an ffmpeg subprocess.
+
+    Skips cv2 decode + re-encode (which caps a 1280x720 Logitech feed to
+    ~8 fps on a Jetson CPU). ffmpeg reads MJPG straight from the camera
+    and copies the codec to a length-prefixed framing on stdout. We just
+    split frames at JPEG markers and forward.
+    """
+    import shutil
+    import subprocess
+
+    if shutil.which("ffmpeg"):
+        cmd = [
+            "ffmpeg",
+            "-hide_banner",
+            "-loglevel", "warning",
+            "-f", "v4l2",
+            "-input_format", "mjpeg",
+            "-video_size", f"{width}x{height}",
+            "-framerate", str(int(fps)),
+            "-i", device,
+            "-c:v", "copy",
+            "-f", "mjpeg",
+            "pipe:1",
+        ]
+    elif shutil.which("gst-launch-1.0"):
+        # Fallback: gst-launch is on virtually every Linux camera image.
+        # We pull MJPEG straight from v4l2src and dump JPEG-segmented bytes
+        # to stdout via fdsink. Same on-wire format as ffmpeg's -f mjpeg.
+        gst_pipeline = (
+            f"v4l2src device={device} io-mode=2 ! "
+            f"image/jpeg,width={width},height={height},framerate={int(fps)}/1 ! "
+            "fdsink fd=1 sync=false"
+        )
+        cmd = ["gst-launch-1.0", "-q", *gst_pipeline.split()]
+    else:
+        raise RuntimeError(
+            "passthrough mode requires either ffmpeg or gst-launch-1.0 on PATH"
+        )
+    logger.info("passthrough cmd: %s", " ".join(cmd))
+    ff = subprocess.Popen(cmd, stdout=subprocess.PIPE, stderr=subprocess.PIPE, bufsize=0)
+    if ff.stdout is None:
+        raise RuntimeError("ffmpeg stdout is None")
+
+    server = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
+    server.setsockopt(socket.SOL_SOCKET, socket.SO_REUSEADDR, 1)
+    server.bind((host, port))
+    server.listen(1)
+    logger.info("listening on %s:%d (passthrough)", host, port)
+
+    stop = threading.Event()
+
+    def _on_signal(_sig: int, _frm: object) -> None:
+        logger.info("shutting down (passthrough)")
+        stop.set()
+        try:
+            server.close()
+        except Exception:
+            pass
+        try:
+            ff.terminate()
+        except Exception:
+            pass
+
+    signal.signal(signal.SIGINT, _on_signal)
+    signal.signal(signal.SIGTERM, _on_signal)
+
+    # Read JPEG frames from ffmpeg's MJPEG stream. Each frame starts with
+    # SOI (0xFF 0xD8) and ends with EOI (0xFF 0xD9). We scan and chunk.
+    SOI = b"\xff\xd8"
+    EOI = b"\xff\xd9"
+    buf = bytearray()
+
+    def next_frame() -> bytes | None:
+        nonlocal buf
+        while not stop.is_set():
+            # Make sure we have an SOI at the start.
+            soi = buf.find(SOI)
+            if soi < 0:
+                chunk = ff.stdout.read(65536)
+                if not chunk:
+                    return None
+                buf.extend(chunk)
+                continue
+            if soi > 0:
+                del buf[:soi]
+            # Look for EOI after SOI (skip the SOI itself, length 2).
+            eoi = buf.find(EOI, 2)
+            if eoi >= 0:
+                frame = bytes(buf[: eoi + 2])
+                del buf[: eoi + 2]
+                return frame
+            chunk = ff.stdout.read(65536)
+            if not chunk:
+                return None
+            buf.extend(chunk)
+        return None
+
+    while not stop.is_set():
+        try:
+            client, addr = server.accept()
+        except OSError:
+            break
+        logger.info("passthrough client connected: %s", addr)
+        client.setsockopt(socket.IPPROTO_TCP, socket.TCP_NODELAY, 1)
+        n = 0
+        try:
+            while not stop.is_set():
+                frame = next_frame()
+                if frame is None:
+                    return
+                try:
+                    client.sendall(struct.pack("<I", len(frame)) + frame)
+                except (BrokenPipeError, ConnectionResetError, OSError) as exc:
+                    logger.info("client disconnected: %s", exc)
+                    break
+                n += 1
+                if n == 1 or n % 200 == 0:
+                    logger.info("passthrough sent %d frames (%d KB last)", n, len(frame) // 1024)
+        finally:
+            try:
+                client.close()
+            except Exception:
+                pass
+
+    try:
+        ff.terminate()
+    except Exception:
+        pass
+    try:
+        server.close()
+    except Exception:
+        pass
+
+
 def main() -> None:
     parser = argparse.ArgumentParser(description="JPEG-over-TCP camera sender")
     parser.add_argument("--device", default="/dev/video0", help="v4l2 device path or numeric index")
@@ -161,7 +313,12 @@ def main() -> None:
     parser.add_argument("--width", type=int, default=1280)
     parser.add_argument("--height", type=int, default=720)
     parser.add_argument("--fps", type=float, default=30.0)
-    parser.add_argument("--quality", type=int, default=80, help="JPEG quality 1..100")
+    parser.add_argument("--quality", type=int, default=80, help="JPEG quality 1..100 (cv2 path only)")
+    parser.add_argument(
+        "--passthrough",
+        action="store_true",
+        help="Skip cv2; pipe v4l2 MJPG straight through ffmpeg (fastest, requires ffmpeg)",
+    )
     parser.add_argument("--verbose", action="store_true")
     args = parser.parse_args()
 
@@ -171,15 +328,25 @@ def main() -> None:
     )
 
     try:
-        serve(
-            device=args.device,
-            host=args.host,
-            port=args.port,
-            width=args.width,
-            height=args.height,
-            fps=args.fps,
-            quality=args.quality,
-        )
+        if args.passthrough:
+            passthrough_serve(
+                device=args.device,
+                host=args.host,
+                port=args.port,
+                width=args.width,
+                height=args.height,
+                fps=args.fps,
+            )
+        else:
+            serve(
+                device=args.device,
+                host=args.host,
+                port=args.port,
+                width=args.width,
+                height=args.height,
+                fps=args.fps,
+                quality=args.quality,
+            )
     except Exception as exc:
         logger.error("fatal: %s", exc)
         sys.exit(1)

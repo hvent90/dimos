@@ -146,6 +146,7 @@
                 setStatus('Connecting to server...');
                 ws = new WebSocket(wsUrl);
 
+                ws.binaryType = 'arraybuffer';
                 ws.onopen = () => {
                     setStatus('Server connected');
                     resolve();
@@ -158,8 +159,149 @@
                 ws.onclose = () => {
                     setStatus('WebSocket closed');
                 };
+                // Server → client binary messages. Currently only the camera
+                // tag (0x01) exists; future tags can be added without
+                // breaking the existing pose/joy upstream.
+                ws.onmessage = async (ev) => {
+                    if (!(ev.data instanceof ArrayBuffer)) return;
+                    const view = new Uint8Array(ev.data);
+                    if (view.length < 2) return;
+                    const tag = view[0];
+                    if (tag === 0x01) {
+                        // JPEG camera frame.
+                        try {
+                            const blob = new Blob([view.subarray(1)], { type: 'image/jpeg' });
+                            const bitmap = await createImageBitmap(blob);
+                            if (cameraTextureLatest) cameraTextureLatest.close?.();
+                            cameraTextureLatest = bitmap;
+                            cameraTextureDirty = true;
+                        } catch (e) {
+                            // ignore decode failures, next frame will retry
+                        }
+                    }
+                };
             });
         }
+
+        // --- In-VR camera quad state ---
+        let cameraProgram = null;
+        let cameraTexture = null;
+        let cameraVbo = null;
+        let cameraTextureLatest = null;     // ImageBitmap pending upload
+        let cameraTextureDirty = false;
+        let cameraHasUpload = false;
+        let cameraAspect = 16 / 9;          // updated on first upload
+
+        function initCameraQuad() {
+            // Vertex + fragment shader for a fullscreen-ish textured quad
+            // positioned in view space (~2 m in front of the viewer).
+            const vs = `
+                attribute vec2 a_pos;
+                attribute vec2 a_uv;
+                uniform mat4 u_proj;
+                uniform mat4 u_view;
+                uniform float u_aspect;     // image w/h
+                uniform float u_dist;       // metres in front of viewer
+                uniform float u_height;     // quad world height in m
+                varying vec2 v_uv;
+                void main() {
+                    float h = u_height;
+                    float w = h * u_aspect;
+                    // a_pos in [-1, 1]; map to a quad of width w, height h
+                    // at z = -u_dist (camera looks toward -Z in view space).
+                    vec4 viewPos = vec4(a_pos.x * w * 0.5,
+                                        a_pos.y * h * 0.5,
+                                        -u_dist, 1.0);
+                    gl_Position = u_proj * viewPos;
+                    v_uv = a_uv;
+                }`;
+            const fs = `
+                precision mediump float;
+                uniform sampler2D u_tex;
+                varying vec2 v_uv;
+                void main() {
+                    gl_FragColor = texture2D(u_tex, v_uv);
+                }`;
+            function compile(type, src) {
+                const sh = gl.createShader(type);
+                gl.shaderSource(sh, src);
+                gl.compileShader(sh);
+                if (!gl.getShaderParameter(sh, gl.COMPILE_STATUS)) {
+                    console.error('shader compile:', gl.getShaderInfoLog(sh));
+                    return null;
+                }
+                return sh;
+            }
+            const vsh = compile(gl.VERTEX_SHADER, vs);
+            const fsh = compile(gl.FRAGMENT_SHADER, fs);
+            cameraProgram = gl.createProgram();
+            gl.attachShader(cameraProgram, vsh);
+            gl.attachShader(cameraProgram, fsh);
+            gl.bindAttribLocation(cameraProgram, 0, 'a_pos');
+            gl.bindAttribLocation(cameraProgram, 1, 'a_uv');
+            gl.linkProgram(cameraProgram);
+            if (!gl.getProgramParameter(cameraProgram, gl.LINK_STATUS)) {
+                console.error('camera shader link:', gl.getProgramInfoLog(cameraProgram));
+            }
+            // Quad: two triangles in CCW. UV flipped vertically so the
+            // image renders right-side-up (texture row 0 is the top of
+            // the JPEG; WebGL UVs put V=0 at the bottom).
+            const verts = new Float32Array([
+                -1, -1, 0, 1,
+                 1, -1, 1, 1,
+                -1,  1, 0, 0,
+                 1,  1, 1, 0,
+            ]);
+            cameraVbo = gl.createBuffer();
+            gl.bindBuffer(gl.ARRAY_BUFFER, cameraVbo);
+            gl.bufferData(gl.ARRAY_BUFFER, verts, gl.STATIC_DRAW);
+
+            cameraTexture = gl.createTexture();
+            gl.bindTexture(gl.TEXTURE_2D, cameraTexture);
+            gl.texParameteri(gl.TEXTURE_2D, gl.TEXTURE_WRAP_S, gl.CLAMP_TO_EDGE);
+            gl.texParameteri(gl.TEXTURE_2D, gl.TEXTURE_WRAP_T, gl.CLAMP_TO_EDGE);
+            gl.texParameteri(gl.TEXTURE_2D, gl.TEXTURE_MIN_FILTER, gl.LINEAR);
+            gl.texParameteri(gl.TEXTURE_2D, gl.TEXTURE_MAG_FILTER, gl.LINEAR);
+        }
+
+        function drawCameraQuad(view) {
+            if (!cameraProgram || !cameraHasUpload) return;
+            if (cameraTextureDirty && cameraTextureLatest) {
+                gl.bindTexture(gl.TEXTURE_2D, cameraTexture);
+                gl.pixelStorei(gl.UNPACK_FLIP_Y_WEBGL, false);
+                gl.texImage2D(gl.TEXTURE_2D, 0, gl.RGBA, gl.RGBA,
+                              gl.UNSIGNED_BYTE, cameraTextureLatest);
+                cameraAspect = cameraTextureLatest.width / cameraTextureLatest.height;
+                cameraTextureDirty = false;
+            }
+            gl.useProgram(cameraProgram);
+            gl.bindBuffer(gl.ARRAY_BUFFER, cameraVbo);
+            gl.enableVertexAttribArray(0);
+            gl.vertexAttribPointer(0, 2, gl.FLOAT, false, 16, 0);
+            gl.enableVertexAttribArray(1);
+            gl.vertexAttribPointer(1, 2, gl.FLOAT, false, 16, 8);
+
+            const projLoc = gl.getUniformLocation(cameraProgram, 'u_proj');
+            const aspLoc = gl.getUniformLocation(cameraProgram, 'u_aspect');
+            const distLoc = gl.getUniformLocation(cameraProgram, 'u_dist');
+            const hLoc = gl.getUniformLocation(cameraProgram, 'u_height');
+            gl.uniformMatrix4fv(projLoc, false, view.projectionMatrix);
+            gl.uniform1f(aspLoc, cameraAspect);
+            gl.uniform1f(distLoc, 1.5);   // 1.5 m in front
+            gl.uniform1f(hLoc, 0.8);      // 0.8 m tall (~46° FOV at 1.5 m)
+
+            gl.activeTexture(gl.TEXTURE0);
+            gl.bindTexture(gl.TEXTURE_2D, cameraTexture);
+            const texLoc = gl.getUniformLocation(cameraProgram, 'u_tex');
+            gl.uniform1i(texLoc, 0);
+
+            gl.drawArrays(gl.TRIANGLE_STRIP, 0, 4);
+        }
+
+        // Mark texture as having data on first successful upload.
+        const _origCreateImageBitmap = window.createImageBitmap;
+        // Set cameraHasUpload after first successful decode in onmessage path.
+        // (Handled by checking cameraTextureLatest before drawing.)
 
         // Initialize WebGL
         function initGL() {
@@ -279,8 +421,24 @@
             xrSession.requestAnimationFrame(onXRFrame);
             // Process and send tracking data
             processTracking(frame);
-            // Render (minimal for passthrough)
-            gl.clear(gl.COLOR_BUFFER_BIT);
+
+            // Render: clear, then draw the camera quad per-eye if we have
+            // any frames from the server.
+            const session = xrSession;
+            const glLayer = session.renderState.baseLayer;
+            gl.bindFramebuffer(gl.FRAMEBUFFER, glLayer.framebuffer);
+            gl.clearColor(0, 0, 0, 0);
+            gl.clear(gl.COLOR_BUFFER_BIT | gl.DEPTH_BUFFER_BIT);
+
+            const pose = frame.getViewerPose(xrRefSpace);
+            if (pose) {
+                if (cameraTextureLatest) cameraHasUpload = true;
+                for (const view of pose.views) {
+                    const vp = glLayer.getViewport(view);
+                    gl.viewport(vp.x, vp.y, vp.width, vp.height);
+                    drawCameraQuad(view);
+                }
+            }
         }
 
         // Start VR session with passthrough
@@ -288,6 +446,7 @@
             try {
                 setStatus('Initializing WebGL...');
                 initGL();
+                initCameraQuad();
                 setStatus('Requesting VR session...');
 
                 // Try immersive-ar first (true passthrough), fall back to immersive-vr

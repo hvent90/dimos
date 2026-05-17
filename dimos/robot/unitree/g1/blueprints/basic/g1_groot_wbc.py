@@ -506,6 +506,9 @@ def _quest_teleop_blueprint(cmd_vel_topic: str) -> Blueprint | None:
             ("joint_command", JointState): LCMTransport("/g1/joint_command", JointState),
             ("cmd_vel", Twist): LCMTransport(cmd_vel_topic, Twist),
             ("buttons", Buttons): LCMTransport("/teleop/buttons", Buttons),
+            # Forward the camera bridge feed into the WebXR client so the
+            # operator sees the robot's view as a floating quad in VR.
+            ("color_image", Image): LCMTransport("/camera_image", Image),
         }
     )
 
