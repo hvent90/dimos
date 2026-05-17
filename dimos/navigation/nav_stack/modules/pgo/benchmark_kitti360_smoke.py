@@ -35,8 +35,7 @@ from dimos.core.coordination.module_coordinator import ModuleCoordinator
 from dimos.core.core import rpc
 from dimos.core.module import Module
 from dimos.core.stream import In
-from dimos.msgs.nav_msgs.GraphNodes3D import GraphNodes3D
-from dimos.msgs.nav_msgs.LineSegments3D import LineSegments3D
+from dimos.msgs.nav_msgs.Graph3D import Graph3D
 from dimos.msgs.nav_msgs.Odometry import Odometry
 from dimos.msgs.nav_msgs.Path import Path as NavPath
 from dimos.msgs.sensor_msgs.PointCloud2 import PointCloud2
@@ -51,18 +50,16 @@ class TopicCounterModule(Module):
 
     corrected_odometry: In[Odometry]
     global_map: In[PointCloud2]
-    pose_graph_nodes: In[GraphNodes3D]
-    pose_graph_edges: In[LineSegments3D]
-    loop_closure: In[NavPath]
+    pose_graph: In[Graph3D]
+    loop_correction_delta: In[NavPath]
 
     def __init__(self, **kwargs: Any) -> None:
         super().__init__(**kwargs)
         self._counts: dict[str, int] = {
             "corrected_odometry": 0,
             "global_map": 0,
-            "pose_graph_nodes": 0,
-            "pose_graph_edges": 0,
-            "loop_closure": 0,
+            "pose_graph": 0,
+            "loop_correction_delta": 0,
         }
 
     @rpc
@@ -129,18 +126,15 @@ def main() -> None:
     for name in (
         "corrected_odometry",
         "global_map",
-        "pose_graph_nodes",
-        "pose_graph_edges",
-        "loop_closure",
+        "pose_graph",
+        "loop_correction_delta",
     ):
         print(f"  {name:<24} {counts.get(name, 0):>6}")
 
     print("\nverdict:")
-    if counts.get("pose_graph_nodes", 0) == 0:
-        print("  ⚠ no graph nodes — PGO never promoted a keyframe. Check --key_pose_delta_*.")
-    elif counts.get("pose_graph_edges", 0) == 0:
-        print("  ⚠ nodes but no edges — graph isn't being assembled.")
-    elif counts.get("loop_closure", 0) == 0:
+    if counts.get("pose_graph", 0) == 0:
+        print("  ⚠ no pose graph — PGO never promoted a keyframe. Check --key_pose_delta_*.")
+    elif counts.get("loop_correction_delta", 0) == 0:
         print(
             "  ⚠ graph builds, no loop closure events — try wider --loop-search-radius "
             "or lower --scan-context-match-threshold."

@@ -23,25 +23,15 @@ from __future__ import annotations
 import time
 from typing import TYPE_CHECKING, BinaryIO
 
-from dimos_lcm.geometry_msgs import (
-    Point as LCMPoint,
-    Pose as LCMPose,
-    PoseStamped as LCMPoseStamped,
-    Quaternion as LCMQuaternion,
-)
 from dimos_lcm.nav_msgs import Path as LCMPath
-from dimos_lcm.std_msgs import Header as LCMHeader, Time as LCMTime
 
 from dimos.types.timestamped import Timestamped
 
-
-def _sec_nsec(ts: float) -> list[int]:
-    s = int(ts)
-    return [s, int((ts - s) * 1_000_000_000)]
-
-
 if TYPE_CHECKING:
     from rerun._baseclasses import Archetype
+
+
+Segment = tuple[tuple[float, float, float], tuple[float, float, float]]
 
 
 class LineSegments3D(Timestamped):
@@ -49,71 +39,34 @@ class LineSegments3D(Timestamped):
 
     Wire format: ``nav_msgs/Path`` — consecutive pose pairs are segments.
     ``orientation.w`` encodes traversability: 1.0=traversable, 0.5=partial, 0.0=unreachable.
+    Each endpoint's ``header.stamp`` is preserved into ``segment_timestamps`` so
+    consumers can correlate endpoints back to source events (e.g. keyframe
+    creation time for a pose-graph SLAM producer).
     """
 
     msg_name = "nav_msgs.LineSegments3D"
     ts: float
     frame_id: str
-    _segments: list[tuple[tuple[float, float, float], tuple[float, float, float]]]
-    _traversability: list[float]
-    # Per-endpoint timestamps (2 entries per segment, in segment order).
-    # Producers that don't carry per-endpoint timing can omit this; the
-    # default is the message-level ts for every endpoint.
-    _endpoint_ts: list[float]
+    segments: list[Segment]
+    traversability: list[float]
+    segment_timestamps: list[tuple[float, float]]
 
     def __init__(
         self,
         ts: float = 0.0,
         frame_id: str = "map",
-        segments: list[tuple[tuple[float, float, float], tuple[float, float, float]]] | None = None,
+        segments: list[Segment] | None = None,
         traversability: list[float] | None = None,
-        endpoint_ts: list[float] | None = None,
+        segment_timestamps: list[tuple[float, float]] | None = None,
     ) -> None:
         self.frame_id = frame_id
         self.ts = ts if ts != 0 else time.time()
-        self._segments = segments or []
-        self._traversability = traversability or [1.0] * len(self._segments)
-        self._endpoint_ts = (
-            endpoint_ts if endpoint_ts is not None else [self.ts] * (2 * len(self._segments))
-        )
+        self.segments = segments or []
+        self.traversability = traversability or [1.0] * len(self.segments)
+        self.segment_timestamps = segment_timestamps or [(self.ts, self.ts)] * len(self.segments)
 
     def lcm_encode(self) -> bytes:
-        lcm_msg = LCMPath()
-        lcm_msg.poses = []
-
-        header_sec_nsec = _sec_nsec(self.ts)
-        for idx, (p1, p2) in enumerate(self._segments):
-            trav = self._traversability[idx] if idx < len(self._traversability) else 1.0
-            endpoint_pairs = (
-                (p1, trav, self._endpoint_ts_for(2 * idx)),
-                (p2, 0.0, self._endpoint_ts_for(2 * idx + 1)),
-            )
-            for endpoint, w_field, endpoint_ts in endpoint_pairs:
-                pose = LCMPoseStamped()
-                pose.header = LCMHeader()
-                pose.header.stamp = LCMTime()
-                [pose.header.stamp.sec, pose.header.stamp.nsec] = _sec_nsec(endpoint_ts)
-                pose.header.frame_id = self.frame_id
-                pose.pose = LCMPose()
-                pose.pose.position = LCMPoint()
-                pose.pose.position.x = endpoint[0]
-                pose.pose.position.y = endpoint[1]
-                pose.pose.position.z = endpoint[2]
-                pose.pose.orientation = LCMQuaternion()
-                pose.pose.orientation.w = float(w_field)
-                lcm_msg.poses.append(pose)
-
-        lcm_msg.poses_length = len(lcm_msg.poses)
-        lcm_msg.header = LCMHeader()
-        lcm_msg.header.stamp = LCMTime()
-        [lcm_msg.header.stamp.sec, lcm_msg.header.stamp.nsec] = header_sec_nsec
-        lcm_msg.header.frame_id = self.frame_id
-        return lcm_msg.lcm_encode()  # type: ignore[no-any-return]
-
-    def _endpoint_ts_for(self, index: int) -> float:
-        if index < len(self._endpoint_ts):
-            return self._endpoint_ts[index]
-        return self.ts
+        raise NotImplementedError("Encoded on C++ side")
 
     @classmethod
     def lcm_decode(cls, data: bytes | BinaryIO) -> LineSegments3D:
@@ -121,9 +74,9 @@ class LineSegments3D(Timestamped):
         header_ts = lcm_msg.header.stamp.sec + lcm_msg.header.stamp.nsec / 1e9
         frame_id = lcm_msg.header.frame_id
 
-        segments = []
-        traversability = []
-        endpoint_ts = []
+        segments: list[Segment] = []
+        traversability: list[float] = []
+        segment_timestamps: list[tuple[float, float]] = []
         poses = lcm_msg.poses
         for i in range(0, len(poses) - 1, 2):
             p1, p2 = poses[i], poses[i + 1]
@@ -134,14 +87,15 @@ class LineSegments3D(Timestamped):
                 )
             )
             traversability.append(p1.pose.orientation.w)
-            endpoint_ts.append(p1.header.stamp.sec + p1.header.stamp.nsec / 1e9)
-            endpoint_ts.append(p2.header.stamp.sec + p2.header.stamp.nsec / 1e9)
+            start_ts = p1.header.stamp.sec + p1.header.stamp.nsec / 1e9
+            end_ts = p2.header.stamp.sec + p2.header.stamp.nsec / 1e9
+            segment_timestamps.append((start_ts, end_ts))
         return cls(
             ts=header_ts,
             frame_id=frame_id,
             segments=segments,
             traversability=traversability,
-            endpoint_ts=endpoint_ts,
+            segment_timestamps=segment_timestamps,
         )
 
     def to_rerun(
@@ -150,40 +104,33 @@ class LineSegments3D(Timestamped):
         color: tuple[int, int, int, int] = (0, 255, 150, 255),
         radii: float = 0.04,
     ) -> Archetype:
-        """Render as ``rr.LineStrips3D`` — color-coded by traversability.
-
-        Green = traversable (reachable from robot), red = non-traversable.
-        """
+        """Render as ``rr.LineStrips3D`` — color-coded by traversability."""
         import rerun as rr
 
-        if not self._segments:
+        if not self.segments:
             return rr.LineStrips3D([])
 
         strips = []
         colors = []
-        for idx, (p1, p2) in enumerate(self._segments):
+        for idx, (p1, p2) in enumerate(self.segments):
             strips.append(
                 [
                     [p1[0], p1[1], p1[2] + z_offset],
                     [p2[0], p2[1], p2[2] + z_offset],
                 ]
             )
-            trav = self._traversability[idx] if idx < len(self._traversability) else 1.0
+            trav = self.traversability[idx] if idx < len(self.traversability) else 1.0
             if trav >= 0.9:
-                colors.append((0, 220, 100, 200))  # green = fully traversable
+                colors.append((0, 220, 100, 200))
             elif trav >= 0.4:
-                colors.append((255, 180, 0, 200))  # yellow = partially traversable
+                colors.append((255, 180, 0, 200))
             else:
-                colors.append((255, 50, 50, 150))  # red = non-traversable
+                colors.append((255, 50, 50, 150))
 
-        return rr.LineStrips3D(
-            strips,
-            colors=colors,
-            radii=[radii] * len(strips),
-        )
+        return rr.LineStrips3D(strips, colors=colors, radii=[radii] * len(strips))
 
     def __len__(self) -> int:
-        return len(self._segments)
+        return len(self.segments)
 
     def __str__(self) -> str:
-        return f"LineSegments3D(frame_id='{self.frame_id}', segments={len(self._segments)})"
+        return f"LineSegments3D(frame_id='{self.frame_id}', segments={len(self.segments)})"

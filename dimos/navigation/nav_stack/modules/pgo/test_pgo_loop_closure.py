@@ -12,10 +12,10 @@
 # See the License for the specific language governing permissions and
 # limitations under the License.
 
-"""End-to-end check that PGO publishes valid loop-closure events.
+"""End-to-end check that PGO publishes valid loop_correction_delta events.
 
 Replays the ``og_nav_60s`` rosbag through PGO with aggressive
-loop-closure thresholds and asserts each emitted ``loop_closure``
+loop-closure thresholds and asserts each emitted ``loop_correction_delta``
 event has positive-shape pose deltas, unit-norm quaternions, and
 finite translations. Wired with the DimOS Module + Blueprint pipeline
 so no LCM topic strings live here.
@@ -56,10 +56,10 @@ QUATERNION_UNIT_TOL = 0.05
 TRANSLATION_MAX_M = 100.0
 
 
-class LoopClosureRecorderModule(Module):
-    """Accumulates every loop_closure event so the test can validate the shape."""
+class LoopCorrectionDeltaRecorderModule(Module):
+    """Accumulates every loop_correction_delta event so the test can validate the shape."""
 
-    loop_closure: In[NavPath]
+    loop_correction_delta: In[NavPath]
 
     def __init__(self, **kwargs: Any) -> None:
         super().__init__(**kwargs)
@@ -68,9 +68,11 @@ class LoopClosureRecorderModule(Module):
     @rpc
     def start(self) -> None:
         super().start()
-        self.register_disposable(Disposable(self.loop_closure.subscribe(self._on_loop_closure)))
+        self.register_disposable(
+            Disposable(self.loop_correction_delta.subscribe(self._on_loop_correction_delta))
+        )
 
-    def _on_loop_closure(self, message: NavPath) -> None:
+    def _on_loop_correction_delta(self, message: NavPath) -> None:
         # JSON-friendly snapshot — Pydantic-friendly RPC return.
         self._events.append(
             {
@@ -100,7 +102,7 @@ class LoopClosureRecorderModule(Module):
             else "<empty>"
         )
         logger.info(
-            f"[loop_closure] event #{len(self._events) - 1} received: "
+            f"[loop_correction_delta] event #{len(self._events) - 1} received: "
             f"poses_length={len(message.poses)}, frame_id={message.frame_id!r}, "
             f"ts={message.ts:.3f}, {first_pose_summary}"
         )
@@ -110,7 +112,9 @@ class LoopClosureRecorderModule(Module):
         return list(self._events)
 
 
-def _validate_loop_closure_event(event: dict[str, Any], event_index: int) -> tuple[float, float]:
+def _validate_loop_correction_delta_event(
+    event: dict[str, Any], event_index: int
+) -> tuple[float, float]:
     """Assert each pose has unit quaternion + finite translation. Returns
     aggregate ``(max_translation_norm, max_quaternion_drift)`` stats.
     """
@@ -165,10 +169,10 @@ def _validate_loop_closure_event(event: dict[str, Any], event_index: int) -> tup
     return max_translation_norm, max_quaternion_drift
 
 
-class TestPGOLoopClosure:
-    """End-to-end: PGO publishes loop-closure events with valid shape."""
+class TestPGOLoopCorrectionDelta:
+    """End-to-end: PGO publishes loop_correction_delta events with valid shape."""
 
-    def test_loop_closure_events_published(self) -> None:
+    def test_loop_correction_delta_events_published(self) -> None:
         playback_blueprint = RosbagScanOdomPlaybackModule.blueprint()
         # Aggressive loop-closure thresholds — bag is 60s, so we need short
         # re-visit windows to actually fire events.
@@ -184,13 +188,13 @@ class TestPGOLoopClosure:
             global_map_publish_rate=1.0,
             unregister_input=True,
         )
-        recorder_blueprint = LoopClosureRecorderModule.blueprint()
+        recorder_blueprint = LoopCorrectionDeltaRecorderModule.blueprint()
 
         blueprint = autoconnect(playback_blueprint, pgo_blueprint, recorder_blueprint)
         coordinator = ModuleCoordinator.build(blueprint)
         try:
             playback = coordinator.get_instance(RosbagScanOdomPlaybackModule)
-            recorder = coordinator.get_instance(LoopClosureRecorderModule)
+            recorder = coordinator.get_instance(LoopCorrectionDeltaRecorderModule)
             while not playback.is_finished():
                 time.sleep(POLL_INTERVAL_SEC)
             time.sleep(POST_FEED_DRAIN_SEC)
@@ -198,7 +202,7 @@ class TestPGOLoopClosure:
         finally:
             coordinator.stop()
 
-        logger.info(f"\n[loop_closure] total events received: {len(events)}")
+        logger.info(f"\n[loop_correction_delta] total events received: {len(events)}")
 
         if not events:
             pytest.skip(
@@ -209,11 +213,11 @@ class TestPGOLoopClosure:
             )
 
         for event_index, event in enumerate(events):
-            max_translation_norm, max_quaternion_drift = _validate_loop_closure_event(
+            max_translation_norm, max_quaternion_drift = _validate_loop_correction_delta_event(
                 event, event_index
             )
             logger.info(
-                f"[loop_closure] event #{event_index} VALID: "
+                f"[loop_correction_delta] event #{event_index} VALID: "
                 f"keyframe_count={len(event['poses'])}, "
                 f"max|t|={max_translation_norm:.4f}m, "
                 f"max|q|-1|={max_quaternion_drift:.6f}"

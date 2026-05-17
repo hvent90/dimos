@@ -257,18 +257,15 @@ def nav_stack_rerun_config(
         visual_override.setdefault("world/goal_path", _goal_path_colors_debug)
         visual_override.setdefault("world/nav_boundary", _nav_boundary_colors_debug)
         visual_override.setdefault("world/contour_polygons", _contour_polygons_colors_debug)
-        visual_override.setdefault("world/graph_nodes", _graph_nodes_colors_debug)
-        visual_override.setdefault("world/graph_edges", _graph_edges_colors_debug)
-        visual_override.setdefault("world/pose_graph_nodes", _pose_graph_nodes_colors_debug)
-        visual_override.setdefault("world/pose_graph_edges", _pose_graph_edges_colors_debug)
+        visual_override.setdefault("world/graph", _graph_colors_debug)
+        visual_override.setdefault("world/pose_graph", _pose_graph_colors_debug)
     else:
         visual_override.setdefault("world/way_point", _waypoint_colors)
         visual_override.setdefault("world/goal", _goal_colors)
         visual_override.setdefault("world/goal_path", _goal_path_colors)
         visual_override.setdefault("world/nav_boundary", _nav_boundary_colors)
         visual_override.setdefault("world/contour_polygons", _contour_polygons_colors)
-        visual_override.setdefault("world/graph_nodes", _hide)
-        visual_override.setdefault("world/graph_edges", _hide)
+        visual_override.setdefault("world/graph", _hide)
     visual_override.setdefault("world/obstacle_cloud", _obstacle_cloud_colors)
     visual_override.setdefault("world/costmap_cloud", _costmap_cloud_colors)
     visual_override.setdefault("world/free_paths", _free_paths_colors)
@@ -581,19 +578,23 @@ def _contour_polygons_colors_debug(polygons: Any) -> Any:
     )
 
 
-def _graph_nodes_colors_debug(graph_nodes: Any) -> Any:
-    return graph_nodes.to_rerun(z_offset=_AGENTIC_DEBUG_BOUNDARY_LIFT)
+def _graph_colors_debug(graph: Any) -> Any:
+    # FarPlanner's visibility graph (nodes + edges as a Graph3D); render
+    # nodes + edges under separate sub-paths so they can be toggled /
+    # styled independently in the rerun viewer.
+    return graph.to_rerun_multi(
+        base_path="world/graph",
+        z_offset=_AGENTIC_DEBUG_BOUNDARY_LIFT,
+    )
 
 
-def _graph_edges_colors_debug(graph_edges: Any) -> Any:
-    return graph_edges.to_rerun(z_offset=_AGENTIC_DEBUG_BOUNDARY_LIFT)
-
-
-def _pose_graph_nodes_colors_debug(graph_nodes: Any) -> Any:
-    # Lift PGO pose-graph nodes to the standard agentic-debug height so they
-    # stand out clearly above terrain in the top-down pane.
-    return graph_nodes.to_rerun(z_offset=_AGENTIC_DEBUG_LIFT, radii=0.15)
-
-
-def _pose_graph_edges_colors_debug(graph_edges: Any) -> Any:
-    return graph_edges.to_rerun(z_offset=_AGENTIC_DEBUG_LIFT, radii=0.06)
+def _pose_graph_colors_debug(pose_graph: Any) -> Any:
+    # PGO pose-graph: render nodes + edges under separate sub-paths so
+    # they can be toggled / styled independently in the rerun viewer.
+    # Lifted to the standard agentic-debug height to stand clear of terrain.
+    return pose_graph.to_rerun_multi(
+        base_path="world/pose_graph",
+        z_offset=_AGENTIC_DEBUG_LIFT,
+        node_radius=0.15,
+        edge_radius=0.06,
+    )

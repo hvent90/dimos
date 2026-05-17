@@ -17,6 +17,7 @@
 #include "commons.h"
 #include "simple_pgo.h"
 #include "dimos_native_module.hpp"
+#include "msgs/Graph3D.hpp"
 #include "point_cloud_utils.hpp"
 
 #include "nav_msgs/Odometry.hpp"
@@ -150,67 +151,59 @@ static nav_msgs::Odometry build_odometry(const M3D& r, const V3D& t, double ts,
     return odom;
 }
 
-// Build a Path-encoded GraphNodes3D message — one pose per keyframe,
-// orientation.w encoded as node_type (1 = odom/robot — green in rerun).
-static nav_msgs::Path build_graph_nodes(const std::vector<KeyPoseWithCloud>& key_poses,
-                                         double ts,
-                                         const std::string& frame_id) {
-    nav_msgs::Path msg;
-    msg.header = dimos::make_header(frame_id, ts);
-    msg.poses_length = static_cast<int32_t>(key_poses.size());
-    msg.poses.reserve(key_poses.size());
-    for (const auto& keyframe : key_poses) {
-        geometry_msgs::PoseStamped pose_stamped;
-        pose_stamped.header = dimos::make_header(frame_id, ts);
-        pose_stamped.pose.position.x = keyframe.t_global.x();
-        pose_stamped.pose.position.y = keyframe.t_global.y();
-        pose_stamped.pose.position.z = keyframe.t_global.z();
-        pose_stamped.pose.orientation.x = 0.0;
-        pose_stamped.pose.orientation.y = 0.0;
-        pose_stamped.pose.orientation.z = 0.0;
-        pose_stamped.pose.orientation.w = 1.0;
-        msg.poses.push_back(pose_stamped);
+// Pose-graph snapshot encoded as a Graph3D:
+//   - one node per keyframe (id = keyframe index, metadata_id = NODE_KEYFRAME),
+//     pose.ts = keyframe creation time so consumers can map nodes back to
+//     the input scan that produced them.
+//   - odometry edges between consecutive keyframes (metadata_id = EDGE_ODOMETRY,
+//     timestamp = the later keyframe's creation time).
+//   - loop-closure edges from `loop_pairs` (metadata_id = EDGE_LOOP_CLOSURE,
+//     timestamp = snapshot publish time since the loop fired this cycle).
+static constexpr uint64_t NODE_KEYFRAME = 0;
+static constexpr uint64_t EDGE_ODOMETRY = 0;
+static constexpr uint64_t EDGE_LOOP_CLOSURE = 1;
+
+static dimos::Graph3D build_pose_graph(
+    const std::vector<KeyPoseWithCloud>& key_poses,
+    const std::vector<std::pair<size_t, size_t>>& loop_pairs,
+    double ts,
+    const std::string& frame_id) {
+    dimos::Graph3D msg(frame_id, ts);
+    msg.reserve_nodes(key_poses.size());
+    msg.reserve_edges(key_poses.size() + loop_pairs.size());
+    for (size_t i = 0; i < key_poses.size(); i++) {
+        const auto& kp = key_poses[i];
+        Eigen::Quaterniond q(kp.r_global);
+        msg.add_node(
+            static_cast<uint64_t>(i),
+            NODE_KEYFRAME,
+            kp.time,
+            kp.t_global.x(), kp.t_global.y(), kp.t_global.z(),
+            q.x(), q.y(), q.z(), q.w());
+    }
+    for (size_t i = 1; i < key_poses.size(); i++) {
+        msg.add_edge(
+            static_cast<uint64_t>(i - 1),
+            static_cast<uint64_t>(i),
+            key_poses[i].time,
+            EDGE_ODOMETRY);
+    }
+    for (const auto& pair : loop_pairs) {
+        if (pair.first >= key_poses.size() || pair.second >= key_poses.size()) continue;
+        msg.add_edge(
+            static_cast<uint64_t>(pair.first),
+            static_cast<uint64_t>(pair.second),
+            ts,
+            EDGE_LOOP_CLOSURE);
     }
     return msg;
 }
 
-static void append_segment(nav_msgs::Path& msg,
-                            const std::string& frame_id,
-                            double start_ts,
-                            const V3D& start,
-                            const V3D& end,
-                            double traversability,
-                            double end_ts) {
-    geometry_msgs::PoseStamped start_pose;
-    start_pose.header = dimos::make_header(frame_id, start_ts);
-    start_pose.pose.position.x = start.x();
-    start_pose.pose.position.y = start.y();
-    start_pose.pose.position.z = start.z();
-    start_pose.pose.orientation.x = 0.0;
-    start_pose.pose.orientation.y = 0.0;
-    start_pose.pose.orientation.z = 0.0;
-    // traversability is encoded on the first pose of each pair
-    start_pose.pose.orientation.w = traversability;
-
-    geometry_msgs::PoseStamped end_pose;
-    end_pose.header = dimos::make_header(frame_id, end_ts);
-    end_pose.pose.position.x = end.x();
-    end_pose.pose.position.y = end.y();
-    end_pose.pose.position.z = end.z();
-    end_pose.pose.orientation.x = 0.0;
-    end_pose.pose.orientation.y = 0.0;
-    end_pose.pose.orientation.z = 0.0;
-    end_pose.pose.orientation.w = traversability;
-
-    msg.poses.push_back(start_pose);
-    msg.poses.push_back(end_pose);
-}
-
-// Build a Path-encoded loop-closure-deltas message — one PoseStamped per
+// Build a Path-encoded loop-correction-delta message — one PoseStamped per
 // keyframe, where position = (post - delta @ pre) translation delta and
 // orientation = delta rotation quaternion. The Nth pose corresponds to
 // the Nth keyframe (m_key_poses[N]).
-static nav_msgs::Path build_loop_closure_deltas(
+static nav_msgs::Path build_loop_correction_delta(
     const std::vector<std::pair<M3D, V3D>>& pre_poses,
     const std::vector<KeyPoseWithCloud>& post_poses,
     double ts,
@@ -245,41 +238,6 @@ static nav_msgs::Path build_loop_closure_deltas(
     return msg;
 }
 
-// Build a Path-encoded LineSegments3D message — pose pairs form segments.
-// Odometry edges get traversability=1.0 (green); loop closures get 0.4
-// (yellow) so they stand out in the rerun rendering. The header stamp
-// on each endpoint is the *creation* time of that keyframe (not the
-// message publish time), so downstream consumers can correlate edge
-// endpoints back to the input scan that produced each keyframe.
-static nav_msgs::Path build_graph_edges(const std::vector<KeyPoseWithCloud>& key_poses,
-                                         const std::vector<std::pair<size_t, size_t>>& loop_pairs,
-                                         double ts,
-                                         const std::string& frame_id) {
-    nav_msgs::Path msg;
-    msg.header = dimos::make_header(frame_id, ts);
-
-    // Odometry edges between consecutive keyframes.
-    for (size_t i = 1; i < key_poses.size(); i++) {
-        append_segment(msg, frame_id, key_poses[i - 1].time,
-                       key_poses[i - 1].t_global,
-                       key_poses[i].t_global,
-                       1.0,
-                       key_poses[i].time);
-    }
-    // Loop closure edges.
-    for (const auto& pair : loop_pairs) {
-        if (pair.first >= key_poses.size() || pair.second >= key_poses.size())
-            continue;
-        append_segment(msg, frame_id, key_poses[pair.first].time,
-                       key_poses[pair.first].t_global,
-                       key_poses[pair.second].t_global,
-                       0.4,
-                       key_poses[pair.second].time);
-    }
-    msg.poses_length = static_cast<int32_t>(msg.poses.size());
-    return msg;
-}
-
 int main(int argc, char** argv)
 {
     signal(SIGTERM, signal_handler);
@@ -293,9 +251,8 @@ int main(int argc, char** argv)
     std::string corrected_odom_topic = native_module.topic("corrected_odometry");
     std::string global_map_topic = native_module.topic("global_map");
     std::string tf_channel = native_module.arg("tf_channel", "/tf#tf2_msgs.TFMessage");
-    std::string graph_nodes_topic = native_module.topic("pose_graph_nodes");
-    std::string graph_edges_topic = native_module.topic("pose_graph_edges");
-    std::string loop_closure_topic = native_module.topic("loop_closure");
+    std::string pose_graph_topic = native_module.topic("pose_graph");
+    std::string loop_correction_delta_topic = native_module.topic("loop_correction_delta");
 
     // Config parameters
     Config config;
@@ -358,9 +315,8 @@ int main(int argc, char** argv)
         fprintf(stderr, "  corrected_odometry: %s\n", corrected_odom_topic.c_str());
         fprintf(stderr, "  global_map: %s\n", global_map_topic.c_str());
         fprintf(stderr, "  tf_channel: %s\n", tf_channel.c_str());
-        fprintf(stderr, "  pose_graph_nodes: %s\n", graph_nodes_topic.c_str());
-        fprintf(stderr, "  pose_graph_edges: %s\n", graph_edges_topic.c_str());
-        fprintf(stderr, "  loop_closure: %s\n", loop_closure_topic.c_str());
+        fprintf(stderr, "  loop_correction_delta: %s\n", loop_correction_delta_topic.c_str());
+        fprintf(stderr, "  pose_graph: %s\n", pose_graph_topic.c_str());
     }
     // Seed identity TF so consumers can query the chain before the first
     // odom message arrives.
@@ -455,12 +411,12 @@ int main(int argc, char** argv)
         pgo.smoothAndUpdate();
 
         if (had_loop) {
-            nav_msgs::Path loop_closure_msg = build_loop_closure_deltas(
+            nav_msgs::Path loop_correction_delta_msg = build_loop_correction_delta(
                 pre_poses, pgo.keyPoses(), cur_time, world_frame);
-            lcm.publish(loop_closure_topic, &loop_closure_msg);
+            lcm.publish(loop_correction_delta_topic, &loop_correction_delta_msg);
             if (debug) {
                 fprintf(stderr,
-                        "PGO: loop closure event published — %zu keyframe deltas\n",
+                        "PGO: loop_correction_delta published — %zu keyframe deltas\n",
                         pre_poses.size());
             }
         }
@@ -482,17 +438,11 @@ int main(int argc, char** argv)
             pgo.offsetR(), pgo.offsetT(), cur_time, parent_frame, world_frame, local_frame);
         lcm.publish(tf_channel, &tf_msg);
 
-        // Publish pose-graph nodes + edges (on every keyframe — iSAM2
-        // may have re-optimized prior poses on loop closure).
-        {
-            nav_msgs::Path nodes_msg = build_graph_nodes(
-                pgo.keyPoses(), cur_time, world_frame);
-            lcm.publish(graph_nodes_topic, &nodes_msg);
-
-            nav_msgs::Path edges_msg = build_graph_edges(
-                pgo.keyPoses(), pgo.historyPairs(), cur_time, world_frame);
-            lcm.publish(graph_edges_topic, &edges_msg);
-        }
+        // Publish pose graph (on every keyframe — iSAM2 may have
+        // re-optimized prior poses on loop closure).
+        dimos::Graph3D pose_graph_msg = build_pose_graph(
+            pgo.keyPoses(), pgo.historyPairs(), cur_time, world_frame);
+        pose_graph_msg.publish(lcm, pose_graph_topic);
 
         // Publish global map (throttled)
         double now = cur_time;

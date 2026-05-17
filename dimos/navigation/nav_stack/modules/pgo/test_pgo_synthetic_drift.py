@@ -27,8 +27,8 @@ scan rather than the pose, can.
 This test runs PGO twice with the same input via the DimOS Module +
 Blueprint pipeline (no direct LCM topic strings here):
 
-1. ``use_scan_context=true``  → expect ≥1 loop_closure event.
-2. ``use_scan_context=false`` → expect 0 loop_closure events.
+1. ``use_scan_context=true``  → expect ≥1 loop_correction_delta event.
+2. ``use_scan_context=false`` → expect 0 loop_correction_delta events.
 """
 
 from __future__ import annotations
@@ -341,10 +341,10 @@ class SyntheticDriftPlaybackModule(Module):
         return self._frames_published
 
 
-class LoopClosureCounterModule(Module):
-    """Counts loop_closure events from any pose-graph SLAM module."""
+class LoopCorrectionDeltaCounterModule(Module):
+    """Counts loop_correction_delta events from any pose-graph SLAM module."""
 
-    loop_closure: In[NavPath]
+    loop_correction_delta: In[NavPath]
 
     def __init__(self, **kwargs: Any) -> None:
         super().__init__(**kwargs)
@@ -353,12 +353,14 @@ class LoopClosureCounterModule(Module):
     @rpc
     def start(self) -> None:
         super().start()
-        self.register_disposable(Disposable(self.loop_closure.subscribe(self._on_loop_closure)))
+        self.register_disposable(
+            Disposable(self.loop_correction_delta.subscribe(self._on_loop_correction_delta))
+        )
 
-    def _on_loop_closure(self, message: NavPath) -> None:
+    def _on_loop_correction_delta(self, message: NavPath) -> None:
         self._count += 1
         logger.info(
-            f"[loop_closure_counter] event #{self._count - 1}: "
+            f"[loop_correction_delta_counter] event #{self._count - 1}: "
             f"keyframe_count={len(message.poses)}, ts={message.ts:.3f}"
         )
 
@@ -394,13 +396,13 @@ def _run_pgo(
         scan_context_max_range_m=30.0,
         scan_context_match_threshold=0.6,
     )
-    counter_blueprint = LoopClosureCounterModule.blueprint()
+    counter_blueprint = LoopCorrectionDeltaCounterModule.blueprint()
 
     blueprint = autoconnect(playback_blueprint, pgo_blueprint, counter_blueprint)
     coordinator = ModuleCoordinator.build(blueprint)
     try:
         playback = coordinator.get_instance(SyntheticDriftPlaybackModule)
-        counter = coordinator.get_instance(LoopClosureCounterModule)
+        counter = coordinator.get_instance(LoopCorrectionDeltaCounterModule)
         while not playback.is_finished():
             time.sleep(POLL_INTERVAL_SEC)
         time.sleep(POST_FEED_DRAIN_SEC)

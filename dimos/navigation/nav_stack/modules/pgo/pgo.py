@@ -24,8 +24,7 @@ from pathlib import Path
 from dimos.core.core import rpc
 from dimos.core.native_module import NativeModule, NativeModuleConfig
 from dimos.core.stream import In, Out
-from dimos.msgs.nav_msgs.GraphNodes3D import GraphNodes3D
-from dimos.msgs.nav_msgs.LineSegments3D import LineSegments3D
+from dimos.msgs.nav_msgs.Graph3D import Graph3D
 from dimos.msgs.nav_msgs.Odometry import Odometry
 from dimos.msgs.nav_msgs.Path import Path as NavPath
 from dimos.msgs.sensor_msgs.PointCloud2 import PointCloud2
@@ -95,9 +94,8 @@ class PGO(NativeModule, LoopClosure):
     odometry: In[Odometry]
     corrected_odometry: Out[Odometry]
     global_map: Out[PointCloud2]
-    pose_graph_nodes: Out[GraphNodes3D]
-    pose_graph_edges: Out[LineSegments3D]
-    loop_closure: Out[NavPath]
+    pose_graph: Out[Graph3D]
+    loop_correction_delta: Out[NavPath]
 
     @rpc
     def start(self) -> None:

@@ -12,20 +12,16 @@
 # See the License for the specific language governing permissions and
 # limitations under the License.
 
-"""Module that scores a pose-graph SLAM module's loop closures against KITTI groundtruth.
+"""Score a pose-graph SLAM module's loop closures against KITTI groundtruth.
 
 Subscribes to two outputs that any pose-graph SLAM module exposes:
 
-* ``pose_graph_edges: In[LineSegments3D]`` — pose-graph edges where loop
-  closures are tagged with traversability ``0.4`` (odometry edges use ``1.0``).
-* ``loop_closure: In[NavPath]`` — one event per loop-closure update with
-  per-keyframe deltas.
-
-The scoring module needs to know, for each edge endpoint, which input scan
-produced that keyframe. The producer publishes a timestamp on each endpoint's
-``PoseStamped`` header — we keep a (timestamp → frame_id) cache built from
-the playback module's send schedule so we can map back unambiguously even
-after iSAM2 has shifted the optimized keyframe positions.
+* ``pose_graph: In[Graph3D]`` — full pose-graph snapshot. Loop-closure
+  edges are identified by ``metadata_id == EDGE_LOOP_CLOSURE``; each
+  node carries the keyframe creation time in ``pose.ts``, which we map
+  back to the input scan that produced it.
+* ``loop_correction_delta: In[NavPath]`` — one event per loop-closure
+  update with per-keyframe deltas.
 """
 
 from __future__ import annotations
@@ -40,13 +36,11 @@ from reactivex.disposable import Disposable
 from dimos.core.core import rpc
 from dimos.core.module import Module, ModuleConfig
 from dimos.core.stream import In
-from dimos.msgs.nav_msgs.LineSegments3D import LineSegments3D
+from dimos.msgs.nav_msgs.Graph3D import Graph3D
 from dimos.msgs.nav_msgs.Path import Path as NavPath
 
-# Producer convention used by PGO and the default for any other
-# LoopClosure implementer that doesn't override it.
-DEFAULT_LOOP_CLOSURE_TRAVERSABILITY = 0.4
-DEFAULT_TRAVERSABILITY_TOLERANCE = 0.05
+# PGO edge-type enum (matches build_pose_graph in pgo/cpp/main.cpp).
+EDGE_LOOP_CLOSURE = 1
 
 
 @dataclass
@@ -83,8 +77,6 @@ class PoseGraphScoringConfig(ModuleConfig):
     # JSON-friendly form of LoopGroundtruth.valid_loops_per_query:
     # frame_id → list of frame_ids that form valid loop pairs.
     valid_loops_per_query: dict[int, list[int]] = Field(default_factory=dict)
-    loop_closure_traversability: float = DEFAULT_LOOP_CLOSURE_TRAVERSABILITY
-    traversability_tolerance: float = DEFAULT_TRAVERSABILITY_TOLERANCE
 
 
 class PoseGraphScoringModule(Module):
@@ -92,13 +84,13 @@ class PoseGraphScoringModule(Module):
 
     config: PoseGraphScoringConfig
 
-    pose_graph_edges: In[LineSegments3D]
-    loop_closure: In[NavPath]
+    pose_graph: In[Graph3D]
+    loop_correction_delta: In[NavPath]
 
     def __init__(self, **kwargs: Any) -> None:
         super().__init__(**kwargs)
         self._detected_pairs: list[tuple[int, int]] = []
-        self._loop_closure_events: int = 0
+        self._loop_correction_delta_events: int = 0
         self._timestamp_ms_to_frame_id: dict[int, int] = {
             round(send_timestamp * 1e3): frame_id
             for frame_id, send_timestamp in zip(
@@ -109,38 +101,35 @@ class PoseGraphScoringModule(Module):
     @rpc
     def start(self) -> None:
         super().start()
-        self.register_disposable(Disposable(self.loop_closure.subscribe(self._on_loop_closure)))
         self.register_disposable(
-            Disposable(self.pose_graph_edges.subscribe(self._on_pose_graph_edges))
+            Disposable(self.loop_correction_delta.subscribe(self._on_loop_correction_delta))
         )
+        self.register_disposable(Disposable(self.pose_graph.subscribe(self._on_pose_graph)))
 
-    def _on_loop_closure(self, message: NavPath) -> None:
+    def _on_loop_correction_delta(self, message: NavPath) -> None:
         del message
-        self._loop_closure_events += 1
+        self._loop_correction_delta_events += 1
 
-    def _on_pose_graph_edges(self, message: LineSegments3D) -> None:
-        # LineSegments3D decodes nav_msgs/Path as paired endpoints + a
-        # per-segment traversability + per-endpoint timestamps. We use
-        # the endpoint timestamps to map each endpoint back to the
-        # input frame_id that produced that keyframe.
-        traversabilities = message._traversability
-        endpoint_ts = message._endpoint_ts
-        for segment_index, traversability in enumerate(traversabilities):
-            if (
-                abs(traversability - self.config.loop_closure_traversability)
-                >= self.config.traversability_tolerance
-            ):
+    def _on_pose_graph(self, message: Graph3D) -> None:
+        id_to_node_ts: dict[int, float] = {n.id: n.pose.ts for n in message.nodes}
+        for edge in message.edges:
+            if edge.metadata_id != EDGE_LOOP_CLOSURE:
                 continue
-            start_frame_id = self._timestamp_to_frame(endpoint_ts[2 * segment_index])
-            end_frame_id = self._timestamp_to_frame(endpoint_ts[2 * segment_index + 1])
-            if start_frame_id is not None and end_frame_id is not None:
-                pair = (start_frame_id, end_frame_id)
-                if pair not in self._detected_pairs:
-                    self._detected_pairs.append(pair)
+            start_ts = id_to_node_ts.get(edge.start_id)
+            end_ts = id_to_node_ts.get(edge.end_id)
+            if start_ts is None or end_ts is None:
+                continue
+            start_frame_id = self._timestamp_to_frame(start_ts)
+            end_frame_id = self._timestamp_to_frame(end_ts)
+            if start_frame_id is None or end_frame_id is None:
+                continue
+            pair = (start_frame_id, end_frame_id)
+            if pair not in self._detected_pairs:
+                self._detected_pairs.append(pair)
 
     def _timestamp_to_frame(self, timestamp_sec: float) -> int | None:
         timestamp_ms = round(timestamp_sec * 1e3)
-        # ±1 ms slop: PoseStamped.ts round-trips through (int32 sec, uint32 nsec).
+        # ±1 ms slop: pose.ts round-trips through (int32 sec, uint32 nsec).
         for slop_ms in (0, -1, 1):
             frame_id = self._timestamp_ms_to_frame_id.get(timestamp_ms + slop_ms)
             if frame_id is not None:
@@ -160,7 +149,7 @@ class PoseGraphScoringModule(Module):
             "groundtruth_queries_with_loop": queries_with_loop,
             "groundtruth_total_loop_pairs": total_pairs,
             "detected_loop_edges": len(self._detected_pairs),
-            "loop_closure_events": self._loop_closure_events,
+            "loop_correction_delta_events": self._loop_correction_delta_events,
             "true_positive": metrics.true_positive,
             "false_positive": metrics.false_positive,
             "false_negative": metrics.false_negative,

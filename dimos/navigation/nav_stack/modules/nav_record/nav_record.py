@@ -24,7 +24,7 @@ from dimos.memory2.module import Recorder, RecorderConfig
 from dimos.msgs.geometry_msgs.PointStamped import PointStamped
 from dimos.msgs.geometry_msgs.Twist import Twist
 from dimos.msgs.nav_msgs.ContourPolygons3D import ContourPolygons3D
-from dimos.msgs.nav_msgs.GraphNodes3D import GraphNodes3D
+from dimos.msgs.nav_msgs.Graph3D import Graph3D
 from dimos.msgs.nav_msgs.LineSegments3D import LineSegments3D
 from dimos.msgs.nav_msgs.Odometry import Odometry
 from dimos.msgs.nav_msgs.Path import Path as NavPath
@@ -74,8 +74,7 @@ class NavRecord(Recorder):
     goal_path: In[NavPath]
     costmap_cloud: In[PointCloud2]  # SimplePlanner only
     # FarPlanner-specific
-    graph_nodes: In[GraphNodes3D]
-    graph_edges: In[LineSegments3D]
+    graph: In[Graph3D]
     contour_polygons: In[ContourPolygons3D]
     nav_boundary: In[LineSegments3D]
 
@@ -86,9 +85,8 @@ class NavRecord(Recorder):
     # PGO outputs
     corrected_odometry: In[Odometry]
     global_map: In[PointCloud2]
-    pose_graph_nodes: In[GraphNodes3D]
-    pose_graph_edges: In[LineSegments3D]
-    loop_closure: In[NavPath]
+    pose_graph: In[Graph3D]
+    loop_correction_delta: In[NavPath]
 
     # FastLio2 outputs (SLAM source; blueprints typically remap FastLio2's
     # "lidar" -> "registered_scan" and "global_map" -> "global_map_fastlio")
