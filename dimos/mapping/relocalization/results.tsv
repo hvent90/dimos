@@ -77,3 +77,4 @@ f886031	0.9636	0.028	0.374	50.2	discard	0.2m@7; lost frames 1292 and 1579 - 0.2m
 d50b94f	0.9455	0.029	0.407	54.9	discard	FPFH radius voxel*5 -> voxel*4; lost 3 frames
 04c2612	0.9636	0.029	0.196	53.8	discard	polish max_iter 100->30; lost 2 frames
 4ab2a25	0.9818	0.028	0.154	54.6	discard	top-K 10->7; lost frame 1292
+1353587	1.0000	0.028	0.087	54.2	keep	0.8m@4 (was 8); same accuracy, -1.3s — coarse scale needs fewer restarts
