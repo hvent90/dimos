@@ -24,7 +24,7 @@ from __future__ import annotations
 import threading
 from threading import Thread
 import time
-from typing import TYPE_CHECKING, Any
+from typing import TYPE_CHECKING, Any, ClassVar
 
 from pydantic import Field
 from reactivex.disposable import Disposable
@@ -76,6 +76,15 @@ class G1WholeBodyConnection(Module):
     """G1 humanoid Module — owns the DDS connection in its own worker."""
 
     config: G1WholeBodyConnectionConfig
+
+    # Hard-realtime: this module receives motor_command from the coordinator
+    # and writes the DDS LowCmd to the robot at 500 Hz. A slow co-tenant
+    # in the same Python process (viewer, camera bridge, etc.) holds the
+    # GIL long enough that motor_command callbacks stall, the DDS write
+    # rate drops, and the robot's onboard watchdog goes to damping. Pin
+    # to its own worker — the docstring above already advertised this
+    # contract, the flag enforces it.
+    solo_worker: ClassVar[bool] = True
 
     motor_command: In[MotorCommandArray]
     motor_states: Out[JointState]
