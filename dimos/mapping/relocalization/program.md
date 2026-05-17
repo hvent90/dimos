@@ -49,7 +49,7 @@ dimos/mapping/relocalization/
 
 ## Experimentation
 
-Each run has a **fixed 5-minute wall-clock budget** (enforced inside
+Each run has a **fixed 90-second wall-clock budget** (enforced inside
 `run.py`). Launch it as:
 
 ```
@@ -81,7 +81,7 @@ script output flood your context.
 
 Maximize **`success_rate`** (fraction of frames within 1m translation
 AND 15° rotation of groundtruth) across the 60 test frames, within the
-5-minute total budget. Higher is better.
+90-second total budget. Higher is better.
 
 Metric hierarchy (apply in order — only consult the next when the
 previous is tied):
@@ -137,7 +137,7 @@ The returned 4x4 matrix `T` must transform body-frame points to world-frame:
 `world = T @ [body; 1]`. If your code returns a wrong shape or raises, the
 evaluator logs `crash` and skips that frame.
 
-The function may take seconds per call — that's expected. The 5-minute
+The function may take seconds per call — that's expected. The 90-second
 budget covers *all* 60 calls; if it expires mid-run, the evaluator stops
 and reports metrics over whatever frames completed. So you can also
 spend more time per frame at the cost of fewer frames evaluated; the
@@ -213,8 +213,8 @@ LOOP FOREVER:
    keep it. If it loses or strictly ties on all three, `git reset --hard
    HEAD~1` and try a different idea.
 
-**Timeout:** Each run should finish in ~5 minutes (enforced inside run.py).
-If a run exceeds 10 minutes wall-clock (e.g. you accidentally disabled the
+**Timeout:** Each run should finish in ~90 seconds (enforced inside run.py).
+If a run exceeds 3 minutes wall-clock (e.g. you accidentally disabled the
 budget), kill it and treat as failure.
 
 **Crashes:** If the crash is dumb (typo, missing import you can fix

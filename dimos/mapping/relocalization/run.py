@@ -22,7 +22,7 @@ This is the **entry point** for the experiment. Run it as:
     uv run dimos/mapping/relocalization/run.py
 
 It imports `relocalize` from `relocalize.py` (sibling file), runs it
-against the 20 cached test frames under a 5-minute wall-clock budget,
+against the 60 cached test frames under a 90-second wall-clock budget,
 and prints a grep-friendly summary block.
 
 The agent's `relocalize` must have the signature:
@@ -59,7 +59,7 @@ import open3d as o3d
 from scipy.spatial.transform import Rotation
 
 DATA_DIR = Path(__file__).parent / "data"
-TIME_BUDGET_SEC = 300.0  # 5 minutes wall-clock for the entire run
+TIME_BUDGET_SEC = 90.0  # 90 seconds wall-clock for the entire run (60 frames over many cores)
 SUCCESS_T_M = 1.0  # success threshold: translation error < 1m
 SUCCESS_R_DEG = 15.0  # success threshold: rotation error < 15°
 NUM_WORKERS = os.cpu_count() or 1  # eval frames in parallel — uses all cores
