@@ -79,6 +79,13 @@ if TYPE_CHECKING:
     from dimos.core.rpc_client import ModuleProxy
 
 
+_FISHEYE_MODELS = frozenset({"equidistant", "fisheye", "kannala_brandt"})
+
+
+def _is_fisheye_model(distortion_model: str | None) -> bool:
+    return (distortion_model or "").strip().lower() in _FISHEYE_MODELS
+
+
 def camera_info_to_cv_matrices(camera_info: CameraInfo) -> tuple[np.ndarray, np.ndarray]:
     """Build OpenCV ``cameraMatrix`` and ``distCoeffs`` from ``CameraInfo``."""
     k = np.array(camera_info.K, dtype=np.float64).reshape(3, 3)
@@ -117,16 +124,29 @@ def estimate_marker_pose(
     marker_length_m: float,
     camera_matrix: np.ndarray,
     dist_coeffs: np.ndarray,
+    *,
+    distortion_model: str | None = None,
 ) -> tuple[np.ndarray, np.ndarray] | None:
-    """Return ``(rvec, tvec)`` for camera optical <- marker from undistorted solvePnP."""
+    """Return ``(rvec, tvec)`` for camera optical <- marker from undistorted solvePnP.
+
+    For fisheye/equidistant intrinsics, corners are first undistorted into the
+    same pinhole ``K`` so the radtan-only ``solvePnP`` sees pinhole-equivalent
+    pixels. Otherwise the radtan ``dist_coeffs`` are passed straight through.
+    """
     obj = _aruco_marker_object_points(marker_length_m)
     img = corners_px.reshape(4, 1, 2).astype(np.float32)
+    if _is_fisheye_model(distortion_model):
+        d_fisheye = np.asarray(dist_coeffs, dtype=np.float64).reshape(-1)[:4].reshape(4, 1)
+        img = cv2.fisheye.undistortPoints(img, camera_matrix, d_fisheye, P=camera_matrix)
+        solve_dist: np.ndarray = np.zeros((0, 1), dtype=np.float64)
+    else:
+        solve_dist = dist_coeffs
     ok, rvec, tvec = cv2.solvePnP(
         obj,
         img,
         camera_matrix,
-        dist_coeffs,
-        flags=cv2.SOLVEPNP_IPPE_SQUARE,
+        solve_dist,
+        flags=cv2.SOLVEPNP_ITERATIVE,
     )
     if not ok:
         return None
@@ -207,7 +227,7 @@ class MarkerTfModule(Module):
 
     def _maybe_warn_distortion(self, camera_info: CameraInfo) -> None:
         model = (camera_info.distortion_model or "").strip().lower()
-        if model in ("", "plumb_bob"):
+        if model in ("", "plumb_bob") or _is_fisheye_model(model):
             return
         if not self._warned_distortion_model:
             logger.warning(
@@ -291,6 +311,7 @@ class MarkerTfModule(Module):
                 self.config.marker_length_m,
                 cam_mtx,
                 dist,
+                distortion_model=info.distortion_model,
             )
             if pose is None:
                 continue
