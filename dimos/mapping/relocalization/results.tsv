@@ -42,3 +42,4 @@ a935b4b	0.9000	0.036	1.086	84.7	discard	FINE_VOXEL 0.1->0.05; denser cloud shift
 652bb44	0.8889	0.034	0.835	90.2	discard	SCALE_PLAN with 0.15m x2; timeout 54/58 — 0.15m FPFH per-frame expensive
 50bab0e	0.8966	0.032	0.887	65.4	discard	rerank top-10 by tight wall fitness (0.075m) post-polish; lost frames 1292, 1363
 bc5c53c	0.8448	0.033	1.134	64.4	discard	consensus selection over polished top-10; cluster picked wrong pose on 5 frames
+9e9f242	0.9483	0.033	0.538	64.5	discard	edge-length 0.9 -> 0.85; tied success+median, swapped 2942 fixed for 2153 broken; tertiary timing noise
