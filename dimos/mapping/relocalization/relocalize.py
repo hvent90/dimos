@@ -169,14 +169,32 @@ def relocalize(
     upright = [T for T in candidates if _gravity_tilt_deg(T) <= GRAVITY_TILT_MAX_DEG]
     pool = upright if upright else candidates
 
-    # Re-rank by fine-scale inlier fitness. evaluate_registration runs only
-    # correspondence accounting (no refinement) — cheap and honest.
+    # Stage 1: rank all candidates by fine-scale fitness (cheap correspondence
+    # accounting, no refinement). Keep top-5 only — promising ones to refine.
     def fine_fitness(T: np.ndarray) -> float:
         r = _reg.evaluate_registration(src_fine, tgt_fine, RERANK_DIST, T)
         return float(r.fitness)
 
-    best_T = max(pool, key=fine_fitness)
+    top_k = sorted(pool, key=fine_fitness, reverse=True)[:5]
 
+    # Stage 2: run a moderate-distance ICP on each top-5 candidate (basin
+    # ≈ RERANK_DIST = 0.15m). A close-to-right candidate snaps to a tight
+    # local minimum; a wrong-room candidate makes no progress. Pick by
+    # post-refinement fitness, which is a much sharper signal than pre-ICP.
+    polished: list[tuple[float, np.ndarray]] = []
+    for T0 in top_k:
+        r = _reg.registration_icp(
+            src_fine,
+            tgt_fine,
+            RERANK_DIST,
+            T0,
+            _reg.TransformationEstimationPointToPlane(),
+            _reg.ICPConvergenceCriteria(max_iteration=100),
+        )
+        polished.append((float(r.fitness), np.asarray(r.transformation)))
+    best_fit, best_T = max(polished, key=lambda fT: fT[0])
+
+    # Stage 3: one final tight ICP pass to tighten the answer.
     refined = _reg.registration_icp(
         src_fine,
         tgt_fine,
