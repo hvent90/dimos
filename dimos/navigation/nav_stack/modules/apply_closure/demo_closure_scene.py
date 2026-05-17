@@ -52,8 +52,11 @@ import rerun as rr
 from scipy.spatial.transform import Rotation, Slerp
 
 from dimos.msgs.geometry_msgs.PoseStamped import PoseStamped
+from dimos.msgs.geometry_msgs.Quaternion import Quaternion
+from dimos.msgs.geometry_msgs.Vector3 import Vector3
 from dimos.msgs.nav_msgs.DynamicCloud import DynamicCloud
-from dimos.msgs.nav_msgs.Path import Path
+from dimos.msgs.nav_msgs.Graph3D import Graph3D
+from dimos.msgs.nav_msgs.GraphDelta3D import GraphDelta3D
 from dimos.navigation.nav_stack.modules.apply_closure.apply_closure import (
     apply_closure_to_cloud,
 )
@@ -232,19 +235,41 @@ def lerp_pose_arrays(A: np.ndarray, B: np.ndarray, alpha: float) -> np.ndarray:
     return out
 
 
-def poses_to_path(times: np.ndarray, mats: np.ndarray) -> Path:
-    poses: list[PoseStamped] = []
-    for ts, T in zip(times, mats, strict=True):
-        q = Rotation.from_matrix(T[:3, :3]).as_quat()  # [x, y, z, w]
-        poses.append(
-            PoseStamped(
-                ts=float(ts),
-                frame_id="map",
-                position=[float(T[0, 3]), float(T[1, 3]), float(T[2, 3])],
-                orientation=[float(q[0]), float(q[1]), float(q[2]), float(q[3])],
-            )
+def _matrix_to_translation_quaternion(mat: np.ndarray) -> tuple[Vector3, Quaternion]:
+    quat = Rotation.from_matrix(mat[:3, :3]).as_quat()  # [x, y, z, w]
+    return (
+        Vector3(float(mat[0, 3]), float(mat[1, 3]), float(mat[2, 3])),
+        Quaternion(float(quat[0]), float(quat[1]), float(quat[2]), float(quat[3])),
+    )
+
+
+def make_graph_delta(
+    times: np.ndarray, prev_poses: np.ndarray, target_poses: np.ndarray
+) -> GraphDelta3D:
+    """Build a GraphDelta3D carrying the per-node correction from prev → target.
+
+    ``nodes[i].pose`` snapshots ``prev_poses[i]``; ``transforms[i]`` is the
+    world-frame delta s.t. ``transforms[i] @ prev_poses[i] = target_poses[i]``.
+    This is the message PGO would publish on a real loop-closure event.
+    """
+    nodes: list[Graph3D.Node3D] = []
+    transforms: list[GraphDelta3D.Transform] = []
+    for i, ts in enumerate(times):
+        prev_mat = prev_poses[i]
+        delta_mat = target_poses[i] @ np.linalg.inv(prev_mat)
+
+        prev_t, prev_q = _matrix_to_translation_quaternion(prev_mat)
+        delta_t, delta_q = _matrix_to_translation_quaternion(delta_mat)
+
+        pose = PoseStamped(
+            ts=float(ts),
+            frame_id="map",
+            position=[prev_t.x, prev_t.y, prev_t.z],
+            orientation=[prev_q.x, prev_q.y, prev_q.z, prev_q.w],
         )
-    return Path(ts=float(times[-1]), frame_id="map", poses=poses)
+        nodes.append(Graph3D.Node3D(pose=pose, id=i, metadata_id=0))
+        transforms.append(GraphDelta3D.Transform(translation=delta_t, rotation=delta_q))
+    return GraphDelta3D(ts=float(times[-1]), nodes=nodes, transforms=transforms)
 
 
 def log_pose_arrow(name: str, T: np.ndarray, color: tuple[int, int, int]) -> None:
@@ -395,14 +420,14 @@ def run_demo(spawn: bool, step_ms: int) -> None:
         frame_id="map",
         ts=float(times[-1]),
     )
-    prev_graph = poses_to_path(times, drifted_poses)
-
     # Snapshot the "before" state on the closure step so it's still visible
     # if you scrub back here.
     log_voxels("world/global_map/drifted", drifted_cloud, (220, 70, 70), radii=0.10)
 
     # Animate the closure: ramp alpha 0→1 across n_anim frames, applying
-    # ApplyClosure each frame so the voxel map visibly snaps into place.
+    # ApplyClosure each frame so the voxel map visibly snaps into place. Each
+    # frame builds a fresh GraphDelta3D whose transforms[i] is the partial
+    # correction needed at fraction alpha.
     n_anim = 24
     for j in range(n_anim + 1):
         alpha = j / n_anim
@@ -410,8 +435,8 @@ def run_demo(spawn: bool, step_ms: int) -> None:
         rr.set_time("sim_time", duration=float(times[-1] - times[0] + 1.0 + alpha))
 
         interp_poses = lerp_pose_arrays(drifted_poses, corrected_poses, alpha)
-        interp_graph = poses_to_path(times, interp_poses)
-        corrected_at_alpha = apply_closure_to_cloud(drifted_cloud, prev_graph, interp_graph)
+        closure_event = make_graph_delta(times, drifted_poses, interp_poses)
+        corrected_at_alpha = apply_closure_to_cloud(drifted_cloud, closure_event)
 
         log_voxels("world/global_map/corrected", corrected_at_alpha, (60, 200, 80), radii=0.10)
         rr.log(
@@ -421,10 +446,9 @@ def run_demo(spawn: bool, step_ms: int) -> None:
         if step_ms > 0:
             time.sleep(step_ms / 1000.0)
 
-    # Final corrected cloud is whatever the last animation frame produced.
-    corrected_cloud = apply_closure_to_cloud(
-        drifted_cloud, prev_graph, poses_to_path(times, corrected_poses)
-    )
+    # Final corrected cloud is whatever the full correction produces.
+    final_closure_event = make_graph_delta(times, drifted_poses, corrected_poses)
+    corrected_cloud = apply_closure_to_cloud(drifted_cloud, final_closure_event)
 
     err_before = mean_nearest_distance(drifted_cloud.world_positions(), gt_points)
     err_after = mean_nearest_distance(corrected_cloud.world_positions(), gt_points)

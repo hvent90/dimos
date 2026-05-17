@@ -17,24 +17,24 @@ from __future__ import annotations
 import math
 
 import numpy as np
-import pytest
 from scipy.spatial.transform import Rotation
 
 from dimos.msgs.geometry_msgs.PoseStamped import PoseStamped
+from dimos.msgs.geometry_msgs.Quaternion import Quaternion
+from dimos.msgs.geometry_msgs.Vector3 import Vector3
 from dimos.msgs.nav_msgs.DynamicCloud import DynamicCloud
-from dimos.msgs.nav_msgs.Path import Path
+from dimos.msgs.nav_msgs.Graph3D import Graph3D
+from dimos.msgs.nav_msgs.GraphDelta3D import GraphDelta3D
 from dimos.navigation.nav_stack.modules.apply_closure.apply_closure import (
     apply_closure_to_cloud,
-    compute_node_deltas,
-    invert_transforms,
+    graph_delta_to_arrays,
     lbs_warp_positions,
     merge_duplicate_voxels,
-    path_to_arrays,
-    pose_stamped_to_matrix,
+    transform_to_matrix,
 )
 
 
-def _pose(ts: float, x: float, y: float, z: float, yaw: float = 0.0) -> PoseStamped:
+def _pose(ts, x=0.0, y=0.0, z=0.0, yaw=0.0):
     quat = Rotation.from_euler("z", yaw).as_quat()
     return PoseStamped(
         ts=ts,
@@ -44,33 +44,52 @@ def _pose(ts: float, x: float, y: float, z: float, yaw: float = 0.0) -> PoseStam
     )
 
 
-def _path(*poses: PoseStamped) -> Path:
-    return Path(ts=0.0, frame_id="map", poses=list(poses))
+def _node(ts, x=0.0, y=0.0, z=0.0, yaw=0.0, node_id=0):
+    return Graph3D.Node3D(pose=_pose(ts, x, y, z, yaw), id=node_id, metadata_id=0)
+
+
+def _transform(tx=0.0, ty=0.0, tz=0.0, yaw=0.0):
+    quat = Rotation.from_euler("z", yaw).as_quat()
+    return GraphDelta3D.Transform(
+        translation=Vector3(tx, ty, tz),
+        rotation=Quaternion(quat[0], quat[1], quat[2], quat[3]),
+    )
+
+
+def _delta(*pairs):
+    """Build a GraphDelta3D from an iterable of (node, transform) pairs."""
+    nodes = [pair[0] for pair in pairs]
+    transforms = [pair[1] for pair in pairs]
+    return GraphDelta3D(ts=1.0, nodes=nodes, transforms=transforms)
 
 
 class TestTransformHelpers:
-    def test_invert_round_trip(self):
-        transform = np.eye(4)
-        transform[:3, :3] = Rotation.from_euler("xyz", [0.3, -0.2, 1.1]).as_matrix()
-        transform[:3, 3] = [1.0, -2.0, 3.0]
-        batch = transform[None, :, :]
-        inv = invert_transforms(batch)
-        np.testing.assert_allclose(batch @ inv, np.eye(4)[None, :, :], atol=1e-9)
-
-    def test_pose_stamped_to_matrix_identity(self):
-        pose = PoseStamped(
-            ts=0.0,
-            frame_id="map",
-            position=[0.0, 0.0, 0.0],
-            orientation=[0.0, 0.0, 0.0, 1.0],
+    def test_transform_to_matrix_identity(self):
+        identity = GraphDelta3D.Transform(
+            translation=Vector3(0.0, 0.0, 0.0),
+            rotation=Quaternion(0.0, 0.0, 0.0, 1.0),
         )
-        np.testing.assert_allclose(pose_stamped_to_matrix(pose), np.eye(4), atol=1e-12)
+        np.testing.assert_allclose(transform_to_matrix(identity), np.eye(4), atol=1e-12)
 
-    def test_compute_node_deltas_identity_when_unchanged(self):
-        prev = np.stack([np.eye(4), np.eye(4)], axis=0)
-        next_transforms = prev.copy()
-        deltas = compute_node_deltas(prev, next_transforms)
-        np.testing.assert_allclose(deltas, np.stack([np.eye(4), np.eye(4)]), atol=1e-12)
+    def test_transform_to_matrix_translation_only(self):
+        t = GraphDelta3D.Transform(
+            translation=Vector3(1.0, 2.0, 3.0),
+            rotation=Quaternion(0.0, 0.0, 0.0, 1.0),
+        )
+        matrix = transform_to_matrix(t)
+        np.testing.assert_allclose(matrix[:3, :3], np.eye(3))
+        np.testing.assert_allclose(matrix[:3, 3], [1.0, 2.0, 3.0])
+
+    def test_graph_delta_to_arrays(self):
+        delta = _delta(
+            (_node(1.0, 2.0, 3.0, 4.0), _transform(0.5, 0.0, 0.0)),
+            (_node(5.0, 6.0, 7.0, 8.0), _transform(0.0, 0.7, 0.0)),
+        )
+        timestamps, deltas = graph_delta_to_arrays(delta)
+        np.testing.assert_array_equal(timestamps, [1.0, 5.0])
+        assert deltas.shape == (2, 4, 4)
+        np.testing.assert_allclose(deltas[0, :3, 3], [0.5, 0.0, 0.0])
+        np.testing.assert_allclose(deltas[1, :3, 3], [0.0, 0.7, 0.0])
 
 
 class TestLBSWarp:
@@ -186,39 +205,42 @@ class TestMergeDuplicates:
 
 
 class TestApplyClosureToCloud:
-    def test_empty_pose_graph_returns_input(self):
+    def test_empty_graph_delta_returns_input(self):
         cloud = DynamicCloud(
             voxels=np.array([[1, 2, 3]], dtype=np.int32),
             quantity=np.array([1], dtype=np.uint32),
             voxel_size=0.5,
         )
-        out = apply_closure_to_cloud(cloud, _path(), _path())
+        out = apply_closure_to_cloud(cloud, _delta())
         assert out is cloud
 
-    def test_identity_correction_preserves_voxels(self):
+    def test_identity_deltas_preserve_voxels(self):
         cloud = DynamicCloud(
             voxels=np.array([[1, 0, 0], [-2, 3, 1]], dtype=np.int32),
             quantity=np.array([4, 5], dtype=np.uint32),
             voxel_size=0.5,
         )
-        prev = _path(_pose(0.0, 0.0, 0.0, 0.0), _pose(10.0, 1.0, 0.0, 0.0))
-        next_graph = _path(_pose(0.0, 0.0, 0.0, 0.0), _pose(10.0, 1.0, 0.0, 0.0))
-        out = apply_closure_to_cloud(cloud, prev, next_graph)
+        delta = _delta(
+            (_node(1.0), _transform()),
+            (_node(10.0), _transform()),
+        )
+        out = apply_closure_to_cloud(cloud, delta)
         # Sort both for comparison since merge_duplicates may reorder
         np.testing.assert_array_equal(np.sort(out.voxels, axis=0), np.sort(cloud.voxels, axis=0))
         assert int(out.quantity.sum()) == int(cloud.quantity.sum())
 
-    def test_rigid_translation_shift(self):
-        """All nodes shifted by the same vector → entire cloud shifts by it."""
+    def test_uniform_translation_shifts_whole_cloud(self):
+        """All nodes carry the same translation delta → entire cloud shifts by it."""
         cloud = DynamicCloud(
             voxels=np.array([[2, 0, 0], [4, 0, 0]], dtype=np.int32),
             quantity=np.array([1, 1], dtype=np.uint32),
             voxel_size=0.5,
         )
-        prev = _path(_pose(0.0, 0.0, 0.0, 0.0), _pose(1.0, 0.0, 0.0, 0.0))
-        # Both next poses shifted by +1m in x
-        next_graph = _path(_pose(0.0, 1.0, 0.0, 0.0), _pose(1.0, 1.0, 0.0, 0.0))
-        out = apply_closure_to_cloud(cloud, prev, next_graph)
+        delta = _delta(
+            (_node(1.0), _transform(tx=1.0)),
+            (_node(2.0), _transform(tx=1.0)),
+        )
+        out = apply_closure_to_cloud(cloud, delta)
         # World positions: (1.0, 0, 0) and (2.0, 0, 0). +1m → (2,0,0), (3,0,0).
         # voxel_size = 0.5, so voxels should be (4, 0, 0) and (6, 0, 0).
         sorted_out = np.sort(out.voxels, axis=0)
@@ -240,33 +262,12 @@ class TestApplyClosureToCloud:
             event_timestamps=np.array([100 * 1_000_000_000], dtype=np.uint64),
             voxel_size=1.0,
         )
-        prev = _path(_pose(1.0, 0.0, 0.0, 0.0), _pose(100.0, 0.0, 0.0, 0.0))
-        # First node unchanged; second node shifted +5m in x.
-        next_graph = _path(_pose(1.0, 0.0, 0.0, 0.0), _pose(100.0, 5.0, 0.0, 0.0))
-        out = apply_closure_to_cloud(cloud, prev, next_graph)
+        delta = _delta(
+            (_node(1.0), _transform()),
+            (_node(100.0), _transform(tx=5.0)),
+        )
+        out = apply_closure_to_cloud(cloud, delta)
         # Voxel 0 (no event → ts=0 → clipped to first node, ts=1 → identity delta): (0,0,0)
         # Voxel 1 (event_ts=100s → clipped to last node → +5m): (10,0,0) → (15,0,0)
         sorted_out = np.sort(out.voxels, axis=0)
         np.testing.assert_array_equal(sorted_out, np.array([[0, 0, 0], [15, 0, 0]]))
-
-    def test_mismatched_length_raises(self):
-        cloud = DynamicCloud(voxel_size=0.5)
-        prev = _path(_pose(0.0, 0.0, 0.0, 0.0))
-        next_graph = _path(_pose(0.0, 0.0, 0.0, 0.0), _pose(1.0, 0.0, 0.0, 0.0))
-        with pytest.raises(ValueError, match="length mismatch"):
-            apply_closure_to_cloud(cloud, prev, next_graph)
-
-    def test_mismatched_timestamps_raises(self):
-        cloud = DynamicCloud(voxel_size=0.5)
-        prev = _path(_pose(0.0, 0.0, 0.0, 0.0), _pose(1.0, 0.0, 0.0, 0.0))
-        next_graph = _path(_pose(0.0, 0.0, 0.0, 0.0), _pose(5.0, 0.0, 0.0, 0.0))
-        with pytest.raises(ValueError, match="timestamps do not match"):
-            apply_closure_to_cloud(cloud, prev, next_graph)
-
-    def test_path_to_arrays_returns_timestamps_and_matrices(self):
-        path = _path(_pose(1.0, 2.0, 3.0, 4.0), _pose(5.0, 6.0, 7.0, 8.0))
-        timestamps, transforms = path_to_arrays(path)
-        np.testing.assert_array_equal(timestamps, [1.0, 5.0])
-        assert transforms.shape == (2, 4, 4)
-        np.testing.assert_allclose(transforms[0, :3, 3], [2.0, 3.0, 4.0])
-        np.testing.assert_allclose(transforms[1, :3, 3], [6.0, 7.0, 8.0])

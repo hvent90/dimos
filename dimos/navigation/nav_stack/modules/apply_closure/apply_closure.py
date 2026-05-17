@@ -16,13 +16,14 @@
 
 Inputs:
 - ``global_map``: the voxel map to warp (DynamicCloud)
-- ``previous_pose_graph``: graph poses before optimization (Path of PoseStamped)
-- ``next_pose_graph``: graph poses after optimization (same nodes, corrected poses)
+- ``loop_closure_event``: a GraphDelta3D published by PGO when iSAM2 smooths
+  the pose graph. ``nodes[i]`` is the pre-smooth keyframe; ``transforms[i]``
+  is the SE(3) delta to apply (left-multiplied: ``post = T_delta @ T_pre``).
 
-For each pose-graph node ``i`` the correction is ``delta_i = next_i @ prev_i^-1``.
 Each voxel is bound to the pose-graph timeline by its latest event timestamp
 (``per_point_latest_timestamp``), and its warp is a two-nearest-neighbor LBS
-blend: lerp on translation, slerp on rotation between the bracketing nodes.
+blend: lerp on translation, slerp on rotation between the bracketing nodes'
+deltas.
 
 The effect: voxels with recent event timestamps follow the latest pose
 corrections, older voxels barely move — matching the way pose-graph drift
@@ -45,28 +46,29 @@ from scipy.spatial.transform import Rotation, Slerp
 from dimos.core.core import rpc
 from dimos.core.module import Module, ModuleConfig
 from dimos.core.stream import In, Out
-from dimos.msgs.geometry_msgs.PoseStamped import PoseStamped
 from dimos.msgs.nav_msgs.DynamicCloud import DynamicCloud
-from dimos.msgs.nav_msgs.Path import Path
+from dimos.msgs.nav_msgs.GraphDelta3D import GraphDelta3D
 from dimos.navigation.nav_stack.frames import FRAME_MAP
 from dimos.utils.logging_config import setup_logger
 
 logger = setup_logger()
 
 
-# Pose-graph node timestamps within this many seconds of each other are
-# treated as identical for matching prev/next graphs.
-_NODE_TIME_MATCH_TOL = 1e-3
 # Slerp requires strictly increasing input times. If two pose-graph nodes
 # share a timestamp (degenerate input), bump later ones by this epsilon so
 # the interpolator stays well-defined.
 _TIME_DEDUP_EPS = 1e-9
 
 
-def pose_stamped_to_matrix(pose: PoseStamped) -> np.ndarray:
-    """Pack a PoseStamped into a 4x4 homogeneous transform."""
+def transform_to_matrix(transform: GraphDelta3D.Transform) -> np.ndarray:
+    """Pack a ``GraphDelta3D.Transform`` (translation + quaternion) into 4x4."""
     quat = np.array(
-        [pose.orientation.x, pose.orientation.y, pose.orientation.z, pose.orientation.w],
+        [
+            transform.rotation.x,
+            transform.rotation.y,
+            transform.rotation.z,
+            transform.rotation.w,
+        ],
         dtype=np.float64,
     )
     norm = float(np.linalg.norm(quat))
@@ -74,39 +76,32 @@ def pose_stamped_to_matrix(pose: PoseStamped) -> np.ndarray:
         quat = np.array([0.0, 0.0, 0.0, 1.0])
     else:
         quat = quat / norm
-    T = np.eye(4, dtype=np.float64)
-    T[:3, :3] = Rotation.from_quat(quat).as_matrix()
-    T[:3, 3] = [pose.x, pose.y, pose.z]
-    return T
+    out = np.eye(4, dtype=np.float64)
+    out[:3, :3] = Rotation.from_quat(quat).as_matrix()
+    out[:3, 3] = [
+        transform.translation.x,
+        transform.translation.y,
+        transform.translation.z,
+    ]
+    return out
 
 
-def path_to_arrays(path: Path) -> tuple[np.ndarray, np.ndarray]:
-    """Return (timestamps[N], transforms[N, 4, 4]) for the path's poses."""
-    n = len(path.poses)
-    ts = np.empty(n, dtype=np.float64)
-    transforms = np.empty((n, 4, 4), dtype=np.float64)
-    for i, pose in enumerate(path.poses):
-        ts[i] = float(pose.ts)
-        transforms[i] = pose_stamped_to_matrix(pose)
-    return ts, transforms
+def graph_delta_to_arrays(graph_delta: GraphDelta3D) -> tuple[np.ndarray, np.ndarray]:
+    """Return (timestamps[N], deltas[N, 4, 4]) extracted from a GraphDelta3D.
 
-
-def invert_transforms(transforms: np.ndarray) -> np.ndarray:
-    """Invert a batch of rigid 4x4 transforms (R^T, -R^T t)."""
-    inv = np.empty_like(transforms)
-    R = transforms[:, :3, :3]
-    t = transforms[:, :3, 3]
-    R_t = np.transpose(R, (0, 2, 1))
-    inv[:, :3, :3] = R_t
-    inv[:, :3, 3] = -np.einsum("nij,nj->ni", R_t, t)
-    inv[:, 3, :] = 0.0
-    inv[:, 3, 3] = 1.0
-    return inv
-
-
-def compute_node_deltas(prev_T: np.ndarray, next_T: np.ndarray) -> np.ndarray:
-    """Per-node correction transforms: delta_i = next_i @ prev_i^-1."""
-    return next_T @ invert_transforms(prev_T)
+    Node timestamps come from each ``node.pose.ts``; deltas come from each
+    ``transforms[i]`` (treated as a world-frame correction per the
+    GraphDelta3D ``post = T_delta @ T_pre`` convention).
+    """
+    n = len(graph_delta.nodes)
+    timestamps = np.empty(n, dtype=np.float64)
+    deltas = np.empty((n, 4, 4), dtype=np.float64)
+    for i, (node, transform) in enumerate(
+        zip(graph_delta.nodes, graph_delta.transforms, strict=True)
+    ):
+        timestamps[i] = float(node.pose.ts)
+        deltas[i] = transform_to_matrix(transform)
+    return timestamps, deltas
 
 
 def _dedupe_times(times: np.ndarray) -> np.ndarray:
@@ -195,40 +190,25 @@ def merge_duplicate_voxels(
 
 def apply_closure_to_cloud(
     cloud: DynamicCloud,
-    previous_pose_graph: Path,
-    next_pose_graph: Path,
+    graph_delta: GraphDelta3D,
 ) -> DynamicCloud:
-    """Warp ``cloud`` by the per-node correction implied by the two graphs.
+    """Warp ``cloud`` by the per-node deltas carried in ``graph_delta``.
 
-    Raises:
-        ValueError: if the graphs disagree in length or in node timestamps.
+    A pass-through if ``graph_delta`` has no nodes.
     """
-    if len(previous_pose_graph.poses) != len(next_pose_graph.poses):
-        raise ValueError(
-            f"pose graph length mismatch: previous={len(previous_pose_graph.poses)}, "
-            f"next={len(next_pose_graph.poses)}"
-        )
-    if len(previous_pose_graph.poses) == 0:
-        # No correction available — pass through.
+    if len(graph_delta.nodes) == 0:
         return cloud
 
-    prev_ts, prev_T = path_to_arrays(previous_pose_graph)
-    next_ts, next_T = path_to_arrays(next_pose_graph)
-    if not np.allclose(prev_ts, next_ts, atol=_NODE_TIME_MATCH_TOL):
-        raise ValueError("pose graph node timestamps do not match between prev and next")
-
-    order = np.argsort(prev_ts, kind="stable")
-    prev_ts = prev_ts[order]
-    prev_T = prev_T[order]
-    next_T = next_T[order]
-
-    deltas = compute_node_deltas(prev_T, next_T)
+    node_times, deltas = graph_delta_to_arrays(graph_delta)
+    order = np.argsort(node_times, kind="stable")
+    node_times = node_times[order]
+    deltas = deltas[order]
 
     world = cloud.world_positions().astype(np.float64)
     latest_ns = cloud.per_point_latest_timestamp()
     point_times = latest_ns.astype(np.float64) / 1_000_000_000.0
 
-    new_world = lbs_warp_positions(world, point_times, prev_ts, deltas)
+    new_world = lbs_warp_positions(world, point_times, node_times, deltas)
     new_voxels = np.rint(new_world / cloud.voxel_size).astype(np.int32)
 
     voxels, quantity, event_indices = merge_duplicate_voxels(
@@ -261,25 +241,20 @@ class ApplyClosure(Module):
     config: ApplyClosureConfig
 
     global_map: In[DynamicCloud]
-    previous_pose_graph: In[Path]
-    next_pose_graph: In[Path]
+    loop_closure_event: In[GraphDelta3D]
     corrected_global_map: Out[DynamicCloud]
 
     def __init__(self, **kwargs: Any) -> None:
         super().__init__(**kwargs)
         self._lock = threading.Lock()
         self._latest_map: DynamicCloud | None = None
-        self._latest_prev: Path | None = None
 
     @rpc
     def start(self) -> None:
         super().start()
         self.register_disposable(Disposable(self.global_map.subscribe(self._on_global_map)))
         self.register_disposable(
-            Disposable(self.previous_pose_graph.subscribe(self._on_previous_pose_graph))
-        )
-        self.register_disposable(
-            Disposable(self.next_pose_graph.subscribe(self._on_next_pose_graph))
+            Disposable(self.loop_closure_event.subscribe(self._on_loop_closure))
         )
         logger.info("ApplyClosure started")
 
@@ -291,29 +266,20 @@ class ApplyClosure(Module):
         with self._lock:
             self._latest_map = msg
 
-    def _on_previous_pose_graph(self, msg: Path) -> None:
-        with self._lock:
-            self._latest_prev = msg
-
-    def _on_next_pose_graph(self, msg: Path) -> None:
+    def _on_loop_closure(self, msg: GraphDelta3D) -> None:
         """Loop-closure trigger: apply correction to the latched map."""
         with self._lock:
             cloud = self._latest_map
-            prev = self._latest_prev
-        if cloud is None or prev is None:
+        if cloud is None:
             return
         t0 = time.monotonic()
-        try:
-            corrected = apply_closure_to_cloud(cloud, prev, msg)
-        except ValueError as exc:
-            logger.warning("ApplyClosure skipped", reason=str(exc))
-            return
+        corrected = apply_closure_to_cloud(cloud, msg)
         corrected.ts = time.time()
         self.corrected_global_map.publish(corrected)
         if self.config.log_each_apply:
             logger.info(
                 "ApplyClosure applied",
-                num_nodes=len(msg.poses),
+                num_nodes=len(msg.nodes),
                 num_points_in=len(cloud),
                 num_points_out=len(corrected),
                 elapsed_ms=round((time.monotonic() - t0) * 1000.0, 2),
