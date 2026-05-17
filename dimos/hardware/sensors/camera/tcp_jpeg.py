@@ -182,6 +182,18 @@ class TcpJpegCameraModule(Module):
         return bytes(buf)
 
 
+class WorkspaceTcpJpegCameraModule(TcpJpegCameraModule):
+    """Same behaviour as ``TcpJpegCameraModule``; a distinct class lets the
+    module coordinator keep two camera receivers in the same blueprint
+    (it keys deployed modules by class, so two of the same class get
+    silently collapsed into one)."""
+
+
 tcp_jpeg_camera = TcpJpegCameraModule.blueprint
 
-__all__ = ["TcpJpegCameraConfig", "TcpJpegCameraModule", "tcp_jpeg_camera"]
+__all__ = [
+    "TcpJpegCameraConfig",
+    "TcpJpegCameraModule",
+    "WorkspaceTcpJpegCameraModule",
+    "tcp_jpeg_camera",
+]

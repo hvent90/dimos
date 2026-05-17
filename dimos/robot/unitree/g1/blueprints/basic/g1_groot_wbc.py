@@ -500,9 +500,11 @@ def _workspace_camera_bridge_blueprint() -> Blueprint | None:
     )
     if not host or not _env_bool("DIMOS_ENABLE_WORKSPACE_CAMERA", True):
         return None
-    from dimos.hardware.sensors.camera.tcp_jpeg import TcpJpegCameraModule
+    # Distinct class so the module coordinator deploys this alongside the
+    # forward camera (it deduplicates by class, not instance).
+    from dimos.hardware.sensors.camera.tcp_jpeg import WorkspaceTcpJpegCameraModule
 
-    return TcpJpegCameraModule.blueprint(
+    return WorkspaceTcpJpegCameraModule.blueprint(
         host=host,
         port=_env_int("DIMOS_ROBOT_WORKSPACE_CAMERA_PORT", 5001),
     ).transports(
