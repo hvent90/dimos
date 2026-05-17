@@ -50,6 +50,7 @@ from dimos.msgs.geometry_msgs.PoseStamped import PoseStamped
 from dimos.msgs.geometry_msgs.Twist import Twist
 from dimos.msgs.nav_msgs.OccupancyGrid import OccupancyGrid
 from dimos.msgs.nav_msgs.Path import Path as PathMsg
+from dimos.msgs.sensor_msgs.Image import Image
 from dimos.msgs.sensor_msgs.Imu import Imu
 from dimos.msgs.sensor_msgs.JointState import JointState
 from dimos.msgs.sensor_msgs.MotorCommandArray import MotorCommandArray
@@ -467,6 +468,29 @@ def _arm_teleop_blueprint() -> Blueprint | None:
     )
 
 
+def _camera_bridge_blueprint() -> Blueprint | None:
+    """Pull a remote v4l2 camera over JPEG-over-TCP and publish it as
+    ``/camera_image`` so the Babylon viewer picks it up.
+
+    Pairs with ``dimos.hardware.sensors.camera.tcp_jpeg_sender`` running on
+    the camera-side host (e.g. the robot's onboard computer for an arm-mounted
+    USB cam). Enabled only when ``DIMOS_ROBOT_CAMERA_HOST`` is set.
+    """
+    host = os.environ.get("DIMOS_ROBOT_CAMERA_HOST")
+    if not host:
+        return None
+    from dimos.hardware.sensors.camera.tcp_jpeg import TcpJpegCameraModule
+
+    return TcpJpegCameraModule.blueprint(
+        host=host,
+        port=_env_int("DIMOS_ROBOT_CAMERA_PORT", 5000),
+    ).transports(
+        {
+            ("video", Image): LCMTransport("/camera_image", Image),
+        }
+    )
+
+
 def _quest_teleop_blueprint(cmd_vel_topic: str) -> Blueprint | None:
     if not _env_bool("DIMOS_ENABLE_QUEST_TELEOP", False):
         return None
@@ -491,7 +515,8 @@ _coordinator, _cmd_vel_topic = _coordinator_blueprint(_backend_selection)
 _babylon = _babylon_blueprint(_backend_selection.viewer_mjcf_path, _cmd_vel_topic)
 _teleop = _arm_teleop_blueprint()
 _quest = _quest_teleop_blueprint(_cmd_vel_topic)
-_optional = tuple(bp for bp in (_babylon, _teleop, _quest) if bp is not None)
+_camera_bridge = _camera_bridge_blueprint()
+_optional = tuple(bp for bp in (_babylon, _teleop, _quest, _camera_bridge) if bp is not None)
 
 g1_groot_wbc = autoconnect(
     _backend_selection.blueprint,
