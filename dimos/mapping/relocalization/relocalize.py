@@ -110,7 +110,7 @@ def _ransac(src_down, tgt_down, src_fpfh, tgt_fpfh, voxel_size: float):
             _reg.CorrespondenceCheckerBasedOnEdgeLength(0.9),
             _reg.CorrespondenceCheckerBasedOnDistance(dist),
         ],
-        criteria=_reg.RANSACConvergenceCriteria(RANSAC_ITERS, 0.999),
+        criteria=_reg.RANSACConvergenceCriteria(RANSAC_ITERS, 0.995),
     )
 
 
