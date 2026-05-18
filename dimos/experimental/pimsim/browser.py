@@ -481,6 +481,7 @@ HTML = r"""<!doctype html>
       let lidarMesh = null;
       let lidarMaterial = null;
       let lidarVisible = true;
+      const lidarPointSizePx = 5.0;
       let clickMode = null;
       let navGoalMarker = null;
       let pointGoalMarker = null;
@@ -929,6 +930,52 @@ HTML = r"""<!doctype html>
         }
       }
 
+      function createLidarMaterial() {
+        if (lidarMaterial) return lidarMaterial;
+
+        const shaders = BABYLON.Effect.ShadersStore;
+        shaders.lidarPointVertexShader = `
+          precision highp float;
+          attribute vec3 position;
+          attribute vec4 color;
+          uniform mat4 worldViewProjection;
+          uniform float pointSize;
+          varying vec4 vColor;
+
+          void main(void) {
+            gl_Position = worldViewProjection * vec4(position, 1.0);
+            gl_PointSize = pointSize;
+            vColor = color;
+          }
+        `;
+        shaders.lidarPointFragmentShader = `
+          precision highp float;
+          varying vec4 vColor;
+
+          void main(void) {
+            vec2 delta = gl_PointCoord - vec2(0.5);
+            float radiusSquared = dot(delta, delta);
+            if (radiusSquared > 0.25) discard;
+            float edgeAlpha = smoothstep(0.25, 0.16, radiusSquared);
+            gl_FragColor = vec4(vColor.rgb, vColor.a * edgeAlpha);
+          }
+        `;
+        lidarMaterial = new BABYLON.ShaderMaterial(
+          "lidarMaterial",
+          scene,
+          { vertex: "lidarPoint", fragment: "lidarPoint" },
+          {
+            attributes: ["position", "color"],
+            uniforms: ["worldViewProjection", "pointSize"],
+            needAlphaBlending: true,
+          },
+        );
+        lidarMaterial.pointsCloud = true;
+        lidarMaterial.setFloat("pointSize", lidarPointSizePx);
+        lidarMaterial.backFaceCulling = false;
+        return lidarMaterial;
+      }
+
       function updatePointCloud(payload) {
         const count = payload.count || 0;
         if (count === 0 || !payload.positions || !payload.colors) return;
@@ -942,7 +989,7 @@ HTML = r"""<!doctype html>
           colors[i * 4 + 0] = packedColors[i * 3 + 0] / 255;
           colors[i * 4 + 1] = packedColors[i * 3 + 1] / 255;
           colors[i * 4 + 2] = packedColors[i * 3 + 2] / 255;
-          colors[i * 4 + 3] = 1;
+          colors[i * 4 + 3] = 0.94;
         }
 
         const nextMesh = new BABYLON.Mesh("lidarCloud", scene);
@@ -950,18 +997,11 @@ HTML = r"""<!doctype html>
         vertexData.positions = positions;
         vertexData.colors = colors;
         vertexData.applyToMesh(nextMesh, true);
+        nextMesh.hasVertexAlpha = true;
         nextMesh.alwaysSelectAsActiveMesh = true;
         nextMesh.isPickable = false;
 
-        if(!lidarMaterial){
-          let s=BABYLON.Effect.ShadersStore;
-          s.lidarPointVertexShader = "attribute vec3 position;attribute vec4 color;uniform mat4 worldViewProjection;uniform float pointSize;varying vec4 c;void main(){gl_Position=worldViewProjection*vec4(position,1.);gl_PointSize=pointSize;c=color;}";
-          s.lidarPointFragmentShader = "precision mediump float;varying vec4 c;void main(){gl_FragColor=c;}";
-          lidarMaterial = new BABYLON.ShaderMaterial("lidarMaterial",scene,{vertex:"lidarPoint",fragment:"lidarPoint"},{attributes:["position","color"],uniforms:["worldViewProjection","pointSize"]});
-          lidarMaterial.pointsCloud = true;
-          lidarMaterial.setFloat("pointSize", 5);
-        }
-        nextMesh.material = lidarMaterial;
+        nextMesh.material = createLidarMaterial();
         nextMesh.setEnabled(lidarVisible);
 
         if (lidarMesh) lidarMesh.dispose();
