@@ -370,17 +370,11 @@ fn build_pointcloud(
     stamp: Time,
 ) -> PointCloud2 {
     let half = voxel_size * 0.5;
-    let mut visible: AHashSet<VoxelKey> = AHashSet::with_capacity(map.voxels.len() + live.len());
-    visible.extend(live.iter().copied());
-    for (&key, &health) in &map.voxels {
-        if health > 0 {
-            visible.insert(key);
-        }
-    }
-
-    let mut data = Vec::with_capacity(visible.len() * 16);
+    let mut data = Vec::with_capacity((map.voxels.len() + live.len()) * 16);
     let mut n: i32 = 0;
-    for &(kx, ky, kz) in &visible {
+
+    // helper just to inline the data handling, makes it a little faster
+    let mut add_to_cloud = |kx: i32, ky: i32, kz: i32| {
         let x = kx as f32 * voxel_size + half;
         let y = ky as f32 * voxel_size + half;
         let z = kz as f32 * voxel_size + half;
@@ -389,6 +383,20 @@ fn build_pointcloud(
         data.extend_from_slice(&z.to_le_bytes());
         data.extend_from_slice(&0.0_f32.to_le_bytes());
         n += 1;
+    };
+
+    // add the healthy voxels
+    for (&(kx, ky, kz), &health) in &map.voxels {
+        if health > 0 {
+            add_to_cloud(kx, ky, kz);
+        }
+    }
+
+    // add in the live voxels if they aren't already there
+    for &(kx, ky, kz) in live {
+        if !matches!(map.voxels.get(&(kx, ky, kz)), Some(h) if *h > 0) {
+            add_to_cloud(kx, ky, kz);
+        }
     }
 
     let make_field = |name: &str, off: i32| PointField {
@@ -398,6 +406,7 @@ fn build_pointcloud(
         count: 1,
     };
 
+    // assemble the final cloud
     PointCloud2 {
         header: Header {
             seq: 0,
