@@ -79,6 +79,6 @@ class HostedTeleopRecorder(Recorder):
 __all__ = [
     "HostedTeleopRecorder",
     "HostedTeleopRecorderConfig",
-    "teleop_hosted_xarm7_sim",
     "teleop_hosted_go2",
+    "teleop_hosted_xarm7_sim",
 ]

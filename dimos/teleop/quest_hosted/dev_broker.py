@@ -71,18 +71,18 @@ Limitations
 from __future__ import annotations
 
 import argparse
-import logging
-import uuid
 from dataclasses import dataclass, field
+import logging
 from pathlib import Path
 from typing import Any
+import uuid
 
-import uvicorn
 from aiortc import RTCPeerConnection, RTCSessionDescription
 from fastapi import FastAPI, HTTPException
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import HTMLResponse
 from pydantic import BaseModel
+import uvicorn
 
 logging.basicConfig(
     level=logging.INFO,
@@ -165,9 +165,7 @@ async def register_robot(body: RegisterBody) -> dict[str, str]:
     async def _on_state() -> None:
         logger.info(f"[{session.robot_name}] robot PC: {robot_pc.connectionState}")
 
-    await robot_pc.setRemoteDescription(
-        RTCSessionDescription(sdp=body.sdp, type=body.type)
-    )
+    await robot_pc.setRemoteDescription(RTCSessionDescription(sdp=body.sdp, type=body.type))
     answer = await robot_pc.createAnswer()
     await robot_pc.setLocalDescription(answer)
 
@@ -236,13 +234,9 @@ async def operator_join(session_id: str, body: SDPBody) -> dict[str, str]:
 
     @operator_pc.on("connectionstatechange")
     async def _on_state() -> None:
-        logger.info(
-            f"[{session.robot_name}] operator PC: {operator_pc.connectionState}"
-        )
+        logger.info(f"[{session.robot_name}] operator PC: {operator_pc.connectionState}")
 
-    await operator_pc.setRemoteDescription(
-        RTCSessionDescription(sdp=body.sdp, type=body.type)
-    )
+    await operator_pc.setRemoteDescription(RTCSessionDescription(sdp=body.sdp, type=body.type))
     answer = await operator_pc.createAnswer()
     await operator_pc.setLocalDescription(answer)
 

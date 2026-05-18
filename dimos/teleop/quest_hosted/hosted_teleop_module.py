@@ -34,8 +34,7 @@ from aiortc import (
     RTCPeerConnection,
     RTCSessionDescription,
 )
-from dimos_lcm.geometry_msgs import PoseStamped as LCMPoseStamped
-from dimos_lcm.geometry_msgs import TwistStamped as LCMTwistStamped
+from dimos_lcm.geometry_msgs import PoseStamped as LCMPoseStamped, TwistStamped as LCMTwistStamped
 from dimos_lcm.sensor_msgs import Joy as LCMJoy
 import httpx
 
@@ -95,7 +94,10 @@ class HostedTeleopModule(Module):
         self._is_engaged: dict[Hand, bool] = {Hand.LEFT: False, Hand.RIGHT: False}
         self._initial_poses: dict[Hand, PoseStamped | None] = {Hand.LEFT: None, Hand.RIGHT: None}
         self._current_poses: dict[Hand, PoseStamped | None] = {Hand.LEFT: None, Hand.RIGHT: None}
-        self._controllers: dict[Hand, QuestControllerState | None] = {Hand.LEFT: None, Hand.RIGHT: None}
+        self._controllers: dict[Hand, QuestControllerState | None] = {
+            Hand.LEFT: None,
+            Hand.RIGHT: None,
+        }
         self._lock = threading.RLock()
 
         # aiortc + httpx are async; run them on a dedicated event loop thread.
@@ -307,9 +309,7 @@ class HostedTeleopModule(Module):
     def _open_cmd_channel(self, sctp_id: int) -> None:
         if self._pc is None:
             return
-        logger.info(
-            f"Operator joined — opening negotiated cmd_unreliable on SCTP id {sctp_id}"
-        )
+        logger.info(f"Operator joined — opening negotiated cmd_unreliable on SCTP id {sctp_id}")
         channel = self._pc.createDataChannel(
             "cmd_unreliable",
             ordered=False,
