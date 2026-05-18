@@ -123,12 +123,14 @@ class MujocoSimModuleConfig(ModuleConfig, DepthCameraConfig):
     lidar_camera_width: int = 640
     lidar_camera_height: int = 360
     lidar_voxel_size: float = 0.05
+    renderer_max_geom: int = 0
     enable_kinematic_base_control: bool = False
     enable_kinematic_joint_hold: bool = False
     inject_legacy_assets: bool = False
     spawn_xy: tuple[float, float] | None = None
     spawn_z: float | None = None
     spawn_yaw: float | None = None
+    reset_joint_positions: list[float] | None = None
     imu_gyro_sensor_names: list[str] = Field(
         default_factory=lambda: [
             "imu-pelvis-angular-velocity",
@@ -270,6 +272,7 @@ class MujocoSimModule(
             spawn_xy=self.config.spawn_xy,
             spawn_z=self.config.spawn_z,
             spawn_yaw=self.config.spawn_yaw,
+            reset_joint_positions=self.config.reset_joint_positions,
         )
 
         dof = self.config.dof
@@ -299,6 +302,7 @@ class MujocoSimModule(
 
     def _make_camera_configs(self) -> list[CameraConfig]:
         camera_configs: list[CameraConfig] = []
+        max_geom = self.config.renderer_max_geom or None
         if self._primary_camera_needed:
             camera_configs.append(
                 CameraConfig(
@@ -306,6 +310,7 @@ class MujocoSimModule(
                     width=self.config.width,
                     height=self.config.height,
                     fps=float(self.config.fps),
+                    max_geom=max_geom,
                 )
             )
 
@@ -323,6 +328,7 @@ class MujocoSimModule(
                     height=self.config.lidar_camera_height,
                     fps=float(self.config.pointcloud_fps),
                     scene_option=lidar_scene_option,
+                    max_geom=max_geom,
                 )
             )
         return camera_configs
@@ -514,8 +520,38 @@ class MujocoSimModule(
         with self._cmd_vel_lock:
             self._cmd_vel = Twist.zero()
             self._last_cmd_vel_time = 0.0
-        engine.request_reset()
-        return True
+        if self._sim_hooks is not None:
+            self._sim_hooks.clear_latched_commands()
+        applied = engine.request_reset(wait=True)
+        logger.info("MujocoSimModule: respawn requested", applied=applied)
+        return applied
+
+    @rpc
+    def respawn_at(
+        self,
+        x: float,
+        y: float,
+        z: float | None = None,
+        yaw: float | None = None,
+    ) -> bool:
+        engine = self._engine
+        if engine is None:
+            return False
+        with self._cmd_vel_lock:
+            self._cmd_vel = Twist.zero()
+            self._last_cmd_vel_time = 0.0
+        if self._sim_hooks is not None:
+            self._sim_hooks.clear_latched_commands()
+        applied = engine.request_reset_to(
+            spawn_xy=(float(x), float(y)),
+            spawn_z=None if z is None else float(z),
+            spawn_yaw=None if yaw is None else float(yaw),
+            wait=True,
+        )
+        logger.info(
+            "MujocoSimModule: respawn_at requested", x=x, y=y, z=z, yaw=yaw, applied=applied
+        )
+        return applied
 
     def _apply_shm_commands(self, engine: MujocoEngine) -> None:
         if self._sim_hooks is not None:

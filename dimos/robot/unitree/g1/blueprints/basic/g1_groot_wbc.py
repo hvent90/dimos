@@ -35,6 +35,7 @@ from dimos.control.components import HardwareComponent, HardwareType
 from dimos.control.coordinator import ControlCoordinator, TaskConfig
 from dimos.control.tasks.g1_groot_wbc_task import (
     ARM_DEFAULT_POSE,
+    G1_GROOT_DEFAULT_POSITIONS,
     G1_GROOT_KD,
     G1_GROOT_KP,
     g1_arms,
@@ -83,6 +84,7 @@ _DEFAULT_GLOBAL_MAP_VOXEL_SIZE_M = 0.05
 _DEFAULT_CUSTOM_SCENE_SCALE = 0.05
 _DEFAULT_OFFICE_MESH_SCALE = 2.0
 _DEFAULT_G1_SPAWN_Z_M = 0.793
+_USD_SCENE_SUFFIXES = {".usd", ".usda", ".usdc", ".usdz"}
 
 
 @dataclass(frozen=True)
@@ -137,6 +139,24 @@ def _env_xyz(name: str, default: tuple[float, float, float]) -> tuple[float, flo
     return values
 
 
+def _default_scene_y_up(scene_path: str | None, *, custom_scene: bool) -> bool:
+    if not scene_path or not custom_scene:
+        return False
+
+    path = Path(scene_path)
+    if path.suffix.lower() in _USD_SCENE_SUFFIXES:
+        try:
+            from pxr import Usd, UsdGeom  # type: ignore[import-not-found, import-untyped]
+
+            stage = Usd.Stage.Open(str(path))
+            if stage is not None:
+                return str(UsdGeom.GetStageUpAxis(stage)).upper() != "Z"
+        except Exception as exc:
+            logger.debug("Could not read USD upAxis for %s: %s", path, exc)
+
+    return True
+
+
 def _scene_mesh_config() -> tuple[
     str | None, float, tuple[float, float, float], tuple[float, float, float], bool
 ]:
@@ -152,7 +172,10 @@ def _scene_mesh_config() -> tuple[
     scene_mesh_scale = _env_float("DIMOS_SCENE_MESH_SCALE", default_scale)
     scene_mesh_translation = _env_xyz("DIMOS_SCENE_MESH_TRANSLATION", (0.0, 0.0, 0.0))
     scene_mesh_rotation = _env_xyz("DIMOS_SCENE_MESH_ROTATION_ZYX_DEG", (0.0, 0.0, 0.0))
-    scene_mesh_y_up = _env_bool("DIMOS_SCENE_MESH_Y_UP", scene_mesh_override is not None)
+    scene_mesh_y_up = _env_bool(
+        "DIMOS_SCENE_MESH_Y_UP",
+        _default_scene_y_up(scene_mesh_path, custom_scene=scene_mesh_override is not None),
+    )
     return (
         scene_mesh_path,
         scene_mesh_scale,
@@ -160,6 +183,16 @@ def _scene_mesh_config() -> tuple[
         scene_mesh_rotation,
         scene_mesh_y_up,
     )
+
+
+def _scene_package_config() -> Any | None:
+    package_path = os.environ.get("DIMOS_SCENE_PACKAGE_PATH") or None
+    if not package_path:
+        return None
+
+    from dimos.simulation.scene_assets.spec import load_scene_package
+
+    return load_scene_package(package_path)
 
 
 def _scene_backed_mjcf(
@@ -172,8 +205,8 @@ def _scene_backed_mjcf(
     if not scene_mesh_path or not _env_bool("DIMOS_SCENE_MESH_COLLISION", True):
         return _MJCF_PATH, _MJCF_PATH
 
-    from dimos.simulation.mujoco.mesh_scene import SceneMeshAlignment
     from dimos.simulation.mujoco.scene_mesh_to_mjcf import load_or_bake
+    from dimos.simulation.scene_assets.mesh_scene import SceneMeshAlignment
 
     _, wrapper = load_or_bake(
         scene_mesh_path=scene_mesh_path,
@@ -214,13 +247,24 @@ def _select_backend() -> _BackendSelection:
         scene_mesh_rotation,
         scene_mesh_y_up,
     ) = _scene_mesh_config()
-    sim_mjcf_path, viewer_mjcf_path = _scene_backed_mjcf(
-        scene_mesh_path,
-        scene_mesh_scale,
-        scene_mesh_translation,
-        scene_mesh_rotation,
-        scene_mesh_y_up,
-    )
+    scene_package = _scene_package_config()
+    if scene_package is not None:
+        scene_mesh_path = str(scene_package.source_path)
+        scene_mesh_scale = scene_package.alignment.scale
+        scene_mesh_translation = scene_package.alignment.translation
+        scene_mesh_rotation = scene_package.alignment.rotation_zyx_deg
+        scene_mesh_y_up = scene_package.alignment.y_up
+    if scene_package is not None and scene_package.mujoco_model_path is not None:
+        sim_mjcf_path = scene_package.mujoco_model_path
+        viewer_mjcf_path = scene_package.mujoco_wrapper_path or _MJCF_PATH
+    else:
+        sim_mjcf_path, viewer_mjcf_path = _scene_backed_mjcf(
+            scene_mesh_path,
+            scene_mesh_scale,
+            scene_mesh_translation,
+            scene_mesh_rotation,
+            scene_mesh_y_up,
+        )
     lidar_disabled = _env_bool("DIMOS_DISABLE_LIDAR", False)
     depth_cloud_enabled = _env_bool("DIMOS_ENABLE_DEPTH_CLOUD", False)
 
@@ -241,6 +285,7 @@ def _select_backend() -> _BackendSelection:
             if lidar_disabled
             else ["lidar_front_camera", "lidar_left_camera", "lidar_right_camera"]
         ),
+        renderer_max_geom=_env_int("DIMOS_MUJOCO_RENDERER_MAX_GEOM", 0),
         lidar_camera_width=_env_int("DIMOS_LIDAR_CAMERA_WIDTH", _DEFAULT_LIDAR_CAMERA_WIDTH),
         lidar_camera_height=_env_int("DIMOS_LIDAR_CAMERA_HEIGHT", _DEFAULT_LIDAR_CAMERA_HEIGHT),
         lidar_voxel_size=_env_float("DIMOS_LIDAR_VOXEL_SIZE", _DEFAULT_LIDAR_VOXEL_SIZE_M),
@@ -249,6 +294,7 @@ def _select_backend() -> _BackendSelection:
         inject_legacy_assets=True,
         spawn_xy=global_config.mujoco_start_pos_float,
         spawn_z=_env_float("DIMOS_MUJOCO_START_Z", _DEFAULT_G1_SPAWN_Z_M),
+        reset_joint_positions=G1_GROOT_DEFAULT_POSITIONS,
     )
     return _BackendSelection(
         blueprint=backend,
@@ -407,8 +453,8 @@ def _babylon_blueprint(viewer_mjcf_path: str | Path, cmd_vel_topic: str) -> Blue
     if not _env_bool("DIMOS_ENABLE_BABYLON", False):
         return None
 
+    from dimos.experimental.pimsim.module import BabylonSceneViewerModule
     from dimos.simulation.mujoco.model import get_assets
-    from dimos.visualization.babylon_scene_viewer import BabylonSceneViewerModule
 
     kwargs: dict[str, Any] = dict(
         mjcf_path=viewer_mjcf_path,
@@ -416,6 +462,7 @@ def _babylon_blueprint(viewer_mjcf_path: str | Path, cmd_vel_topic: str) -> Blue
         port=_env_int("DIMOS_BABYLON_PORT", _DEFAULT_BABYLON_PORT),
     )
     if global_config.simulation:
+        scene_package = _scene_package_config()
         (
             scene_mesh_path,
             scene_mesh_scale,
@@ -423,8 +470,32 @@ def _babylon_blueprint(viewer_mjcf_path: str | Path, cmd_vel_topic: str) -> Blue
             scene_mesh_rotation,
             scene_mesh_y_up,
         ) = _scene_mesh_config()
-        scene_visual_override = os.environ.get("DIMOS_SCENE_VISUAL_PATH") or None
-        scene_visual_path = scene_visual_override or scene_mesh_path
+        if scene_package is not None:
+            scene_mesh_path = str(scene_package.source_path)
+            scene_mesh_scale = scene_package.alignment.scale
+            scene_mesh_translation = scene_package.alignment.translation
+            scene_mesh_rotation = scene_package.alignment.rotation_zyx_deg
+            scene_mesh_y_up = scene_package.alignment.y_up
+        if scene_package is not None and scene_package.visual_path is not None:
+            scene_visual_path = str(scene_package.visual_path)
+            scene_visual_y_up = scene_package.alignment.y_up
+            scene_mesh_scale = scene_package.alignment.scale
+            scene_mesh_translation = scene_package.alignment.translation
+            scene_mesh_rotation = scene_package.alignment.rotation_zyx_deg
+            browser_collision_path = (
+                str(scene_package.browser_collision_path)
+                if scene_package.browser_collision_path is not None
+                else None
+            )
+        else:
+            scene_visual_override = os.environ.get("DIMOS_SCENE_VISUAL_PATH") or None
+            browser_collision_path = os.environ.get("DIMOS_SCENE_BROWSER_COLLISION_PATH") or None
+            scene_visual_path = scene_visual_override or scene_mesh_path
+            scene_visual_y_up = (
+                _default_scene_y_up(scene_visual_path, custom_scene=True)
+                if scene_visual_override
+                else scene_mesh_y_up
+            )
         kwargs.update(
             scene_path=scene_visual_path,
             scene_scale=_env_float("DIMOS_SCENE_VISUAL_SCALE", scene_mesh_scale),
@@ -432,7 +503,8 @@ def _babylon_blueprint(viewer_mjcf_path: str | Path, cmd_vel_topic: str) -> Blue
             scene_rotation_zyx_deg=_env_xyz(
                 "DIMOS_SCENE_VISUAL_ROTATION_ZYX_DEG", scene_mesh_rotation
             ),
-            scene_y_up=_env_bool("DIMOS_SCENE_VISUAL_Y_UP", scene_mesh_y_up),
+            scene_y_up=_env_bool("DIMOS_SCENE_VISUAL_Y_UP", scene_visual_y_up),
+            browser_collision_path=browser_collision_path,
             pointcloud_hz=_env_float("DIMOS_BABYLON_POINTCLOUD_HZ", 2.0),
             pointcloud_max_points=_env_int("DIMOS_BABYLON_POINTCLOUD_MAX_POINTS", 70000),
         )
@@ -550,7 +622,7 @@ def _quest_teleop_blueprint(cmd_vel_topic: str) -> Blueprint | None:
 
 _backend_selection = _select_backend()
 _coordinator, _cmd_vel_topic = _coordinator_blueprint(_backend_selection)
-_babylon = _babylon_blueprint(_backend_selection.viewer_mjcf_path, _cmd_vel_topic)
+_babylon = _babylon_blueprint(_MJCF_PATH, _cmd_vel_topic)
 _teleop = _arm_teleop_blueprint()
 _quest = _quest_teleop_blueprint(_cmd_vel_topic)
 _camera_bridge = _camera_bridge_blueprint()

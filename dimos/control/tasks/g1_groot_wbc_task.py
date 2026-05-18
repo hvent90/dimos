@@ -167,6 +167,7 @@ _DEFAULT_POSITIONS_29 = [
     0.0,
     0.0,  # right arm (not driven by policy)
 ]
+G1_GROOT_DEFAULT_POSITIONS: list[float] = list(_DEFAULT_POSITIONS_29)
 
 _SINGLE_OBS_DIM = 86
 _OBS_HISTORY_LEN = 6
@@ -754,6 +755,7 @@ class G1GrootWBCTask(BaseControlTask):
 
 __all__ = [
     "ARM_DEFAULT_POSE",
+    "G1_GROOT_DEFAULT_POSITIONS",
     "G1_GROOT_KD",
     "G1_GROOT_KP",
     "G1GrootWBCTask",

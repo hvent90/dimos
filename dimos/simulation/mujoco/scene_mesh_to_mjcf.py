@@ -77,7 +77,7 @@ from dimos.simulation.mujoco.collision_spec import (
     CollisionSpec,
     decide_for_prim,
 )
-from dimos.simulation.mujoco.mesh_scene import (
+from dimos.simulation.scene_assets.mesh_scene import (
     SceneMeshAlignment,
     ScenePrimMesh,
     load_scene_prims,
@@ -131,31 +131,31 @@ _WRAPPER_TEMPLATE = """\
 # it universally for one fewer code path.
 _ASSET_LINE = '    <mesh name="{name}" file="{file}" inertia="shell"/>'
 
-# Collision (group 3) -- actually collides.  rgba alpha < 1 lets the
-# user toggle visibility independently of the visual mesh.
+# Collision (group 3) -- actually collides. Keep it opaque so MuJoCo
+# depth renders treat the scene as solid for lidar/camera simulation.
 _COL_MESH_LINE = (
     '      <geom name="{name}" type="mesh" mesh="{mesh}" '
-    'contype="1" conaffinity="1" group="3" rgba="0.5 0.6 1.0 0.35"{friction}/>'
+    'contype="1" conaffinity="1" group="3" rgba="0.5 0.6 1.0 1"{friction}/>'
 )
 _COL_BOX_LINE = (
     '      <geom name="{name}" type="box" pos="{pos}" quat="{quat}" size="{size}" '
-    'contype="1" conaffinity="1" group="3" rgba="0.5 0.6 1.0 0.35"{friction}/>'
+    'contype="1" conaffinity="1" group="3" rgba="0.5 0.6 1.0 1"{friction}/>'
 )
 _COL_SPHERE_LINE = (
     '      <geom name="{name}" type="sphere" pos="{pos}" size="{size}" '
-    'contype="1" conaffinity="1" group="3" rgba="0.5 0.6 1.0 0.35"{friction}/>'
+    'contype="1" conaffinity="1" group="3" rgba="0.5 0.6 1.0 1"{friction}/>'
 )
 _COL_CYL_LINE = (
     '      <geom name="{name}" type="cylinder" pos="{pos}" quat="{quat}" size="{size}" '
-    'contype="1" conaffinity="1" group="3" rgba="0.5 0.6 1.0 0.35"{friction}/>'
+    'contype="1" conaffinity="1" group="3" rgba="0.5 0.6 1.0 1"{friction}/>'
 )
 _COL_CAP_LINE = (
     '      <geom name="{name}" type="capsule" pos="{pos}" quat="{quat}" size="{size}" '
-    'contype="1" conaffinity="1" group="3" rgba="0.5 0.6 1.0 0.35"{friction}/>'
+    'contype="1" conaffinity="1" group="3" rgba="0.5 0.6 1.0 1"{friction}/>'
 )
 _COL_PLANE_LINE = (
     '      <geom name="{name}" type="plane" pos="{pos}" quat="{quat}" size="{size}" '
-    'contype="1" conaffinity="1" group="3" rgba="0.5 0.6 1.0 0.35"{friction}/>'
+    'contype="1" conaffinity="1" group="3" rgba="0.5 0.6 1.0 1"{friction}/>'
 )
 
 # Visual (group 2) -- drawn, doesn't collide.
@@ -179,7 +179,7 @@ _CACHE_KEY_LEN = 12
 # affect MJCF emission (new geom kinds, rewritten visual policy, etc.).
 # This is only a local cache salt; it is not a persisted file format
 # contract and old cache directories can safely stay on disk.
-_CACHE_SCHEMA_VERSION = "dispatcher-v7"
+_CACHE_SCHEMA_VERSION = "dispatcher-v8"
 
 
 @dataclass
@@ -509,7 +509,12 @@ def _process_one_prim(
             {"hulls": 0, "box_fallbacks": 0, "visuals": 0, "degenerate": 0},
         )
 
-    decision = decide_for_prim(vertices=v, triangles=t, prim_path=prim.name, spec=spec)
+    decision = decide_for_prim(
+        vertices=v,
+        triangles=t,
+        prim_path=prim.prim_path or prim.name,
+        spec=spec,
+    )
 
     asset_lines: list[str] = []
     geom_lines: list[str] = []
@@ -547,6 +552,8 @@ def _process_one_prim(
     for j, (hv, ht) in enumerate(decision.hulls):
         v_arr = np.asarray(hv, dtype=np.float32)
         f_arr = np.asarray(ht, dtype=np.int32)
+        if decision.target_faces is not None:
+            v_arr, f_arr = _simplify_mesh_geom(v_arr, f_arr, decision.target_faces)
         if not _valid_hull(v_arr, f_arr):
             box_line = _fallback_box_geom(f"{prim.name}_h{j:03d}_box", v_arr, friction_attr)
             if box_line is None:
@@ -858,6 +865,58 @@ def _write_hull_obj(obj_file: Path, vertices: np.ndarray, faces: np.ndarray) -> 
     """Write a CoACD/single-hull mesh.  No watertight check -- hulls are
     closed by construction."""
     _write_mesh_obj(obj_file, vertices, faces)
+
+
+def _simplify_mesh_geom(
+    vertices: np.ndarray,
+    faces: np.ndarray,
+    target_faces: int,
+) -> tuple[np.ndarray, np.ndarray]:
+    if target_faces <= 0 or len(faces) <= target_faces:
+        return vertices, faces
+
+    mesh = o3d.geometry.TriangleMesh()
+    mesh.vertices = o3d.utility.Vector3dVector(vertices.astype(np.float64))
+    mesh.triangles = o3d.utility.Vector3iVector(faces.astype(np.int32))
+    try:
+        mesh.remove_duplicated_vertices()
+        mesh.remove_duplicated_triangles()
+        mesh.remove_degenerate_triangles()
+        mesh.remove_unreferenced_vertices()
+        simplified = mesh
+        for _ in range(3):
+            if len(simplified.triangles) <= target_faces:
+                break
+            simplified = simplified.simplify_quadric_decimation(
+                target_number_of_triangles=target_faces
+            )
+            simplified.remove_degenerate_triangles()
+            simplified.remove_duplicated_triangles()
+            simplified.remove_unreferenced_vertices()
+        out_vertices = np.asarray(simplified.vertices, dtype=np.float32)
+        out_faces = np.asarray(simplified.triangles, dtype=np.int32)
+        if len(out_vertices) >= 4 and 4 <= len(out_faces) <= target_faces:
+            return out_vertices, out_faces
+    except Exception:
+        logger.debug("mesh simplification failed; falling back to convex hull", exc_info=True)
+
+    hull = _convex_hull_mesh(vertices)
+    return hull if hull is not None else (vertices, faces)
+
+
+def _convex_hull_mesh(vertices: np.ndarray) -> tuple[np.ndarray, np.ndarray] | None:
+    try:
+        from scipy.spatial import ConvexHull, QhullError  # type: ignore[import-untyped]
+
+        hull = ConvexHull(vertices.astype(np.float64))
+    except (QhullError, ValueError):
+        return None
+
+    faces = np.asarray(hull.simplices, dtype=np.int32)
+    used = np.unique(faces.reshape(-1))
+    remap = {int(old): idx for idx, old in enumerate(used)}
+    remapped_faces = np.vectorize(remap.__getitem__, otypes=[np.int32])(faces)
+    return vertices[used].astype(np.float32), remapped_faces.astype(np.int32)
 
 
 def _write_visual_obj(obj_file: Path, vertices: np.ndarray, faces: np.ndarray) -> None:

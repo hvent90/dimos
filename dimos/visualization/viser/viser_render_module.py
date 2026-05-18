@@ -549,7 +549,7 @@ class ViserRenderModule(Module):
         # Cheap now that GLBs are geometry-only (textures stripped at
         # asset-prep time) — load_scene_mesh peaks at ~1 GB even for the
         # 1.4M-vert office mesh.
-        from dimos.mapping.mesh_scene import (
+        from dimos.simulation.scene_assets.mesh_scene import (
             SceneMeshAlignment,
             load_scene_mesh,
             make_raycasting_scene,
@@ -573,7 +573,7 @@ class ViserRenderModule(Module):
                 wxyz=wxyz,
                 position=position,
             )
-            logger.info(f"Viser: scene mesh added ({len(glb_bytes)/1e6:.1f} MB GLB)")
+            logger.info(f"Viser: scene mesh added ({len(glb_bytes) / 1e6:.1f} MB GLB)")
             # Build raycaster from geometry separately (browser already
             # has the bytes for display; we need o3d structures here).
             try:
@@ -581,7 +581,9 @@ class ViserRenderModule(Module):
                 self._raycast_scene = make_raycasting_scene(scene_mesh)
                 logger.info("Viser: scene-mesh raycaster ready for click-to-point")
             except Exception as e:
-                logger.warning(f"Viser: raycaster build failed (point-goal will use plane fallback): {e}")
+                logger.warning(
+                    f"Viser: raycaster build failed (point-goal will use plane fallback): {e}"
+                )
             return
 
         # Non-GLB path: USD, OBJ, PLY — geometry-only, no texture decode blowup.
@@ -596,9 +598,7 @@ class ViserRenderModule(Module):
             color=(180, 180, 180),
             opacity=1.0,
         )
-        logger.info(
-            f"Viser: scene mesh added ({len(vertices)} verts, {len(faces)} tris)"
-        )
+        logger.info(f"Viser: scene mesh added ({len(vertices)} verts, {len(faces)} tris)")
         try:
             self._raycast_scene = make_raycasting_scene(scene_mesh)
             logger.info("Viser: scene-mesh raycaster ready for click-to-point")

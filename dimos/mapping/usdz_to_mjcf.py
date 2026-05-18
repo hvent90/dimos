@@ -46,7 +46,7 @@ from pathlib import Path
 import numpy as np
 import open3d as o3d  # type: ignore[import-untyped]
 
-from dimos.mapping.mesh_scene import SceneMeshAlignment
+from dimos.simulation.scene_assets.mesh_scene import SceneMeshAlignment
 from dimos.utils.logging_config import setup_logger
 
 logger = setup_logger()
@@ -172,7 +172,7 @@ def bake_scene_mjcf(
     # bounding box (robot is "inside" the box → 5 m penetration).  Each
     # USD prim individually is approximately convex (a crate, a wall
     # panel, a barrel), so the hull-of-each is a faithful collider.
-    from dimos.mapping.mesh_scene import load_scene_prims
+    from dimos.simulation.scene_assets.mesh_scene import load_scene_prims
 
     logger.info(f"bake_scene_mjcf: loading + aligning {scene_mesh_path} (per-prim)")
     prims = load_scene_prims(scene_mesh_path, alignment=align)

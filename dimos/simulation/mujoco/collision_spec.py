@@ -77,6 +77,8 @@ class CollisionSpec:
       force the corresponding primitive.  Auto-fit picks the parameters
       unless explicit ``"size"`` / ``"pos"`` / ``"quat"`` is provided.
     - ``"hull"``: force single convex hull, no CoACD.
+    - ``"mesh"`` / ``"decimate"``: emit this prim as a mesh geom. Optional
+      ``"target_faces"`` simplifies the source mesh before MJCF emission.
     - ``"decompose"``: force CoACD even if auto-fit would have accepted a
       primitive.  Optional ``"max_hulls"`` overrides ``coacd_max_hulls``.
     - ``"skip"``: emit no collision geom.  Visual mesh still drawn.
@@ -87,6 +89,8 @@ class CollisionSpec:
 
     - ``"friction"``: list ``[slide, spin, roll]``.
     - ``"max_hulls"``: per-pattern CoACD cap.
+    - ``"target_faces"``: per-pattern triangle target for ``mesh`` /
+      ``decimate`` outputs, or a post-process cap for hull outputs.
     """
 
     #: Fallback policy when no pattern matches.  ``"auto"`` runs the full
@@ -605,6 +609,10 @@ class PrimDecision:
     #: Optional friction override from sidecar.
     friction: tuple[float, float, float] | None = None
 
+    #: Optional per-mesh triangle cap from sidecar.  The bake applies this
+    #: before writing OBJ assets for mesh geoms.
+    target_faces: int | None = None
+
 
 def decide_for_prim(
     vertices: np.ndarray,
@@ -629,6 +637,7 @@ def decide_for_prim(
     friction = override.get("friction")
     if friction is not None:
         friction = tuple(float(x) for x in friction)
+    target_faces = _target_faces(override)
 
     # 0. Explicit "skip" — short-circuit.
     if kind == "skip":
@@ -653,6 +662,7 @@ def decide_for_prim(
             hulls=[(vertices, triangles)],  # signal: single-hull, no decomp
             reason="sidecar:hull",
             friction=friction,
+            target_faces=target_faces,
         )
     if kind == "decompose":
         max_h = int(override.get("max_hulls", spec.coacd_max_hulls))
@@ -662,6 +672,15 @@ def decide_for_prim(
             hulls=hulls,
             reason="sidecar:decompose",
             friction=friction,
+            target_faces=target_faces,
+        )
+    if kind in {"mesh", "decimate"}:
+        return PrimDecision(
+            mode="hulls",
+            hulls=[(vertices, triangles)],
+            reason=f"sidecar:{kind}",
+            friction=friction,
+            target_faces=target_faces,
         )
 
     # 4. From here on: kind == "auto".  Generic heuristics first.
@@ -791,6 +810,16 @@ def _resolve_explicit_primitive(
     if "quat" in override:
         fit["quat"] = tuple(float(x) for x in override["quat"])
     return fit
+
+
+def _target_faces(override: OverrideConfig) -> int | None:
+    raw = override.get("target_faces", override.get("max_faces"))
+    if raw is None:
+        return None
+    target_faces = int(raw)
+    if target_faces <= 0:
+        return None
+    return max(4, target_faces)
 
 
 def _coacd_decompose(

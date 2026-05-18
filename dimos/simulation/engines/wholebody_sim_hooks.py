@@ -142,6 +142,12 @@ class WholeBodySimHooks:
             if self._gripper_idx < len(positions):
                 shm.write_gripper_state(positions[self._gripper_idx])
 
+    def clear_latched_commands(self) -> None:
+        self._latest_pd_pos_target = None
+        self._latest_pd_kp = None
+        self._latest_pd_kd = None
+        self._latest_pd_tau = None
+
     def _gripper_joint_to_ctrl(self, joint_position: float) -> float:
         """Map joint-space gripper position to actuator control value."""
         jlo, jhi = self._gripper_joint_range
