@@ -71,16 +71,34 @@ _X2_URDF_PATH = Path(__file__).resolve().parent / "x2_ultra.urdf"
 # Names match the X2 URDF/MJCF (sans the "_joint" suffix, which the viewer adds).
 # JointStateArray.joints[] is positionally indexed in this exact order.
 _ARM_JOINT_NAMES: tuple[str, ...] = (
-    "left_shoulder_pitch", "left_shoulder_roll", "left_shoulder_yaw",
-    "left_elbow", "left_wrist_yaw", "left_wrist_pitch", "left_wrist_roll",
-    "right_shoulder_pitch", "right_shoulder_roll", "right_shoulder_yaw",
-    "right_elbow", "right_wrist_yaw", "right_wrist_pitch", "right_wrist_roll",
+    "left_shoulder_pitch",
+    "left_shoulder_roll",
+    "left_shoulder_yaw",
+    "left_elbow",
+    "left_wrist_yaw",
+    "left_wrist_pitch",
+    "left_wrist_roll",
+    "right_shoulder_pitch",
+    "right_shoulder_roll",
+    "right_shoulder_yaw",
+    "right_elbow",
+    "right_wrist_yaw",
+    "right_wrist_pitch",
+    "right_wrist_roll",
 )
 _LEG_JOINT_NAMES: tuple[str, ...] = (
-    "left_hip_pitch", "left_hip_roll", "left_hip_yaw",
-    "left_knee", "left_ankle_pitch", "left_ankle_roll",
-    "right_hip_pitch", "right_hip_roll", "right_hip_yaw",
-    "right_knee", "right_ankle_pitch", "right_ankle_roll",
+    "left_hip_pitch",
+    "left_hip_roll",
+    "left_hip_yaw",
+    "left_knee",
+    "left_ankle_pitch",
+    "left_ankle_roll",
+    "right_hip_pitch",
+    "right_hip_roll",
+    "right_hip_yaw",
+    "right_knee",
+    "right_ankle_pitch",
+    "right_ankle_roll",
 )
 _WAIST_JOINT_NAMES: tuple[str, ...] = ("waist_yaw", "waist_pitch", "waist_roll")
 _HEAD_JOINT_NAMES: tuple[str, ...] = ("head_yaw", "head_pitch")
@@ -443,25 +461,29 @@ class X2Connection(X2ConnectionBase, Camera, Pointcloud, IMU, Lidar):
         # Joint state subscriptions (one per body part, all aimdk_msgs/JointStateArray).
         joint_state_msg = self._import_msg("aimdk_msgs.msg", "JointStateArray")
         node.create_subscription(
-            joint_state_msg, _TOPIC_JOINT_ARM,
+            joint_state_msg,
+            _TOPIC_JOINT_ARM,
             lambda m: self._on_joint_state_array(m, _ARM_JOINT_NAMES),
             sensor_qos,
             callback_group=sensor_group,
         )
         node.create_subscription(
-            joint_state_msg, _TOPIC_JOINT_LEG,
+            joint_state_msg,
+            _TOPIC_JOINT_LEG,
             lambda m: self._on_joint_state_array(m, _LEG_JOINT_NAMES),
             sensor_qos,
             callback_group=sensor_group,
         )
         node.create_subscription(
-            joint_state_msg, _TOPIC_JOINT_WAIST,
+            joint_state_msg,
+            _TOPIC_JOINT_WAIST,
             lambda m: self._on_joint_state_array(m, _WAIST_JOINT_NAMES),
             sensor_qos,
             callback_group=sensor_group,
         )
         node.create_subscription(
-            joint_state_msg, _TOPIC_JOINT_HEAD,
+            joint_state_msg,
+            _TOPIC_JOINT_HEAD,
             lambda m: self._on_joint_state_array(m, _HEAD_JOINT_NAMES),
             sensor_qos,
             callback_group=sensor_group,
@@ -510,7 +532,6 @@ class X2Connection(X2ConnectionBase, Camera, Pointcloud, IMU, Lidar):
         Thread(target=self._register_input_source, daemon=True).start()
 
     def _ros_spin(self) -> None:
-        import rclpy
         from rclpy.executors import MultiThreadedExecutor
 
         # MultiThreadedExecutor: joint-state topics on this node tick at
@@ -724,8 +745,7 @@ class X2Connection(X2ConnectionBase, Camera, Pointcloud, IMU, Lidar):
         """
         positions = dict(zip(msg.name, msg.position, strict=False))
         target = [
-            float(positions.get(n, self._joint_positions.get(n, 0.0)))
-            for n in _ARM_JOINT_NAMES
+            float(positions.get(n, self._joint_positions.get(n, 0.0))) for n in _ARM_JOINT_NAMES
         ]
         self._set_arm_target(target)
 
@@ -758,15 +778,18 @@ class X2Connection(X2ConnectionBase, Camera, Pointcloud, IMU, Lidar):
 
         q_sol, ok, err = ik.solve(target_se3, ik_q, chain)
         if not ok:
-            logger.warning("X2Connection: %s IK no-converge (err=%.4f), using best effort",
-                           side, err)
+            logger.warning(
+                "X2Connection: %s IK no-converge (err=%.4f), using best effort", side, err
+            )
 
         # Start from current arm target (preserve unaffected joints if a
         # previous target was set; else start from current state).
         with self._arm_lock:
-            base = list(self._arm_target) if self._arm_target is not None else self._arm_state_vector()
+            base = (
+                list(self._arm_target) if self._arm_target is not None else self._arm_state_vector()
+            )
         for short_name, slot in zip(chain.joint_names, chain.qpos_indices, strict=True):
-            key = short_name[:-len("_joint")] if short_name.endswith("_joint") else short_name
+            key = short_name[: -len("_joint")] if short_name.endswith("_joint") else short_name
             idx = _ARM_JOINT_NAMES.index(key)
             base[idx] = float(q_sol[slot])
 
@@ -795,7 +818,7 @@ class X2Connection(X2ConnectionBase, Camera, Pointcloud, IMU, Lidar):
         """Move both arms to a tucked pose (elbows bent ~90°, arms close to body)."""
         target = [0.0] * 14
         # elbow indices in _ARM_JOINT_NAMES: 3 (left), 10 (right)
-        target[3] = -1.2   # left elbow (limits: -2.3556..0.0)
+        target[3] = -1.2  # left elbow (limits: -2.3556..0.0)
         target[10] = -1.2  # right elbow
         self._set_arm_target(target)
         return True
@@ -820,7 +843,9 @@ class X2Connection(X2ConnectionBase, Camera, Pointcloud, IMU, Lidar):
         current = ik.fk_pose(ik_q, ik.left)
         q_wxyz = pin.Quaternion(current.rotation)
         target = PoseStamped(
-            x=float(x), y=float(y), z=float(z),
+            x=float(x),
+            y=float(y),
+            z=float(z),
             orientation=Quaternion(
                 float(q_wxyz.x), float(q_wxyz.y), float(q_wxyz.z), float(q_wxyz.w)
             ),
@@ -847,7 +872,9 @@ class X2Connection(X2ConnectionBase, Camera, Pointcloud, IMU, Lidar):
         current = ik.fk_pose(ik_q, ik.right)
         q_wxyz = pin.Quaternion(current.rotation)
         target = PoseStamped(
-            x=float(x), y=float(y), z=float(z),
+            x=float(x),
+            y=float(y),
+            z=float(z),
             orientation=Quaternion(
                 float(q_wxyz.x), float(q_wxyz.y), float(q_wxyz.z), float(q_wxyz.w)
             ),
@@ -882,14 +909,14 @@ class X2Connection(X2ConnectionBase, Camera, Pointcloud, IMU, Lidar):
             "<CycloneDDS><Domain>"
             "<General>"
             # Pin to enp2s0 so DDS uses the robot LAN, not wlp3s0.
-            "<Interfaces><NetworkInterface name=\"enp2s0\"/></Interfaces>"
+            '<Interfaces><NetworkInterface name="enp2s0"/></Interfaces>'
             # Multicast stays enabled for data delivery (the publisher uses it
             # for high-bandwidth topics); discovery is also fine over multicast
             # but we add a static peer as a fallback in case the multicast
             # route is broken by dimos's loopback route.
             "</General>"
             "<Discovery>"
-            "<Peers><Peer address=\"10.0.1.41\"/></Peers>"
+            '<Peers><Peer address="10.0.1.41"/></Peers>'
             "<ParticipantIndex>auto</ParticipantIndex>"
             "</Discovery>"
             "</Domain></CycloneDDS>"
@@ -961,7 +988,9 @@ class X2Connection(X2ConnectionBase, Camera, Pointcloud, IMU, Lidar):
                 self._latest_video_frame = image
                 recv += 1
                 if recv == 1 or recv % 60 == 0:
-                    logger.info("X2Connection: camera-bridge frame %d (%d KB)", recv, length // 1024)
+                    logger.info(
+                        "X2Connection: camera-bridge frame %d (%d KB)", recv, length // 1024
+                    )
         except Exception as exc:
             logger.exception("X2Connection: camera-bridge reader crashed: %s", exc)
 

@@ -54,10 +54,20 @@ _URDF_PATH = Path(__file__).resolve().parent / "g1.urdf"
 # Canonical arm-joint short names, left arm then right arm (matches
 # ``make_humanoid_joints("g1")[15:]`` ordering).
 _ARM_JOINT_NAMES: tuple[str, ...] = (
-    "left_shoulder_pitch", "left_shoulder_roll", "left_shoulder_yaw",
-    "left_elbow", "left_wrist_roll", "left_wrist_pitch", "left_wrist_yaw",
-    "right_shoulder_pitch", "right_shoulder_roll", "right_shoulder_yaw",
-    "right_elbow", "right_wrist_roll", "right_wrist_pitch", "right_wrist_yaw",
+    "left_shoulder_pitch",
+    "left_shoulder_roll",
+    "left_shoulder_yaw",
+    "left_elbow",
+    "left_wrist_roll",
+    "left_wrist_pitch",
+    "left_wrist_yaw",
+    "right_shoulder_pitch",
+    "right_shoulder_roll",
+    "right_shoulder_yaw",
+    "right_elbow",
+    "right_wrist_roll",
+    "right_wrist_pitch",
+    "right_wrist_yaw",
 )
 _FULL_JOINT_NAMES: tuple[str, ...] = tuple(f"{_HW_ID}/{n}" for n in _ARM_JOINT_NAMES)
 
@@ -114,9 +124,7 @@ class G1ArmTeleop(Module):
     def start(self) -> None:
         super().start()
         self.joint_state.subscribe(self._on_joint_state)
-        logger.info(
-            "G1ArmTeleop ready (%d arm joints, limits from URDF)", len(self._limits)
-        )
+        logger.info("G1ArmTeleop ready (%d arm joints, limits from URDF)", len(self._limits))
 
     @rpc
     def stop(self) -> None:

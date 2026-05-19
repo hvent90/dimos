@@ -18,15 +18,15 @@ roughly 0.3-1.0 m radius from each shoulder).
 from __future__ import annotations
 
 import argparse
+from pathlib import Path
 import sys
 import time
-from pathlib import Path
 
 # Allow running directly without `uv pip install -e`.
 sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
 
-from dimos.core.transport import LCMTransport  # noqa: E402
-from dimos.msgs.geometry_msgs.PointStamped import PointStamped  # noqa: E402
+from dimos.core.transport import LCMTransport
+from dimos.msgs.geometry_msgs.PointStamped import PointStamped
 
 
 def main() -> int:
@@ -42,9 +42,7 @@ def main() -> int:
     )
     args = p.parse_args()
 
-    pt = PointStamped(
-        x=args.x, y=args.y, z=args.z, ts=time.time(), frame_id=args.frame
-    )
+    pt = PointStamped(x=args.x, y=args.y, z=args.z, ts=time.time(), frame_id=args.frame)
     tx = LCMTransport(args.topic, PointStamped)
     tx.publish(pt)
     print(f"Published {pt} on {args.topic}")

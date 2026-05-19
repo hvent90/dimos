@@ -33,8 +33,10 @@ def main() -> None:
     )
     from sensor_msgs.msg import CompressedImage
 
-    topic = sys.argv[1] if len(sys.argv) > 1 else (
-        "/aima/hal/sensor/rgbd_head_front/rgb_image/compressed"
+    topic = (
+        sys.argv[1]
+        if len(sys.argv) > 1
+        else ("/aima/hal/sensor/rgbd_head_front/rgb_image/compressed")
     )
 
     rclpy.init()

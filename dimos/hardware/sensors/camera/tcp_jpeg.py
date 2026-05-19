@@ -76,9 +76,7 @@ class TcpJpegCameraModule(Module):
     def start(self) -> None:
         super().start()
         self._stop.clear()
-        self._thread = threading.Thread(
-            target=self._run, name="tcp-jpeg-camera", daemon=True
-        )
+        self._thread = threading.Thread(target=self._run, name="tcp-jpeg-camera", daemon=True)
         self._thread.start()
         logger.info(
             "TcpJpegCameraModule connecting to %s:%d",
@@ -119,9 +117,7 @@ class TcpJpegCameraModule(Module):
                 break
 
     def _connect_and_stream(self) -> None:
-        sock = socket.create_connection(
-            (self.config.host, self.config.port), timeout=5.0
-        )
+        sock = socket.create_connection((self.config.host, self.config.port), timeout=5.0)
         sock.settimeout(None)
         sock.setsockopt(socket.IPPROTO_TCP, socket.TCP_NODELAY, 1)
         self._sock = sock
