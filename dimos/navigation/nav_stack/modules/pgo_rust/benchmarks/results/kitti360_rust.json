@@ -1,0 +1,16 @@
+{
+  "scans_played": 500,
+  "groundtruth_queries_with_loop": 176,
+  "groundtruth_total_loop_pairs": 2173,
+  "detected_loop_edges": 0,
+  "loop_closure_events": 0,
+  "true_positive": 0,
+  "false_positive": 0,
+  "false_negative": 176,
+  "precision": null,
+  "recall": 0.0,
+  "f1": 0.0,
+  "wallclock_seconds": 24.956072294851765,
+  "sequence_id": 2,
+  "git_sha": "541e8a44774a90fc64224a4e74abe12b5346bb49"
+}

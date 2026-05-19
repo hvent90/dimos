@@ -1,0 +1,10 @@
+{
+  "git_sha": "541e8a44774a90fc64224a4e74abe12b5346bb49",
+  "scan_context_ap": 0.9604,
+  "frames_evaluated": 450,
+  "queries_with_gt": 176,
+  "top1_true_positives": 140,
+  "sequence": 2,
+  "max_scans": 500,
+  "note": "Place recognition uses Python scan_context re-implementation; identical across backends by design"
+}

@@ -1,0 +1,8 @@
+{
+  "git_sha": "541e8a44774a90fc64224a4e74abe12b5346bb49",
+  "completed": true,
+  "wall_clock_seconds": 11.965515428,
+  "num_scans": 100,
+  "sequence": 2,
+  "note": "KITTI-360 smoke run on local machine"
+}
