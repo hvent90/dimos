@@ -28,15 +28,22 @@ from pathlib import Path
 import numpy as np
 import pinocchio as pin
 
-
 _LEFT_ARM_JOINT_NAMES = (
-    "left_shoulder_pitch_joint", "left_shoulder_roll_joint", "left_shoulder_yaw_joint",
-    "left_elbow_joint", "left_wrist_yaw_joint", "left_wrist_pitch_joint",
+    "left_shoulder_pitch_joint",
+    "left_shoulder_roll_joint",
+    "left_shoulder_yaw_joint",
+    "left_elbow_joint",
+    "left_wrist_yaw_joint",
+    "left_wrist_pitch_joint",
     "left_wrist_roll_joint",
 )
 _RIGHT_ARM_JOINT_NAMES = (
-    "right_shoulder_pitch_joint", "right_shoulder_roll_joint", "right_shoulder_yaw_joint",
-    "right_elbow_joint", "right_wrist_yaw_joint", "right_wrist_pitch_joint",
+    "right_shoulder_pitch_joint",
+    "right_shoulder_roll_joint",
+    "right_shoulder_yaw_joint",
+    "right_elbow_joint",
+    "right_wrist_yaw_joint",
+    "right_wrist_pitch_joint",
     "right_wrist_roll_joint",
 )
 _LEFT_EE_FRAME = "left_wrist_roll_link"
@@ -47,8 +54,8 @@ _RIGHT_EE_FRAME = "right_wrist_roll_link"
 class ArmChain:
     """Joint-index + end-effector-frame info for one arm."""
 
-    qpos_indices: list[int]   # indices into the pinocchio q vector
-    nv_indices: list[int]     # indices into the pinocchio v / Jacobian column space
+    qpos_indices: list[int]  # indices into the pinocchio q vector
+    nv_indices: list[int]  # indices into the pinocchio v / Jacobian column space
     ee_frame_id: int
     joint_names: tuple[str, ...]
 
@@ -114,7 +121,6 @@ class X2ArmIK:
         same shape as q_seed; only the chain's qpos slots are modified.
         """
         q = q_seed.copy()
-        nv = self.model.nv
         err_norm = float("inf")
         for _ in range(max_iter):
             pin.forwardKinematics(self.model, self.data, q)

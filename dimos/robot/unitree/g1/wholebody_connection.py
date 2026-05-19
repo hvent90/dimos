@@ -265,7 +265,9 @@ class G1WholeBodyConnection(Module):
     def _snapshot_motor_imu(
         self,
     ) -> tuple[
-        list[float], list[float], list[float],
+        list[float],
+        list[float],
+        list[float],
         tuple[float, float, float, float],
         tuple[float, float, float],
         tuple[float, float, float],

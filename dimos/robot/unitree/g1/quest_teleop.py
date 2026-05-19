@@ -306,7 +306,9 @@ class G1QuestTeleopModule(QuestTeleopModule):
         # last logged frame, so a still controller doesn't spam.
         prev_key = f"_last_joy_axes_{msg.frame_id}"
         prev = getattr(self, prev_key, None)
-        if prev is None or any(abs(axes[i] - prev[i]) > 0.01 for i in range(min(len(axes), len(prev)))):
+        if prev is None or any(
+            abs(axes[i] - prev[i]) > 0.01 for i in range(min(len(axes), len(prev)))
+        ):
             logger.info("G1 Quest joy[%s]: axes=%s", msg.frame_id, [round(a, 3) for a in axes])
             setattr(self, prev_key, list(axes))
         super()._on_joy_bytes(data)
@@ -403,9 +405,7 @@ class G1QuestTeleopModule(QuestTeleopModule):
         if moving != self._cmd_vel_moving:
             self._cmd_vel_moving = moving
             if moving:
-                logger.info(
-                    "G1 Quest cmd_vel active: vx=%.2f vy=%.2f wz=%.2f", vx, vy, yaw_rate
-                )
+                logger.info("G1 Quest cmd_vel active: vx=%.2f vy=%.2f wz=%.2f", vx, vy, yaw_rate)
             else:
                 logger.info("G1 Quest cmd_vel zeroed")
 

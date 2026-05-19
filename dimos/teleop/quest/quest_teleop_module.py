@@ -50,8 +50,8 @@ from dimos.web.robot_web_interface import RobotWebInterface
 
 # WebSocket message tags (server → client). The Quest WebXR client receives
 # these and routes by leading byte. Each camera tag carries a JPEG-encoded frame.
-_WS_TAG_CAMERA_JPEG = 0x01       # forward / head camera
-_WS_TAG_WORKSPACE_JPEG = 0x02    # workspace / down-looking camera
+_WS_TAG_CAMERA_JPEG = 0x01  # forward / head camera
+_WS_TAG_WORKSPACE_JPEG = 0x02  # workspace / down-looking camera
 
 logger = setup_logger()
 
@@ -108,8 +108,8 @@ class QuestTeleopModule(Module):
     # Optional: forward image streams to the WebXR client for in-VR display
     # (rendered as textured quads in front of the user). Wire from a
     # blueprint transport if you want camera-in-VR; leave unbound otherwise.
-    color_image: In[Image]       # forward-facing (tag 0x01)
-    workspace_image: In[Image]   # workspace / down-looking (tag 0x02)
+    color_image: In[Image]  # forward-facing (tag 0x01)
+    workspace_image: In[Image]  # workspace / down-looking (tag 0x02)
 
     def __init__(self, **kwargs: Any) -> None:
         super().__init__(**kwargs)

@@ -89,7 +89,13 @@ def serve(
     actual_fps = cap.get(cv2.CAP_PROP_FPS)
     logger.info(
         "cv2 capture %s opened: %dx%d @ %.1f fps (requested %dx%d@%g)",
-        device, actual_w, actual_h, actual_fps, width, height, fps,
+        device,
+        actual_w,
+        actual_h,
+        actual_fps,
+        width,
+        height,
+        fps,
     )
 
     encode_params = [int(cv2.IMWRITE_JPEG_QUALITY), int(quality)]
@@ -185,14 +191,22 @@ def passthrough_serve(
         cmd = [
             "ffmpeg",
             "-hide_banner",
-            "-loglevel", "warning",
-            "-f", "v4l2",
-            "-input_format", "mjpeg",
-            "-video_size", f"{width}x{height}",
-            "-framerate", str(int(fps)),
-            "-i", device,
-            "-c:v", "copy",
-            "-f", "mjpeg",
+            "-loglevel",
+            "warning",
+            "-f",
+            "v4l2",
+            "-input_format",
+            "mjpeg",
+            "-video_size",
+            f"{width}x{height}",
+            "-framerate",
+            str(int(fps)),
+            "-i",
+            device,
+            "-c:v",
+            "copy",
+            "-f",
+            "mjpeg",
             "pipe:1",
         ]
     elif shutil.which("gst-launch-1.0"):
@@ -206,9 +220,7 @@ def passthrough_serve(
         )
         cmd = ["gst-launch-1.0", "-q", *gst_pipeline.split()]
     else:
-        raise RuntimeError(
-            "passthrough mode requires either ffmpeg or gst-launch-1.0 on PATH"
-        )
+        raise RuntimeError("passthrough mode requires either ffmpeg or gst-launch-1.0 on PATH")
     logger.info("passthrough cmd: %s", " ".join(cmd))
     ff = subprocess.Popen(cmd, stdout=subprocess.PIPE, stderr=subprocess.PIPE, bufsize=0)
     if ff.stdout is None:
@@ -313,7 +325,9 @@ def main() -> None:
     parser.add_argument("--width", type=int, default=1280)
     parser.add_argument("--height", type=int, default=720)
     parser.add_argument("--fps", type=float, default=30.0)
-    parser.add_argument("--quality", type=int, default=80, help="JPEG quality 1..100 (cv2 path only)")
+    parser.add_argument(
+        "--quality", type=int, default=80, help="JPEG quality 1..100 (cv2 path only)"
+    )
     parser.add_argument(
         "--passthrough",
         action="store_true",
