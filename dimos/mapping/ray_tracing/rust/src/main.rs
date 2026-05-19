@@ -29,6 +29,7 @@ struct VoxelMap {
 }
 
 #[derive(Module)]
+#[module(setup = validate_config)]
 struct RayTracingVoxelMap {
     #[input(decode = PointCloud2::decode, handler = on_lidar)]
     lidar: Input<PointCloud2>,
@@ -47,6 +48,50 @@ struct RayTracingVoxelMap {
 }
 
 impl RayTracingVoxelMap {
+    /// Make sure all the configs are valid on setup
+    async fn validate_config(&self) {
+        let cfg = &self.config;
+        if !cfg.voxel_size.is_finite() || cfg.voxel_size <= 0.0 {
+            panic!(
+                "voxel_ray_tracing: voxel_size must be > 0, got {}",
+                cfg.voxel_size
+            );
+        }
+        if !cfg.max_range.is_finite() || cfg.max_range < 0.0 {
+            panic!(
+                "voxel_ray_tracing: max_range must be >= 0, got {}",
+                cfg.max_range
+            );
+        }
+        if !cfg.shadow_depth.is_finite() || cfg.shadow_depth < 0.0 {
+            panic!(
+                "voxel_ray_tracing: shadow_depth must be >= 0, got {}",
+                cfg.shadow_depth
+            );
+        }
+        if !cfg.grace_depth.is_finite() || cfg.grace_depth < 0.0 {
+            panic!(
+                "voxel_ray_tracing: grace_depth must be >= 0, got {}",
+                cfg.grace_depth
+            );
+        }
+        if cfg.ray_subsample == 0 {
+            panic!("voxel_ray_tracing: ray_subsample must be >= 1, got 0");
+        }
+        if cfg.max_health <= 0 {
+            panic!(
+                "voxel_ray_tracing: max_health must be > 0 or voxels can never become visible, got {}",
+                cfg.max_health
+            );
+        }
+        if cfg.min_health >= cfg.max_health {
+            panic!(
+                "voxel_ray_tracing: min_health ({}) must be < max_health ({})",
+                cfg.min_health, cfg.max_health
+            );
+        }
+    }
+
     async fn on_odometry(&mut self, msg: Odometry) {
         self.last_origin = Some((
             msg.pose.pose.position.x as f32,
@@ -62,10 +107,6 @@ impl RayTracingVoxelMap {
         };
 
         let voxel_size = self.config.voxel_size;
-        if voxel_size <= 0.0 {
-            eprintln!("voxel_ray_tracing: voxel_size must be > 0, got {voxel_size}");
-            return;
-        }
 
         let points = match extract_xyz(&msg) {
             Ok(p) => p,
@@ -121,7 +162,7 @@ fn update_map(
 
     let mut misses: AHashSet<VoxelKey> = AHashSet::new();
     let origin_voxel = world_to_voxel(origin.0, origin.1, origin.2, inv);
-    let step = cfg.ray_subsample.max(1) as usize;
+    let step = cfg.ray_subsample as usize;
     for (i, &p) in points.iter().enumerate() {
         if i % step != 0 {
             continue;
@@ -239,8 +280,8 @@ fn find_misses_along_ray(
         endpoint.1 as f32 * voxel_size + half,
         endpoint.2 as f32 * voxel_size + half,
     );
-    let shadow_sq = shadow_depth.max(0.0).powi(2);
-    let grace_sq = grace_depth.max(0.0).powi(2);
+    let shadow_sq = shadow_depth.powi(2);
+    let grace_sq = grace_depth.powi(2);
 
     let mut past_endpoint = false;
     loop {
