@@ -14,6 +14,7 @@
 
 from __future__ import annotations
 
+import math
 import threading
 import time
 from typing import Any
@@ -29,8 +30,12 @@ from dimos.msgs.nav_msgs.Path import Path
 from dimos.msgs.sensor_msgs.PointCloud2 import PointCloud2
 from dimos.navigation.nav_stack.modules.mls_planner.planner import (
     MLS,
+    Node,
+    astar,
+    max_step_in_voxels,
     points_to_mls,
     robot_height_in_voxels,
+    snap_to_surface,
     surface_centers,
 )
 from dimos.utils.logging_config import setup_logger
@@ -42,13 +47,12 @@ class MlsPlannerConfig(ModuleConfig):
     world_frame: str = "world"
     voxel_size: float = 0.1
     robot_height: float = 0.75  # m
+    max_step_height: float = 0.15  # m — largest step the robot can climb between adjacent surfaces
 
 
 class MlsPlanner(Module):
-    """3D multi-level surface planner.
-
-    Stub: emits a 2-pose straight-line path from latest odometry to the goal.
-    The real surface-graph A* will replace _plan() in a follow-up.
+    """3D multi-level surface planner: extracts an MLS from the global voxel map
+    and runs surface-graph A* between the robot's current surface and the goal.
     """
 
     config: MlsPlannerConfig
@@ -91,10 +95,13 @@ class MlsPlanner(Module):
     def _on_goal(self, goal: PoseStamped) -> None:
         with self._lock:
             odom = self._latest_odom
-        if odom is None:
+            mls = self._latest_mls
+        if odom is None or mls is None:
+            logger.warning("MlsPlanner: goal received before odom/map; ignoring")
             return
-        path = self._plan(odom, goal)
-        self.path.publish(path)
+        path = self._plan(mls, odom, goal)
+        if path is not None:
+            self.path.publish(path)
 
     def _publish_surfaces(self, mls: MLS) -> None:
         centers = surface_centers(mls, self.config.voxel_size)
@@ -106,20 +113,48 @@ class MlsPlanner(Module):
         self.surfaces.publish(cloud)
         logger.info("MlsPlanner extracted %d surfaces across %d columns", len(centers), len(mls))
 
-    def _plan(self, odom: Odometry, goal: PoseStamped) -> Path:
-        start_pose = PoseStamped(
-            ts=time.time(),
-            frame_id=self.config.world_frame,
-            position=[odom.x, odom.y, odom.z],
-            orientation=[
-                odom.orientation.x,
-                odom.orientation.y,
-                odom.orientation.z,
-                odom.orientation.w,
-            ],
+    def _plan(self, mls: MLS, odom: Odometry, goal: PoseStamped) -> Path | None:
+        vs = self.config.voxel_size
+        start_node = snap_to_surface(
+            mls, math.floor(odom.x / vs), math.floor(odom.y / vs), odom.z, vs
         )
+        goal_node = snap_to_surface(
+            mls,
+            math.floor(goal.position.x / vs),
+            math.floor(goal.position.y / vs),
+            goal.position.z,
+            vs,
+        )
+        if start_node is None or goal_node is None:
+            logger.warning(
+                "MlsPlanner: could not snap start/goal to MLS surface (start=%s goal=%s)",
+                start_node,
+                goal_node,
+            )
+            return None
+
+        max_step_voxels = max_step_in_voxels(self.config.max_step_height, vs)
+        nodes = astar(mls, start_node, goal_node, max_step_voxels)
+        if nodes is None:
+            logger.warning("MlsPlanner: no path from %s to %s", start_node, goal_node)
+            return None
+
+        logger.info("MlsPlanner: path with %d waypoints", len(nodes))
         return Path(
             ts=time.time(),
             frame_id=self.config.world_frame,
-            poses=[start_pose, goal],
+            poses=[self._node_to_pose(n) for n in nodes],
+        )
+
+    def _node_to_pose(self, node: Node) -> PoseStamped:
+        kx, ky, kz = node
+        vs = self.config.voxel_size
+        half = 0.5 * vs
+        # z is the TOP of the supporting voxel — where feet/wheels actually sit,
+        # not the voxel center.
+        return PoseStamped(
+            ts=time.time(),
+            frame_id=self.config.world_frame,
+            position=[kx * vs + half, ky * vs + half, (kz + 1) * vs],
+            orientation=[0.0, 0.0, 0.0, 1.0],
         )

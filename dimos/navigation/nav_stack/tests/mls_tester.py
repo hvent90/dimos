@@ -24,6 +24,7 @@ from typing import Any
 
 from dimos.core.coordination.blueprints import Blueprint, autoconnect
 from dimos.core.coordination.module_coordinator import ModuleCoordinator
+from dimos.msgs.nav_msgs.Path import Path
 from dimos.msgs.sensor_msgs.PointCloud2 import PointCloud2
 from dimos.navigation.nav_stack.modules.mls_planner.module import MlsPlanner
 from dimos.navigation.nav_stack.tests.evaluator import Evaluator, default_scene
@@ -34,12 +35,19 @@ def _render_surfaces(msg: PointCloud2) -> Any:
     return msg.to_rerun(voxel_size=0.075, mode="boxes")
 
 
+def _render_path(msg: Path) -> Any:
+    return msg.to_rerun(z_offset=0.0)
+
+
 def build_blueprint() -> Blueprint:
     return autoconnect(
         Evaluator.blueprint(scene=default_scene()),
         MlsPlanner.blueprint(),
         RerunBridgeModule.blueprint(
-            visual_override={"world/surfaces": _render_surfaces},
+            visual_override={
+                "world/surfaces": _render_surfaces,
+                "world/path": _render_path,
+            },
         ),
     )
 
