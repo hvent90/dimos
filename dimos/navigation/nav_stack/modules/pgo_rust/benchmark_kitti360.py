@@ -41,21 +41,24 @@ def _resolve_git_sha() -> str:
     benchmark run from producing a clean SHA).
     """
     try:
-        repo_root = Path(__file__).parent
+        cwd = Path(__file__).parent
         sha = subprocess.check_output(
-            ["git", "rev-parse", "HEAD"], cwd=repo_root, text=True
+            ["git", "rev-parse", "HEAD"], cwd=cwd, text=True
         ).strip()
-        # `git status --porcelain --untracked-files=no PATHSPEC` filters to
-        # tracked-file modifications outside the results directory. The
-        # `:!` pathspec is git's "exclude" magic — the trailing path is
-        # relative to the repo root, not cwd.
+        # Pathspec arguments are matched against the repo-root-relative path
+        # printed by `git status --porcelain`, regardless of the process's
+        # working directory. Resolve the repo root so we can construct the
+        # exclude path consistently.
+        repo_root = Path(subprocess.check_output(
+            ["git", "rev-parse", "--show-toplevel"], cwd=cwd, text=True,
+        ).strip())
+        results_rel = (cwd / "benchmarks" / "results").resolve().relative_to(repo_root)
         status = subprocess.check_output(
             [
                 "git", "status", "--porcelain", "--untracked-files=no",
-                "--", ".",
-                ":(exclude)dimos/navigation/nav_stack/modules/pgo_rust/benchmarks/results",
+                "--", ":(top)", f":(top,exclude){results_rel.as_posix()}",
             ],
-            cwd=repo_root, text=True,
+            cwd=cwd, text=True,
         ).strip()
         return f"{sha}_dirty" if status else sha
     except (subprocess.CalledProcessError, FileNotFoundError):
