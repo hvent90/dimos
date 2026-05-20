@@ -113,10 +113,17 @@ Solver::Solver(double relinearize_threshold)
     : impl_(std::make_unique<Impl>(relinearize_threshold)) {}
 Solver::~Solver() = default;
 
-void Solver::update(FactorGraph& graph, Values& initial) {
+void Solver::update(FactorGraph& graph, Values& initial, uint32_t extra_iterations) {
     impl_->isam2.update(graph.impl_->graph, initial.impl_->values);
     graph.impl_->graph.resize(0);
     initial.impl_->values.clear();
+    // After the seeded update, run extra no-input iSAM2 updates to let
+    // relinearization converge. Cpp/simple_pgo.cpp:301-308 calls update()
+    // 4 extra times after a loop fires; single update leaves poses in a
+    // half-corrected state on incremental graphs with relinearizeThreshold=0.01.
+    for (uint32_t i = 0; i < extra_iterations; ++i) {
+        impl_->isam2.update();
+    }
     impl_->current_estimate = impl_->isam2.calculateEstimate();
 }
 

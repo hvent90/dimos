@@ -58,7 +58,7 @@ public:
     explicit Solver(double relinearize_threshold);
     ~Solver();
 
-    void update(FactorGraph& graph, Values& initial);
+    void update(FactorGraph& graph, Values& initial, uint32_t extra_iterations);
 
     // Reads `count` keys back; returns parallel vectors for key and per-key 7
     // pose components (translation + quaternion).  We avoid sharing a struct

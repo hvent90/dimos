@@ -23,12 +23,30 @@ from __future__ import annotations
 
 import argparse
 import json
+import subprocess
 from pathlib import Path
 
 from dimos.navigation.nav_stack.benchmarks.pose_graph_kitti360.runner import (
     run_benchmark,
 )
 from dimos.navigation.nav_stack.modules.pgo_rust.pgo_rust import PGORust
+
+
+def _resolve_git_sha() -> str:
+    """Read the head commit SHA, suffixed with '_dirty' if the worktree
+    has uncommitted changes. Used to stamp every result JSON so the
+    benchmark output is traceable back to source. Empty string if not
+    in a git repo (shouldn't happen in normal usage)."""
+    try:
+        sha = subprocess.check_output(
+            ["git", "rev-parse", "HEAD"], cwd=Path(__file__).parent, text=True
+        ).strip()
+        status = subprocess.check_output(
+            ["git", "status", "--porcelain"], cwd=Path(__file__).parent, text=True
+        ).strip()
+        return f"{sha}_dirty" if status else sha
+    except (subprocess.CalledProcessError, FileNotFoundError):
+        return ""
 
 # Mirrors better_pgo's tuned KITTI-360 config (see pgo_cpp's variant for the
 # rationale comment). Same kwargs so cpp vs rust F1 is apples-to-apples.
@@ -69,6 +87,7 @@ def main() -> None:
         max_scans=args.max_scans,
         publish_interval_sec=args.publish_interval_sec,
     )
+    results["git_sha"] = _resolve_git_sha()
 
     print(json.dumps(results, indent=2))
     if args.output_json is not None:

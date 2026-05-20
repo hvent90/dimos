@@ -134,7 +134,15 @@ impl GraphOptimizer for GtsamOptimizer {
     }
 
     fn update(&mut self) -> Vec<PoseDelta> {
-        self.backend.update();
+        // 4 extra iterations matches cpp/simple_pgo.cpp:303-308 which calls
+        // m_isam2->update() 4 extra times after a loop fires. iSAM2 with
+        // relinearizeThreshold=0.01 needs multiple passes to redistribute
+        // a fresh loop closure across the chain — single update leaves
+        // half-corrected poses that wreck subsequent loop searches' world
+        // frame consistency. PgoState only calls optimizer.update() when
+        // a loop is pending, so we can always do the extras.
+        const ISAM2_LOOP_EXTRA_ITERATIONS: u32 = 4;
+        self.backend.update(ISAM2_LOOP_EXTRA_ITERATIONS);
         let mut deltas = Vec::new();
         for (key, after) in self.backend.estimate_all() {
             let before = self.last_estimates.insert(key, after).unwrap_or(after);

@@ -63,7 +63,12 @@ mod ffi {
         fn clear(self: Pin<&mut Values>);
         fn size(self: &Values) -> usize;
 
-        fn update(self: Pin<&mut Solver>, graph: Pin<&mut FactorGraph>, initial: Pin<&mut Values>);
+        fn update(
+            self: Pin<&mut Solver>,
+            graph: Pin<&mut FactorGraph>,
+            initial: Pin<&mut Values>,
+            extra_iterations: u32,
+        );
         fn estimate_all(
             self: &Solver,
             keys: &mut Vec<u64>,
@@ -154,8 +159,12 @@ impl GtsamBackend {
         self.initial.pin_mut().insert(key, c[0], c[1], c[2], c[3], c[4], c[5], c[6]);
     }
 
-    pub fn update(&mut self) {
-        self.solver.pin_mut().update(self.graph.pin_mut(), self.initial.pin_mut());
+    pub fn update(&mut self, extra_iterations: u32) {
+        self.solver.pin_mut().update(
+            self.graph.pin_mut(),
+            self.initial.pin_mut(),
+            extra_iterations,
+        );
     }
 
     pub fn estimate(&self, key: u64) -> Option<Isometry3<f64>> {
