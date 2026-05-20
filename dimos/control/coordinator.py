@@ -26,10 +26,9 @@ Features:
 """
 
 from dataclasses import dataclass, field
-from pathlib import Path
 import threading
 import time
-from typing import TYPE_CHECKING, Any, Literal
+from typing import TYPE_CHECKING, Any
 
 from dimos.control.components import (
     TWIST_SUFFIX_MAP,
@@ -77,20 +76,8 @@ class TaskConfig:
     type: str = "trajectory"
     joint_names: list[str] = field(default_factory=lambda: [])
     priority: int = 10
-    # Task-specific optional fields. Factories decide which fields they use.
-    model_path: str | Path | None = None
-    ee_joint_id: int = 6
-    hand: Literal["left", "right"] | None = None  # teleop_ik only
-    gripper_joint: str | None = None
-    gripper_open_pos: float = 0.0
-    gripper_closed_pos: float = 0.0
-    hardware_id: str | None = None
-    default_positions: list[float] | None = None
     auto_start: bool = False
-    auto_arm: bool = False
-    auto_dry_run: bool = False
-    default_ramp_seconds: float = 10.0
-    decimation: int | None = None
+    params: dict[str, Any] = field(default_factory=dict)
 
 
 class ControlCoordinatorConfig(ModuleConfig):
@@ -107,12 +94,16 @@ class ControlCoordinatorConfig(ModuleConfig):
 class ControlCoordinator(Module):
     """Centralized control coordinator with per-joint arbitration.
 
-    Single tick loop that:
-    1. Reads state from all hardware
-    2. Runs all active tasks
-    3. Arbitrates conflicts per-joint (highest priority wins)
-    4. Routes commands to hardware
-    5. Publishes aggregated joint state
+    The coordinator is normally used as a DimOS blueprint module. Hardware
+    adapters and control tasks are described declaratively in
+    ``ControlCoordinatorConfig`` and instantiated when the module starts.
+
+    Per tick, the coordinator:
+    1. Reads state from configured hardware
+    2. Runs active tasks
+    3. Arbitrates conflicting commands per joint (highest priority wins)
+    4. Routes commands to the owning hardware adapter
+    5. Publishes the aggregated canonical joint state
 
     Key design decisions:
     - Joint-centric commands (not hardware-centric)
@@ -122,14 +113,30 @@ class ControlCoordinator(Module):
     - Aggregated preemption (one notification per task per tick)
 
     Example:
-        >>> from dimos.control import ControlCoordinator
-        >>> from dimos.hardware.manipulators.xarm import XArmAdapter
+        >>> from dimos.control.components import HardwareComponent, HardwareType
+        >>> from dimos.control.components import make_joints
+        >>> from dimos.control.coordinator import ControlCoordinator, TaskConfig
         >>>
-        >>> orch = ControlCoordinator(tick_rate=100.0)
-        >>> adapter = XArmAdapter(ip="192.168.1.185", dof=7)
-        >>> adapter.connect()
-        >>> orch.add_hardware("left_arm", adapter, joint_prefix="left")
-        >>> orch.start()
+        >>> coordinator = ControlCoordinator.blueprint(
+        ...     tick_rate=100.0,
+        ...     hardware=[
+        ...         HardwareComponent(
+        ...             hardware_id="arm",
+        ...             hardware_type=HardwareType.MANIPULATOR,
+        ...             joints=make_joints("arm", 7),
+        ...             adapter_type="xarm",
+        ...             address="192.168.1.185",
+        ...         ),
+        ...     ],
+        ...     tasks=[
+        ...         TaskConfig(
+        ...             name="traj_arm",
+        ...             type="trajectory",
+        ...             joint_names=make_joints("arm", 7),
+        ...             priority=10,
+        ...         ),
+        ...     ],
+        ... )
     """
 
     config: ControlCoordinatorConfig

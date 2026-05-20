@@ -121,8 +121,8 @@ else:
         type="servo",
         joint_names=g1_arms,
         priority=10,
-        default_positions=ARM_DEFAULT_POSE,
         auto_start=True,
+        params={"default_positions": ARM_DEFAULT_POSE},
     )
 
 
@@ -203,13 +203,15 @@ _coordinator = ControlCoordinator.blueprint(
             type="g1_groot_wbc",
             joint_names=g1_legs_waist,
             priority=50,
-            model_path=_GROOT_MODEL_DIR,
-            hardware_id="g1",
             auto_start=True,
-            auto_arm=_auto_arm,
-            auto_dry_run=_auto_dry_run,
-            default_ramp_seconds=_default_ramp_seconds,
-            decimation=_decimation,
+            params={
+                "model_path": _GROOT_MODEL_DIR,
+                "hardware_id": "g1",
+                "auto_arm": _auto_arm,
+                "auto_dry_run": _auto_dry_run,
+                "default_ramp_seconds": _default_ramp_seconds,
+                "decimation": _decimation,
+            },
         ),
         *([_arm_holder] if _arm_holder is not None else []),
     ],

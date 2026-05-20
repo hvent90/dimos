@@ -65,10 +65,10 @@ class ControlTaskRegistry:
 
         Args:
             name: Registered task-type name (e.g. ``"trajectory"``).
-            cfg: ``TaskConfig`` carrying name/joint_names/priority and
-                whatever else this task needs.
+            cfg: ``TaskConfig`` carrying the generic task envelope
+                (name/joint_names/priority) plus task-owned ``params``.
             hardware: Coordinator's hardware map. Tasks that need an
-                adapter resolve via ``cfg.hardware_id``; pass ``None``
+                adapter resolve it from their typed params; pass ``None``
                 only if no task in this registry needs hardware.
         """
         key = name.lower()

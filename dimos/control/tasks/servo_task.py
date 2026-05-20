@@ -35,6 +35,7 @@ from dimos.control.task import (
     JointCommandOutput,
     ResourceClaim,
 )
+from dimos.protocol.service.spec import BaseConfig
 from dimos.utils.logging_config import setup_logger
 
 logger = setup_logger()
@@ -260,13 +261,21 @@ __all__ = [
 ]
 
 
+class JointServoTaskParams(BaseConfig):
+    timeout: float | None = None
+    default_positions: list[float] | None = None
+
+
 def create_task(cfg: Any, hardware: Any) -> JointServoTask:
+    params = JointServoTaskParams.model_validate(cfg.params)
     kwargs: dict[str, object] = {
         "joint_names": cfg.joint_names,
         "priority": cfg.priority,
     }
-    if cfg.default_positions is not None:
-        kwargs["default_positions"] = cfg.default_positions
+    if params.timeout is not None:
+        kwargs["timeout"] = params.timeout
+    if params.default_positions is not None:
+        kwargs["default_positions"] = params.default_positions
         # Zero timeout pairs naturally with default-hold.
-        kwargs["timeout"] = 0.0
+        kwargs.setdefault("timeout", 0.0)
     return JointServoTask(cfg.name, JointServoTaskConfig(**kwargs))  # type: ignore[arg-type]

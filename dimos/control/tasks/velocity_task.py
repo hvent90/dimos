@@ -36,6 +36,7 @@ from dimos.control.task import (
     JointCommandOutput,
     ResourceClaim,
 )
+from dimos.protocol.service.spec import BaseConfig
 from dimos.utils.logging_config import setup_logger
 
 logger = setup_logger()
@@ -274,11 +275,19 @@ __all__ = [
 ]
 
 
+class JointVelocityTaskParams(BaseConfig):
+    timeout: float = 0.2
+    zero_on_timeout: bool = True
+
+
 def create_task(cfg: Any, hardware: Any) -> JointVelocityTask:
+    params = JointVelocityTaskParams.model_validate(cfg.params)
     return JointVelocityTask(
         cfg.name,
         JointVelocityTaskConfig(
             joint_names=cfg.joint_names,
             priority=cfg.priority,
+            timeout=params.timeout,
+            zero_on_timeout=params.zero_on_timeout,
         ),
     )
