@@ -137,6 +137,7 @@ class RelocalizationModule(Module):
                         f"relocalize skipped: n_pts={n_pts} < MIN_LOCAL_POINTS={MIN_LOCAL_POINTS}"
                     )
                     self._last_skip_log = now
+                time.sleep(0.1)
                 continue
 
             t0 = time.monotonic()
@@ -144,6 +145,7 @@ class RelocalizationModule(Module):
                 T, fitness = _relocalize(self._premap.pointcloud, local_map.pointcloud)
             except Exception:
                 logger.exception("relocalize() failed")
+                time.sleep(1.0)
                 continue
             dt = time.monotonic() - t0
 
