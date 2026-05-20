@@ -50,7 +50,9 @@ class CostMapper(Module):
     def start(self) -> None:
         super().start()
 
-        def _maybe_merge(triple: tuple[PointCloud2, PointCloud2 | None, Transform | None]) -> PointCloud2:
+        def _maybe_merge(
+            triple: tuple[PointCloud2, PointCloud2 | None, Transform | None],
+        ) -> PointCloud2:
             gmap, lmap, tf = triple
             if lmap is not None and tf is not None:
                 return gmap + lmap.transform(tf)
@@ -68,11 +70,10 @@ class CostMapper(Module):
             elapsed_ms = (time.perf_counter() - start) * 1000
             return grid, elapsed_ms, rx_monotonic
 
-
         self.register_disposable(
             combine_latest(
                 self.global_map.observable(),  # type: ignore[no-untyped-call]
-                self.loaded_map.observable().pipe(ops.start_with(None)),    # type: ignore[no-untyped-call]
+                self.loaded_map.observable().pipe(ops.start_with(None)),  # type: ignore[no-untyped-call]
                 self.world_to_map.observable().pipe(ops.start_with(None)),  # type: ignore[no-untyped-call]
             )
             .pipe(ops.map(_maybe_merge))

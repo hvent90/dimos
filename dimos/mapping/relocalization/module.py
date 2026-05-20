@@ -12,7 +12,8 @@
 # See the License for the specific language governing permissions and
 # limitations under the License.
 
-import threading, time
+import threading
+import time
 from typing import Any
 
 import numpy as np
@@ -22,31 +23,32 @@ from dimos.constants import DEFAULT_THREAD_JOIN_TIMEOUT
 from dimos.core.core import rpc
 from dimos.core.module import Module, ModuleConfig
 from dimos.core.stream import In, Out
-from dimos.msgs.geometry_msgs.Transform import Transform
+from dimos.mapping.relocalization.relocalize import relocalize as _relocalize
 from dimos.msgs.geometry_msgs.Quaternion import Quaternion
+from dimos.msgs.geometry_msgs.Transform import Transform
 from dimos.msgs.geometry_msgs.Vector3 import Vector3
 from dimos.msgs.sensor_msgs.PointCloud2 import PointCloud2
-from dimos.utils.logging_config import setup_logger
 from dimos.utils.data import resolve_named_path
-
-from dimos.mapping.relocalization.relocalize import relocalize as _relocalize
+from dimos.utils.logging_config import setup_logger
 
 logger = setup_logger()
 
 FRAME_MAP = "map"
 FRAME_WORLD = "world"
 
-DEFAULT_Z_OFFSET = 20.0     # before the first relocalize() converges, offset map this much in z
-PUBLISH_INTERVAL = 2.0      # for loaded_map + TF
+DEFAULT_Z_OFFSET = 20.0  # before the first relocalize() converges, offset map this much in z
+PUBLISH_INTERVAL = 2.0  # for loaded_map + TF
 RELOC_INTERVAL = 2.0
 MIN_LOCAL_POINTS = 20000
 MAP_SUFFIX = ".pc2.lcm"
 
 
 class Config(ModuleConfig):
-    map_file: str | None = None         # e.g. `-o relocalizationmodule.map_file=go2_hongkong_office_twopass_map`
+    map_file: str | None = (
+        None  # e.g. `-o relocalizationmodule.map_file=go2_hongkong_office_twopass_map`
+    )
     publish_loaded_map: bool = True
-    publish_merged: bool = False        # turn on by `-o relocalizationmodule.publish_merged=true`
+    publish_merged: bool = False  # turn on by `-o relocalizationmodule.publish_merged=true`
     fitness_threshold: float = 0.6
 
 

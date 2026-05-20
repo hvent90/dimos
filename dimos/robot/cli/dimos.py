@@ -694,7 +694,9 @@ def export_premap_cmd(
         None, "--duration", help="Limit to first N seconds (default: full log)"
     ),
     device: str = typer.Option(
-        "CUDA:0", "--device", help="Open3D compute device (e.g. CUDA:0, CPU:0); fallback to CPU if unavailable"
+        "CUDA:0",
+        "--device",
+        help="Open3D compute device (e.g. CUDA:0, CPU:0); fallback to CPU if unavailable",
     ),
 ) -> None:
     """Export a twopass relocalization premap (.pc2.lcm) from a recorded SQLite dataset."""
