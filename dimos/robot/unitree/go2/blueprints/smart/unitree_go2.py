@@ -19,6 +19,7 @@ from dimos.core.coordination.blueprints import autoconnect
 from dimos.core.stream import In
 from dimos.mapping.costmapper import CostMapper
 from dimos.mapping.voxels import VoxelGridMapper
+from dimos.mapping.relocalization import RelocalizationModule
 from dimos.memory2.module import Recorder, RecorderConfig
 from dimos.msgs.geometry_msgs.PoseStamped import PoseStamped
 from dimos.msgs.sensor_msgs.Image import Image
@@ -34,6 +35,7 @@ from dimos.robot.unitree.go2.blueprints.basic.unitree_go2_basic import unitree_g
 unitree_go2 = autoconnect(
     unitree_go2_basic,
     VoxelGridMapper.blueprint(),
+    RelocalizationModule.blueprint(),
     CostMapper.blueprint(),
     ReplanningAStarPlanner.blueprint(),
     WavefrontFrontierExplorer.blueprint(),
