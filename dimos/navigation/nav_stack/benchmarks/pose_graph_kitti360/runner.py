@@ -151,19 +151,32 @@ def run_benchmark(
         scoring = coordinator.get_instance(PoseGraphScoringModule)
 
         # Wait for the playback module to finish publishing all scans.
-        while not playback.is_finished():
-            published = playback.frames_published()
-            logger.info(
-                f"  playback {published}/{len(frame_ids)} "
-                f"({published / max(len(frame_ids), 1) * 100:.0f}%)"
-            )
+        # `is_finished()` is an RPC and the reply can queue behind heavy
+        # pose_graph traffic when the PGO binary is CPU-bound on ICP. The
+        # caller-side timeout (120s default) trips before the reply arrives.
+        # We retry on TimeoutError indefinitely — a real stall has to be
+        # detected by `playback_error()` returning non-None, not by RPC
+        # timeout (which is just a transient bus congestion signal).
+        while True:
+            try:
+                if playback.is_finished():
+                    break
+            except TimeoutError:
+                pass
             time.sleep(poll_interval_sec)
 
-        playback_error = playback.playback_error()
+        try:
+            playback_error = playback.playback_error()
+        except TimeoutError:
+            playback_error = None
         if playback_error is not None:
+            try:
+                published = playback.frames_published()
+            except TimeoutError:
+                published = -1
             raise RuntimeError(
                 f"Kitti360PlaybackModule aborted at frame "
-                f"{playback.frames_published()}/{len(frame_ids)}: {playback_error}"
+                f"{published}/{len(frame_ids)}: {playback_error}"
             )
 
         # Drain remaining loop-closure / edge messages from PGO's backlog.

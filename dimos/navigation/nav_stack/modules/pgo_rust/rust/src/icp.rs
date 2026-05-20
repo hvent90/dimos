@@ -40,7 +40,13 @@ impl Default for Config {
             max_iterations: 50,
             max_correspondence_distance: 10.0,
             transform_epsilon: 1e-6,
-            min_correspondences: 10,
+            // PCL's IterativeClosestPoint can iterate from very few
+            // correspondences (it lets the few it finds pull source toward
+            // target on each iteration, growing the correspondence set). Our
+            // earlier `min_correspondences: 10` floor rejected entire ICP
+            // runs that PCL would have happily refined. 3 is enough to
+            // estimate a rigid SE(3); below that the SVD is rank-deficient.
+            min_correspondences: 3,
             initial_transform: Isometry3::identity(),
         }
     }

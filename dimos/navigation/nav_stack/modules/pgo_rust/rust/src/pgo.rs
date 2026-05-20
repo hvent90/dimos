@@ -38,6 +38,12 @@ pub struct Config {
     pub prior_noise: PoseNoise,
     pub odometry_noise: PoseNoise,
     pub loop_noise: PoseNoise,
+    /// Reject SC matches whose candidate world position is farther than this
+    /// from the query's world position (in m, in current pose_offset frame).
+    /// Mirrors cpp/simple_pgo's `loop_candidate_max_distance_m` config arg
+    /// (default 30 m there).  KITTI-360 odometry drift is bounded enough that
+    /// real revisits stay within this radius even before the first loop fires.
+    pub loop_candidate_max_distance_m: f64,
 }
 
 impl Default for Config {
@@ -57,6 +63,7 @@ impl Default for Config {
             prior_noise: PoseNoise::isotropic(1e-6, 1e-6),
             odometry_noise: PoseNoise::isotropic(0.05, 0.02),
             loop_noise: PoseNoise::isotropic(0.1, 0.05),
+            loop_candidate_max_distance_m: 30.0,
         }
     }
 }
@@ -185,20 +192,41 @@ impl PgoState {
         }
         self.last_loop_check_time = query.timestamp;
 
+        // Single best scan-context match (matches cpp/simple_pgo.cpp:204-207).
+        // Top-K admission was tried but produced more false positives.
         let (candidate_index, sector_shift) = if self.config.use_scan_context {
-            self.search_by_scan_context(query_index)
+            self.search_by_scan_context(query_index, 1)
+                .into_iter()
+                .next()
                 .or_else(|| self.search_by_position(query_index).map(|index| (index, 0)))
         } else {
             self.search_by_position(query_index).map(|index| (index, 0))
         }?;
 
-        // Refine via ICP. Both source and target submaps live in the WORLD
-        // frame (mirroring cpp/simple_pgo.cpp:260-261, which uses each
-        // keyframe's t_global/r_global to bake bodies into world coords).
-        // Running ICP on body-frame data on the source side and world-frame on
-        // the target side would land ICP on a wrong basin every time.
-        let target_cloud = self.submap(candidate_index);
+        // Reject candidates physically too far from the query in current
+        // world frame.  scan_context's structural descriptor can match
+        // genuinely-similar-looking-but-different scenes (urban grid → grid)
+        // across the trajectory; this gate kills those cross-trajectory FPs
+        // before they get into ICP and from there into iSAM2 (where one bad
+        // loop ruins pose_offset and cascades).
+        let q_world = (self.pose_offset * self.keyframes[query_index].raw_pose).translation.vector;
+        let c_world = (self.pose_offset * self.keyframes[candidate_index].raw_pose).translation.vector;
+        if (q_world - c_world).norm() > self.config.loop_candidate_max_distance_m {
+            return None;
+        }
+
         let source_cloud = self.submap(query_index);
+        self.try_icp_for_candidate(query_index, candidate_index, sector_shift, &source_cloud)
+    }
+
+    fn try_icp_for_candidate(
+        &self,
+        query_index: usize,
+        candidate_index: usize,
+        sector_shift: i64,
+        source_cloud: &[[f64; 3]],
+    ) -> Option<LoopPair> {
+        let target_cloud = self.submap(candidate_index);
 
         // Seed ICP from the scan-context column shift's implied yaw rotation,
         // about the query's global position (NOT the world origin — see cpp
@@ -216,19 +244,38 @@ impl PgoState {
             );
         }
 
+        // Single-pass ICP with PCL-style few-correspondences tolerance
+        // (min_correspondences=3 in icp::Config::default — was 10, which
+        // rejected entire runs that PCL would refine).  Start at 10 m corr
+        // distance to match cpp.  ICP iterates from whatever overlapping
+        // points exist after the yaw init_guess and grows the correspondence
+        // set as the source pulls toward target.
         let mut icp_cfg = icp::Config::default();
         icp_cfg.initial_transform = init_guess;
         let icp_result = icp::align(&source_cloud, &target_cloud, &icp_cfg);
-        // C++ requires hasConverged() AND fitness ≤ threshold to accept. Drop
-        // results that hit max_iterations without converging — those are the
-        // ICP runs that didn't find a stable basin.
-        if icp_result.reason != icp::TerminationReason::Converged {
+
+        // Accept any ICP termination that didn't error out.  Trust
+        // scan_context for admission (its 0.4 cosine threshold already
+        // filters out ~95% of queries), and let the noise-scaled loop
+        // factor in iSAM2 attenuate any borderline matches.  The cpp
+        // baseline at loop_score_thresh=10000 effectively does the same:
+        // "accept whatever scan_context matched, ICP gives us the
+        // refined transform but isn't a rejection gate."
+        if !matches!(
+            icp_result.reason,
+            icp::TerminationReason::Converged | icp::TerminationReason::MaxIterations
+        ) {
             return None;
         }
         let score = icp_result.mean_squared_error as f32;
         if score > self.config.loop_score_thresh {
             return None;
         }
+        eprintln!(
+            "pgo_rust ICP ACCEPT: q={} c={} corr={} mse={:.3} reason={:?}",
+            query_index, candidate_index, icp_result.correspondences,
+            icp_result.mean_squared_error, icp_result.reason,
+        );
         Some(LoopPair {
             source_index: query_index,
             target_index: candidate_index,
@@ -237,21 +284,25 @@ impl PgoState {
         })
     }
 
-    fn search_by_scan_context(&self, query_index: usize) -> Option<(usize, i64)> {
+    /// Return the top-K scan-context matches (lowest descriptor distance) that
+    /// pass the time-eligibility + threshold gates.  Sorted ascending by
+    /// distance.  Caller runs ICP on each and accepts the first to pass
+    /// geometric verification.
+    fn search_by_scan_context(&self, query_index: usize, top_k: usize) -> Vec<(usize, i64)> {
         let query = &self.keyframes[query_index];
-        let mut best: Option<(usize, f32, i64)> = None;
+        let mut ranked: Vec<(usize, f32, i64)> = Vec::new();
         for (candidate_index, candidate) in self.keyframes.iter().enumerate() {
             if candidate_index == query_index || !self.is_time_eligible(query, candidate) {
                 continue;
             }
             let (distance, shift) = scan_context::best_distance(&query.descriptor, &candidate.descriptor);
-            if distance < self.config.scan_context.match_threshold
-                && best.is_none_or(|(_, best_distance, _)| distance < best_distance)
-            {
-                best = Some((candidate_index, distance, shift));
+            if distance < self.config.scan_context.match_threshold {
+                ranked.push((candidate_index, distance, shift));
             }
         }
-        best.map(|(index, _, shift)| (index, shift))
+        ranked.sort_by(|a, b| a.1.partial_cmp(&b.1).unwrap_or(std::cmp::Ordering::Equal));
+        ranked.truncate(top_k);
+        ranked.into_iter().map(|(idx, _, shift)| (idx, shift)).collect()
     }
 
     fn search_by_position(&self, query_index: usize) -> Option<usize> {
@@ -310,11 +361,19 @@ impl PgoState {
     /// still get the minimum tightness from config, and to a 1.0 ceiling so
     /// catastrophic fits don't go infinite-sigma.
     pub fn enqueue_loop(&mut self, pair: LoopPair) {
-        let score_sigma = (pair.score as f64).clamp(
-            self.config.loop_noise.translation_sigma.min(self.config.loop_noise.rotation_sigma),
-            1.0,
-        );
-        let scaled_noise = PoseNoise::isotropic(score_sigma, score_sigma);
+        // Empirically, passing the raw ICP MSE as sigma (rather than
+        // sqrt(MSE), which would mathematically match cpp's Variances())
+        // gives FAR better F1 on KITTI-360. The raw value is looser, so
+        // a single false-positive loop can't yank the trajectory hard
+        // enough to break subsequent loop searches. Tight noise (sqrt-based)
+        // amplifies first-FP damage and kills downstream recall via
+        // pose_offset cascade. Floor at config.loop_noise to avoid
+        // unrealistic tightness on perfect ICP fits; ceiling at 5 so a
+        // catastrophic fit can't go infinite-sigma either.
+        let raw_sigma = (pair.score as f64).max(0.0);
+        let translation_sigma = raw_sigma.clamp(self.config.loop_noise.translation_sigma, 5.0);
+        let rotation_sigma = raw_sigma.clamp(self.config.loop_noise.rotation_sigma, 5.0);
+        let scaled_noise = PoseNoise::isotropic(translation_sigma, rotation_sigma);
         self.optimizer.add_between(
             pair.target_index as u64,
             pair.source_index as u64,

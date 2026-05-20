@@ -30,6 +30,23 @@ from dimos.navigation.nav_stack.benchmarks.pose_graph_kitti360.runner import (
 )
 from dimos.navigation.nav_stack.modules.pgo_rust.pgo_rust import PGORust
 
+# Mirrors better_pgo's tuned KITTI-360 config (see pgo_cpp's variant for the
+# rationale comment). Same kwargs so cpp vs rust F1 is apples-to-apples.
+DEFAULT_PUBLISH_INTERVAL_SEC = 0.1
+DEFAULT_PGO_KWARGS: dict[str, object] = {
+    "scan_context_match_threshold": 0.4,
+    "scan_context_top_k": 50,
+    "loop_score_thresh": 10000.0,
+    "loop_search_radius": 1.0,
+    "loop_time_thresh": 50.0,
+    "min_loop_detect_duration": 0.0,
+    "loop_candidate_max_distance_m": 10.0,
+    "key_pose_delta_trans": 0.5,
+    "submap_resolution": 0.5,
+    "loop_submap_half_range": 2,
+    "global_map_publish_rate": 0.001,
+}
+
 
 def main() -> None:
     parser = argparse.ArgumentParser(
@@ -38,22 +55,15 @@ def main() -> None:
     parser.add_argument("--kitti360-root", type=Path, required=True)
     parser.add_argument("--sequence", type=int, default=2)
     parser.add_argument("--max-scans", type=int, default=None)
-    parser.add_argument("--scan-context-match-threshold", type=float, default=0.4)
-    parser.add_argument("--loop-score-thresh", type=float, default=0.5)
-    parser.add_argument("--loop-search-radius-m", type=float, default=1.0)
-    parser.add_argument("--key-pose-delta-trans", type=float, default=0.5)
-    parser.add_argument("--publish-interval-sec", type=float, default=0.02)
+    parser.add_argument(
+        "--publish-interval-sec", type=float, default=DEFAULT_PUBLISH_INTERVAL_SEC
+    )
     parser.add_argument("--output-json", type=Path, default=None)
     args = parser.parse_args()
 
     results = run_benchmark(
         module_under_test=PGORust,
-        module_kwargs={
-            "scan_context_match_threshold": args.scan_context_match_threshold,
-            "loop_score_thresh": args.loop_score_thresh,
-            "loop_search_radius": args.loop_search_radius_m,
-            "key_pose_delta_trans": args.key_pose_delta_trans,
-        },
+        module_kwargs=DEFAULT_PGO_KWARGS,
         kitti360_root=args.kitti360_root,
         sequence_id=args.sequence,
         max_scans=args.max_scans,

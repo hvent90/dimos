@@ -60,6 +60,7 @@ class PGORustConfig(NativeModuleConfig):
     loop_submap_half_range: int = 5
     submap_resolution: float = 0.1
     min_loop_detect_duration: float = 5.0
+    loop_candidate_max_distance_m: float = 30.0
 
     unregister_input: bool = True
 
