@@ -15,14 +15,8 @@
 """Ensure libpython is available in the venv for MuJoCo's mjpython on macOS.
 
 When Python is installed via uv, mjpython fails because it expects
-libpython at a path that uv doesn't populate. mjpython's launcher script
-parses @executable_path rpaths from the python binary via otool and
-applies os.path.dirname() to each, feeding the results into
-DYLD_FALLBACK_LIBRARY_PATH. For uv's cpython build with
-``LC_RPATH = @executable_path/../lib``, this buggy dirname computation
-resolves to the venv root (``.venv/``), not ``.venv/lib/`` — so that's
-where mjpython actually searches. This configurator creates the symlink
-at the venv root so the dlopen succeeds.
+libpython at .venv/lib/ but uv places it in its own managed directory.
+This configurator creates a symlink so mjpython can find the library.
 """
 
 from __future__ import annotations
@@ -50,14 +44,10 @@ class LibPythonConfiguratorMacOS(SystemConfigurator):
             return True
 
         self._missing.clear()
-        venv_root = Path(sys.prefix)
-        venv_lib = venv_root / "lib"
+        venv_lib = Path(sys.prefix) / "lib"
         real_lib = Path(sys.executable).resolve().parent.parent / "lib"
 
         for dylib in real_lib.glob("libpython*.dylib"):
-            target = venv_root / dylib.name
-            if not target.exists():
-                self._missing.append((target, dylib))
             target = venv_lib / dylib.name
             if not target.exists():
                 self._missing.append((target, dylib))
