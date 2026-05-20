@@ -17,6 +17,8 @@
 These tests talk to a live Cloudflare Realtime SFU and are skipped
 unless ``CF_TELEOP_APP_ID`` and ``CF_TELEOP_APP_SECRET`` are set in the
 environment.
+
+Run with: ``pytest -m tool dimos/protocol/pubsub/impl/test_webrtcpubsub.py``
 """
 
 from __future__ import annotations
@@ -27,6 +29,8 @@ import threading
 import time
 
 import pytest
+
+pytestmark = pytest.mark.tool
 
 try:
     from dimos.protocol.pubsub.impl.webrtc_providers.cloudflare import (
