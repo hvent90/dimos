@@ -76,13 +76,11 @@ def _mock_post(url: str, **kwargs: object) -> MagicMock:
         name = body["params"]["name"]
         args = body["params"].get("arguments", {})
         if name == "add":
-            result = {"content": [{"type": "text", "text": str(args.get("x", 0) + args.get("y", 0))}]}
-        elif name == "greet":
             result = {
-                "content": [
-                    {"type": "text", "text": f"Hello, {args.get('name', 'world')}!"}
-                ]
+                "content": [{"type": "text", "text": str(args.get("x", 0) + args.get("y", 0))}]
             }
+        elif name == "greet":
+            result = {"content": [{"type": "text", "text": f"Hello, {args.get('name', 'world')}!"}]}
         elif name == "take_picture":
             # Simulates `dimos.msgs.sensor_msgs.Image.agent_encode()` output.
             result = {
@@ -176,8 +174,7 @@ def test_image_tool_returns_langgraph_command(mcp_client: McpClient) -> None:
     # First block is the intro text; the rest carry the image_url payload.
     assert blocks[0]["type"] == "text"
     assert any(
-        b.get("type") == "image_url" and "FAKEPAYLOAD" in b["image_url"]["url"]
-        for b in blocks[1:]
+        b.get("type") == "image_url" and "FAKEPAYLOAD" in b["image_url"]["url"] for b in blocks[1:]
     )
 
 
