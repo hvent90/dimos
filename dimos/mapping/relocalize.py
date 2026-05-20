@@ -112,7 +112,7 @@ def _gravity_tilt_deg(T: np.ndarray) -> float:
 def relocalize(
     global_map: o3d.geometry.PointCloud,
     local_map: o3d.geometry.PointCloud,
-) -> np.ndarray:
+) -> tuple[np.ndarray, float]:
     """Estimate the 4x4 transform placing ``local_map`` into ``global_map``.
 
     Multi-scale × multi-restart FPFH+RANSAC → gravity-filtered, re-ranked by
@@ -198,4 +198,4 @@ def relocalize(
         )
         polished.append((float(r.fitness), np.asarray(r.transformation)))
     best_fit, best_T = max(polished, key=lambda fT: fT[0])
-    return best_T
+    return best_T, best_fit

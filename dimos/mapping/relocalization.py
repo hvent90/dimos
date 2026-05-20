@@ -49,6 +49,7 @@ class Config(ModuleConfig):
     map_file: str | None = None         # e.g. `-o relocalizationmodule.map_file=go2_hongkong_office_twopass_map`
     publish_loaded_map: bool = True
     publish_merged: bool = False        # turn on by `-o relocalizationmodule.publish_merged=true`
+    fitness_threshold: float = 0.6
 
 
 class RelocalizationModule(Module):
@@ -145,11 +146,19 @@ class RelocalizationModule(Module):
 
             t0 = time.monotonic()
             try:
-                T = _relocalize(self._premap.pointcloud, local_map.pointcloud)
+                T, fitness = _relocalize(self._premap.pointcloud, local_map.pointcloud)
             except Exception:
                 logger.exception("relocalize() failed")
                 continue
             dt = time.monotonic() - t0
+
+            if fitness < self.config.fitness_threshold:
+                logger.warning(
+                    f"relocalize rejected: fitness={fitness:.3f} < threshold={self.config.fitness_threshold} "
+                    f"time_cost={dt:.1f}s n_pts={n_pts}"
+                )
+                time.sleep(RELOC_INTERVAL)
+                continue
 
             # relocalize(scan, map) returns T such that scan_in_map_frame = T(scan_raw).
             # We are publishing a TF for map_in_scan_frame, notice that the base frame is `world`
@@ -166,7 +175,7 @@ class RelocalizationModule(Module):
                 self._relocalized = True
 
             logger.info(
-                f"relocalize: time_cost={dt:.1f}s n_pts={n_pts} "
+                f"relocalize: fitness={fitness:.3f} time_cost={dt:.1f}s n_pts={n_pts} "
                 f"reloc_t={T[:3, 3].round(3).tolist()} "
                 f"TF {self._scan_frame_id!r} -> {FRAME_MAP!r} "
                 f"published_t={T_inv[:3, 3].round(3).tolist()} "
