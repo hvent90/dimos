@@ -102,7 +102,6 @@ impl RayTracingVoxelMap {
 
     async fn on_lidar(&mut self, msg: PointCloud2) {
         let Some(origin) = self.last_origin else {
-            // Need at least one odometry sample before we can raycast.
             return;
         };
 
@@ -127,8 +126,6 @@ impl RayTracingVoxelMap {
 
         update_map(&mut self.map, origin, &points, &self.config);
 
-        // Echo the input cloud's frame; the global map lives in the same
-        // world frame as the upstream lidar/odometry.
         let cloud = build_pointcloud(
             &self.map,
             &live,

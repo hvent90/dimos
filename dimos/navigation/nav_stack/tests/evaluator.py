@@ -114,6 +114,49 @@ def _box_shell(
     return np.concatenate(faces, axis=0)
 
 
+def bridge_detour_scene(voxel_size: float = 0.1) -> Scene:
+    """Start on a bridge, goal directly below it on the floor.
+
+    The bridge top sits at z_voxel=10 over x∈[-1,1], y∈[-3,3], with bridge
+    underside at z_voxel=9. No side walls — the floor under the bridge is
+    reachable from outside the bridge's footprint. The only way down from
+    the bridge top is a 10-step staircase at its -y end (y∈[-5,-3]).
+
+    Start: (0, 2, 1.5) on the bridge top. Goal: (0, 2, 0.5) on the floor
+    directly under the start. Direct vertical drop is impossible (10-voxel
+    delta), so A* must plan AWAY from the goal in -y (~5m along the bridge),
+    descend the stairs, then come back in +y (~7m on the floor under the
+    bridge) to reach the goal. Tests that A* doesn't get stuck following the
+    heuristic into a local minimum.
+    """
+    # Floor everywhere (no holes — lidar sees floor under the bridge).
+    floor = _flat_floor(voxel_size, extent=(-5.0, 5.0, -5.0, 5.0))
+
+    # Bridge: top + bottom face only, no side walls. This makes the floor
+    # under the bridge reachable from outside, so the robot can walk under
+    # it after descending the stairs.
+    bridge_top = _flat_floor(voxel_size, extent=(-1.0, 1.0, -3.0, 3.0), z=10 * voxel_size)
+    bridge_bottom = _flat_floor(voxel_size, extent=(-1.0, 1.0, -3.0, 3.0), z=9 * voxel_size)
+
+    # 10-step staircase at the bridge's -y end (y∈[-5,-3]), each step 1 voxel
+    # tall and 0.2m deep, climbing from floor to the bridge level at z_voxel=10.
+    parts: list[np.ndarray] = [floor, bridge_top, bridge_bottom]
+    for k in range(1, 11):
+        y_lo = -5.0 + (k - 1) * 0.2
+        y_hi = -5.0 + k * 0.2
+        zmax = (k + 0.5) * voxel_size  # top voxel at z_voxel=k
+        parts.append(_box_shell(voxel_size, (-1.0, 1.0, y_lo, y_hi, 0.0, zmax)))
+
+    voxels = np.concatenate(parts, axis=0).astype(np.float32)
+    return Scene(
+        voxels=voxels,
+        voxel_size=voxel_size,
+        start_position=(0.0, 2.0, 1.5),
+        goal_position=(0.0, 2.0, 0.5),
+        name="bridge_detour",
+    )
+
+
 def spiral_staircase_scene(voxel_size: float = 0.1) -> Scene:
     """Three-flight spiral staircase; flight 3 sits directly above flight 1.
 
