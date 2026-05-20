@@ -9,6 +9,7 @@ use lcm_msgs::std_msgs::{Header, Time};
 use serde::Deserialize;
 
 type VoxelKey = (i32, i32, i32);
+const DDA_EPSILON: f32 = 1.0e-8;
 
 #[derive(Debug, Deserialize)]
 #[serde(deny_unknown_fields)]
@@ -238,9 +239,9 @@ fn find_misses_along_ray(
 
     let (mut x, mut y, mut z) = origin_voxel;
 
-    let step_x = dx.signum() as i32;
-    let step_y = dy.signum() as i32;
-    let step_z = dz.signum() as i32;
+    let step_x = step_from_delta(dx);
+    let step_y = step_from_delta(dy);
+    let step_z = step_from_delta(dz);
 
     let t_max_init = |p: f32, d: f32, vox: i32, step: i32| -> f32 {
         if step == 0 {
@@ -284,7 +285,13 @@ fn find_misses_along_ray(
     let grace_sq = grace_depth.powi(2);
 
     let mut past_endpoint = false;
-    loop {
+    let voxel_distance = (endpoint.0 - origin_voxel.0)
+        .abs()
+        .max((endpoint.1 - origin_voxel.1).abs())
+        .max((endpoint.2 - origin_voxel.2).abs());
+    let shadow_steps = (shadow_depth / voxel_size).ceil().max(0.0) as i32;
+    let max_steps = (voxel_distance + shadow_steps + 4).max(1) as usize * 3;
+    for _ in 0..max_steps {
         if tx < ty {
             if tx < tz {
                 x += step_x;
@@ -327,6 +334,17 @@ fn find_misses_along_ray(
         if map_voxels.contains_key(&(x, y, z)) {
             misses.insert((x, y, z));
         }
+    }
+}
+
+#[inline]
+fn step_from_delta(delta: f32) -> i32 {
+    if delta.abs() < DDA_EPSILON {
+        0
+    } else if delta > 0.0 {
+        1
+    } else {
+        -1
     }
 }
 

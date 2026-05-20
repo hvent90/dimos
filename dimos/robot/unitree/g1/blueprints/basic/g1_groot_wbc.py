@@ -89,6 +89,9 @@ _DEFAULT_G1_SPAWN_Z_M = 0.793
 _RAYTRACE_EXECUTABLE_PATH = (
     _REPO_ROOT / "dimos/mapping/ray_tracing/rust/target/release/voxel_ray_tracing"
 )
+_SCENE_LIDAR_EXECUTABLE_PATH = (
+    _REPO_ROOT / "dimos/simulation/sensors/rust/scene_lidar/target/release/scene_lidar"
+)
 
 
 @dataclass(frozen=True)
@@ -141,6 +144,23 @@ def _raytrace_mapper_available() -> bool:
     return _RAYTRACE_EXECUTABLE_PATH.exists() or shutil.which("cargo") is not None
 
 
+def _cargo_executable() -> str | None:
+    cargo = shutil.which("cargo")
+    if cargo is not None:
+        return cargo
+    cargo_home = Path.home() / ".cargo/bin/cargo"
+    return str(cargo_home) if cargo_home.exists() else None
+
+
+def _native_scene_lidar_available() -> bool:
+    return _SCENE_LIDAR_EXECUTABLE_PATH.exists() or _cargo_executable() is not None
+
+
+def _native_scene_lidar_build_command() -> str | None:
+    cargo = _cargo_executable()
+    return f"{cargo} build --release" if cargo is not None else None
+
+
 @lru_cache(maxsize=1)
 def _scene_package_config() -> Any | None:
     scene = os.environ.get("DIMOS_SCENE_PACKAGE_PATH") or global_config.scene
@@ -152,6 +172,21 @@ def _scene_package_config() -> Any | None:
         robot_mjcf_path=_MJCF_PATH,
         meshdir=_G1_MESH_DIR,
     )
+
+
+def _native_scene_lidar_enabled(scene_package: Any | None, lidar_disabled: bool) -> bool:
+    if lidar_disabled or scene_package is None or scene_package.browser_collision_path is None:
+        return False
+    if not _env_bool("DIMOS_ENABLE_NATIVE_SCENE_LIDAR", True):
+        return False
+    if _native_scene_lidar_available():
+        return True
+    logger.warning(
+        "Native scene lidar unavailable; falling back to MuJoCo depth lidar. "
+        "Install cargo or build %s to enable it.",
+        _SCENE_LIDAR_EXECUTABLE_PATH,
+    )
+    return False
 
 
 def _select_backend() -> _BackendSelection:
@@ -177,6 +212,7 @@ def _select_backend() -> _BackendSelection:
         sim_mjcf_path, viewer_mjcf_path = _MJCF_PATH, _MJCF_PATH
     lidar_disabled = _env_bool("DIMOS_DISABLE_LIDAR", False)
     depth_cloud_enabled = _env_bool("DIMOS_ENABLE_DEPTH_CLOUD", False)
+    native_scene_lidar_enabled = _native_scene_lidar_enabled(scene_package, lidar_disabled)
 
     from dimos.simulation.engines.mujoco_sim_module import MujocoSimModule
 
@@ -188,11 +224,12 @@ def _select_backend() -> _BackendSelection:
         camera_name=os.environ.get("DIMOS_MUJOCO_CAMERA", "head_color"),
         enable_color=False,
         enable_depth=depth_cloud_enabled,
-        enable_pointcloud=(not lidar_disabled) or depth_cloud_enabled,
+        enable_pointcloud=depth_cloud_enabled
+        or ((not lidar_disabled) and not native_scene_lidar_enabled),
         pointcloud_fps=_env_float("DIMOS_POINTCLOUD_FPS", _DEFAULT_POINTCLOUD_FPS),
         lidar_camera_names=(
             []
-            if lidar_disabled
+            if lidar_disabled or native_scene_lidar_enabled
             else ["lidar_front_camera", "lidar_left_camera", "lidar_right_camera"]
         ),
         renderer_max_geom=_env_int("DIMOS_MUJOCO_RENDERER_MAX_GEOM", 0),
@@ -292,10 +329,40 @@ def _sim_support_blueprints() -> tuple[Blueprint, ...]:
 
     lidar_disabled = _env_bool("DIMOS_DISABLE_LIDAR", False)
     scene_package = _scene_package_config()
+    native_scene_lidar_enabled = _native_scene_lidar_enabled(scene_package, lidar_disabled)
     global_map_voxel_size = _env_float(
         "DIMOS_GLOBAL_MAP_VOXEL_SIZE", _DEFAULT_GLOBAL_MAP_VOXEL_SIZE_M
     )
     map_backend = os.environ.get("DIMOS_GLOBAL_MAP_BACKEND", "raytrace").lower()
+
+    lidar_stack: tuple[Blueprint, ...] = ()
+    if native_scene_lidar_enabled:
+        from dimos.simulation.sensors.scene_lidar import SceneLidarModule
+
+        assert scene_package is not None
+        lidar_stack = (
+            SceneLidarModule.blueprint(
+                build_command=_native_scene_lidar_build_command(),
+                scene_metadata_path=str(scene_package.metadata_path),
+                collision_path=str(scene_package.browser_collision_path),
+                hz=_env_float("DIMOS_SCENE_LIDAR_HZ", 10.0),
+                horizontal_samples=_env_int("DIMOS_SCENE_LIDAR_HORIZONTAL_SAMPLES", 720),
+                vertical_samples=_env_int("DIMOS_SCENE_LIDAR_VERTICAL_SAMPLES", 16),
+                elevation_min_deg=_env_float("DIMOS_SCENE_LIDAR_ELEVATION_MIN_DEG", -22.5),
+                elevation_max_deg=_env_float("DIMOS_SCENE_LIDAR_ELEVATION_MAX_DEG", 22.5),
+                max_range=_env_float("DIMOS_SCENE_LIDAR_MAX_RANGE", 10.0),
+                sensor_x=_env_float("DIMOS_SCENE_LIDAR_SENSOR_X", 0.0),
+                sensor_y=_env_float("DIMOS_SCENE_LIDAR_SENSOR_Y", 0.0),
+                sensor_z=_env_float("DIMOS_SCENE_LIDAR_SENSOR_Z", 1.0),
+                yaw_offset_deg=_env_float("DIMOS_SCENE_LIDAR_YAW_OFFSET_DEG", 0.0),
+                output_voxel_size=_env_float("DIMOS_SCENE_LIDAR_OUTPUT_VOXEL_SIZE", 0.03),
+            ).transports(
+                {
+                    ("pose", PoseStamped): LCMTransport("/odom", PoseStamped),
+                    ("lidar", PointCloud2): LCMTransport("/lidar", PointCloud2),
+                }
+            ),
+        )
 
     if lidar_disabled or scene_package is None or sys.platform == "darwin":
         mapping_stack: tuple[Blueprint, ...] = (StaticCostmapModule.blueprint(),)
@@ -345,6 +412,7 @@ def _sim_support_blueprints() -> tuple[Blueprint, ...]:
         )
 
     return (
+        *lidar_stack,
         *mapping_stack,
         ReplanningAStarPlanner.blueprint(),
     )
