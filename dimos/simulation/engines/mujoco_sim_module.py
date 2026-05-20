@@ -28,14 +28,12 @@ from __future__ import annotations
 
 import math
 from pathlib import Path
-import shutil
-import subprocess
-import sys
 import threading
 import time
-from typing import Any, Literal
+from typing import Any
 
 import mujoco
+import numpy as np
 from pydantic import Field
 import reactivex as rx
 from scipy.spatial.transform import Rotation as R
@@ -51,6 +49,7 @@ from dimos.msgs.geometry_msgs.Vector3 import Vector3
 from dimos.msgs.sensor_msgs.CameraInfo import CameraInfo
 from dimos.msgs.sensor_msgs.Image import Image, ImageFormat
 from dimos.msgs.sensor_msgs.Imu import Imu
+from dimos.msgs.sensor_msgs.JointState import JointState
 from dimos.msgs.sensor_msgs.PointCloud2 import PointCloud2
 from dimos.simulation.engines.mujoco_engine import (
     CameraConfig,
@@ -58,6 +57,7 @@ from dimos.simulation.engines.mujoco_engine import (
     MujocoEngine,
 )
 from dimos.simulation.engines.mujoco_shm import (
+    CMD_MODE_PD_TAU,
     ManipShmWriter,
     shm_key_from_path,
 )
@@ -85,6 +85,97 @@ def _default_identity_transform() -> Transform:
         translation=Vector3(0.0, 0.0, 0.0),
         rotation=Quaternion(0.0, 0.0, 0.0, 1.0),
     )
+
+
+class _WholeBodySimHooks:
+    """Per-step bridge between MuJoCo actuators and whole-body SHM."""
+
+    def __init__(
+        self,
+        shm: ManipShmWriter,
+        dof: int,
+        *,
+        gripper_idx: int | None = None,
+        gripper_ctrl_range: tuple[float, float] = (0.0, 1.0),
+        gripper_joint_range: tuple[float, float] = (0.0, 1.0),
+    ) -> None:
+        self._shm = shm
+        self._dof = dof
+        self._gripper_idx = gripper_idx
+        self._gripper_ctrl_range = gripper_ctrl_range
+        self._gripper_joint_range = gripper_joint_range
+        self._latest_pd_pos_target: np.ndarray | None = None
+        self._latest_pd_kp: np.ndarray | None = None
+        self._latest_pd_kd: np.ndarray | None = None
+        self._latest_pd_tau: np.ndarray | None = None
+
+    def pre_step(self, engine: MujocoEngine) -> None:
+        shm = self._shm
+        dof = self._dof
+
+        pos_cmd = shm.read_position_command(dof)
+        if pos_cmd is not None:
+            if shm.read_command_mode() == CMD_MODE_PD_TAU:
+                self._latest_pd_pos_target = pos_cmd
+            else:
+                engine.write_joint_command(JointState(position=pos_cmd.tolist()))
+
+        vel_cmd = shm.read_velocity_command(dof)
+        if vel_cmd is not None:
+            engine.write_joint_command(JointState(velocity=vel_cmd.tolist()))
+
+        kp_cmd = shm.read_kp_command(dof)
+        if kp_cmd is not None:
+            self._latest_pd_kp = kp_cmd
+        kd_cmd = shm.read_kd_command(dof)
+        if kd_cmd is not None:
+            self._latest_pd_kd = kd_cmd
+        tau_cmd = shm.read_tau_command(dof)
+        if tau_cmd is not None:
+            self._latest_pd_tau = tau_cmd
+
+        if (
+            self._latest_pd_pos_target is not None
+            and self._latest_pd_kp is not None
+            and self._latest_pd_kd is not None
+        ):
+            q = np.asarray(engine.joint_positions[:dof], dtype=np.float64)
+            dq = np.asarray(engine.joint_velocities[:dof], dtype=np.float64)
+            tau_ff = self._latest_pd_tau if self._latest_pd_tau is not None else np.zeros(dof)
+            tau = (
+                self._latest_pd_kp * (self._latest_pd_pos_target - q)
+                + self._latest_pd_kd * (-dq)
+                + tau_ff
+            )
+            engine.write_joint_command(JointState(effort=tau.tolist()))
+
+        if self._gripper_idx is not None:
+            gripper_cmd = shm.read_gripper_command()
+            if gripper_cmd is not None:
+                engine.set_position_target(
+                    self._gripper_idx, self._gripper_joint_to_ctrl(gripper_cmd)
+                )
+
+    def post_step(self, engine: MujocoEngine) -> None:
+        shm = self._shm
+        shm.write_joint_state(
+            positions=engine.joint_positions,
+            velocities=engine.joint_velocities,
+            efforts=engine.joint_efforts,
+        )
+        if self._gripper_idx is not None:
+            positions = engine.joint_positions
+            if self._gripper_idx < len(positions):
+                shm.write_gripper_state(positions[self._gripper_idx])
+
+    def _gripper_joint_to_ctrl(self, joint_position: float) -> float:
+        jlo, jhi = self._gripper_joint_range
+        clo, chi = self._gripper_ctrl_range
+        clamped = max(jlo, min(jhi, joint_position))
+        if jhi == jlo:
+            return clo
+        t = (clamped - jlo) / (jhi - jlo)
+        return chi - t * (chi - clo)
 
 
 class MujocoSimModuleConfig(ModuleConfig, DepthCameraConfig):
@@ -133,17 +224,6 @@ class MujocoSimModuleConfig(ModuleConfig, DepthCameraConfig):
             "imu_accel",
         ]
     )
-    # Engine execution mode:
-    #   "thread"     — engine runs on a dimos worker thread inside this
-    #                  Module (current default). Cameras supported.
-    #   "subprocess" — Module spawns ``python -m
-    #                  dimos.simulation.engines.mujoco_engine`` and proxies
-    #                  to it via SHM. Needed when a passive viewer is wanted
-    #                  (mujoco.viewer.launch_passive requires main thread,
-    #                  which a dimos worker can't provide on macOS).
-    #                  Cameras + image-stream Out ports are not supported
-    #                  in this mode — set enable_color/depth/pointcloud=False.
-    engine_mode: Literal["thread", "subprocess"] = "thread"
 
 
 class MujocoSimModule(
@@ -175,8 +255,7 @@ class MujocoSimModule(
         super().__init__(**kwargs)
         self._engine: MujocoEngine | None = None
         self._shm: ManipShmWriter | None = None
-        self._sim_hooks: Any | None = None  # WholeBodySimHooks; thread mode only
-        self._engine_proc: subprocess.Popen[Any] | None = None  # subprocess mode only
+        self._sim_hooks: _WholeBodySimHooks | None = None
         self._gripper_idx: int | None = None
         self._gripper_ctrl_range: tuple[float, float] = (0.0, 1.0)
         self._gripper_joint_range: tuple[float, float] = (0.0, 1.0)
@@ -234,14 +313,7 @@ class MujocoSimModule(
             raise RuntimeError("MujocoSimModule: config.address (MJCF path) is required")
 
         # SHM key — adapter derives the same key from the same MJCF path.
-        # Both engine_mode paths use it.
         shm_key = shm_key_from_path(self.config.address)
-
-        if self.config.engine_mode == "subprocess":
-            self._start_subprocess(shm_key)
-            return
-
-        # Thread mode is the default engine path.
         self._shm = ManipShmWriter(shm_key)
 
         # Build engine with SHM hooks installed.
@@ -317,10 +389,8 @@ class MujocoSimModule(
         else:
             self._imu_base_qpos_slice = None
 
-        # Wire SHM bridge hooks (shared with subprocess mode).
-        from dimos.simulation.engines.wholebody_sim_hooks import WholeBodySimHooks
-
-        self._sim_hooks = WholeBodySimHooks(
+        # Wire SHM bridge hooks.
+        self._sim_hooks = _WholeBodySimHooks(
             self._shm,
             dof=dof,
             gripper_idx=self._gripper_idx,
@@ -372,63 +442,6 @@ class MujocoSimModule(
             shm_key=shm_key,
         )
 
-    def _start_subprocess(self, shm_key: str) -> None:
-        """Spawn ``mujoco_engine.engine_main`` as a child process.
-
-        macOS needs ``mjpython`` for ``viewer.launch_passive`` (it bridges
-        the Cocoa main-thread requirement); Linux runs fine under the
-        regular Python interpreter. Cameras + image-stream outputs are
-        not supported in this mode — frame transport would need an SHM
-        ring buffer that doesn't exist yet — so we refuse early to give
-        a clear error.
-        """
-        if self.config.enable_color or self.config.enable_depth or self.config.enable_pointcloud:
-            raise RuntimeError(
-                "MujocoSimModule(engine_mode='subprocess') does not support cameras "
-                "(no cross-process frame buffer yet). Set enable_color / enable_depth / "
-                "enable_pointcloud to False or use engine_mode='thread'."
-            )
-        if sys.platform == "darwin":
-            interp = shutil.which("mjpython") or shutil.which("python")
-        else:
-            interp = sys.executable
-        if interp is None:
-            raise RuntimeError(
-                "MujocoSimModule(engine_mode='subprocess'): no mjpython/python on PATH"
-            )
-
-        cmd = [
-            interp,
-            "-m",
-            "dimos.simulation.engines.mujoco_engine",
-            str(self.config.address),
-            shm_key,
-            str(self.config.dof),
-        ]
-        if not self.config.headless:
-            cmd.append("--view")
-        if not self.config.inject_legacy_assets:
-            cmd.append("--no-asset-inject")
-
-        self._engine_proc = subprocess.Popen(cmd)
-        time.sleep(0.2)
-        returncode = self._engine_proc.poll()
-        if returncode is not None:
-            self._engine_proc = None
-            raise RuntimeError(
-                "MujocoSimModule engine subprocess exited immediately "
-                f"(returncode={returncode}, address={self.config.address})"
-            )
-        logger.info(
-            "MujocoSimModule spawned engine subprocess",
-            pid=self._engine_proc.pid,
-            interp=interp,
-            address=self.config.address,
-            shm_key=shm_key,
-        )
-        # The dimos-side adapter polls SHM readiness; start() only catches
-        # immediate spawn failures here.
-
     @rpc
     def stop(self) -> None:
         self._stop_event.set()
@@ -445,23 +458,6 @@ class MujocoSimModule(
             except Exception as exc:
                 logger.error("engine.disconnect() failed", error=str(exc))
                 errors.append(("engine.disconnect", exc))
-        # Subprocess-mode teardown — SIGTERM, escalate to SIGKILL after
-        # a grace period if the subprocess doesn't exit (SHM cleanup
-        # happens inside engine_main's finally block).
-        if self._engine_proc is not None and self._engine_proc.poll() is None:
-            try:
-                self._engine_proc.terminate()
-                self._engine_proc.wait(timeout=3.0)
-            except subprocess.TimeoutExpired:
-                logger.warning(
-                    f"engine subprocess pid={self._engine_proc.pid} didn't exit in 3 s; SIGKILL"
-                )
-                self._engine_proc.kill()
-            except Exception as exc:
-                logger.error("engine subprocess terminate raised", error=str(exc))
-                errors.append(("engine_proc.terminate", exc))
-            finally:
-                self._engine_proc = None
         if self._shm is not None:
             try:
                 self._shm.signal_stop()
@@ -480,11 +476,10 @@ class MujocoSimModule(
             raise RuntimeError(f"MujocoSimModule.stop() failed during {op}: {err}") from err
 
     def _publish_shm_and_lcm(self, engine: MujocoEngine) -> None:
-        """Post-step hook: SHM writes (via WholeBodySimHooks) + LCM publishes.
+        """Post-step hook: SHM writes + LCM publishes.
 
-        Subprocess-mode engines run the SHM half in their own process; the
-        LCM half there too (see ``mujoco_engine.engine_main``). This thread-
-        mode version stays here so existing in-Module behaviour is identical.
+        This stays in the module so odom/IMU continue to flow through normal
+        typed ports while the whole-body adapter consumes joint state via SHM.
         """
         if self._sim_hooks is not None:
             self._sim_hooks.post_step(engine)

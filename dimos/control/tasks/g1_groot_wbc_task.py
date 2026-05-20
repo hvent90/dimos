@@ -641,8 +641,8 @@ class G1GrootWBCTask(BaseControlTask):
         ``compute()`` will snapshot the current joint positions on the
         next tick, lerp toward ``default_15`` over ``ramp_seconds``,
         then flip ``_armed`` true and hand control to the ONNX policy.
-        A ramp of 0 arms immediately with no interpolation (what sim
-        uses — the subprocess already holds the MJCF's default pose).
+        A ramp of 0 arms immediately with no interpolation, which is what
+        sim uses when the MJCF already starts near the policy default pose.
 
         Safe to call redundantly; calls while already armed or arming
         are ignored.  No-op if the task is not ``_active``.

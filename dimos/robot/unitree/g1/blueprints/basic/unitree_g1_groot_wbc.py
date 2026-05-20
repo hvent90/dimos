@@ -29,10 +29,7 @@ Sim (``--simulation``):
     MujocoSimModule (in-process MuJoCo + SHM) + sim_mujoco_g1 adapter.
     50 Hz tick (matches the rate the policy was trained at). No arming
     ramp, no dry-run, no servo_arms -- sim physics doesn't gravity-collapse
-    the arms between trajectories. Optional passive viewer runs in the
-    engine subprocess; flip on via
-    ``-o mujocosimmodule.engine_mode=subprocess -o mujocosimmodule.headless=false``
-    so the viewer lives on that subprocess's main thread.
+    the arms between trajectories.
 
 Usage:
     dimos run unitree-g1-groot-wbc                 # real hardware
@@ -41,8 +38,6 @@ Usage:
 Overrides (replace the old env-var dance):
     dimos run unitree-g1-groot-wbc \\
         -o g1wholebodyconnection.network_interface=enp2s0
-    dimos --simulation run unitree-g1-groot-wbc \\
-        -o mujocosimmodule.engine_mode=subprocess -o mujocosimmodule.headless=false
 """
 
 from __future__ import annotations
