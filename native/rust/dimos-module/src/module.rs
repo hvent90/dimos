@@ -9,8 +9,15 @@ use serde::de::DeserializeOwned;
 
 use crate::transport::Transport;
 
-const INPUT_CHANNEL_CAPACITY: usize = 16;
-const PUBLISH_CHANNEL_CAPACITY: usize = 64;
+// Per-input handler mpsc-queue capacity. When the queue is full, new
+// messages are dropped via `try_send` (see `TypedRoute::try_dispatch`).
+// At 16 slots and 10 Hz publish, the queue fills in 1.6 s if the
+// handler processes at <10 Hz — common for handlers doing real work
+// like PointCloud2 decode + loop closure. Bumping to 1024 buys ~100 s
+// of headroom at the same load. Same payoff for any handler that
+// can't keep up at line rate.
+const INPUT_CHANNEL_CAPACITY: usize = 1024;
+const PUBLISH_CHANNEL_CAPACITY: usize = 1024;
 
 // Each input() call produces a TypedRoute that decodes its message type
 // and forwards it to the right Input's mpsc channel.
