@@ -665,6 +665,39 @@ def send(
     topic_send(topic, message_expr)
 
 
+@main.command(name="export-premap")
+def export_premap_cmd(
+    dataset: str = typer.Argument(..., help="Dataset .db name (resolved via get_data) or path"),
+    output: Path | None = typer.Option(None, "-o", "--output", help="Output .pc2.lcm path"),
+    voxel_size: float = typer.Option(0.05, "--voxel-size", help="Voxel size for the rebuild"),
+    duration: float | None = typer.Option(
+        None, "--duration", help="Limit to first N seconds (default: full log)"
+    ),
+) -> None:
+    """Export a twopass relocalization premap (.pc2.lcm) from a recorded SQLite dataset."""
+    from dimos.mapping.pgo import pgo_then_voxels
+    from dimos.memory2.store.sqlite import SqliteStore
+    from dimos.utils.data import get_data, get_data_dir
+
+    name = dataset if dataset.endswith(".db") else f"{dataset}.db"
+    path = Path(name)
+    db_path = path if path.is_absolute() or path.exists() else get_data(name)
+
+    store = SqliteStore(path=db_path)
+    lidar = store.streams.lidar
+    if duration is not None:
+        lidar = lidar.before(lidar.first().ts + duration)
+
+    typer.echo(f"computing twopass map from {db_path} (voxel_size={voxel_size})...")
+    twopass_map = pgo_then_voxels(lidar, voxel_size=voxel_size)
+
+    if output is None:
+        stem = Path(name).stem
+        output = get_data_dir() / f"{stem}_twopass_map.pc2.lcm"
+    output.write_bytes(twopass_map.lcm_encode())
+    typer.echo(f"wrote {output}")
+
+
 @main.command(name="rerun-bridge")
 def rerun_bridge_cmd(
     memory_limit: str = typer.Option(
