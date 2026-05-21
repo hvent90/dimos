@@ -36,12 +36,11 @@ from aiortc import (
     RTCPeerConnection,
     RTCSessionDescription,
 )
-from aiortc.mediastreams import VideoStreamTrack
+from aiortc.mediastreams import VIDEO_CLOCK_RATE, VIDEO_TIME_BASE, VideoStreamTrack
 import av
 from dimos_lcm.geometry_msgs import PoseStamped as LCMPoseStamped, TwistStamped as LCMTwistStamped
 from dimos_lcm.sensor_msgs import Joy as LCMJoy
 import httpx
-import numpy as np
 from reactivex.disposable import Disposable
 
 from dimos.core.core import rpc
@@ -76,40 +75,68 @@ _AV_FORMAT_MAP = {
 
 
 class CameraVideoTrack(VideoStreamTrack):
-    """aiortc video track that pulls the latest Image from the In port.
+    """aiortc video track sourced from the latest Image on the In port.
 
-    Latest-frame-wins — when aiortc calls ``recv()`` (paced by the negotiated
-    frame rate), we encode the most recent Image we've received. Earlier
-    frames are dropped, not queued. Lowest end-to-end latency.
+    Drain-mode: ``recv()`` returns only when a *new* Image has arrived since
+    the last delivery, naturally throttling encode rate to the source's
+    cadence. Avoids feeding the encoder duplicate frames at startup (which
+    cause a warm-up burst that the browser plays in fast-forward).
 
-    Until the first Image arrives, ``recv()`` returns a black 640x480
-    placeholder so the operator's ``<video>`` element gets *something* and
-    doesn't time out.
+    Wall-clock PTSs: timestamps reflect real elapsed time since the first
+    delivered frame, not aiortc's idealized 30 fps schedule — so the browser
+    paces playback at whatever the source actually produced.
     """
 
     def __init__(self) -> None:
         super().__init__()
         self._lock = threading.Lock()
         self._latest: Image | None = None
+        self._frame_seq = 0           # bumped on each set_latest
+        self._consumed_seq = 0        # last seq recv() returned
+        self._armed = False           # gate: ignore everything until arm()
+        self._first_wall: float | None = None
+
+    def arm(self) -> None:
+        """Discard any frames received so far and start delivering from now.
+
+        Called by ``HostedTeleopModule`` once the PeerConnection is fully
+        ``connected`` — guarantees the operator's video starts at "this
+        instant", not at "whenever the robot booted".
+        """
+        with self._lock:
+            self._consumed_seq = self._frame_seq
+            self._armed = True
 
     def set_latest(self, img: Image) -> None:
-        """Subscribe callback — overwrite the latest frame, no queuing."""
+        """Subscribe callback — overwrite the latest frame, bump seq."""
         with self._lock:
             self._latest = img
+            self._frame_seq += 1
 
     async def recv(self) -> av.VideoFrame:
-        pts, time_base = await self.next_timestamp()
-        with self._lock:
-            img = self._latest
-        if img is None:
-            arr = np.zeros((480, 640, 3), dtype=np.uint8)
-            fmt = "bgr24"
-        else:
-            arr = img.data
-            fmt = _AV_FORMAT_MAP.get(img.format, "bgr24")
-        frame = av.VideoFrame.from_ndarray(arr, format=fmt)
+        # Block until armed AND a new (unconsumed) frame arrives.
+        while True:
+            with self._lock:
+                if (
+                    self._armed
+                    and self._latest is not None
+                    and self._frame_seq > self._consumed_seq
+                ):
+                    img = self._latest
+                    self._consumed_seq = self._frame_seq
+                    break
+            await asyncio.sleep(0.005)
+
+        now = time.time()
+        if self._first_wall is None:
+            self._first_wall = now
+        pts = int((now - self._first_wall) * VIDEO_CLOCK_RATE)
+
+        frame = av.VideoFrame.from_ndarray(
+            img.data, format=_AV_FORMAT_MAP.get(img.format, "bgr24")
+        )
         frame.pts = pts
-        frame.time_base = time_base
+        frame.time_base = VIDEO_TIME_BASE
         return frame
 
 
@@ -175,7 +202,7 @@ class HostedTeleopModule(Module):
         # low-rate control-plane events (mode switch, etc.) ride here too.
         self._state_channel = None
         self._state_channel_id: int | None = None
-        
+
         self._video_track = CameraVideoTrack()
 
         self._control_loop_thread: threading.Thread | None = None
@@ -271,6 +298,10 @@ class HostedTeleopModule(Module):
         async def _on_state() -> None:
             assert self._pc is not None
             logger.info(f"PC state: {self._pc.connectionState}")
+            if self._pc.connectionState == "connected":
+                # Discard everything captured before the wire was ready;
+                # the first frame the operator sees is "from this instant".
+                self._video_track.arm()
 
         offer = await self._pc.createOffer()
         await self._pc.setLocalDescription(offer)
