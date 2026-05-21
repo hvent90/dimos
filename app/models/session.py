@@ -20,6 +20,11 @@ class TeleopSession(Base):
     state: Mapped[str] = Column(String, default="idle")  # idle | active | disconnected
     cf_session_id: Mapped[str] = Column(String, nullable=True)
 
+    # msid trackId of the video the robot published via cf_client.add_tracks
+    # at create_session. None when the robot's offer had no sendonly m=video.
+    # join_session reads this to subscribe operators to the same trackName.
+    published_video_track_name: Mapped[str | None] = Column(String, nullable=True)
+
     # Active operator (null = no one controlling)
     operator_id: Mapped[str | None] = Column(String, nullable=True)
     operator_cf_session_id: Mapped[str | None] = Column(String, nullable=True)

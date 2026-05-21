@@ -1,5 +1,6 @@
 """Session lifecycle endpoints."""
 
+import logging
 from datetime import datetime, timezone
 
 from fastapi import APIRouter, Depends, HTTPException
@@ -11,6 +12,9 @@ from models.database import get_db
 from models.session import TeleopSession
 from services.auth import get_current_user, get_robot_id
 from services.cloudflare import CloudflareRealtimeError, cf_client
+from services.sdp_utils import extract_video_track
+
+log = logging.getLogger(__name__)
 
 router = APIRouter(prefix="/sessions", tags=["sessions"])
 
@@ -124,12 +128,49 @@ async def create_session(
             detail=f"Cloudflare session create failed ({type(e).__name__}): {e}",
         )
 
+    sdp_answer = cf_result["sdp_answer"]
+    published_track_name: str | None = None
+
+    # If the robot's offer carries a sendable m=video, register it as a CF
+    # publisher track. CF leaves the m-section un-bound otherwise — same
+    # failure mode that blocked datachannel bridging during Phase 4 P1
+    # smoke testing: session stays "not ready" indefinitely.
+    video = extract_video_track(body.sdp_offer)
+    if video is not None:
+        mid, track_name = video
+        try:
+            pub_result = await cf_client.add_tracks(
+                cf_result["cf_session_id"],
+                [{"location": "local", "mid": mid, "trackName": track_name}],
+            )
+        except CloudflareRealtimeError as e:
+            raise HTTPException(
+                status_code=502,
+                detail=f"Cloudflare add_tracks (robot publish) failed: {e.detail}",
+            )
+        except Exception as e:
+            raise HTTPException(
+                status_code=502,
+                detail=f"Robot publish failed ({type(e).__name__}): {e}",
+            )
+        # CF may renegotiate the publisher SDP. If it does, the robot must
+        # apply the new answer instead of the original /sessions/new answer.
+        renegotiated = pub_result.get("sessionDescription", {}).get("sdp")
+        if renegotiated:
+            sdp_answer = renegotiated
+        published_track_name = track_name
+        log.info(
+            "Published video track robot=%s cf_session=%s mid=%s trackName=%s",
+            robot_id, cf_result["cf_session_id"], mid, track_name,
+        )
+
     # Store session
     session = TeleopSession(
         robot_id=robot_id,
         robot_name=body.robot_name,
         state="idle",
         cf_session_id=cf_result["cf_session_id"],
+        published_video_track_name=published_track_name,
     )
     db.add(session)
     await db.commit()
@@ -138,7 +179,7 @@ async def create_session(
     return CreateSessionResponse(
         session_id=session.id,
         cf_session_id=cf_result["cf_session_id"],
-        sdp_answer=cf_result["sdp_answer"],
+        sdp_answer=sdp_answer,
         ice_servers=ICE_SERVERS,
     )
 
@@ -249,6 +290,47 @@ async def join_session(
         )
 
     operator_cf_id = cf_result["cf_session_id"]
+    sdp_answer = cf_result["sdp_answer"]
+
+    # Wire the operator's recvonly m=video to the robot's published track.
+    # CF requires an explicit cross-session subscribe — without this, the
+    # m=video is dangling and breaks session readiness the same way an
+    # un-bound publisher does on the robot side.
+    if session.published_video_track_name and body.role == "operator":
+        try:
+            sub_result = await cf_client.add_tracks(
+                operator_cf_id,
+                [
+                    {
+                        "location": "remote",
+                        "sessionId": session.cf_session_id,
+                        "trackName": session.published_video_track_name,
+                    }
+                ],
+                sdp_offer=body.sdp_offer,
+            )
+        except CloudflareRealtimeError as e:
+            raise HTTPException(
+                status_code=502,
+                detail=f"Cloudflare add_tracks (operator subscribe) failed: {e.detail}",
+            )
+        except Exception as e:
+            raise HTTPException(
+                status_code=502,
+                detail=f"Operator subscribe failed ({type(e).__name__}): {e}",
+            )
+        # CF returns the renegotiated answer with the routed video bound —
+        # operator setRemoteDescription against THIS, not the original
+        # /sessions/new answer.
+        renegotiated = sub_result.get("sessionDescription", {}).get("sdp")
+        if renegotiated:
+            sdp_answer = renegotiated
+        else:
+            log.warning(
+                "CF add_tracks returned no renegotiated SDP for operator_cf=%s; "
+                "falling back to original /sessions/new answer",
+                operator_cf_id,
+            )
 
     if body.role == "operator":
         session.operator_id = user_id
@@ -258,7 +340,7 @@ async def join_session(
 
     return JoinSessionResponse(
         cf_session_id=operator_cf_id,
-        sdp_answer=cf_result["sdp_answer"],
+        sdp_answer=sdp_answer,
         robot_cf_session_id=session.cf_session_id,
         ice_servers=ICE_SERVERS,
         role=body.role,
