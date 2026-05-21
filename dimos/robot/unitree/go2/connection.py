@@ -13,7 +13,7 @@
 # limitations under the License.
 
 from enum import Enum
-import logging
+from importlib import resources
 import sys
 from threading import Thread
 import time
@@ -33,6 +33,7 @@ from dimos.core.module import Module, ModuleConfig
 from dimos.core.stream import In, Out
 from dimos.core.transport import LCMTransport, pSHMTransport
 from dimos.spec.perception import Camera, Pointcloud
+from dimos.utils.logging_config import setup_logger
 
 if TYPE_CHECKING:
     from dimos.core.rpc_client import ModuleProxy
@@ -42,7 +43,7 @@ from dimos.msgs.geometry_msgs.Transform import Transform
 from dimos.msgs.geometry_msgs.Twist import Twist
 from dimos.msgs.geometry_msgs.Vector3 import Vector3
 from dimos.msgs.sensor_msgs.CameraInfo import CameraInfo
-from dimos.msgs.sensor_msgs.Image import Image, ImageFormat
+from dimos.msgs.sensor_msgs.Image import Image
 from dimos.msgs.sensor_msgs.PointCloud2 import PointCloud2
 from dimos.robot.unitree.connection import UnitreeWebRTCConnection
 from dimos.utils.decorators.decorators import simple_mcache
@@ -53,7 +54,7 @@ if sys.version_info < (3, 13):
 else:
     from typing import TypeVar
 
-logger = logging.getLogger(__name__)
+logger = setup_logger()
 
 
 class Go2Mode(str, Enum):
@@ -83,22 +84,14 @@ class Go2ConnectionProtocol(Protocol):
     def publish_request(self, topic: str, data: dict) -> dict: ...  # type: ignore[type-arg]
 
 
-def _camera_info_static() -> CameraInfo:
-    fx, fy, cx, cy = (819.553492, 820.646595, 625.284099, 336.808987)
-    width, height = (1280, 720)
+_FRONT_CAMERA_720_YAML = resources.files("dimos.robot.unitree.go2").joinpath(
+    "front_camera_720.yaml"
+)
 
-    return CameraInfo(
-        frame_id="camera_optical",
-        height=height,
-        width=width,
-        distortion_model="plumb_bob",
-        D=[0.0, 0.0, 0.0, 0.0, 0.0],
-        K=[fx, 0.0, cx, 0.0, fy, cy, 0.0, 0.0, 1.0],
-        R=[1.0, 0.0, 0.0, 0.0, 1.0, 0.0, 0.0, 0.0, 1.0],
-        P=[fx, 0.0, cx, 0.0, 0.0, fy, cy, 0.0, 0.0, 0.0, 1.0, 0.0],
-        binning_x=0,
-        binning_y=0,
-    )
+
+def _camera_info_static() -> CameraInfo:
+    with resources.as_file(_FRONT_CAMERA_720_YAML) as yaml_path:
+        return CameraInfo.from_yaml(str(yaml_path))
 
 
 # Static camera mount chain: base_link -> camera_link -> camera_optical.
@@ -126,19 +119,25 @@ def make_connection(ip: str | None, cfg: GlobalConfig) -> Go2ConnectionProtocol:
         from dimos.robot.unitree.mujoco_connection import MujocoConnection
 
         return MujocoConnection(cfg)
-    else:
+    elif connection_type == "dimsim":
+        from dimos.robot.unitree.dimsim_connection import DimSimConnection
+
+        return DimSimConnection(cfg)
+    elif connection_type == "webrtc":
         assert ip is not None, "IP address must be provided"
         return UnitreeWebRTCConnection(ip)
+    else:
+        raise ValueError(f"Unknown simulator {cfg.simulation!r}. Choose from: mujoco, dimsim")
 
 
 class ReplayConnection(UnitreeWebRTCConnection):
     # we don't want UnitreeWebRTCConnection to init
     def __init__(  # type: ignore[no-untyped-def]
         self,
-        dataset: str = "go2_bigoffice",
+        dataset: str = "go2_china_office",
         **kwargs,
     ) -> None:
-        self.dir_name = dataset
+        self.dataset = dataset
         self.replay_config = {
             "loop": kwargs.get("loop", True),
             "seek": kwargs.get("seek"),
@@ -168,33 +167,17 @@ class ReplayConnection(UnitreeWebRTCConnection):
 
     @simple_mcache
     def lidar_stream(self):  # type: ignore[no-untyped-def]
-        lidar_store = TimedSensorReplay(f"{self.dir_name}/lidar")  # type: ignore[var-annotated]
+        lidar_store = TimedSensorReplay(f"{self.dataset}/lidar")  # type: ignore[var-annotated]
         return lidar_store.stream(**self.replay_config)
 
     @simple_mcache
     def odom_stream(self):  # type: ignore[no-untyped-def]
-        odom_store = TimedSensorReplay(f"{self.dir_name}/odom")  # type: ignore[var-annotated]
+        odom_store = TimedSensorReplay(f"{self.dataset}/odom")  # type: ignore[var-annotated]
         return odom_store.stream(**self.replay_config)
 
-    # we don't have raw video stream in the data set
     @simple_mcache
     def video_stream(self):  # type: ignore[no-untyped-def]
-        # Legacy Unitree recordings can have RGB bytes that were tagged/assumed as BGR.
-        # Fix at replay-time by coercing everything to RGB before publishing/logging.
-        def _autocast_video(x):  # type: ignore[no-untyped-def]
-            # If the old recording tagged it as BGR, relabel to RGB (do NOT channel-swap again).
-            if isinstance(x, Image):
-                if x.format == ImageFormat.BGR:
-                    x.format = ImageFormat.RGB
-                if not x.frame_id:
-                    x.frame_id = "camera_optical"
-                return x
-
-            # Some recordings may store raw arrays or frame wrappers.
-            arr = x.to_ndarray(format="rgb24") if hasattr(x, "to_ndarray") else x
-            return Image.from_numpy(arr, format=ImageFormat.RGB, frame_id="camera_optical")
-
-        video_store = TimedSensorReplay(f"{self.dir_name}/color_image", autocast=_autocast_video)
+        video_store: TimedSensorReplay[Image] = TimedSensorReplay(f"{self.dataset}/color_image")
         return video_store.stream(**self.replay_config)
 
     def move(self, twist: Twist, duration: float = 0.0) -> bool:
@@ -209,6 +192,8 @@ _Config = TypeVar("_Config", bound=ConnectionConfig, default=ConnectionConfig)
 
 
 class GO2Connection(Module, Camera, Pointcloud):
+    dedicated_worker = True
+
     config: ConnectionConfig
     cmd_vel: In[Twist]
     pointcloud: Out[PointCloud2]

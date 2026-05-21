@@ -14,11 +14,36 @@
 
 from __future__ import annotations
 
+import asyncio
+
 import pytest
 
 from dimos.agents.mcp.mcp_server import McpServer
+from dimos.core.module import Module
+from dimos.core.stream import Out
 from dimos.core.tests.stress_test_module import StressTestModule
 from dimos.porcelain.dimos import Dimos, _resolve_target
+
+
+class TickerModule(Module):
+    tick: Out[int]
+
+    async def main(self):
+        task = asyncio.create_task(self._publisher())
+        try:
+            yield
+        finally:
+            task.cancel()
+
+    async def _publisher(self) -> None:
+        i = 1001
+        try:
+            while True:
+                await asyncio.sleep(0.05)
+                self.tick.publish(i)
+                i += 1
+        except asyncio.CancelledError:
+            pass
 
 
 def test_resolve_module_class():
@@ -65,6 +90,24 @@ def test_repr_when_stopped(app):
 def test_skills_before_run(app):
     with pytest.raises(RuntimeError, match="No modules are running"):
         _ = app.skills
+
+
+def test_peek_stream_before_run(app):
+    with pytest.raises(RuntimeError, match="No modules are running"):
+        app.peek_stream("whatever")
+
+
+def test_peek_stream_unknown_raises(running_app):
+    with pytest.raises(LookupError, match="No running module exposes"):
+        running_app.peek_stream("definitely_not_a_stream")
+
+
+def test_peek_stream_returns_published_value(app):
+    app.run(TickerModule)
+    value = app.peek_stream("tick", timeout=2.0)
+    assert value is not None
+    assert isinstance(value, int)
+    assert value > 1000
 
 
 def test_restart_before_run(app):
@@ -129,7 +172,6 @@ def test_dir_lists_modules(running_app):
     assert "stop" in d
 
 
-@pytest.mark.slow
 def test_restart_no_reload(running_app):
     running_app.restart(StressTestModule, reload_source=False)
     result = running_app.skills.ping()
@@ -141,26 +183,22 @@ def test_skills_accessible(running_app):
     assert "ping" in dir(skills)
 
 
-@pytest.mark.slow
 def test_connected_run_by_name_adds_module(running_app, client):
     client.run("mcp-server")
     assert "McpServer" in client._source.list_module_names()
     assert "McpServer" in running_app._source.list_module_names()
 
 
-@pytest.mark.slow
 def test_connected_run_by_class_adds_module(client):
     client.run(McpServer)
     assert "McpServer" in client._source.list_module_names()
 
 
-@pytest.mark.slow
 def test_connected_run_by_blueprint_object(client):
     client.run(McpServer.blueprint())
     assert "McpServer" in client._source.list_module_names()
 
 
-@pytest.mark.slow
 def test_connected_restart_no_reload(client):
     client.restart(StressTestModule, reload_source=False)
     assert client.skills.ping() == "pong"
