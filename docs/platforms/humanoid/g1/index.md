@@ -13,7 +13,7 @@
 3. Run wired ssh command:
 
 ```bash
-ssh -L 3030:localhost:3030 unitree@192.168.123.164
+ssh -L 9877:localhost:9877 -L 9876:localhost:9876 -L 3030:localhost:3030 unitree@192.168.123.164
 # Password: 123
 ```
 
@@ -77,7 +77,7 @@ Note: this button combination may vary based on the model of the G1
 
 ## 4. Run the Blueprint
 
-In the ssh terminal `ssh -L 3030:localhost:3030 unitree@192.168.123.164`
+In the ssh terminal `ssh -L 9877:localhost:9877 -L 9876:localhost:9876 -L 3030:localhost:3030 unitree@192.168.123.164`
 
 ```sh skip
 # confirm nix is installed
