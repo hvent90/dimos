@@ -59,9 +59,8 @@ def _r1pro_rerun_blueprint() -> Any:
 
     main_tab = rrb.Horizontal(
         rrb.Vertical(
-            rrb.Spatial2DView(origin="world/r1pro/wrist_left_color", name="Left wrist"),
-            rrb.Spatial2DView(origin="world/r1pro/wrist_right_color", name="Right wrist"),
-            rrb.Spatial2DView(origin="world/r1pro/head_color", name="Head"),
+            rrb.Spatial2DView(origin="world/r1pro/head_color", name="Head color"),
+            rrb.Spatial2DView(origin="world/r1pro/head_depth", name="Head depth"),
         ),
         rrb.Spatial3DView(
             origin="world",
@@ -72,22 +71,23 @@ def _r1pro_rerun_blueprint() -> Any:
             ),
         ),
         column_shares=[1, 2],
-        name="Main",
+        name="3D + head",
     )
 
-    surround_tab = rrb.Grid(
-        rrb.Spatial2DView(origin="world/r1pro/chassis_front_left", name="Front-left"),
-        rrb.Spatial2DView(origin="world/r1pro/chassis_front_right", name="Front-right"),
-        rrb.Spatial2DView(origin="world/r1pro/chassis_left", name="Left"),
-        rrb.Spatial2DView(origin="world/r1pro/chassis_right", name="Right"),
-        rrb.Spatial2DView(origin="world/r1pro/chassis_rear", name="Rear"),
-        rrb.Spatial2DView(origin="world/r1pro/head_depth", name="Head depth"),
+    cameras_tab = rrb.Grid(
+        rrb.Spatial2DView(origin="world/r1pro/chassis_front_left", name="Chassis front-left"),
+        rrb.Spatial2DView(origin="world/r1pro/chassis_front_right", name="Chassis front-right"),
+        rrb.Spatial2DView(origin="world/r1pro/chassis_left", name="Chassis left"),
+        rrb.Spatial2DView(origin="world/r1pro/chassis_right", name="Chassis right"),
+        rrb.Spatial2DView(origin="world/r1pro/chassis_rear", name="Chassis rear"),
+        rrb.Spatial2DView(origin="world/r1pro/wrist_left_color", name="Wrist left"),
+        rrb.Spatial2DView(origin="world/r1pro/wrist_right_color", name="Wrist right"),
         grid_columns=3,
-        name="Surround + depth",
+        name="All cameras",
     )
 
     return rrb.Blueprint(
-        rrb.Tabs(main_tab, surround_tab),
+        rrb.Tabs(main_tab, cameras_tab),
         rrb.TimePanel(state="hidden"),
         rrb.SelectionPanel(state="hidden"),
     )

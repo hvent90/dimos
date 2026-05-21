@@ -71,7 +71,6 @@ all_blueprints = {
     "openarm-mock-planner-coordinator": "dimos.robot.manipulators.openarm.blueprints:openarm_mock_planner_coordinator",
     "openarm-planner-coordinator": "dimos.robot.manipulators.openarm.blueprints:openarm_planner_coordinator",
     "r1pro-coordinator": "dimos.robot.galaxea.r1pro.blueprints.basic.r1pro_coordinator:r1pro_coordinator",
-    "r1pro-keyboard-teleop": "dimos.robot.galaxea.r1pro.blueprints.basic.r1pro_keyboard_teleop:r1pro_keyboard_teleop",
     "teleop-phone": "dimos.teleop.phone.blueprints:teleop_phone",
     "teleop-phone-go2": "dimos.teleop.phone.blueprints:teleop_phone_go2",
     "teleop-phone-go2-fleet": "dimos.teleop.phone.blueprints:teleop_phone_go2_fleet",
