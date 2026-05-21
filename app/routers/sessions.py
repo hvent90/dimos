@@ -16,8 +16,16 @@ router = APIRouter(prefix="/sessions", tags=["sessions"])
 
 CMD_CHANNEL_NAME = "cmd_unreliable"
 STATE_CHANNEL_NAME = "state_reliable"
+# Robot publishes pongs on this channel — CF datachannel routing is strict
+# publisher → subscriber per name, so the reverse direction needs its own name
+# rather than reusing `state_reliable`.
+STATE_BACK_CHANNEL_NAME = "state_reliable_back"
 
-_robot_subscriber_dc_ids: dict[str, dict[str, int]] = {}
+# Per-session map of channel-name → robot-side SCTP id. Holds both subscriber
+# ids (cmd_unreliable, state_reliable that the robot reads) and the publisher
+# id for state_reliable_back (which the robot writes). Heartbeat surfaces each
+# id under a role-appropriate field name.
+_robot_channel_ids: dict[str, dict[str, int]] = {}
 
 
 # ─── Request/Response schemas ────────────────────────────────────────
@@ -52,6 +60,7 @@ class JoinSessionResponse(BaseModel):
 class BridgeDatachannelResponse(BaseModel):
     cmd_channel_id: int
     state_channel_id: int
+    state_back_channel_id: int
 
 
 class HeartbeatRequest(BaseModel):
@@ -153,11 +162,12 @@ async def heartbeat(
     session.last_heartbeat = datetime.now(timezone.utc)
     await db.commit()
 
-    sub_ids = _robot_subscriber_dc_ids.get(session_id, {})
+    chan_ids = _robot_channel_ids.get(session_id, {})
     return {
         "ack": True,
-        "cmd_channel_subscriber_id": sub_ids.get(CMD_CHANNEL_NAME),
-        "state_channel_subscriber_id": sub_ids.get(STATE_CHANNEL_NAME),
+        "cmd_channel_subscriber_id": chan_ids.get(CMD_CHANNEL_NAME),
+        "state_channel_subscriber_id": chan_ids.get(STATE_CHANNEL_NAME),
+        "state_back_channel_publisher_id": chan_ids.get(STATE_BACK_CHANNEL_NAME),
     }
 
 
@@ -173,7 +183,7 @@ async def delete_session(
         raise HTTPException(status_code=404, detail="Session not found")
 
     session.state = "disconnected"
-    _robot_subscriber_dc_ids.pop(session_id, None)
+    _robot_channel_ids.pop(session_id, None)
     await db.commit()
 
 
@@ -274,22 +284,39 @@ async def bridge_datachannel(
     if not session.operator_cf_session_id or not session.cf_session_id:
         raise HTTPException(status_code=409, detail="CF sessions not ready")
 
-    channel_names = [CMD_CHANNEL_NAME, STATE_CHANNEL_NAME]
+    # Three channels per session, two of them operator→robot and one
+    # robot→operator (state_reliable_back, for pongs). Bundle each direction
+    # into a single CF call so this stays at 2 roundtrips, not 4.
+    all_names = [CMD_CHANNEL_NAME, STATE_CHANNEL_NAME, STATE_BACK_CHANNEL_NAME]
+    operator_entries = [
+        {"location": "local", "dataChannelName": CMD_CHANNEL_NAME},
+        {"location": "local", "dataChannelName": STATE_CHANNEL_NAME},
+        {
+            "location": "remote",
+            "sessionId": session.cf_session_id,
+            "dataChannelName": STATE_BACK_CHANNEL_NAME,
+        },
+    ]
+    robot_entries = [
+        {
+            "location": "remote",
+            "sessionId": session.operator_cf_session_id,
+            "dataChannelName": CMD_CHANNEL_NAME,
+        },
+        {
+            "location": "remote",
+            "sessionId": session.operator_cf_session_id,
+            "dataChannelName": STATE_CHANNEL_NAME,
+        },
+        {"location": "local", "dataChannelName": STATE_BACK_CHANNEL_NAME},
+    ]
+
     try:
-        pub = await cf_client.add_datachannels(
-            session.operator_cf_session_id,
-            [{"location": "local", "dataChannelName": name} for name in channel_names],
+        operator_resp = await cf_client.add_datachannels(
+            session.operator_cf_session_id, operator_entries
         )
-        sub = await cf_client.add_datachannels(
-            session.cf_session_id,
-            [
-                {
-                    "location": "remote",
-                    "sessionId": session.operator_cf_session_id,
-                    "dataChannelName": name,
-                }
-                for name in channel_names
-            ],
+        robot_resp = await cf_client.add_datachannels(
+            session.cf_session_id, robot_entries
         )
     except CloudflareRealtimeError as e:
         raise HTTPException(
@@ -305,26 +332,27 @@ async def bridge_datachannel(
     # Index by dataChannelName from the response, not by request position —
     # don't assume CF preserves order across the array.
     try:
-        pub_ids = {entry["dataChannelName"]: int(entry["id"]) for entry in pub}
-        sub_ids = {entry["dataChannelName"]: int(entry["id"]) for entry in sub}
+        op_ids = {entry["dataChannelName"]: int(entry["id"]) for entry in operator_resp}
+        robot_ids = {entry["dataChannelName"]: int(entry["id"]) for entry in robot_resp}
     except (KeyError, TypeError, ValueError) as e:
         raise HTTPException(
             status_code=502,
             detail=f"Cloudflare returned malformed DataChannel entry: {e}",
         )
 
-    missing = [n for n in channel_names if n not in pub_ids or n not in sub_ids]
+    missing = [n for n in all_names if n not in op_ids or n not in robot_ids]
     if missing:
         raise HTTPException(
             status_code=502,
             detail=f"Cloudflare missing DataChannel id for: {', '.join(missing)}",
         )
 
-    _robot_subscriber_dc_ids[session.id] = sub_ids
+    _robot_channel_ids[session.id] = robot_ids
 
     return BridgeDatachannelResponse(
-        cmd_channel_id=pub_ids[CMD_CHANNEL_NAME],
-        state_channel_id=pub_ids[STATE_CHANNEL_NAME],
+        cmd_channel_id=op_ids[CMD_CHANNEL_NAME],
+        state_channel_id=op_ids[STATE_CHANNEL_NAME],
+        state_back_channel_id=op_ids[STATE_BACK_CHANNEL_NAME],
     )
 
 
@@ -346,7 +374,7 @@ async def leave_session(
         session.operator_id = None
         session.operator_cf_session_id = None
         session.state = "idle"
-        _robot_subscriber_dc_ids.pop(session_id, None)
+        _robot_channel_ids.pop(session_id, None)
         await db.commit()
 
     return {"session_id": session_id, "state": session.state}
