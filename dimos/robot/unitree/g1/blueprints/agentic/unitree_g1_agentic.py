@@ -13,15 +13,85 @@
 # See the License for the specific language governing permissions and
 # limitations under the License.
 
-"""Full G1 stack with agentic skills."""
+from __future__ import annotations
+
+import os
 
 from dimos.core.coordination.blueprints import autoconnect
+from dimos.core.global_config import global_config
+from dimos.hardware.sensors.lidar.fastlio2.module import FastLio2
+from dimos.navigation.movement_manager.movement_manager import MovementManager
+from dimos.navigation.nav_stack.main import create_nav_stack, nav_stack_rerun_config
+from dimos.navigation.replanning_a_star.module import ReplanningAStarPlanner
 from dimos.robot.unitree.g1.blueprints.agentic._agentic_skills import _agentic_skills
-from dimos.robot.unitree.g1.blueprints.perceptive.unitree_g1 import unitree_g1
-
-unitree_g1_agentic = autoconnect(
-    unitree_g1,
-    _agentic_skills,
+from dimos.robot.unitree.g1.blueprints.perceptive._perception_and_memory import (
+    _perception_and_memory,
 )
+from dimos.robot.unitree.g1.config import G1, G1_LOCAL_PLANNER_PRECOMPUTED_PATHS
+from dimos.robot.unitree.g1.effectors.high_level.dds_sdk import G1HighLevelDdsSdk
+from dimos.robot.unitree.g1.g1_rerun import (
+    g1_odometry_tf_override,
+    g1_static_robot,
+)
+from dimos.visualization.vis_module import vis_module
 
-__all__ = ["unitree_g1_agentic"]
+unitree_g1_agentic = (
+    autoconnect(
+        FastLio2.blueprint(
+            host_ip=os.getenv("LIDAR_HOST_IP", "192.168.123.164"),
+            lidar_ip=os.getenv("LIDAR_IP", "192.168.123.120"),
+            mount=G1.internal_odom_offsets["mid360_link"],
+            map_freq=1.0,
+            config="default.yaml",
+        ),
+        create_nav_stack(
+            planner="simple",
+            vehicle_height=G1.height_clearance,
+            max_speed=0.6,
+            far_planner={
+                "is_static_env": False,
+            },
+            terrain_analysis={
+                "obstacle_height_threshold": 0.01,
+                "ground_height_threshold": 0.01,
+                "sensor_range": 40,  # meters
+            },
+            local_planner={
+                "paths_dir": str(G1_LOCAL_PLANNER_PRECOMPUTED_PATHS),
+                "publish_free_paths": False,
+            },
+            simple_planner={
+                "cell_size": 0.2,
+                "obstacle_height_threshold": 0.10,
+                "inflation_radius": 0.5,
+                "lookahead_distance": 2.0,
+                "replan_rate": 5.0,
+                "replan_cooldown": 2.0,
+            },
+        ),
+        MovementManager.blueprint(),
+        ReplanningAStarPlanner.blueprint(),
+        G1HighLevelDdsSdk.blueprint(),
+        vis_module(
+            viewer_backend=global_config.viewer,
+            rerun_config=nav_stack_rerun_config(
+                {
+                    "visual_override": {"world/odometry": g1_odometry_tf_override},
+                    "static": {"world/tf/robot": g1_static_robot},
+                    "memory_limit": "1GB",
+                },
+                vis_throttle=0.5,
+            ),
+        ),
+        _perception_and_memory,
+        _agentic_skills,
+    )
+    .remappings(
+        [
+            (FastLio2, "global_map", "_fastlio_global_map"),
+            # Planner owns way_point — disconnect MovementManager's click relay
+            (MovementManager, "way_point", "_mgr_way_point_unused"),
+        ]
+    )
+    .global_config(n_workers=12, robot_model="unitree_g1")
+)
