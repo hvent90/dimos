@@ -45,7 +45,7 @@ SSH into the robot, then:
 
 ```bash
 # pick the "developer" setup
-bash <(curl -fsSL https://pub-4767fdd15e6a41b6b2ce2558d71ec8d9.r2.dev/install.sh)
+DIM_BRANCH=main bash <(curl -fsSL https://pub-4767fdd15e6a41b6b2ce2558d71ec8d9.r2.dev/install.sh)
 ```
 
 #### Notes
