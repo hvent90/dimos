@@ -284,39 +284,45 @@ async def bridge_datachannel(
     if not session.operator_cf_session_id or not session.cf_session_id:
         raise HTTPException(status_code=409, detail="CF sessions not ready")
 
-    # Three channels per session, two of them operator→robot and one
-    # robot→operator (state_reliable_back, for pongs). Bundle each direction
-    # into a single CF call so this stays at 2 roundtrips, not 4.
-    all_names = [CMD_CHANNEL_NAME, STATE_CHANNEL_NAME, STATE_BACK_CHANNEL_NAME]
-    operator_entries = [
-        {"location": "local", "dataChannelName": CMD_CHANNEL_NAME},
-        {"location": "local", "dataChannelName": STATE_CHANNEL_NAME},
-        {
-            "location": "remote",
-            "sessionId": session.cf_session_id,
-            "dataChannelName": STATE_BACK_CHANNEL_NAME,
-        },
-    ]
-    robot_entries = [
-        {
-            "location": "remote",
-            "sessionId": session.operator_cf_session_id,
-            "dataChannelName": CMD_CHANNEL_NAME,
-        },
-        {
-            "location": "remote",
-            "sessionId": session.operator_cf_session_id,
-            "dataChannelName": STATE_CHANNEL_NAME,
-        },
-        {"location": "local", "dataChannelName": STATE_BACK_CHANNEL_NAME},
-    ]
-
+    # CF constraint: each /datachannels/new request body's `dataChannels`
+    # array must be homogeneous in direction — all `location: "local"` OR
+    # all `location: "remote"`. Mixing them yields
+    #   errorCode=invalid_params
+    #   errorDescription="Pushing and Pulling in the same request is currently unsupported"
+    # So this is 4 separate calls (operator pub, robot sub, robot pub, operator sub),
+    # not 2 bundled ones. Don't re-bundle in a future refactor.
+    forward_names = [CMD_CHANNEL_NAME, STATE_CHANNEL_NAME]
     try:
-        operator_resp = await cf_client.add_datachannels(
-            session.operator_cf_session_id, operator_entries
+        # operator → robot: cmd + state. Operator publishes, robot subscribes.
+        op_pub = await cf_client.add_datachannels(
+            session.operator_cf_session_id,
+            [{"location": "local", "dataChannelName": name} for name in forward_names],
         )
-        robot_resp = await cf_client.add_datachannels(
-            session.cf_session_id, robot_entries
+        robot_sub = await cf_client.add_datachannels(
+            session.cf_session_id,
+            [
+                {
+                    "location": "remote",
+                    "sessionId": session.operator_cf_session_id,
+                    "dataChannelName": name,
+                }
+                for name in forward_names
+            ],
+        )
+        # robot → operator: state_back. Robot publishes pongs, operator subscribes.
+        robot_pub = await cf_client.add_datachannels(
+            session.cf_session_id,
+            [{"location": "local", "dataChannelName": STATE_BACK_CHANNEL_NAME}],
+        )
+        op_sub = await cf_client.add_datachannels(
+            session.operator_cf_session_id,
+            [
+                {
+                    "location": "remote",
+                    "sessionId": session.cf_session_id,
+                    "dataChannelName": STATE_BACK_CHANNEL_NAME,
+                }
+            ],
         )
     except CloudflareRealtimeError as e:
         raise HTTPException(
@@ -332,27 +338,36 @@ async def bridge_datachannel(
     # Index by dataChannelName from the response, not by request position —
     # don't assume CF preserves order across the array.
     try:
-        op_ids = {entry["dataChannelName"]: int(entry["id"]) for entry in operator_resp}
-        robot_ids = {entry["dataChannelName"]: int(entry["id"]) for entry in robot_resp}
+        op_pub_ids = {entry["dataChannelName"]: int(entry["id"]) for entry in op_pub}
+        robot_sub_ids = {entry["dataChannelName"]: int(entry["id"]) for entry in robot_sub}
+        robot_pub_ids = {entry["dataChannelName"]: int(entry["id"]) for entry in robot_pub}
+        op_sub_ids = {entry["dataChannelName"]: int(entry["id"]) for entry in op_sub}
     except (KeyError, TypeError, ValueError) as e:
         raise HTTPException(
             status_code=502,
             detail=f"Cloudflare returned malformed DataChannel entry: {e}",
         )
 
-    missing = [n for n in all_names if n not in op_ids or n not in robot_ids]
+    missing = [n for n in forward_names if n not in op_pub_ids or n not in robot_sub_ids]
+    if STATE_BACK_CHANNEL_NAME not in robot_pub_ids or STATE_BACK_CHANNEL_NAME not in op_sub_ids:
+        missing.append(STATE_BACK_CHANNEL_NAME)
     if missing:
         raise HTTPException(
             status_code=502,
             detail=f"Cloudflare missing DataChannel id for: {', '.join(missing)}",
         )
 
-    _robot_channel_ids[session.id] = robot_ids
+    # Heartbeat surfaces robot-side ids. Robot subscribes to cmd + state,
+    # publishes state_back — keep them all under one channel-name map.
+    _robot_channel_ids[session.id] = {
+        **robot_sub_ids,
+        STATE_BACK_CHANNEL_NAME: robot_pub_ids[STATE_BACK_CHANNEL_NAME],
+    }
 
     return BridgeDatachannelResponse(
-        cmd_channel_id=op_ids[CMD_CHANNEL_NAME],
-        state_channel_id=op_ids[STATE_CHANNEL_NAME],
-        state_back_channel_id=op_ids[STATE_BACK_CHANNEL_NAME],
+        cmd_channel_id=op_pub_ids[CMD_CHANNEL_NAME],
+        state_channel_id=op_pub_ids[STATE_CHANNEL_NAME],
+        state_back_channel_id=op_sub_ids[STATE_BACK_CHANNEL_NAME],
     )
 
 
