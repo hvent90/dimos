@@ -147,18 +147,21 @@ source /opt/ros/humble/setup.bash              # Humble's rclpy on PYTHONPATH
 export ROS_DOMAIN_ID=41                        # match the robot
 ```
 
-**One-time on a fresh checkout** — see "Challenges & How We Solved Them" §12
-for the rationale:
+**One-time on a fresh checkout** — opt into the r1pro direnv template
+(see §12.A for the rationale):
 
 ```bash
-echo "3.10" > .python-version                  # pin uv to 3.10
+ln -sf .envrc.r1pro .envrc                     # exports UV_PYTHON=3.10
+direnv allow                                   # auto-activates per-dir
 rm -rf .venv
-uv sync --python 3.10 --all-extras --no-extra dds --no-extra unitree-dds
+uv sync --all-extras --no-extra dds --no-extra unitree-dds
 ```
 
 `requires-python = ">=3.10"` in `pyproject.toml`, with `onnxruntime<1.24`
 and `onnxruntime-gpu>=1.17.1,<1.24` upper-bounded so cp310 wheels are
 available (PyPI's 1.24.x dropped Python 3.10 support on 2026-02-05).
+The repo's `.python-version` stays at `3.12` (project default); the
+direnv template overrides it only inside this checkout for opted-in devs.
 
 The XML profile `fastdds_r1pro.xml` is no longer required — the docker
 container uses Humble's default FastDDS multicast over the `--network=host`
@@ -705,23 +708,47 @@ The path in the trace was `cpython-3.12.13-linux-x86_64-gnu`. Humble's
 rclpy is built for **Python 3.10** (Ubuntu 22.04 system Python) — its
 compiled `.so` files won't load under 3.12.
 
-**Fix — what worked**:
+**Fix — `.envrc.r1pro` direnv template** (the standing solution on this
+branch — matches the existing `.envrc.nix` / `.envrc.venv` pattern):
 
 ```bash
-echo "3.10" > .python-version                  # commit-or-keep-local
+# One-time setup for any r1pro dev:
+ln -sf .envrc.r1pro .envrc
+direnv allow
+
+# Then the usual:
 rm -rf .venv
-uv venv --python /usr/bin/python3.10 --seed
-uv sync --python 3.10 --all-extras --no-extra dds --no-extra unitree-dds
+uv sync                                        # picks UV_PYTHON=3.10 from .envrc.r1pro
 source .venv/bin/activate
 source /opt/ros/humble/setup.bash
 python -c "import rclpy; print(rclpy.__file__)"
 # /opt/ros/humble/lib/python3.10/site-packages/rclpy/__init__.py
 ```
 
-**Why it kept happening**: `uv sync` honours the project's
-`.python-version` over the `--python` flag passed to `uv venv`. Without
-either pinning `.python-version` to 3.10 or passing `--python 3.10` to
-`uv sync` itself, every subsequent sync regenerates the venv at the
+The `.envrc.r1pro` template exports `UV_PYTHON=3.10` and activates the
+local venv. Symlinking it to `.envrc` opts you into the pin
+**per-checkout**, only inside this repo, only for devs who opt in.
+`.python-version` stays at `3.12` (the project default — unchanged), so
+non-r1pro work elsewhere in dimos picks the highest Python as before.
+
+**Why a direnv template instead of committing `.python-version=3.10`**:
+the repo-wide `.python-version` would force 3.10 on every dimos dev/CI,
+including Jazzy / Python 3.12 work that has nothing to do with r1pro.
+Direnv's per-directory activation lets only opted-in r1pro devs pick up
+the override.
+
+**One-shot fallback** if you can't use direnv:
+
+```bash
+uv sync --python 3.10 --all-extras --no-extra dds --no-extra unitree-dds
+```
+
+Every time. `.python-version` left untouched.
+
+**Why it kept happening before the template**: `uv sync` honours the
+project's `.python-version` over the `--python` flag passed to `uv venv`.
+Without setting `UV_PYTHON=3.10` (via direnv) or passing `--python 3.10`
+to `uv sync` itself, every subsequent sync regenerates the venv at the
 highest installed Python (3.12 in our uv install).
 
 **B. `onnxruntime` 1.24.1 dropped cp310 wheels**
