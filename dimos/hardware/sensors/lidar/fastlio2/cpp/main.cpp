@@ -65,7 +65,10 @@ static FastLio* g_fastlio = nullptr;
 static std::string g_lidar_topic;
 static std::string g_odometry_topic;
 static std::string g_map_topic;
-static std::string g_tf_topic;        // shared /tf channel (optional, default /tf#tf2_msgs.TFMessage)
+// Shared /tf channel.  Hardcoded — TF transport is a system-wide convention,
+// not a per-module knob.  Frame names are configurable; the channel isn't.
+static const std::string TF_CHANNEL = "/tf#tf2_msgs.TFMessage";
+
 static std::string g_frame_id;        // odom frame — parent of dynamic Odometry/TF (required via --frame_id)
 static std::string g_body_frame;       // body frame — parent of static mount TF (required via --body_frame)
 static std::string g_sensor_frame;     // sensor frame — child of dynamic AND static TF (default "livox_frame")
@@ -207,7 +210,7 @@ static void publish_odometry(const custom_messages::Odometry& odom, double times
 // ---------------------------------------------------------------------------
 
 static void publish_tf(const custom_messages::Odometry& odom, double timestamp) {
-    if (!g_lcm || g_tf_topic.empty()) return;
+    if (!g_lcm) return;
 
     geometry_msgs::TransformStamped t;
     t.header = make_header(g_frame_id, timestamp);
@@ -225,7 +228,7 @@ static void publish_tf(const custom_messages::Odometry& odom, double timestamp) 
     tf_msg.transforms.push_back(t);
     tf_msg.transforms_length = static_cast<int32_t>(tf_msg.transforms.size());
 
-    g_lcm->publish(g_tf_topic, &tf_msg);
+    g_lcm->publish(TF_CHANNEL, &tf_msg);
 }
 
 // ---------------------------------------------------------------------------
@@ -239,7 +242,7 @@ static void publish_tf(const custom_messages::Odometry& odom, double timestamp) 
 // ---------------------------------------------------------------------------
 
 static void publish_static_mount_tf(double timestamp) {
-    if (!g_lcm || g_tf_topic.empty() || g_sensor_frame.empty()) return;
+    if (!g_lcm || g_sensor_frame.empty()) return;
 
     geometry_msgs::TransformStamped t;
     t.header = make_header(g_body_frame, timestamp);
@@ -256,7 +259,7 @@ static void publish_static_mount_tf(double timestamp) {
     tf_msg.transforms.push_back(t);
     tf_msg.transforms_length = static_cast<int32_t>(tf_msg.transforms.size());
 
-    g_lcm->publish(g_tf_topic, &tf_msg);
+    g_lcm->publish(TF_CHANNEL, &tf_msg);
 }
 
 // ---------------------------------------------------------------------------
@@ -381,14 +384,9 @@ int main(int argc, char** argv) {
     g_odometry_topic = mod.has("odometry") ? mod.topic("odometry") : "";
     g_map_topic = mod.has("global_map") ? mod.topic("global_map") : "";
 
-    // Shared /tf channel.  Per REP-105, fastlio (the odometry source)
-    // publishes g_frame_id → g_sensor_frame (e.g. odom → livox_frame) on
-    // /tf alongside Odometry.  Set --tf_channel "" to disable.
-    g_tf_topic = mod.arg("tf_channel", "/tf#tf2_msgs.TFMessage");
-
     // Static mount frame (body_frame → sensor_frame, e.g. base_link →
     // livox_frame).  DimOS has no /tf_static, so we periodically re-emit
-    // on /tf at mount_publish_hz.  mount_publish_hz=0 disables it.
+    // on TF_CHANNEL at mount_publish_hz.  mount_publish_hz=0 disables it.
     g_sensor_frame = mod.arg("sensor_frame", "livox_frame");
 
     if (g_lidar_topic.empty() && g_odometry_topic.empty()) {
@@ -475,8 +473,7 @@ int main(int argc, char** argv) {
                g_odometry_topic.empty() ? "(disabled)" : g_odometry_topic.c_str());
         printf("[fastlio2] global_map topic: %s\n",
                g_map_topic.empty() ? "(disabled)" : g_map_topic.c_str());
-        printf("[fastlio2] tf topic: %s\n",
-               g_tf_topic.empty() ? "(disabled)" : g_tf_topic.c_str());
+        printf("[fastlio2] tf topic: %s\n", TF_CHANNEL.c_str());
         printf("[fastlio2] static mount tf: %s → %s @ %.1f Hz\n",
                g_body_frame.c_str(),
                g_sensor_frame.c_str(),
@@ -558,10 +555,10 @@ int main(int argc, char** argv) {
     // Static mount TF (body_frame → sensor_frame).  Emitted once
     // immediately and then re-emitted at mount_publish_hz so consumers
     // that connect late still find it in their TF buffer.  Disabled
-    // when mount_publish_hz <= 0 or tf_channel is empty.
+    // when mount_publish_hz <= 0.
     std::chrono::microseconds mount_interval{0};
     auto last_mount_publish = std::chrono::steady_clock::now();
-    if (!g_tf_topic.empty() && g_mount_publish_hz > 0.0f) {
+    if (g_mount_publish_hz > 0.0f) {
         mount_interval = std::chrono::microseconds(
             static_cast<int64_t>(1e6 / g_mount_publish_hz));
         double startup_ts = std::chrono::duration<double>(

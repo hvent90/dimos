@@ -78,6 +78,13 @@ class FastLio2Config(NativeModuleConfig):
     # in the body frame (i.e. body_frame → sensor_frame).  Published only
     # as a static TF; no longer pre-folded into SLAM outputs.  Consumers
     # wanting the body's pose compose (odom → sensor) ∘ (body → sensor)^-1.
+    #
+    # ARCHITECTURAL NOTE: In strict REP-105 the mount belongs in URDF and
+    # would be published by robot_state_publisher (or equivalent), not by
+    # the sensor driver.  DimOS has no such central static-TF source today,
+    # so fastlio2 owns this as a workaround.  Replicating it per-sensor
+    # won't scale — when a URDF/static-TF module lands, body_frame, mount,
+    # mount_publish_hz, and publish_static_mount_tf should move there.
     mount: Pose = Pose()
 
     # Frame chain (REP-105).
@@ -85,7 +92,8 @@ class FastLio2Config(NativeModuleConfig):
     #                 FastLio2 provides locally-smooth, continuous odometry
     #                 (no loop-closure jumps; PGO publishes map→odom).
     #   body_frame  → parent of the static mount TF.  The robot's body
-    #                 reference frame.
+    #                 reference frame.  Only here pending a central
+    #                 static-TF source (see ARCHITECTURAL NOTE on `mount`).
     #   sensor_frame→ child of BOTH the dynamic Odometry/TF and the static
     #                 mount TF.  The actual frame of FAST-LIO's output.
     frame_id: str = FRAME_ODOM
@@ -115,16 +123,14 @@ class FastLio2Config(NativeModuleConfig):
         Path, validate_as(...).transform(lambda p: p if p.is_absolute() else _CONFIG_DIR / p)
     ] = Path("mid360.yaml")
 
-    # Shared /tf channel.  The C++ binary publishes
-    # frame_id → sensor_frame (odom → livox_frame) on /tf alongside
-    # Odometry, per REP-105.  Set to empty string to disable.
-    tf_channel: str = "/tf#tf2_msgs.TFMessage"
-
     # Static mount TF (body_frame → sensor_frame, e.g.
     # base_link → livox_frame) derived from `mount`.  DimOS has no
-    # /tf_static channel, so the C++ binary re-emits on `tf_channel`
-    # at `mount_publish_hz` — matching DeskStaticTfModule's pattern.
+    # /tf_static channel, so the C++ binary re-emits on /tf at
+    # `mount_publish_hz` — matching DeskStaticTfModule's pattern.
     # Set mount_publish_hz=0 to disable.
+    #
+    # The /tf channel itself is hardcoded in the C++ binary —
+    # transport is a system-wide convention, not a per-module knob.
     sensor_frame: str = "livox_frame"
     mount_publish_hz: float = 10.0
 
