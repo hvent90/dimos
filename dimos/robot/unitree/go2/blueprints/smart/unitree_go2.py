@@ -18,7 +18,7 @@ from pathlib import Path
 from dimos.core.coordination.blueprints import autoconnect
 from dimos.core.stream import In
 from dimos.mapping.costmapper import CostMapper
-from dimos.mapping.relocalization import RelocalizationModule
+from dimos.mapping.relocalization.module import RelocalizationModule
 from dimos.mapping.voxels import VoxelGridMapper
 from dimos.memory2.module import Recorder, RecorderConfig
 from dimos.msgs.geometry_msgs.PoseStamped import PoseStamped
