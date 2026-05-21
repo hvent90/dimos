@@ -268,9 +268,9 @@ def nav_stack_rerun_config(
     visual_override.setdefault("world/terrain_map", _terrain_map_colors)
     visual_override.setdefault("world/terrain_map_ext", _terrain_map_colors)
     visual_override.setdefault("world/global_map", _global_map_colors)
-    visual_override.setdefault("world/global_map_pgo", _global_map_colors)
-    visual_override.setdefault("world/global_map_fastlio", _global_map_colors)
-    visual_override.setdefault("world/corrected_global_map", _global_map_colors)
+    visual_override.setdefault("world/_pgo_global_map", _hide)
+    visual_override.setdefault("world/_fastlio_global_map", _hide)
+    visual_override.setdefault("world/map_override", _hide)
     visual_override.setdefault(
         "world/registered_scan", _registered_scan_colors if show_registered_scan else _hide
     )
