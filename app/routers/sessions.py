@@ -15,8 +15,9 @@ from services.cloudflare import CloudflareRealtimeError, cf_client
 router = APIRouter(prefix="/sessions", tags=["sessions"])
 
 CMD_CHANNEL_NAME = "cmd_unreliable"
+STATE_CHANNEL_NAME = "state_reliable"
 
-_robot_subscriber_dc_ids: dict[str, int] = {}
+_robot_subscriber_dc_ids: dict[str, dict[str, int]] = {}
 
 
 # ─── Request/Response schemas ────────────────────────────────────────
@@ -50,6 +51,7 @@ class JoinSessionResponse(BaseModel):
 
 class BridgeDatachannelResponse(BaseModel):
     cmd_channel_id: int
+    state_channel_id: int
 
 
 class HeartbeatRequest(BaseModel):
@@ -151,9 +153,11 @@ async def heartbeat(
     session.last_heartbeat = datetime.now(timezone.utc)
     await db.commit()
 
+    sub_ids = _robot_subscriber_dc_ids.get(session_id, {})
     return {
         "ack": True,
-        "cmd_channel_subscriber_id": _robot_subscriber_dc_ids.get(session_id),
+        "cmd_channel_subscriber_id": sub_ids.get(CMD_CHANNEL_NAME),
+        "state_channel_subscriber_id": sub_ids.get(STATE_CHANNEL_NAME),
     }
 
 
@@ -270,10 +274,11 @@ async def bridge_datachannel(
     if not session.operator_cf_session_id or not session.cf_session_id:
         raise HTTPException(status_code=409, detail="CF sessions not ready")
 
+    channel_names = [CMD_CHANNEL_NAME, STATE_CHANNEL_NAME]
     try:
         pub = await cf_client.add_datachannels(
             session.operator_cf_session_id,
-            [{"location": "local", "dataChannelName": CMD_CHANNEL_NAME}],
+            [{"location": "local", "dataChannelName": name} for name in channel_names],
         )
         sub = await cf_client.add_datachannels(
             session.cf_session_id,
@@ -281,8 +286,9 @@ async def bridge_datachannel(
                 {
                     "location": "remote",
                     "sessionId": session.operator_cf_session_id,
-                    "dataChannelName": CMD_CHANNEL_NAME,
+                    "dataChannelName": name,
                 }
+                for name in channel_names
             ],
         )
     except CloudflareRealtimeError as e:
@@ -296,15 +302,27 @@ async def bridge_datachannel(
             detail=f"Datachannel bridge failed ({type(e).__name__}): {e}",
         )
 
-    if not pub or "id" not in pub[0] or not sub or "id" not in sub[0]:
+    if (
+        not pub
+        or not sub
+        or len(pub) != len(channel_names)
+        or len(sub) != len(channel_names)
+        or any("id" not in entry for entry in pub)
+        or any("id" not in entry for entry in sub)
+    ):
         raise HTTPException(
             status_code=502,
-            detail="Cloudflare did not return a DataChannel id",
+            detail="Cloudflare did not return DataChannel ids for all channels",
         )
 
-    _robot_subscriber_dc_ids[session.id] = int(sub[0]["id"])
+    pub_ids = {name: int(entry["id"]) for name, entry in zip(channel_names, pub)}
+    sub_ids = {name: int(entry["id"]) for name, entry in zip(channel_names, sub)}
+    _robot_subscriber_dc_ids[session.id] = sub_ids
 
-    return BridgeDatachannelResponse(cmd_channel_id=int(pub[0]["id"]))
+    return BridgeDatachannelResponse(
+        cmd_channel_id=pub_ids[CMD_CHANNEL_NAME],
+        state_channel_id=pub_ids[STATE_CHANNEL_NAME],
+    )
 
 
 @router.post("/{session_id}/leave")

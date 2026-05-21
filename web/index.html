@@ -45,6 +45,12 @@
         let userEmail = localStorage.getItem('teleop_email') || '';
         let brokerOverride = new URLSearchParams(window.location.search).get('broker') || '';
 
+        const isLocalDev = ['localhost', '127.0.0.1', '0.0.0.0'].includes(window.location.hostname);
+        if (isLocalDev && !token) {
+            token = 'dev-token';
+            userEmail = 'dev@local';
+        }
+
         // WebRTC + WebXR state
         let pc = null;
         let cmdChannel = null;
@@ -54,6 +60,15 @@
         let lastSendTime = 0;
         let activeRobot = null;
         const sendInterval = 1000 / 80;
+
+        let stateChannel = null;
+        let clockOffsetMs = 0;
+        let bestRttMs = Infinity;
+        let clockSyncBurstTimer = null;
+        let clockSyncDriftTimer = null;
+        const CLOCK_SYNC_BURST_COUNT = 5;          // 5 pings…
+        const CLOCK_SYNC_BURST_INTERVAL_MS = 400;  // …~400ms apart → converge in ~2s
+        const CLOCK_SYNC_DRIFT_INTERVAL_MS = 30000; // then one every 30s for drift
 
         // Probed once at boot. Quest browser → true; desktop/mobile → false.
         let xrSupported = false;
@@ -438,6 +453,10 @@
                         Negotiating...
                     </div>
 
+                    <video id="robot-cam" autoplay muted playsinline
+                        class="w-full rounded-lg border border-gray-800 bg-black my-4"
+                        style="display:none; max-height: 360px; object-fit: contain;"></video>
+
                     <div class="grid grid-cols-2 gap-4 my-6 text-left">
                         <div class="bg-gray-900 border border-gray-800 rounded-lg p-4">
                             <div class="text-xs text-gray-500 mb-2">Controls</div>
@@ -520,18 +539,22 @@ angular.z = 0</pre>
         function startKeyboardLoop() {
             window.addEventListener('keydown', onKeyDown);
             window.addEventListener('keyup', onKeyUp);
+            let twistSeq = 0;
             kbInterval = setInterval(() => {
                 // Always update key visuals; only send/readout when channel is up.
                 updateKeyVisuals();
                 if (!cmdChannel || cmdChannel.readyState !== 'open') return;
                 const t = buildTwist();
-                const nowMs = Date.now();
+                // Stamp in the robot's clock frame (clockOffsetMs is 0 until
+                // the first pong lands; falls back gracefully on old brokers).
+                const nowMs = Date.now() + clockOffsetMs;
                 const ts = new std_msgs.Time({
                     sec: Math.floor(nowMs / 1000),
                     nsec: (nowMs % 1000) * 1_000_000,
                 });
+                twistSeq = (twistSeq + 1) & 0x7fffffff;
                 const twist = new geometry_msgs.TwistStamped({
-                    header: new std_msgs.Header({ stamp: ts, frame_id: 'keyboard' }),
+                    header: new std_msgs.Header({ stamp: ts, frame_id: 'keyboard', seq: twistSeq }),
                     twist: new geometry_msgs.Twist({
                         linear: new geometry_msgs.Vector3({ x: t.linear_x, y: t.linear_y, z: t.linear_z }),
                         angular: new geometry_msgs.Vector3({ x: 0, y: 0, z: t.angular_z }),
@@ -593,6 +616,17 @@ angular.z = 0</pre>
             });
 
             const sctpPlaceholder = pc.createDataChannel('_sctp_init');
+
+            // Robot video — recvonly transceiver so the offer carries a video
+            // m-section the broker can bind the robot's track to.
+            pc.addTransceiver('video', { direction: 'recvonly' });
+            pc.ontrack = (e) => {
+                if (e.track.kind !== 'video') return;
+                const v = document.getElementById('robot-cam');
+                if (!v) return;
+                v.srcObject = e.streams[0] || new MediaStream([e.track]);
+                v.style.display = 'block';
+            };
 
             const iceFailed = new Promise((_, reject) => {
                 pc.oniceconnectionstatechange = () => {
@@ -659,6 +693,67 @@ angular.z = 0</pre>
                 }),
                 iceFailed,
             ]);
+
+            // state_reliable — opened best-effort. Older brokers won't return
+            // state_channel_id and clock sync simply doesn't run; cmdChannel
+            // still works and the rest of the page is unaffected.
+            if (bridge.state_channel_id != null) {
+                stateChannel = pc.createDataChannel('state_reliable', {
+                    negotiated: true,
+                    id: bridge.state_channel_id,
+                    ordered: true,
+                });
+                stateChannel.onopen = () => startClockSync(stateChannel);
+                stateChannel.onmessage = (e) => handleStateMessage(e.data);
+                stateChannel.onerror = (e) => console.warn('[state-channel] error', e);
+                stateChannel.onclose = () => console.info('[state-channel] closed');
+            }
+        }
+
+        // ─── Clock sync (Phase 1.5) ─────────────────────────────────────────
+        function startClockSync(channel) {
+            let sent = 0;
+            const sendPing = () => {
+                if (!channel || channel.readyState !== 'open') return;
+                channel.send(JSON.stringify({ type: 'ping', client_ts: Date.now() / 1000 }));
+            };
+            sendPing();  // fire one immediately so the user sees calibration ASAP
+            sent = 1;
+            clockSyncBurstTimer = setInterval(() => {
+                sendPing();
+                sent += 1;
+                if (sent >= CLOCK_SYNC_BURST_COUNT) {
+                    clearInterval(clockSyncBurstTimer);
+                    clockSyncBurstTimer = null;
+                    // Drift-correction: one ping every 30s. Keeps min-RTT
+                    // logic running so a transient stall doesn't pin us to a
+                    // bad offset for the rest of the session.
+                    clockSyncDriftTimer = setInterval(sendPing, CLOCK_SYNC_DRIFT_INTERVAL_MS);
+                }
+            }, CLOCK_SYNC_BURST_INTERVAL_MS);
+        }
+
+        function stopClockSync() {
+            if (clockSyncBurstTimer) { clearInterval(clockSyncBurstTimer); clockSyncBurstTimer = null; }
+            if (clockSyncDriftTimer) { clearInterval(clockSyncDriftTimer); clockSyncDriftTimer = null; }
+        }
+
+        function handleStateMessage(data) {
+            let msg;
+            try { msg = JSON.parse(data); } catch (_) { return; }
+            if (msg.type === 'pong') applyPong(msg);
+        }
+
+        function applyPong(pong) {
+            const recvTsSec = Date.now() / 1000;
+            const rttMs = (recvTsSec - pong.client_ts) * 1000;
+            if (rttMs < 0 || rttMs > 5000) return;  // discard clearly-bogus samples
+            if (rttMs >= bestRttMs) return;
+            bestRttMs = rttMs;
+            const offsetSec =
+                ((pong.robot_ts - pong.client_ts) + (pong.robot_ts - recvTsSec)) / 2;
+            clockOffsetMs = offsetSec * 1000;
+            console.log(`[clock-sync] rtt=${rttMs.toFixed(1)}ms offset=${clockOffsetMs.toFixed(1)}ms`);
         }
 
         function send(bytes) {
@@ -691,7 +786,7 @@ angular.z = 0</pre>
 
                 const pos = pose.transform.position;
                 const rot = pose.transform.orientation;
-                const nowMs = Date.now();
+                const nowMs = Date.now() + clockOffsetMs;
                 const stamp = new std_msgs.Time({
                     sec: Math.floor(nowMs / 1000),
                     nsec: (nowMs % 1000) * 1_000_000,
@@ -777,9 +872,15 @@ angular.z = 0</pre>
             } catch (_) {}
 
             stopKeyboardLoop();
+            stopClockSync();
             if (xrSession) { await xrSession.end().catch(() => {}); xrSession = null; }
             if (cmdChannel) { try { cmdChannel.close(); } catch (_) {} cmdChannel = null; }
+            if (stateChannel) { try { stateChannel.close(); } catch (_) {} stateChannel = null; }
+            const v = document.getElementById('robot-cam');
+            if (v) { v.srcObject = null; v.style.display = 'none'; }
             if (pc) { try { pc.close(); } catch (_) {} pc = null; }
+            clockOffsetMs = 0;
+            bestRttMs = Infinity;
 
             const canvas = document.getElementById('canvas');
             canvas.style.display = 'none';
