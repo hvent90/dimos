@@ -17,8 +17,6 @@
 Accepts streaming joint positions (e.g., from teleoperation) and outputs them
 directly to hardware each tick. Useful for teleoperation, visual servoing,
 or any real-time control where you don't want trajectory planning overhead.
-
-CRITICAL: Uses t_now from CoordinatorState, never calls time.time()
 """
 
 from __future__ import annotations

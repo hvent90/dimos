@@ -345,12 +345,12 @@ class MujocoSimModule(
                 )
             )
 
+        # Hooks are installed via set_step_hooks() after gripper detection
+        # below, since they depend on the resolved gripper index.
         self._engine = MujocoEngine(
             config_path=Path(self.config.address),
             headless=self.config.headless,
             cameras=cameras,
-            on_before_step=None,  # set after gripper detection below
-            on_after_step=None,
             assets=engine_assets,
         )
 
@@ -399,8 +399,10 @@ class MujocoSimModule(
             gripper_ctrl_range=self._gripper_ctrl_range,
             gripper_joint_range=self._gripper_joint_range,
         )
-        self._engine._on_before_step = self._sim_hooks.pre_step  # type: ignore[attr-defined]
-        self._engine._on_after_step = self._publish_shm_and_lcm  # type: ignore[attr-defined]
+        self._engine.set_step_hooks(
+            before=self._sim_hooks.pre_step,
+            after=self._publish_shm_and_lcm,
+        )
 
         # Start physics (sim thread spawned inside engine.connect()).
         if not self._engine.connect():
@@ -450,7 +452,6 @@ class MujocoSimModule(
         self._publish_thread = None
 
         errors: list[tuple[str, BaseException]] = []
-        # Thread-mode engine teardown.
         if self._engine is not None:
             try:
                 self._engine.disconnect()

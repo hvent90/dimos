@@ -134,6 +134,19 @@ class MujocoEngine(SimulationEngine):
         self._camera_frames: dict[str, CameraFrame] = {}
         self._camera_lock = threading.Lock()
 
+    def set_step_hooks(
+        self,
+        before: StepHook | None = None,
+        after: StepHook | None = None,
+    ) -> None:
+        """Install pre/post step hooks after construction.
+
+        Use when the hooks depend on engine state (joint count, gripper
+        index) that isn't known until the model is loaded.
+        """
+        self._on_before_step = before
+        self._on_after_step = after
+
     def _resolve_xml_path(self, config_path: Path) -> Path:
         if config_path is None:
             raise ValueError("config_path is required for MuJoCo simulation loading")

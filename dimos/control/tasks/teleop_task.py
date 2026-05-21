@@ -19,8 +19,6 @@ inverse kinematics internally to output joint commands. Deltas are applied
 relative to the EE pose captured at engage time.
 
 Participates in joint-level arbitration.
-
-CRITICAL: Uses t_now from CoordinatorState, never calls time.time()
 """
 
 from __future__ import annotations

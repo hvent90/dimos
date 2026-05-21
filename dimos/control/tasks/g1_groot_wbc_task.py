@@ -23,7 +23,6 @@ Observation, action, and model-selection semantics are preserved
 verbatim — changing them drifts us away from the ONNX policies trained
 by GR00T-WholeBodyControl.
 
-CRITICAL: Uses t_now from CoordinatorState, never calls time.time().
 """
 
 from __future__ import annotations
@@ -327,28 +326,6 @@ class G1GrootWBCTask(BaseControlTask):
         self._cached_q_15 = self._default_15.copy()
         self._state_seen = False
 
-        # Lifecycle state machine.
-        #
-        #   _active   — task is registered and compute() is being invoked
-        #               by the coordinator.  Gate for the whole compute()
-        #               path; start()/stop() toggle this.
-        #   _armed    — policy outputs are emitted to the adapter.  Flip
-        #               via arm()/disarm().
-        #   _arming   — currently ramping current-pose → default_15 over
-        #               ``_arming_duration`` seconds.  Set by arm() with
-        #               a non-zero ramp, cleared when alpha reaches 1.
-        #   _arm_pending — arm() was called; compute() captures the ramp
-        #               start pose from state on the next tick and flips
-        #               into _arming (or _armed directly if ramp=0).
-        #   _dry_run  — compute() still runs the policy (obs history
-        #               stays hot) but returns None so the coordinator
-        #               sends no command to the adapter.  Throttled log
-        #               lets the operator see what WOULD have gone out.
-        #
-        # When active-but-unarmed, compute() echoes back the current
-        # joint positions so the PD error is zero and the robot sits in
-        # pure damping (kd-only) — this mirrors the reference backend's
-        # "hold current pose" inactive state.
         self._active = False
         self._armed = False
         self._arming = False

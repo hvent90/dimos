@@ -17,8 +17,6 @@
 Accepts streaming cartesian poses (e.g., from teleoperation, visual servoing)
 and computes inverse kinematics internally to output joint commands.
 Participates in joint-level arbitration.
-
-CRITICAL: Uses t_now from CoordinatorState, never calls time.time()
 """
 
 from __future__ import annotations

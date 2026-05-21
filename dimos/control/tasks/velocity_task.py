@@ -19,8 +19,6 @@ directly to hardware each tick. Useful for joystick control, force feedback,
 or any velocity-mode real-time control.
 
 SAFETY: On timeout, sends zero velocities to stop motion (configurable).
-
-CRITICAL: Uses t_now from CoordinatorState, never calls time.time()
 """
 
 from __future__ import annotations
