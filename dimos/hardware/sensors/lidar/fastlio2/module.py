@@ -113,6 +113,14 @@ class FastLio2Config(NativeModuleConfig):
     # Odometry, per REP-105.  Set to empty string to disable.
     tf_channel: str = "/tf#tf2_msgs.TFMessage"
 
+    # Static mount TF (child_frame_id → sensor_frame, e.g.
+    # base_link → livox_frame) derived from `mount`.  DimOS has no
+    # /tf_static channel, so the C++ binary re-emits on `tf_channel`
+    # at `mount_publish_hz` — matching DeskStaticTfModule's pattern.
+    # Set mount_publish_hz=0 to disable.
+    sensor_frame: str = "livox_frame"
+    mount_publish_hz: float = 10.0
+
     debug: bool = False
 
     # SDK port configuration (see livox/ports.py for defaults)

@@ -68,6 +68,8 @@ static std::string g_map_topic;
 static std::string g_tf_topic;        // shared /tf channel (optional, default /tf#tf2_msgs.TFMessage)
 static std::string g_frame_id;        // required via --frame_id
 static std::string g_child_frame_id;   // required via --child_frame_id
+static std::string g_sensor_frame;     // static mount child frame (default "livox_frame")
+static float g_mount_publish_hz = 10.0f;  // 0 = disable static mount TF
 static float g_frequency = 10.0f;
 
 // Initial pose offset (applied to all SLAM outputs)
@@ -319,6 +321,37 @@ static void publish_tf(const custom_messages::Odometry& odom, double timestamp) 
 }
 
 // ---------------------------------------------------------------------------
+// Publish static mount TF (child_frame_id → sensor_frame)
+//
+// DimOS has no /tf_static channel today (PubSubTF.publish_static raises
+// NotImplementedError; DeskStaticTfModule's workaround is to re-publish
+// on /tf at a low Hz).  We mirror that pattern here: the sensor mount
+// transform (g_init_*, configured via `mount` on the Python side) is
+// emitted on /tf at g_mount_publish_hz.
+// ---------------------------------------------------------------------------
+
+static void publish_static_mount_tf(double timestamp) {
+    if (!g_lcm || g_tf_topic.empty() || g_sensor_frame.empty()) return;
+
+    geometry_msgs::TransformStamped t;
+    t.header = make_header(g_child_frame_id, timestamp);
+    t.child_frame_id = g_sensor_frame;
+    t.transform.translation.x = g_init_x;
+    t.transform.translation.y = g_init_y;
+    t.transform.translation.z = g_init_z;
+    t.transform.rotation.x = g_init_qx;
+    t.transform.rotation.y = g_init_qy;
+    t.transform.rotation.z = g_init_qz;
+    t.transform.rotation.w = g_init_qw;
+
+    tf2_msgs::TFMessage tf_msg;
+    tf_msg.transforms.push_back(t);
+    tf_msg.transforms_length = static_cast<int32_t>(tf_msg.transforms.size());
+
+    g_lcm->publish(g_tf_topic, &tf_msg);
+}
+
+// ---------------------------------------------------------------------------
 // Livox SDK callbacks
 // ---------------------------------------------------------------------------
 
@@ -445,6 +478,11 @@ int main(int argc, char** argv) {
     // Set --tf_channel "" to disable.
     g_tf_topic = mod.arg("tf_channel", "/tf#tf2_msgs.TFMessage");
 
+    // Static mount frame (child_frame_id → sensor_frame).  DimOS has no
+    // /tf_static, so we periodically re-emit on /tf at mount_publish_hz.
+    // mount_publish_hz=0 disables the static publish.
+    g_sensor_frame = mod.arg("sensor_frame", "livox_frame");
+
     if (g_lidar_topic.empty() && g_odometry_topic.empty()) {
         fprintf(stderr, "Error: at least one of --lidar or --odometry is required\n");
         return 1;
@@ -469,6 +507,7 @@ int main(int argc, char** argv) {
     g_child_frame_id = mod.arg_required("child_frame_id");
     float pointcloud_freq = mod.arg_float("pointcloud_freq", 5.0f);
     float odom_freq = mod.arg_float("odom_freq", 50.0f);
+    g_mount_publish_hz = mod.arg_float("mount_publish_hz", 10.0f);
     CloudFilterConfig filter_cfg;
     filter_cfg.voxel_size = mod.arg_float("voxel_size", 0.1f);
     filter_cfg.sor_mean_k = mod.arg_int("sor_mean_k", 50);
@@ -528,6 +567,10 @@ int main(int argc, char** argv) {
                g_map_topic.empty() ? "(disabled)" : g_map_topic.c_str());
         printf("[fastlio2] tf topic: %s\n",
                g_tf_topic.empty() ? "(disabled)" : g_tf_topic.c_str());
+        printf("[fastlio2] static mount tf: %s → %s @ %.1f Hz\n",
+               g_child_frame_id.c_str(),
+               g_sensor_frame.c_str(),
+               g_mount_publish_hz);
         printf("[fastlio2] config: %s\n", config_path.c_str());
         printf("[fastlio2] host_ip: %s  lidar_ip: %s  frequency: %.1f Hz\n",
                host_ip.c_str(), lidar_ip.c_str(), g_frequency);
@@ -600,6 +643,20 @@ int main(int argc, char** argv) {
         global_map = std::make_unique<VoxelMap>(map_voxel_size, map_max_range);
         map_interval = std::chrono::microseconds(
             static_cast<int64_t>(1e6 / map_freq));
+    }
+
+    // Static mount TF (child_frame_id → sensor_frame).  Emitted once
+    // immediately and then re-emitted at mount_publish_hz so consumers
+    // that connect late still find it in their TF buffer.  Disabled
+    // when mount_publish_hz <= 0 or tf_channel is empty.
+    std::chrono::microseconds mount_interval{0};
+    auto last_mount_publish = std::chrono::steady_clock::now();
+    if (!g_tf_topic.empty() && g_mount_publish_hz > 0.0f) {
+        mount_interval = std::chrono::microseconds(
+            static_cast<int64_t>(1e6 / g_mount_publish_hz));
+        double startup_ts = std::chrono::duration<double>(
+            std::chrono::system_clock::now().time_since_epoch()).count();
+        publish_static_mount_tf(startup_ts);
     }
 
     while (g_running.load()) {
@@ -684,6 +741,16 @@ int main(int argc, char** argv) {
                 publish_tf(fl_odom, ts);
                 last_odom_publish = now;
             }
+        }
+
+        // Periodically re-emit static mount TF.  Independent of pose updates
+        // so late-joiners can resolve livox_frame even before fastlio has a
+        // pose to report.
+        if (mount_interval.count() > 0 && now - last_mount_publish >= mount_interval) {
+            double ts = std::chrono::duration<double>(
+                std::chrono::system_clock::now().time_since_epoch()).count();
+            publish_static_mount_tf(ts);
+            last_mount_publish = now;
         }
 
         // Handle LCM messages
