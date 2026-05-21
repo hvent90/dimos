@@ -377,9 +377,9 @@ For the DiMOS-side, the canonical verification is now:
    connection module gets through `Starting R1ProConnection control RawROS...`
    to `Waiting up to 5s for first feedback from torso/left_arm/right_arm...`
    (or `R1ProConnection started` once the robot is talking).
-2. `python scripts/r1pro_test/run_rerun_bridge.py` → rerun window opens,
-   wrist + head + 3D + surround cams populate (see §11 for sensor-dropout
-   troubleshooting if any pane stays blank).
+2. `dimos --viewer rerun-web run r1pro-coordinator` → rerun web viewer at
+   `http://localhost:9090`, wrist + head + 3D + surround cams populate
+   (see §11 for sensor-dropout troubleshooting if any pane stays blank).
 3. `dimos run r1pro-keyboard-teleop` → press W, robot moves forward.
 
 ---
@@ -413,10 +413,14 @@ For the DiMOS-side, the canonical verification is now:
 - [x] **Coordinator blueprint registered as `r1pro-coordinator`**
 - [x] **Keyboard teleop blueprint (chassis Twist) — `r1pro-keyboard-teleop`**
 - [x] **Phase 1 hardware verification: connection boots, sensors flow, rerun renders all panes (2026-05-09)**
+- [x] **Rerun bridge refactored to team-standard pattern — inline blueprint factory in coordinator, gated on `--viewer rerun` (§12.G)**
+- [x] **`.envrc.r1pro` direnv template — opt-in `UV_PYTHON=3.10` without committing repo-wide `.python-version=3.10` (§12.H)**
+- [x] **Test scripts restored from `task/mustafa/r1pro-dual-arm-testing` (test_01..06, run_all_tests.py, SENSOR_DROP_RUNBOOK.md)**
 - [ ] Manipulation blueprint (planner-coordinator) — researched, three paths identified, decision deferred (see §12.E)
 - [ ] Push the URDF + meshes (`data/r1_pro_description/`) to git LFS so manipulation-blueprint paths can run on a fresh clone
 - [ ] Torso planning approach — fold torso into bimanual planner (richer reachability) vs hold-fixed (simpler). Open question.
-- [ ] Verify keyboard teleop end-to-end on hardware after the X11-flip-rate patch (§12.D)
+- [ ] Keyboard teleop felt "heavy" on hardware — `display_rate_hz` patch reverted, real root cause still TBD (see §12.D)
+- [ ] Re-test `test_05_dimos_ros_layer.py` from the restored scripts — it referenced now-deleted monolithic adapters; needs updating to the new `R1ProConnection` imports or marking as historical
 - [ ] Phase 2/3/4 hardware verification: ROS topic counts, motor_states / cmd_vel flow under load, brake-mode sanity
 
 ---
@@ -909,6 +913,13 @@ manipulation works locally but breaks on a fresh clone.
 git add data/.lfs/r1_pro_description.tar.gz
 git commit -m "lfs: add r1_pro_description (urdf + meshes)"
 ```
+
+**G. Rerun bridge refactored to the team-standard pattern**
+
+The original v1 of this branch shipped a standalone bridge launcher
+(`scripts/r1pro_test/run_rerun_bridge.py`) plus a separate layout file
+(`dimos/robot/galaxea/r1pro/rerun.py`). Worked, but diverged from how
+Go2 and G1 do it. 
 
 ---
 
