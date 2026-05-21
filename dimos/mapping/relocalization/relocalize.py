@@ -71,9 +71,7 @@ def _global_preprocess(
     return cached  # type: ignore[no-any-return]
 
 
-def _global_fine(
-    global_map: o3d.geometry.PointCloud, voxel_size: float
-) -> o3d.geometry.PointCloud:
+def _global_fine(global_map: o3d.geometry.PointCloud, voxel_size: float) -> o3d.geometry.PointCloud:
     key = ("fine", voxel_size, len(global_map.points))
     cached = _GLOBAL_CACHE.get(key)
     if cached is None:
