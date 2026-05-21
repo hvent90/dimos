@@ -74,15 +74,22 @@ class FastLio2Config(NativeModuleConfig):
     lidar_ip: str = "192.168.1.155"
     frequency: float = 10.0
 
-    # Sensor mount pose — position + orientation of the sensor relative to ground.
-    # Converted to init_pose CLI arg [x, y, z, qx, qy, qz, qw] in model_post_init.
+    # Sensor mount on the body — position + orientation of the sensor frame
+    # in the body frame (i.e. body_frame → sensor_frame).  Published only
+    # as a static TF; no longer pre-folded into SLAM outputs.  Consumers
+    # wanting the body's pose compose (odom → sensor) ∘ (body → sensor)^-1.
     mount: Pose = Pose()
 
-    # Frame IDs for output messages.  "odom" reflects that FastLio2 provides
-    # locally-smooth, continuous odometry (no loop-closure jumps).  PGO
-    # publishes the map→odom correction via TF.
+    # Frame chain (REP-105).
+    #   frame_id    → parent of dynamic Odometry/TF.  "odom" reflects that
+    #                 FastLio2 provides locally-smooth, continuous odometry
+    #                 (no loop-closure jumps; PGO publishes map→odom).
+    #   body_frame  → parent of the static mount TF.  The robot's body
+    #                 reference frame.
+    #   sensor_frame→ child of BOTH the dynamic Odometry/TF and the static
+    #                 mount TF.  The actual frame of FAST-LIO's output.
     frame_id: str = FRAME_ODOM
-    child_frame_id: str = FRAME_BODY
+    body_frame: str = FRAME_BODY
 
     # FAST-LIO internal processing rates
     msr_freq: float = 50.0
@@ -109,11 +116,11 @@ class FastLio2Config(NativeModuleConfig):
     ] = Path("mid360.yaml")
 
     # Shared /tf channel.  The C++ binary publishes
-    # frame_id → child_frame_id (odom → base_link) on /tf alongside
+    # frame_id → sensor_frame (odom → livox_frame) on /tf alongside
     # Odometry, per REP-105.  Set to empty string to disable.
     tf_channel: str = "/tf#tf2_msgs.TFMessage"
 
-    # Static mount TF (child_frame_id → sensor_frame, e.g.
+    # Static mount TF (body_frame → sensor_frame, e.g.
     # base_link → livox_frame) derived from `mount`.  DimOS has no
     # /tf_static channel, so the C++ binary re-emits on `tf_channel`
     # at `mount_publish_hz` — matching DeskStaticTfModule's pattern.
@@ -138,19 +145,20 @@ class FastLio2Config(NativeModuleConfig):
     # Resolved in __post_init__, passed as --config_path to the binary
     config_path: str | None = None
 
-    # init_pose is computed from mount; config is resolved to config_path
-    init_pose: list[float] = [0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 1.0]
+    # 7-float marshaling of `mount` for the CLI (Pose isn't directly
+    # serializable as a single arg).  Set in model_post_init.
+    mount_xyz_quat: list[float] = [0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 1.0]
     cli_exclude: frozenset[str] = frozenset({"config", "mount"})
 
     def model_post_init(self, __context: object) -> None:
-        """Resolve config_path and compute init_pose from mount."""
+        """Resolve config_path and flatten mount for the CLI."""
         super().model_post_init(__context)
         cfg = self.config
         if not cfg.is_absolute():
             cfg = _CONFIG_DIR / cfg
         self.config_path = str(cfg.resolve())
         m = self.mount
-        self.init_pose = [
+        self.mount_xyz_quat = [
             m.x,
             m.y,
             m.z,

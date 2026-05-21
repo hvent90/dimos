@@ -66,52 +66,23 @@ static std::string g_lidar_topic;
 static std::string g_odometry_topic;
 static std::string g_map_topic;
 static std::string g_tf_topic;        // shared /tf channel (optional, default /tf#tf2_msgs.TFMessage)
-static std::string g_frame_id;        // required via --frame_id
-static std::string g_child_frame_id;   // required via --child_frame_id
-static std::string g_sensor_frame;     // static mount child frame (default "livox_frame")
+static std::string g_frame_id;        // odom frame — parent of dynamic Odometry/TF (required via --frame_id)
+static std::string g_body_frame;       // body frame — parent of static mount TF (required via --body_frame)
+static std::string g_sensor_frame;     // sensor frame — child of dynamic AND static TF (default "livox_frame")
 static float g_mount_publish_hz = 10.0f;  // 0 = disable static mount TF
 static float g_frequency = 10.0f;
 
-// Initial pose offset (applied to all SLAM outputs)
-// Position offset
-static double g_init_x = 0.0;
-static double g_init_y = 0.0;
-static double g_init_z = 0.0;
-// Orientation offset as quaternion (identity = no rotation)
-static double g_init_qx = 0.0;
-static double g_init_qy = 0.0;
-static double g_init_qz = 0.0;
-static double g_init_qw = 1.0;
-
-// Helper: quaternion multiply (Hamilton product)  q_out = q1 * q2
-static void quat_mul(double ax, double ay, double az, double aw,
-                     double bx, double by, double bz, double bw,
-                     double& ox, double& oy, double& oz, double& ow) {
-    ow = aw*bw - ax*bx - ay*by - az*bz;
-    ox = aw*bx + ax*bw + ay*bz - az*by;
-    oy = aw*by - ax*bz + ay*bw + az*bx;
-    oz = aw*bz + ax*by - ay*bx + az*bw;
-}
-
-// Helper: rotate a vector by a quaternion  v_out = q * v * q_inv
-static void quat_rotate(double qx, double qy, double qz, double qw,
-                        double vx, double vy, double vz,
-                        double& ox, double& oy, double& oz) {
-    // t = 2 * cross(q_xyz, v)
-    double tx = 2.0 * (qy*vz - qz*vy);
-    double ty = 2.0 * (qz*vx - qx*vz);
-    double tz = 2.0 * (qx*vy - qy*vx);
-    // v_out = v + qw*t + cross(q_xyz, t)
-    ox = vx + qw*tx + (qy*tz - qz*ty);
-    oy = vy + qw*ty + (qz*tx - qx*tz);
-    oz = vz + qw*tz + (qx*ty - qy*tx);
-}
-
-// Check if initial pose is non-identity
-static bool has_init_pose() {
-    return g_init_x != 0.0 || g_init_y != 0.0 || g_init_z != 0.0 ||
-           g_init_qx != 0.0 || g_init_qy != 0.0 || g_init_qz != 0.0 || g_init_qw != 1.0;
-}
+// Sensor mount on the body (body_frame → sensor_frame).
+// Published ONLY as a static TF — no longer pre-folded into SLAM output.
+// Consumers compose the dynamic odom→sensor TF with this static
+// body→sensor to derive odom→body.
+static double g_mount_x = 0.0;
+static double g_mount_y = 0.0;
+static double g_mount_z = 0.0;
+static double g_mount_qx = 0.0;
+static double g_mount_qy = 0.0;
+static double g_mount_qz = 0.0;
+static double g_mount_qw = 1.0;
 
 // Frame accumulator (Livox SDK raw → CustomMsg)
 static std::mutex g_pc_mutex;
@@ -174,28 +145,14 @@ static void publish_lidar(PointCloudXYZI::Ptr cloud, double timestamp,
     pc.data_length = pc.row_step;
     pc.data.resize(pc.data_length);
 
-    // Apply the full init_pose transform (rotation + translation) to point clouds.
-    // FAST-LIO's map origin is at the sensor's initial position.  The rotation
-    // corrects axis direction (e.g. 180° X for upside-down mount) and the
-    // translation shifts the origin so that ground sits at z≈0 (e.g. z=1.2
-    // for a sensor mounted 1.2m above ground).  This matches the odometry
-    // frame, which also gets the full init_pose applied.
-    const bool apply_init_pose = has_init_pose();
+    // Raw FAST-LIO output. Mount transform is published as a static TF
+    // (body_frame → sensor_frame) — consumers compose if they need points
+    // in body coordinates.
     for (int i = 0; i < num_points; ++i) {
         float* dst = reinterpret_cast<float*>(pc.data.data() + i * 16);
-        if (apply_init_pose) {
-            double rx, ry, rz;
-            quat_rotate(g_init_qx, g_init_qy, g_init_qz, g_init_qw,
-                        cloud->points[i].x, cloud->points[i].y, cloud->points[i].z,
-                        rx, ry, rz);
-            dst[0] = static_cast<float>(rx + g_init_x);
-            dst[1] = static_cast<float>(ry + g_init_y);
-            dst[2] = static_cast<float>(rz + g_init_z);
-        } else {
-            dst[0] = cloud->points[i].x;
-            dst[1] = cloud->points[i].y;
-            dst[2] = cloud->points[i].z;
-        }
+        dst[0] = cloud->points[i].x;
+        dst[1] = cloud->points[i].y;
+        dst[2] = cloud->points[i].z;
         dst[3] = cloud->points[i].intensity;
     }
 
@@ -211,40 +168,17 @@ static void publish_odometry(const custom_messages::Odometry& odom, double times
 
     nav_msgs::Odometry msg;
     msg.header = make_header(g_frame_id, timestamp);
-    msg.child_frame_id = g_child_frame_id;
+    // FAST-LIO tracks the sensor's pose in its world frame (= odom).
+    // Publish raw, mount transform comes through as a separate static TF.
+    msg.child_frame_id = g_sensor_frame;
 
-    // Pose (apply initial pose offset: p_out = R_init * p_slam + t_init)
-    if (has_init_pose()) {
-        double rx, ry, rz;
-        quat_rotate(g_init_qx, g_init_qy, g_init_qz, g_init_qw,
-                    odom.pose.pose.position.x,
-                    odom.pose.pose.position.y,
-                    odom.pose.pose.position.z,
-                    rx, ry, rz);
-        msg.pose.pose.position.x = rx + g_init_x;
-        msg.pose.pose.position.y = ry + g_init_y;
-        msg.pose.pose.position.z = rz + g_init_z;
-
-        double ox, oy, oz, ow;
-        quat_mul(g_init_qx, g_init_qy, g_init_qz, g_init_qw,
-                 odom.pose.pose.orientation.x,
-                 odom.pose.pose.orientation.y,
-                 odom.pose.pose.orientation.z,
-                 odom.pose.pose.orientation.w,
-                 ox, oy, oz, ow);
-        msg.pose.pose.orientation.x = ox;
-        msg.pose.pose.orientation.y = oy;
-        msg.pose.pose.orientation.z = oz;
-        msg.pose.pose.orientation.w = ow;
-    } else {
-        msg.pose.pose.position.x = odom.pose.pose.position.x;
-        msg.pose.pose.position.y = odom.pose.pose.position.y;
-        msg.pose.pose.position.z = odom.pose.pose.position.z;
-        msg.pose.pose.orientation.x = odom.pose.pose.orientation.x;
-        msg.pose.pose.orientation.y = odom.pose.pose.orientation.y;
-        msg.pose.pose.orientation.z = odom.pose.pose.orientation.z;
-        msg.pose.pose.orientation.w = odom.pose.pose.orientation.w;
-    }
+    msg.pose.pose.position.x = odom.pose.pose.position.x;
+    msg.pose.pose.position.y = odom.pose.pose.position.y;
+    msg.pose.pose.position.z = odom.pose.pose.position.z;
+    msg.pose.pose.orientation.x = odom.pose.pose.orientation.x;
+    msg.pose.pose.orientation.y = odom.pose.pose.orientation.y;
+    msg.pose.pose.orientation.z = odom.pose.pose.orientation.z;
+    msg.pose.pose.orientation.w = odom.pose.pose.orientation.w;
 
     // Covariance (fixed-size double[36])
     for (int i = 0; i < 36; ++i) {
@@ -264,11 +198,12 @@ static void publish_odometry(const custom_messages::Odometry& odom, double times
 }
 
 // ---------------------------------------------------------------------------
-// Publish TF
+// Publish dynamic TF (frame_id → sensor_frame, i.e. odom → livox_frame)
 //
-// Per REP-105, an odometry source publishes the parent → child transform on
-// /tf alongside its Odometry message.  Same frame chain as publish_odometry
-// (g_frame_id → g_child_frame_id), same init_pose offset applied.
+// FAST-LIO's pose is the sensor's pose in its world frame, which we relabel
+// as odom.  No mount transform is applied here — that ships separately as
+// the static body→sensor TF in publish_static_mount_tf().  Consumers wanting
+// the body's pose compose (odom → sensor) ∘ (body → sensor)^-1.
 // ---------------------------------------------------------------------------
 
 static void publish_tf(const custom_messages::Odometry& odom, double timestamp) {
@@ -276,42 +211,15 @@ static void publish_tf(const custom_messages::Odometry& odom, double timestamp) 
 
     geometry_msgs::TransformStamped t;
     t.header = make_header(g_frame_id, timestamp);
-    t.child_frame_id = g_child_frame_id;
+    t.child_frame_id = g_sensor_frame;
 
-    // Same init_pose offset publish_odometry applies (kept in lockstep so
-    // /tf and /odometry never disagree on where base_link is).
-    double px, py, pz;
-    double qx, qy, qz, qw;
-    if (has_init_pose()) {
-        quat_rotate(g_init_qx, g_init_qy, g_init_qz, g_init_qw,
-                    odom.pose.pose.position.x,
-                    odom.pose.pose.position.y,
-                    odom.pose.pose.position.z,
-                    px, py, pz);
-        px += g_init_x; py += g_init_y; pz += g_init_z;
-        quat_mul(g_init_qx, g_init_qy, g_init_qz, g_init_qw,
-                 odom.pose.pose.orientation.x,
-                 odom.pose.pose.orientation.y,
-                 odom.pose.pose.orientation.z,
-                 odom.pose.pose.orientation.w,
-                 qx, qy, qz, qw);
-    } else {
-        px = odom.pose.pose.position.x;
-        py = odom.pose.pose.position.y;
-        pz = odom.pose.pose.position.z;
-        qx = odom.pose.pose.orientation.x;
-        qy = odom.pose.pose.orientation.y;
-        qz = odom.pose.pose.orientation.z;
-        qw = odom.pose.pose.orientation.w;
-    }
-
-    t.transform.translation.x = px;
-    t.transform.translation.y = py;
-    t.transform.translation.z = pz;
-    t.transform.rotation.x = qx;
-    t.transform.rotation.y = qy;
-    t.transform.rotation.z = qz;
-    t.transform.rotation.w = qw;
+    t.transform.translation.x = odom.pose.pose.position.x;
+    t.transform.translation.y = odom.pose.pose.position.y;
+    t.transform.translation.z = odom.pose.pose.position.z;
+    t.transform.rotation.x = odom.pose.pose.orientation.x;
+    t.transform.rotation.y = odom.pose.pose.orientation.y;
+    t.transform.rotation.z = odom.pose.pose.orientation.z;
+    t.transform.rotation.w = odom.pose.pose.orientation.w;
 
     tf2_msgs::TFMessage tf_msg;
     tf_msg.transforms.push_back(t);
@@ -321,12 +229,12 @@ static void publish_tf(const custom_messages::Odometry& odom, double timestamp) 
 }
 
 // ---------------------------------------------------------------------------
-// Publish static mount TF (child_frame_id → sensor_frame)
+// Publish static mount TF (body_frame → sensor_frame)
 //
 // DimOS has no /tf_static channel today (PubSubTF.publish_static raises
 // NotImplementedError; DeskStaticTfModule's workaround is to re-publish
 // on /tf at a low Hz).  We mirror that pattern here: the sensor mount
-// transform (g_init_*, configured via `mount` on the Python side) is
+// transform (g_mount_*, configured via `mount` on the Python side) is
 // emitted on /tf at g_mount_publish_hz.
 // ---------------------------------------------------------------------------
 
@@ -334,15 +242,15 @@ static void publish_static_mount_tf(double timestamp) {
     if (!g_lcm || g_tf_topic.empty() || g_sensor_frame.empty()) return;
 
     geometry_msgs::TransformStamped t;
-    t.header = make_header(g_child_frame_id, timestamp);
+    t.header = make_header(g_body_frame, timestamp);
     t.child_frame_id = g_sensor_frame;
-    t.transform.translation.x = g_init_x;
-    t.transform.translation.y = g_init_y;
-    t.transform.translation.z = g_init_z;
-    t.transform.rotation.x = g_init_qx;
-    t.transform.rotation.y = g_init_qy;
-    t.transform.rotation.z = g_init_qz;
-    t.transform.rotation.w = g_init_qw;
+    t.transform.translation.x = g_mount_x;
+    t.transform.translation.y = g_mount_y;
+    t.transform.translation.z = g_mount_z;
+    t.transform.rotation.x = g_mount_qx;
+    t.transform.rotation.y = g_mount_qy;
+    t.transform.rotation.z = g_mount_qz;
+    t.transform.rotation.w = g_mount_qw;
 
     tf2_msgs::TFMessage tf_msg;
     tf_msg.transforms.push_back(t);
@@ -474,13 +382,13 @@ int main(int argc, char** argv) {
     g_map_topic = mod.has("global_map") ? mod.topic("global_map") : "";
 
     // Shared /tf channel.  Per REP-105, fastlio (the odometry source)
-    // publishes g_frame_id → g_child_frame_id on /tf alongside Odometry.
-    // Set --tf_channel "" to disable.
+    // publishes g_frame_id → g_sensor_frame (e.g. odom → livox_frame) on
+    // /tf alongside Odometry.  Set --tf_channel "" to disable.
     g_tf_topic = mod.arg("tf_channel", "/tf#tf2_msgs.TFMessage");
 
-    // Static mount frame (child_frame_id → sensor_frame).  DimOS has no
-    // /tf_static, so we periodically re-emit on /tf at mount_publish_hz.
-    // mount_publish_hz=0 disables the static publish.
+    // Static mount frame (body_frame → sensor_frame, e.g. base_link →
+    // livox_frame).  DimOS has no /tf_static, so we periodically re-emit
+    // on /tf at mount_publish_hz.  mount_publish_hz=0 disables it.
     g_sensor_frame = mod.arg("sensor_frame", "livox_frame");
 
     if (g_lidar_topic.empty() && g_odometry_topic.empty()) {
@@ -504,7 +412,7 @@ int main(int argc, char** argv) {
     std::string lidar_ip = mod.arg("lidar_ip", "192.168.1.155");
     g_frequency = mod.arg_float("frequency", 10.0f);
     g_frame_id = mod.arg_required("frame_id");
-    g_child_frame_id = mod.arg_required("child_frame_id");
+    g_body_frame = mod.arg_required("body_frame");
     float pointcloud_freq = mod.arg_float("pointcloud_freq", 5.0f);
     float odom_freq = mod.arg_float("odom_freq", 50.0f);
     g_mount_publish_hz = mod.arg_float("mount_publish_hz", 10.0f);
@@ -535,30 +443,32 @@ int main(int argc, char** argv) {
     ports.host_imu_data   = mod.arg_int("host_imu_data_port", port_defaults.host_imu_data);
     ports.host_log_data   = mod.arg_int("host_log_data_port", port_defaults.host_log_data);
 
-    // Initial pose offset [x, y, z, qx, qy, qz, qw]
+    // Sensor mount transform [x, y, z, qx, qy, qz, qw] — published only as
+    // the static body_frame → sensor_frame TF.  No longer pre-applied to
+    // SLAM outputs.
     {
-        std::string init_str = mod.arg("init_pose", "");
-        if (!init_str.empty()) {
+        std::string mount_str = mod.arg("mount_xyz_quat", "");
+        if (!mount_str.empty()) {
             double vals[7] = {0, 0, 0, 0, 0, 0, 1};
             int n = 0;
             size_t pos = 0;
-            while (pos < init_str.size() && n < 7) {
-                size_t comma = init_str.find(',', pos);
-                if (comma == std::string::npos) comma = init_str.size();
-                vals[n++] = std::stod(init_str.substr(pos, comma - pos));
+            while (pos < mount_str.size() && n < 7) {
+                size_t comma = mount_str.find(',', pos);
+                if (comma == std::string::npos) comma = mount_str.size();
+                vals[n++] = std::stod(mount_str.substr(pos, comma - pos));
                 pos = comma + 1;
             }
-            g_init_x = vals[0]; g_init_y = vals[1]; g_init_z = vals[2];
-            g_init_qx = vals[3]; g_init_qy = vals[4]; g_init_qz = vals[5]; g_init_qw = vals[6];
+            g_mount_x = vals[0]; g_mount_y = vals[1]; g_mount_z = vals[2];
+            g_mount_qx = vals[3]; g_mount_qy = vals[4]; g_mount_qz = vals[5]; g_mount_qw = vals[6];
         }
     }
 
     if (debug) {
         printf("[fastlio2] Starting FAST-LIO2 + Livox Mid-360 native module\n");
-        if (has_init_pose()) {
-            printf("[fastlio2] init_pose: xyz=(%.3f, %.3f, %.3f) quat=(%.4f, %.4f, %.4f, %.4f)\n",
-                   g_init_x, g_init_y, g_init_z, g_init_qx, g_init_qy, g_init_qz, g_init_qw);
-        }
+        printf("[fastlio2] mount %s → %s: xyz=(%.3f, %.3f, %.3f) quat=(%.4f, %.4f, %.4f, %.4f)\n",
+               g_body_frame.c_str(), g_sensor_frame.c_str(),
+               g_mount_x, g_mount_y, g_mount_z,
+               g_mount_qx, g_mount_qy, g_mount_qz, g_mount_qw);
         printf("[fastlio2] lidar topic: %s\n",
                g_lidar_topic.empty() ? "(disabled)" : g_lidar_topic.c_str());
         printf("[fastlio2] odometry topic: %s\n",
@@ -568,7 +478,7 @@ int main(int argc, char** argv) {
         printf("[fastlio2] tf topic: %s\n",
                g_tf_topic.empty() ? "(disabled)" : g_tf_topic.c_str());
         printf("[fastlio2] static mount tf: %s → %s @ %.1f Hz\n",
-               g_child_frame_id.c_str(),
+               g_body_frame.c_str(),
                g_sensor_frame.c_str(),
                g_mount_publish_hz);
         printf("[fastlio2] config: %s\n", config_path.c_str());
@@ -645,7 +555,7 @@ int main(int argc, char** argv) {
             static_cast<int64_t>(1e6 / map_freq));
     }
 
-    // Static mount TF (child_frame_id → sensor_frame).  Emitted once
+    // Static mount TF (body_frame → sensor_frame).  Emitted once
     // immediately and then re-emitted at mount_publish_hz so consumers
     // that connect late still find it in their TF buffer.  Disabled
     // when mount_publish_hz <= 0 or tf_channel is empty.
