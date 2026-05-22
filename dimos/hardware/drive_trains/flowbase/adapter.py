@@ -107,7 +107,7 @@ class FlowBaseAdapter:
             return self._last_velocities.copy()
 
     def read_odometry(self) -> list[float] | None:
-        """Read odometry from FlowBase as [x, y, theta]."""
+        """Read odometry from FlowBase as [x, y, theta] in standard frame."""
         if not self._connected or not self._client:
             return None
 
@@ -118,9 +118,13 @@ class FlowBaseAdapter:
             if odom is None:
                 return None
 
-            translation = odom["translation"]  # [x, y]
-            rotation = odom["rotation"]  # theta in radians
-            return [float(translation[0]), float(translation[1]), float(rotation)]
+            translation = odom["translation"]  # [x, y] in FlowBase frame
+            rotation = odom["rotation"]  # theta (rad) in FlowBase frame
+            return [
+                float(translation[0]),
+                -float(translation[1]),
+                -float(rotation),
+            ]
         except Exception as e:
             logger.error(f"Error reading FlowBase odometry: {e}")
             return None
