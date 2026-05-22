@@ -170,7 +170,7 @@ class UnityBridgeConfig(ModuleConfig):
     unity_extra_args: list[str] = Field(default_factory=list)
 
     frame_id: str = "map"
-    child_frame_id: str = "current_point"
+    child_frame_id: str = "base_link"
     parent_frame: str = "world"
 
     # Vehicle parameters

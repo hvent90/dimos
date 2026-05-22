@@ -97,7 +97,7 @@ class LocalPlannerConfig(NativeModuleConfig):
 
     paths_dir: str = ""
 
-    body_frame: str = "current_point"
+    body_frame: str = "base_link"
 
     vehicle_length: float = 0.5  # m
     vehicle_width: float = 0.5  # m

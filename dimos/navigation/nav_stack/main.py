@@ -52,8 +52,8 @@ def create_nav_stack(
     record: bool = False,
     world_frame: str = "world",
     map_frame: str = "map",
-    start_point_frame: str = "start_point",
-    current_point_frame: str = "current_point",
+    odom_frame: str = "odom",
+    base_link_frame: str = "base_link",
     terrain_analysis: dict[str, Any] | None = None,
     terrain_map_ext: dict[str, Any] | None = None,
     local_planner: dict[str, Any] | None = None,
@@ -79,7 +79,7 @@ def create_nav_stack(
         far_planner_config.setdefault("vehicle_height", vehicle_height)
 
     local_planner_config = {**(local_planner or {})}
-    local_planner_config.setdefault("body_frame", current_point_frame)
+    local_planner_config.setdefault("body_frame", base_link_frame)
     path_follower_config = {**(path_follower or {})}
     simple_planner_config = {**(simple_planner or {})}
     if waypoint_threshold is not None:
@@ -168,8 +168,8 @@ def create_nav_stack(
             **{
                 "parent_frame": world_frame,
                 "frame_id": map_frame,
-                "child_frame_id": start_point_frame,
-                "body_frame": current_point_frame,
+                "child_frame_id": odom_frame,
+                "body_frame": base_link_frame,
                 **(pgo or {}),
             }
         ).remappings([(PGO, "registered_scan", "lidar"), (PGO, "global_map", "_pgo_global_map")]),
@@ -178,7 +178,7 @@ def create_nav_stack(
         merged_simple_planner_config: dict[str, Any] = {
             "replan_rate": replan_rate,
             "frame_id": map_frame,
-            "body_frame": current_point_frame,
+            "body_frame": base_link_frame,
         }
         if vehicle_height is not None:
             merged_simple_planner_config["ground_offset_below_robot"] = vehicle_height
@@ -234,7 +234,7 @@ def create_nav_stack(
         modules.append(
             NavRecord.blueprint(
                 **{
-                    "default_frame_id": current_point_frame,
+                    "default_frame_id": base_link_frame,
                     **(nav_record or {}),
                 }
             ).remappings([(NavRecord, "global_map", "_pgo_global_map")])
