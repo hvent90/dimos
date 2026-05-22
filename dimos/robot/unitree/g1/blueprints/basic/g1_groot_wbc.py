@@ -49,6 +49,7 @@ from dimos.control.tasks.g1_groot_wbc_task import (
 from dimos.core.coordination.blueprints import Blueprint, autoconnect
 from dimos.core.global_config import global_config
 from dimos.core.transport import LCMTransport
+from dimos.experimental.pimsim.entity import EntityStateBatch
 from dimos.hardware.whole_body.spec import WholeBodyConfig
 from dimos.msgs.geometry_msgs.PointStamped import PointStamped
 from dimos.msgs.geometry_msgs.PoseStamped import PoseStamped
@@ -362,6 +363,12 @@ def _sim_support_blueprints() -> tuple[Blueprint, ...]:
                 {
                     ("pose", PoseStamped): LCMTransport("/odom", PoseStamped),
                     ("lidar", PointCloud2): LCMTransport("/lidar", PointCloud2),
+                    # Dynamic-entity batch from BabylonSceneViewerModule
+                    # (Add button in HUD spawns; rust lidar folds entity
+                    # primitives into per-ray analytical intersections).
+                    ("entity_states", EntityStateBatch): LCMTransport(
+                        "/entity_state_batch", EntityStateBatch
+                    ),
                 }
             ),
         )
@@ -470,6 +477,11 @@ def _babylon_blueprint(viewer_mjcf_path: str | Path, cmd_vel_topic: str) -> Blue
             ("clicked_point", PointStamped): LCMTransport("/clicked_point", PointStamped),
             ("point_goal", PointStamped): LCMTransport("/point_goal", PointStamped),
             ("workspace_image", Image): LCMTransport("/workspace_image", Image),
+            # Dynamic-entity batch out — picked up by SceneLidarModule
+            # subscriber so the lidar pointcloud includes Havok entities.
+            ("entity_state_batch", EntityStateBatch): LCMTransport(
+                "/entity_state_batch", EntityStateBatch
+            ),
         }
     )
 

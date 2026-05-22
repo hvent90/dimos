@@ -18,6 +18,7 @@ from __future__ import annotations
 
 from dimos.core.native_module import NativeModule, NativeModuleConfig
 from dimos.core.stream import In, Out
+from dimos.experimental.pimsim.entity import EntityStateBatch
 from dimos.msgs.geometry_msgs.PoseStamped import PoseStamped
 from dimos.msgs.sensor_msgs.PointCloud2 import PointCloud2
 
@@ -44,11 +45,16 @@ class SceneLidarConfig(NativeModuleConfig):
 
 
 class SceneLidarModule(NativeModule):
-    """Raycast lidar from the cooked browser collision scene."""
+    """Raycast lidar from the cooked browser collision scene.
+
+    Optionally subscribes to ``entity_states`` for dynamic obstacle
+    coverage — see ``dimos.experimental.pimsim`` for the publisher.
+    """
 
     config: SceneLidarConfig
 
     pose: In[PoseStamped]
+    entity_states: In[EntityStateBatch]
     lidar: Out[PointCloud2]
 
 
