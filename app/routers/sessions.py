@@ -65,6 +65,14 @@ class BridgeDatachannelResponse(BaseModel):
     cmd_channel_id: int
     state_channel_id: int
     state_back_channel_id: int
+    # CF renegotiation offer from the post-bridge video pull. None when the
+    # robot published no video or the pull failed (video degrades, datachannels
+    # still work). Operator answers it via /renegotiate-answer.
+    video_offer: str | None = None
+
+
+class RenegotiateAnswerRequest(BaseModel):
+    sdp_answer: str
 
 
 class HeartbeatRequest(BaseModel):
@@ -262,25 +270,17 @@ async def join_session(
                 detail=f"Session already has operator: {session.operator_id}",
             )
 
-    # Subscribe the operator to the robot's published video by declaring a
-    # remote track in this SAME /sessions/new call — symmetric to the
-    # publisher side. The operator's offer already carries the recvonly
-    # m=video, so CF binds the routed track and returns it in the normal join
-    # answer (no post-connect renegotiation). Skipped if the robot published
-    # no video, or for non-operator roles.
-    tracks: list[dict] | None = None
-    if session.published_video_track_name and body.role == "operator":
-        tracks = [
-            {
-                "location": "remote",
-                "sessionId": session.cf_session_id,
-                "trackName": session.published_video_track_name,
-            }
-        ]
-
-    # Create a new CF session for this operator (they get their own PeerConnection)
+    # Operator joins datachannels-clean: NO remote video track declared here.
+    # Pulling the robot's video at /sessions/new sets
+    # requiresImmediateRenegotiation, which the single-shot join can't satisfy
+    # — leaving the operator session half-negotiated so every later
+    # /datachannels/new returns "session not ready". The bare recvonly m=video
+    # the operator's offer already carries is fine on its own (proven: a
+    # video-disabled robot still bridged). Video is pulled AFTER the bridge,
+    # once the operator PC is connected and can renegotiate — see
+    # bridge_datachannel.
     try:
-        cf_result = await cf_client.create_session(body.sdp_offer, tracks=tracks)
+        cf_result = await cf_client.create_session(body.sdp_offer)
     except CloudflareRealtimeError as e:
         raise HTTPException(status_code=502, detail=f"Cloudflare error: {e.detail}")
     except Exception as e:
@@ -325,11 +325,12 @@ async def bridge_datachannel(
     if not session.operator_cf_session_id or not session.cf_session_id:
         raise HTTPException(status_code=409, detail="CF sessions not ready")
 
-    # Note: video publishing is NOT done here — the robot's video track is
-    # declared at create_session time (CF /sessions/new tracks array), which
-    # is the only way a publisher binds cleanly. The operator subscribe is
-    # likewise declared at join_session. bridge-datachannel is datachannels
-    # only.
+    # Robot video PUBLISH is declared at create_session (CF /sessions/new
+    # tracks array) — the only way a publisher binds cleanly. The operator
+    # video SUBSCRIBE is pulled at the end of THIS handler, after datachannels
+    # are bridged: a remote pull triggers renegotiation that only works on the
+    # connected operator PC. Datachannels are bridged first so a video failure
+    # can degrade gracefully without losing commands/clock-sync.
 
     # CF constraint: each /datachannels/new request body's `dataChannels`
     # array must be homogeneous in direction — all `location: "local"` OR
@@ -411,11 +412,66 @@ async def bridge_datachannel(
         STATE_BACK_CHANNEL_NAME: robot_pub_ids[STATE_BACK_CHANNEL_NAME],
     }
 
+    # Pull the robot's video onto the now-connected operator session. A remote
+    # pull sets requiresImmediateRenegotiation — return CF's offer so the
+    # operator can answer it via /renegotiate-answer. Best-effort: a pull
+    # failure must NOT 502 the bridge (commands + clock-sync already work, so
+    # degrade to no-video rather than tearing down a working session).
+    video_offer: str | None = None
+    if session.published_video_track_name:
+        try:
+            pull = await cf_client.add_tracks(
+                session.operator_cf_session_id,
+                [
+                    {
+                        "location": "remote",
+                        "sessionId": session.cf_session_id,
+                        "trackName": session.published_video_track_name,
+                    }
+                ],
+            )
+            sd = pull.get("sessionDescription") or {}
+            if pull.get("requiresImmediateRenegotiation") and sd.get("sdp"):
+                video_offer = sd["sdp"]
+        except Exception as e:
+            log.error(
+                "Video pull failed for session=%s: %r — video disabled",
+                session.id, e,
+            )
+
     return BridgeDatachannelResponse(
         cmd_channel_id=op_pub_ids[CMD_CHANNEL_NAME],
         state_channel_id=op_pub_ids[STATE_CHANNEL_NAME],
         state_back_channel_id=op_sub_ids[STATE_BACK_CHANNEL_NAME],
+        video_offer=video_offer,
     )
+
+
+@router.post("/{session_id}/renegotiate-answer")
+async def renegotiate_answer(
+    session_id: str,
+    body: RenegotiateAnswerRequest,
+    user: dict = Depends(get_current_user),
+    db: AsyncSession = Depends(get_db),
+):
+    """Operator submits its SDP answer to the video-pull renegotiation offer
+    returned by bridge-datachannel."""
+    session = await db.get(TeleopSession, session_id)
+    if not session:
+        raise HTTPException(status_code=404, detail="Session not found")
+    if session.operator_id != user["sub"]:
+        raise HTTPException(status_code=403, detail="Not the bound operator")
+    if not session.operator_cf_session_id:
+        raise HTTPException(status_code=409, detail="Operator CF session not ready")
+
+    try:
+        await cf_client.renegotiate(session.operator_cf_session_id, body.sdp_answer)
+    except CloudflareRealtimeError as e:
+        raise HTTPException(
+            status_code=502,
+            detail=f"Cloudflare renegotiate failed: {e.detail}",
+        )
+    return {"ok": True}
 
 
 @router.post("/{session_id}/leave")

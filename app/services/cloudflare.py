@@ -68,6 +68,53 @@ class CloudflareRealtime:
             "sdp_answer": data["sessionDescription"]["sdp"],
         }
 
+    async def add_tracks(self, session_id: str, tracks: list[dict]) -> dict:
+        """Pull/push tracks onto an existing connected session via /tracks/new.
+
+        Used for the operator's video subscribe AFTER its PC is connected and
+        datachannels are bridged. A remote (pulled) track makes CF set
+        `requiresImmediateRenegotiation: true` in the response — the caller
+        must drive setRemoteDescription(offer)/answer on the operator PC and
+        POST the answer back via renegotiate(). Returns the raw CF response
+        (sessionDescription + requiresImmediateRenegotiation)."""
+        url = f"{self.base_url}/sessions/{session_id}/tracks/new"
+        async with httpx.AsyncClient() as client:
+            resp = await client.post(
+                url,
+                headers=self.headers,
+                json={"tracks": tracks},
+                timeout=30.0,
+            )
+        if resp.status_code not in (200, 201):
+            raise CloudflareRealtimeError(resp.status_code, resp.text)
+        data = resp.json()
+        if data.get("errorCode"):
+            raise CloudflareRealtimeError(
+                resp.status_code,
+                f"{data['errorCode']}: {data.get('errorDescription', '')}",
+            )
+        return data
+
+    async def renegotiate(self, session_id: str, sdp_answer: str) -> None:
+        """Submit the operator's SDP answer after a pull set
+        requiresImmediateRenegotiation. PUT /sessions/{id}/renegotiate."""
+        url = f"{self.base_url}/sessions/{session_id}/renegotiate"
+        async with httpx.AsyncClient() as client:
+            resp = await client.put(
+                url,
+                headers=self.headers,
+                json={"sessionDescription": {"type": "answer", "sdp": sdp_answer}},
+                timeout=30.0,
+            )
+        if resp.status_code not in (200, 201):
+            raise CloudflareRealtimeError(resp.status_code, resp.text)
+        data = resp.json()
+        if data.get("errorCode"):
+            raise CloudflareRealtimeError(
+                resp.status_code,
+                f"{data['errorCode']}: {data.get('errorDescription', '')}",
+            )
+
     async def add_datachannels(self, session_id: str, channels: list[dict]) -> list[dict]:
         url = f"{self.base_url}/sessions/{session_id}/datachannels/new"
         attempts = 1 + len(_ADD_DC_RETRY_DELAYS_SEC)
