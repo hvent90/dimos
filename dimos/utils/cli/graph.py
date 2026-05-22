@@ -123,6 +123,9 @@ def _find_package_root(filepath: str) -> str | None:
 
 
 def _load_blueprints(python_file: str) -> list[tuple[str, Blueprint]]:
+    # Note: registers the loaded module in sys.modules under its real dotted name so
+    # relative imports work. Intended for one-shot CLI use; calling this twice in a
+    # long-running process would replace the prior entry under the same dotted name.
     filepath = os.path.abspath(python_file)
     if not os.path.isfile(filepath):
         raise FileNotFoundError(filepath)
