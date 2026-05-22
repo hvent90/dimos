@@ -27,7 +27,7 @@ from typing import Any
 from dimos.core.coordination.blueprints import Blueprint, autoconnect
 from dimos.core.coordination.module_coordinator import ModuleCoordinator
 from dimos.navigation.nav_stack.evaluator.evaluator import Evaluator
-from dimos.navigation.nav_stack.evaluator.straight_line_planner import StraightLinePlanner
+from dimos.navigation.nav_stack.modules.mls_planner.mls_planner import MLSPlanner
 from dimos.visualization.rerun.bridge import RerunBridgeModule
 
 _POSE_MARKER_RADIUS = 0.4
@@ -58,13 +58,13 @@ def _render_global_map(msg: Any) -> Any:
 
 
 def _render_surface_map(msg: Any) -> Any:
-    return msg.to_rerun(mode="boxes", size=0.1)
+    return msg.to_rerun(mode="boxes", size=0.1, colors=[128, 0, 128])  # purple
 
 
 def create_evaluator_blueprint() -> Blueprint:
     return autoconnect(
         Evaluator.blueprint(),
-        StraightLinePlanner.blueprint(),
+        MLSPlanner.blueprint(),
         RerunBridgeModule.blueprint(
             visual_override={
                 "world/start_pose": _render_start_pose,
