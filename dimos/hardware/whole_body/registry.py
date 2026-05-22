@@ -82,12 +82,8 @@ class WholeBodyAdapterRegistry:
         import dimos.hardware.whole_body as hw_pkg
         import dimos.simulation.adapters.whole_body as sim_pkg
 
-        self._discover_in(
-            "dimos.hardware.whole_body", hw_pkg.__path__[0], max_depth=2
-        )
-        self._discover_flat(
-            "dimos.simulation.adapters.whole_body", sim_pkg.__path__[0]
-        )
+        self._discover_in("dimos.hardware.whole_body", hw_pkg.__path__[0], max_depth=2)
+        self._discover_flat("dimos.simulation.adapters.whole_body", sim_pkg.__path__[0])
 
     def _discover_flat(self, pkg_path: str, dir_path: str) -> None:
         """Discovery variant for the simulation adapters layout: each

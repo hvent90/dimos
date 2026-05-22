@@ -447,14 +447,12 @@ class ManipShmReader:
         n_kp = min(len(kp), MAX_JOINTS)
         n_kd = min(len(kd), MAX_JOINTS)
         n_tau = min(len(tau), MAX_JOINTS)
-        np.ndarray((MAX_JOINTS,), dtype=np.float64, buffer=self.shm.pos_t.buf)[:n_pos] = (
-            positions[:n_pos]
-        )
+        np.ndarray((MAX_JOINTS,), dtype=np.float64, buffer=self.shm.pos_t.buf)[:n_pos] = positions[
+            :n_pos
+        ]
         np.ndarray((MAX_JOINTS,), dtype=np.float64, buffer=self.shm.kp_t.buf)[:n_kp] = kp[:n_kp]
         np.ndarray((MAX_JOINTS,), dtype=np.float64, buffer=self.shm.kd_t.buf)[:n_kd] = kd[:n_kd]
-        np.ndarray((MAX_JOINTS,), dtype=np.float64, buffer=self.shm.tau_t.buf)[:n_tau] = tau[
-            :n_tau
-        ]
+        np.ndarray((MAX_JOINTS,), dtype=np.float64, buffer=self.shm.tau_t.buf)[:n_tau] = tau[:n_tau]
         self._set_command_mode(CMD_MODE_PD_TAU)
         self._increment_seq(SEQ_KP_CMD)
         self._increment_seq(SEQ_KD_CMD)
