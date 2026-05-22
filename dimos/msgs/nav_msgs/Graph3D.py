@@ -35,9 +35,6 @@ if TYPE_CHECKING:
     from rerun._baseclasses import Archetype
 
 
-# Default node metadata_id → RGBA. Callers can override via the
-# `node_colors` kwarg on to_rerun*; these defaults match the far_planner
-# node-type enum (0=normal, 1=odom, 2=goal, 3=frontier, 4=navpoint).
 _DEFAULT_NODE_COLORS: dict[int, tuple[int, int, int, int]] = {
     0: (180, 180, 180, 200),
     1: (0, 255, 0, 255),
@@ -47,7 +44,6 @@ _DEFAULT_NODE_COLORS: dict[int, tuple[int, int, int, int]] = {
 }
 _DEFAULT_NODE_COLOR = (200, 200, 200, 180)
 
-# Edge-type → RGBA, soft default (caller can override via to_rerun args).
 _DEFAULT_EDGE_COLORS: dict[int, tuple[int, int, int, int]] = {
     0: (0, 220, 100, 200),  # odom / traversable — green
     1: (255, 180, 0, 220),  # loop_closure / partial — yellow

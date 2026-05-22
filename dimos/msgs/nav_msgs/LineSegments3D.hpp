@@ -61,6 +61,7 @@ public:
             p1.pose.orientation.x = 0.0;
             p1.pose.orientation.y = 0.0;
             p1.pose.orientation.z = 0.0;
+            // TODO: remove LineSegments3D entirely because of stuff like this:
             // orientation.w on the first endpoint carries traversability
             // (see LineSegments3D.py).
             p1.pose.orientation.w = s.traversability;
