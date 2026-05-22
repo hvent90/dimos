@@ -1,5 +1,6 @@
 """Session lifecycle endpoints."""
 
+import asyncio
 import logging
 from datetime import datetime, timezone
 
@@ -427,29 +428,60 @@ async def bridge_datachannel(
         video_status = "no_published_track"
         log.warning("bridge: no published_video_track_name session=%s", session.id)
     else:
-        try:
-            pull = await cf_client.add_tracks(
-                session.operator_cf_session_id,
-                [
-                    {
-                        "location": "remote",
-                        "sessionId": session.cf_session_id,
-                        "trackName": session.published_video_track_name,
-                    }
-                ],
-            )
-            sd = pull.get("sessionDescription") or {}
-            if pull.get("requiresImmediateRenegotiation") and sd.get("sdp"):
-                video_offer = sd["sdp"]
-            else:
-                video_status = "pull_no_renegotiation"
-                log.warning(
-                    "bridge: video pull no renegotiation session=%s track=%s resp=%r",
-                    session.id, session.published_video_track_name, pull,
+        # CF's tracks/new returns a PER-TRACK not_found_track_error ("Track not
+        # found on remote peer ... make sure the publisher is connected and
+        # sending packets") when the robot's RTP hasn't reached the SFU yet — a
+        # propagation race right after connect. The robot IS sending (verified
+        # robot-side: recv() active, currentDirection=sendonly), so retry with
+        # backoff until CF sees the packets — mirrors the add_datachannels
+        # session-not-ready retry.
+        _PULL_RETRY_DELAYS = (0.3, 0.6, 1.0, 1.5, 2.0)
+        pull: dict = {}
+        for attempt in range(1 + len(_PULL_RETRY_DELAYS)):
+            try:
+                pull = await cf_client.add_tracks(
+                    session.operator_cf_session_id,
+                    [
+                        {
+                            "location": "remote",
+                            "sessionId": session.cf_session_id,
+                            "trackName": session.published_video_track_name,
+                        }
+                    ],
                 )
-        except Exception as e:
-            video_status = f"pull_error: {e}"
-            log.error("Video pull failed session=%s: %r", session.id, e)
+            except Exception as e:
+                video_status = f"pull_error: {e}"
+                log.error("Video pull failed session=%s: %r", session.id, e)
+                break
+
+            sd = pull.get("sessionDescription") or {}
+            if sd.get("sdp"):
+                # Use CF's offer whenever present — don't also require the
+                # requiresImmediateRenegotiation flag (CF omits it when the
+                # operator's recvonly m=video section already existed).
+                video_offer = sd["sdp"]
+                video_status = "ok"
+                break
+
+            track_errs = [
+                t.get("errorCode") for t in pull.get("tracks", []) if t.get("errorCode")
+            ]
+            if "not_found_track_error" in track_errs and attempt < len(_PULL_RETRY_DELAYS):
+                delay = _PULL_RETRY_DELAYS[attempt]
+                log.warning(
+                    "bridge: video pull not_found_track (publisher packets not "
+                    "visible yet) session=%s attempt=%d retrying in %.2fs",
+                    session.id, attempt + 1, delay,
+                )
+                await asyncio.sleep(delay)
+                continue
+
+            video_status = f"pull_no_offer: {track_errs or 'no_sdp'}"
+            log.warning(
+                "bridge: video pull gave no offer session=%s track=%s resp=%r",
+                session.id, session.published_video_track_name, pull,
+            )
+            break
 
     return BridgeDatachannelResponse(
         cmd_channel_id=op_pub_ids[CMD_CHANNEL_NAME],
