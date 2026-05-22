@@ -1,0 +1,54 @@
+- pr: 2131
+  comment_id: 3254780591
+  author: greptile-apps
+  file: dimos/navigation/nav_stack/modules/apply_closure/apply_closure.py
+  line: null
+  problem: |
+    P1 — Output is published on `self.corrected_global_map`, but the class declares
+    `map_override: Out[DynamicCloud]`. Every loop-closure event would raise AttributeError
+    and the closure-apply pipeline would be silently dead.
+  solution: |
+    skipped: stale — current code at line 277 already does `self.map_override.publish(corrected)`,
+    matching greptile's suggested fix. Greptile was likely looking at an older revision.
+  commit: null
+- pr: 2131
+  comment_id: 3254780620
+  author: greptile-apps
+  file: dimos/mapping/ray_tracing/rust/src/main.rs
+  line: 460
+  problem: |
+    P2 — Hardcoded DDA iteration cap (`max_iter = 4096`) may silently truncate long rays.
+    A 30 m near-axis-aligned diagonal at 0.1 m voxel can need ~900 cells today, but the cap
+    masks future range/voxel-size changes. Greptile suggests deriving from
+    ceil(max_range / voxel_size * sqrt(3)).
+  solution: |
+    skipped — fix lives in `dimos/mapping/ray_tracing/rust/src/main.rs`, which is one of the
+    2 deferred conflict files; HEAD's Rust binary is currently retained via `git checkout
+    --ours` from the main merge. Touching this file before the binary divergence is
+    resolved would conflict again. Defer until Jeff picks one of the two Rust binaries.
+  commit: null
+- pr: 2131
+  comment_id: 3254780663
+  author: greptile-apps
+  file: dimos/msgs/nav_msgs/DynamicCloud.py
+  line: 182
+  problem: |
+    P2 — `timestamp_nanos = int(self.ts * 1_000_000_000) if self.ts else 0` treats `ts=0.0`
+    as "no timestamp" via Python truthiness. `lcm_decode` has the matching asymmetry. This
+    is self-consistent but a comment documenting the `0 = unset` convention would help.
+  solution: |
+    skipped — the suggested change is to add a documentation comment about the `0 = unset`
+    convention. Greptile itself notes "this is self-consistent". Documentation-only nit,
+    not a behavior change; leaving for Jeff to add at his discretion.
+  commit: null
+- pr: 2131
+  comment_id: 3254844181
+  author: jeff-hykin
+  file: dimos/memory2/module.py
+  line: 309
+  problem: |
+    (will clean this up)
+  solution: |
+    Author self-todo (not a review request). Acknowledged and recorded so future autofix
+    runs do not re-flag it as unaddressed.
+  commit: null
