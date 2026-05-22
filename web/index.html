@@ -728,25 +728,26 @@ angular.z = 0</pre>
                 stateBackChannel.onclose = () => console.info('[state-back-channel] closed');
             }
 
-            // Video subscribe (Phase 4) — DIAGNOSTIC ONLY for now. The broker
-            // returns CF's renegotiated SDP in video_sdp_answer, but applying
-            // it post-connect is a real renegotiation we haven't designed yet:
-            // the PC is 'stable' here, so setRemoteDescription(answer) would
-            // throw, and a half-applied offer could break the working
-            // cmd/clock-sync datachannels. So we only LOG it — combined with
-            // the broker's add_tracks response log, this pins down CF's exact
-            // shape so the renegotiation can be written correctly next.
-            if (bridge.video_sdp_answer) {
-                const sdp = bridge.video_sdp_answer;
-                // a=setup:actpass ⇒ offer; a=setup:active/passive ⇒ answer.
-                const setup = (sdp.match(/^a=setup:(\S+)/m) || [])[1] || 'unknown';
-                const inferredType = setup === 'actpass' ? 'offer'
-                    : (setup === 'active' || setup === 'passive') ? 'answer' : 'unknown';
-                console.log('[video] got video_sdp_answer: len=%d signalingState=%s a=setup:%s inferredType=%s',
-                    sdp.length, pc.signalingState, setup, inferredType);
-                console.log('[video] sdp head:\n%s', sdp.slice(0, 500));
+            // Video subscribe (Phase 4). Broker pulled the robot's track onto
+            // our session and returned CF's renegotiation OFFER. Apply it
+            // (setRemote → answer → POST /renegotiate-answer) so the pulled
+            // m=video finalizes and ontrack fires. cmd/state channels are
+            // negotiated SCTP ids, unaffected by this renegotiation.
+            // Best-effort: a failure leaves commands + clock sync intact.
+            if (bridge.video_offer) {
+                try {
+                    await pc.setRemoteDescription({ type: 'offer', sdp: bridge.video_offer });
+                    const answer = await pc.createAnswer();
+                    await pc.setLocalDescription(answer);
+                    await api('POST', `/sessions/${sessionId}/renegotiate-answer`, {
+                        sdp_answer: pc.localDescription.sdp,
+                    });
+                    console.info('[video] renegotiation complete — awaiting frames');
+                } catch (err) {
+                    console.warn('[video] renegotiation failed (commands unaffected):', err);
+                }
             } else {
-                console.info('[video] no video_sdp_answer (no published video, or older broker)');
+                console.info('[video] no video_offer (no published video, or older broker)');
             }
         }
 
