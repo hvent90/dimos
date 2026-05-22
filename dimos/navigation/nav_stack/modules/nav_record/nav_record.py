@@ -37,7 +37,7 @@ from dimos.msgs.std_msgs.Int8 import Int8
 class NavRecordConfig(RecorderConfig):
     db_path: str = "nav_recording.db"
     # Robot body frame, for unstamped messages.
-    default_frame_id: str = "current_point"
+    default_frame_id: str = "base_link"
     # Generous so PGO iSAM2 stalls (~500ms) don't cause lookup misses.
     tf_tolerance: float = 3.0
 

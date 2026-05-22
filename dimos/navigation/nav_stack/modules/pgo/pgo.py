@@ -45,7 +45,7 @@ class PGOConfig(NativeModuleConfig):
     frame_id: str = "map"
     child_frame_id: str = "odom"
     parent_frame: str = "world"
-    body_frame: str = "current_point"
+    body_frame: str = "base_link"
     tf_channel: str = "/tf#tf2_msgs.TFMessage"
 
     # The C++ binary's CLI args use the legacy frame names.

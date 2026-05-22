@@ -85,7 +85,7 @@ class FastLio2Config(NativeModuleConfig):
     mount: Pose = Pose()
 
     frame_id: str = "odom"
-    child_frame_id: str = "current_point"
+    child_frame_id: str = "base_link"
     sensor_frame: str = "mid360_link"
 
     # FAST-LIO internal processing rates

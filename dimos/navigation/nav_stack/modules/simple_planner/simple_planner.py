@@ -275,7 +275,7 @@ def astar(
 
 class SimplePlannerConfig(ModuleConfig):
     frame_id: str = "map"
-    body_frame: str = "current_point"
+    body_frame: str = "base_link"
 
     cell_size: float = 0.3  # m per cell
     obstacle_height_threshold: float = 0.15  # m above ground
