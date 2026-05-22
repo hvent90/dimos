@@ -16,30 +16,33 @@
 
 Two layers:
 
-* ``DataChannelProvider`` — abstract interface for managing WebRTC
-  DataChannels. Implementations handle signaling, PeerConnection
-  lifecycle, and DataChannel creation for a specific SFU backend
-  (Cloudflare Realtime, LiveKit, etc.).
+* ``DataChannelProvider`` — protocol for managing WebRTC DataChannels.
+  Implementations handle signaling, PeerConnection lifecycle, and
+  DataChannel creation for a specific SFU backend (Cloudflare Realtime,
+  LiveKit, etc.).
 
-* ``WebRTCPubSub`` — thin pubsub facade that delegates to a provider.
-  Exposes the standard ``publish``/``subscribe`` bytes-on-the-wire
-  interface used by other DimOS transports.
+* ``WebRTCPubSub`` — pubsub implementation inheriting from
+  :class:`~dimos.protocol.pubsub.spec.AllPubSub`. Delegates to a
+  provider and conforms to the standard DimOS pubsub interface
+  (publish/subscribe/subscribe_all).
 
 Providers are in ``dimos/protocol/pubsub/impl/webrtc_providers/``.
 """
 
 from __future__ import annotations
 
-from abc import ABC, abstractmethod
 from collections.abc import Callable
+from typing import Any, Protocol, runtime_checkable
 
+from dimos.protocol.pubsub.spec import AllPubSub
 from dimos.utils.logging_config import setup_logger
 
 logger = setup_logger()
 
 
-class DataChannelProvider(ABC):
-    """Abstract interface for WebRTC DataChannel backends.
+@runtime_checkable
+class DataChannelProvider(Protocol):
+    """Protocol for WebRTC DataChannel backends.
 
     A provider manages the WebRTC PeerConnection(s) and exposes
     publish/subscribe semantics over named DataChannels. Implementations
@@ -50,38 +53,47 @@ class DataChannelProvider(ABC):
     The provider handles this transparently.
     """
 
-    @abstractmethod
     def start(self) -> None:
         """Connect to the SFU and establish transport."""
+        ...
 
-    @abstractmethod
     def stop(self) -> None:
         """Disconnect and release resources."""
+        ...
 
-    @abstractmethod
     def publish(self, topic: str, data: bytes) -> None:
         """Send bytes on a named topic/channel."""
+        ...
 
-    @abstractmethod
     def subscribe(self, topic: str, callback: Callable[[bytes, str], None]) -> Callable[[], None]:
         """Subscribe to bytes on a named topic. Returns unsubscribe callable."""
+        ...
 
     @property
-    @abstractmethod
     def is_connected(self) -> bool:
         """Whether the provider is connected and ready."""
+        ...
 
 
-class WebRTCPubSub:
+class WebRTCPubSub(AllPubSub[str, bytes]):
     """Bytes-on-the-wire pubsub over WebRTC DataChannels.
 
+    Inherits from :class:`AllPubSub[str, bytes]`:
+      - TopicT = str (DataChannel name / multiplexed topic)
+      - MsgT = bytes (raw bytes, LCM-encoded or otherwise)
+
     Delegates to a :class:`DataChannelProvider` implementation.
-    Same interface as ``LCMPubSubBase`` and ``BytesSharedMemory``.
+    Satisfies the standard pubsub grid tests in ``test_spec.py``.
+
+    WebRTC DataChannels are inherently "receive all" — messages arrive
+    on a shared multiplexed channel and are demuxed by topic/fingerprint.
+    This matches LCM multicast semantics, hence AllPubSub.
     """
 
     def __init__(self, provider: DataChannelProvider) -> None:
         self._provider = provider
         self._started = False
+        self._all_callbacks: list[Callable[[bytes, str], Any]] = []
 
     @property
     def provider(self) -> DataChannelProvider:
@@ -99,15 +111,44 @@ class WebRTCPubSub:
         self._provider.stop()
         self._started = False
 
-    def publish(self, topic: str, msg: bytes) -> None:
+    def publish(self, topic: str, message: bytes) -> None:
+        """Publish raw bytes to a named DataChannel/topic."""
         if not self._started:
             self.start()
-        self._provider.publish(topic, msg)
+        self._provider.publish(topic, message)
 
     def subscribe(self, topic: str, callback: Callable[[bytes, str], None]) -> Callable[[], None]:
+        """Subscribe to raw bytes on a topic. Callback is (data, topic)."""
         if not self._started:
             self.start()
-        return self._provider.subscribe(topic, callback)
+
+        # Wrap callback to also fan-out to subscribe_all listeners
+        def _wrapped(data: bytes, t: str) -> None:
+            callback(data, t)
+            for all_cb in self._all_callbacks:
+                try:
+                    all_cb(data, t)
+                except Exception:
+                    logger.exception("subscribe_all callback error")
+
+        return self._provider.subscribe(topic, _wrapped)
+
+    def subscribe_all(self, callback: Callable[[bytes, str], Any]) -> Callable[[], None]:
+        """Subscribe to all messages on all topics.
+
+        Messages received on any subscribed topic are delivered to
+        subscribe_all listeners. This mirrors LCM multicast semantics
+        where the underlying channel delivers everything.
+        """
+        self._all_callbacks.append(callback)
+
+        def _unsub() -> None:
+            try:
+                self._all_callbacks.remove(callback)
+            except ValueError:
+                pass
+
+        return _unsub
 
 
 # Re-export provider availability flag
