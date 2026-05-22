@@ -39,6 +39,7 @@ import argparse
 from dataclasses import asdict
 import json
 import math
+import os
 from pathlib import Path
 import sys
 import threading
@@ -360,82 +361,72 @@ def _run_ladder(
     mode: str,
     use_ff: bool,
     use_profile: bool,
+    coord_rpc: RPCClient,
+    recorder: _JointStateRecorder,
 ) -> tuple[list[OperatingPoint], list[dict]]:
     # Bare stock baseline by default: this is the physical-limit
     # measurement. FF / velocity profile are opt-in comparison arms.
     ff = cfg.feedforward.to_runtime() if use_ff else None
     k_angular = float(cfg.recommended_controller.params.get("k_angular", 0.5))
 
-    # Long-lived: RPC client to the operator's coord + LCM subscription
-    # to /coordinator/joint_state. Shared across all (path, speed) runs.
-    coord_rpc: RPCClient = RPCClient(None, ControlCoordinator)
-    joints = make_twist_base_joints(profile.joints_prefix)
-    recorder = _JointStateRecorder(joint_names=joints)
-    js_sub = LCMTransport(_JOINT_STATE_TOPIC, JointState)
-    js_unsub = js_sub.subscribe(recorder.on_joint_state)
-
     points: list[OperatingPoint] = []
     runs: list[dict] = []  # for the XY trajectory overlay
-    try:
-        for name, path in _path_set().items():
-            for speed in speeds:
-                prof_cfg = (
-                    cfg.velocity_profile.to_runtime(max_linear_speed=speed) if use_profile else None
-                )
-                if mode == "hw":
-                    resp = (
-                        input(
-                            f"\n[{name} v={speed:.2f}] reposition+aim robot, "
-                            f"ENTER=run  s=skip  q=quit: "
-                        )
-                        .strip()
-                        .lower()
+    for name, path in _path_set().items():
+        for speed in speeds:
+            prof_cfg = (
+                cfg.velocity_profile.to_runtime(max_linear_speed=speed) if use_profile else None
+            )
+            if mode == "hw":
+                resp = (
+                    input(
+                        f"\n[{name} v={speed:.2f}] reposition+aim robot, "
+                        f"ENTER=run  s=skip  q=quit: "
                     )
-                    if resp == "q":
-                        raise KeyboardInterrupt
-                    if resp == "s":
-                        print("  skipped")
-                        continue
-                traj, ref = _run_baseline(
-                    profile,
-                    coord_rpc,
-                    recorder,
-                    path,
-                    speed,
-                    k_angular,
-                    ff,
-                    prof_cfg,
-                    timeout_s,
-                    f"{name}@{speed:.2f}",
+                    .strip()
+                    .lower()
                 )
-                # Score/plot against the executed-frame reference (anchored path).
-                s = score_run(ref, traj)
-                points.append(
-                    OperatingPoint(
-                        path=name,
-                        speed=speed,
-                        cte_max=s.cte_max,
-                        cte_rms=s.cte_rms,
-                        arrived=s.arrived,
-                    )
+                if resp == "q":
+                    raise KeyboardInterrupt
+                if resp == "s":
+                    print("  skipped")
+                    continue
+            traj, ref = _run_baseline(
+                profile,
+                coord_rpc,
+                recorder,
+                path,
+                speed,
+                k_angular,
+                ff,
+                prof_cfg,
+                timeout_s,
+                f"{name}@{speed:.2f}",
+            )
+            # Score/plot against the executed-frame reference (anchored path).
+            s = score_run(ref, traj)
+            points.append(
+                OperatingPoint(
+                    path=name,
+                    speed=speed,
+                    cte_max=s.cte_max,
+                    cte_rms=s.cte_rms,
+                    arrived=s.arrived,
                 )
-                runs.append(
-                    {
-                        "path": name,
-                        "speed": speed,
-                        "cte_max": s.cte_max,
-                        "arrived": s.arrived,
-                        "ref": [(p.position.x, p.position.y) for p in ref.poses],
-                        "exec": [(tk.pose.position.x, tk.pose.position.y) for tk in traj.ticks],
-                    }
-                )
-                print(
-                    f"  {name:14} v={speed:.2f}  cte_max={s.cte_max * 100:6.1f}cm  "
-                    f"cte_rms={s.cte_rms * 100:6.1f}cm  arrived={s.arrived}"
-                )
-    finally:
-        js_unsub()
-        coord_rpc.stop_rpc_client()
+            )
+            runs.append(
+                {
+                    "path": name,
+                    "speed": speed,
+                    "cte_max": s.cte_max,
+                    "arrived": s.arrived,
+                    "ref": [(p.position.x, p.position.y) for p in ref.poses],
+                    "exec": [(tk.pose.position.x, tk.pose.position.y) for tk in traj.ticks],
+                }
+            )
+            print(
+                f"  {name:14} v={speed:.2f}  cte_max={s.cte_max * 100:6.1f}cm  "
+                f"cte_rms={s.cte_rms * 100:6.1f}cm  arrived={s.arrived}"
+            )
     return points, runs
 
 
@@ -614,6 +605,12 @@ def main() -> None:
         f"  controller: {arm_desc}\n"
         f"  k_angular={cfg.recommended_controller.params.get('k_angular')}"
     )
+    coord_rpc: RPCClient = RPCClient(None, ControlCoordinator)
+    joints = make_twist_base_joints(profile.joints_prefix)
+    recorder = _JointStateRecorder(joint_names=joints)
+    js_sub = LCMTransport(_JOINT_STATE_TOPIC, JointState)
+    js_unsub = js_sub.subscribe(recorder.on_joint_state)
+
     try:
         points, runs = _run_ladder(
             cfg,
@@ -623,11 +620,16 @@ def main() -> None:
             args.mode,
             use_ff=args.ff,
             use_profile=args.profile,
+            coord_rpc=coord_rpc,
+            recorder=recorder,
         )
     except KeyboardInterrupt:
-        raise SystemExit(
-            "\n[hw] aborted by operator — robot stopped, artifact not modified."
-        ) from None
+        # Try not to lose accumulated data even on operator quit.
+        points, runs = [], []
+        print("\n[hw] aborted by operator — robot stopped, no artifact written.")
+        os._exit(1)
+
+    # === ARTIFACTS FIRST (before any teardown that might segfault) ===
     inversion = invert_tolerance(points, tolerances)
     opm = OperatingPointMap(speeds=speeds, points=points, tolerance_inversion=inversion)
 
@@ -670,6 +672,18 @@ def main() -> None:
                 f"{row.max_speed:.2f} m/s with this profile "
                 f"(binding path: {row.binding_path})."
             )
+
+    # === BEST-EFFORT TEARDOWN (artifacts already on disk) ===
+    for label, cleanup in (("unsubscribe", js_unsub), ("rpc client", coord_rpc.stop_rpc_client)):
+        try:
+            cleanup()
+        except Exception as e:
+            print(f"  [cleanup warning] {label}: {e}")
+
+    # Skip Python interp shutdown to avoid LCM/portal C-library teardown
+    # segfaults. Artifacts are already saved; nothing useful happens after
+    # this point. Exit code 0 (success).
+    os._exit(0)
 
 
 if __name__ == "__main__":
