@@ -408,9 +408,7 @@ class HostedTeleopModule(Module):
         # candidates into the candidate-less section(s) so they're applied.
         answer_sdp = _propagate_bundle_candidates(data["sdp_answer"])
 
-        await self._pc.setRemoteDescription(
-            RTCSessionDescription(sdp=answer_sdp, type="answer")
-        )
+        await self._pc.setRemoteDescription(RTCSessionDescription(sdp=answer_sdp, type="answer"))
 
         # NOTE: do NOT close sctp_init here. Under MAX_BUNDLE the SCTP shares
         # the single bundled ICE/DTLS transport with video; closing the only
