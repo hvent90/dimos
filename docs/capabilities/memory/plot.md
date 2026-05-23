@@ -361,6 +361,7 @@ from dimos.perception.detection.type.detection3d.imageDetections3DPC import (
     ImageDetections3DPC,
 )
 from dimos.robot.unitree.go2.connection import GO2Connection
+from dimos.robot.unitree.go2.config import Go2Config
 from dimos.memory2.vis.space.elements import Box3D
 from dimos.msgs.geometry_msgs.Pose import Pose
 from dimos.msgs.geometry_msgs.Transform import Transform
@@ -369,7 +370,7 @@ from dimos.msgs.geometry_msgs.Vector3 import Vector3
 # TODO We need a nicer way to get optical transform for image streams
 # depending on the source
 def world_to_optical(base_pose):
-    return -(Transform.from_pose("base_link", base_pose) + GO2Connection.static_transforms["camera_link"] + GO2Connection.static_transforms["camera_optical"])
+    return -(Transform.from_pose("base_link", base_pose) + Go2Config.static_absolute_transforms["base_link/camera_link/camera_optical"])
 
 drawing = Space()
 

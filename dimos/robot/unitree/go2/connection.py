@@ -26,8 +26,6 @@ import rerun.blueprint as rrb
 
 from dimos.agents.annotation import skill
 from dimos.constants import (
-    DEFAULT_CAMERA_FRAME,
-    DEFAULT_CAMERA_OPTICAL_FRAME,
     DEFAULT_CAPACITY_COLOR_IMAGE,
     DEFAULT_ROBOT_FRAME,
     DEFAULT_THREAD_JOIN_TIMEOUT,
@@ -47,14 +45,13 @@ if TYPE_CHECKING:
 from dimos.memory2.replay import Replay, resolve_db_path
 from dimos.memory2.store.sqlite import SqliteStore
 from dimos.msgs.geometry_msgs.PoseStamped import PoseStamped
-from dimos.msgs.geometry_msgs.Quaternion import Quaternion
 from dimos.msgs.geometry_msgs.Transform import Transform
 from dimos.msgs.geometry_msgs.Twist import Twist
-from dimos.msgs.geometry_msgs.Vector3 import Vector3
 from dimos.msgs.sensor_msgs.CameraInfo import CameraInfo
 from dimos.msgs.sensor_msgs.Image import Image
 from dimos.msgs.sensor_msgs.PointCloud2 import PointCloud2
 from dimos.robot.unitree.connection import UnitreeWebRTCConnection
+from dimos.robot.unitree.go2.config import Go2Config
 from dimos.utils.decorators.decorators import cached_property, simple_mcache
 
 if sys.version_info < (3, 13):
@@ -74,9 +71,10 @@ class ConnectionConfig(ModuleConfig):
     ip: str = Field(default_factory=lambda m: m["g"].robot_ip)
     mode: Go2Mode = Go2Mode.DEFAULT
     frame_id: str | None = DEFAULT_ROBOT_FRAME
-    camera_link_frame: str = DEFAULT_CAMERA_FRAME
-    camera_optical_frame: str = DEFAULT_CAMERA_OPTICAL_FRAME
     static_publish_rate: float = 1.0
+    static_transforms: dict[str, Transform] = Field(
+        default_factory=lambda: dict(Go2Config.static_relative_transforms)
+    )
 
 
 class Go2ConnectionProtocol(Protocol):
@@ -205,21 +203,6 @@ class GO2Connection(Module, Camera, Pointcloud):
 
     connection: Go2ConnectionProtocol
     camera_info_static: CameraInfo = _camera_info_static()
-    static_transforms = dict(
-        # key=default child transform name
-        camera_link=Transform(
-            translation=Vector3(0.3, 0.0, 0.0),
-            rotation=Quaternion(0.0, 0.0, 0.0, 1.0),
-            frame_id=DEFAULT_ROBOT_FRAME,
-            child_frame_id=DEFAULT_CAMERA_FRAME,
-        ),
-        camera_optical=Transform(
-            translation=Vector3(0.0, 0.0, 0.0),
-            rotation=Quaternion(-0.5, 0.5, -0.5, 0.5),
-            frame_id=DEFAULT_CAMERA_FRAME,
-            child_frame_id=DEFAULT_CAMERA_OPTICAL_FRAME,
-        ),
-    )
     _static_publish_thread: Thread | None = None
     _latest_video_frame: Image | None = None
 
@@ -289,24 +272,37 @@ class GO2Connection(Module, Camera, Pointcloud):
             self.odom.publish(msg)
 
     def _static_publish(self) -> None:
-        frame_remap = {
-            DEFAULT_ROBOT_FRAME: self.frame_id,
-            DEFAULT_CAMERA_FRAME: self.config.camera_link_frame,
-            DEFAULT_CAMERA_OPTICAL_FRAME: self.config.camera_optical_frame,
+        config_frame_remap = {
+            Go2Config.body_frame: self.frame_id,
         }
+        # remape the frame_id
+        stamped_statics = [
+            Transform(
+                translation=transform.translation,
+                rotation=transform.rotation,
+                frame_id=config_frame_remap.get(transform.frame_id, transform.frame_id),
+                child_frame_id=config_frame_remap.get(
+                    transform.child_frame_id, transform.child_frame_id
+                ),
+            )
+            for transform in self.config.static_transforms.values()
+        ]
+
         if self.config.static_publish_rate > 0:
             period = 1.0 / self.config.static_publish_rate
             while True:
-                stamped_statics = [
+                now = time.time()
+                self.tf.publish(
+                    # reconstructed here to refresh the timestamp
                     Transform(
-                        translation=t.translation,
-                        rotation=t.rotation,
-                        frame_id=frame_remap.get(t.frame_id, t.frame_id),
-                        child_frame_id=frame_remap.get(t.child_frame_id, t.child_frame_id),
+                        translation=transform.translation,
+                        rotation=transform.rotation,
+                        frame_id=transform.frame_id,
+                        child_frame_id=transform.child_frame_id,
+                        ts=now,
                     )
-                    for t in self.static_transforms.values()
-                ]
-                self.tf.publish(*stamped_statics)
+                    for transform in stamped_statics
+                )
                 self.camera_info.publish(self.camera_info_static)
                 time.sleep(period)
 
