@@ -64,6 +64,10 @@ class Config(ModuleConfig):
     # Camera optical frame name we look up the extrinsic against. The bridge
     # / static_tf publisher should publish ``camera_optical -> <lidar_frame>``.
     camera_optical_frame: str = "camera_optical"
+    # Drop points whose projected pixel lands within ``border_margin`` of the
+    # image edge. Wide-angle / fisheye distortion gets unreliable near edges
+    # — bumping this trades coverage for color fidelity. 0 disables.
+    border_margin: int = 0
 
 
 def color_pointcloud(
@@ -71,6 +75,7 @@ def color_pointcloud(
     image: Image,
     camera_info: CameraInfo,
     T_camera_lidar: np.ndarray,
+    border_margin: int = 0,
 ) -> tuple[np.ndarray, np.ndarray]:
     """Pure projection + nearest-neighbour color sampling.
 
@@ -79,12 +84,16 @@ def color_pointcloud(
         image: latest ``Image`` to sample from. BGR is converted to RGB.
         camera_info: intrinsics + distortion model.
         T_camera_lidar: ``(4, 4)`` SE(3) such that ``p_cam = T @ p_lidar``.
+        border_margin: pixels within ``border_margin`` of any image edge are
+            treated as invalid. Useful for fisheye / wide-angle cameras
+            whose distortion is unreliable near the edges. ``0`` (default)
+            disables the extra filter.
 
     Returns:
-        ``(valid_positions, valid_colors)`` — only the points that landed in
-        front of the camera *and* inside the image. Positions are returned in
-        the *original lidar frame* (unchanged from input). Colors are ``uint8``
-        ``(M, 3)`` RGB.
+        ``(positions, colors)`` — only the points that landed in front of the
+        camera *and* inside the image (and outside the border margin, if any).
+        Positions are in the *original lidar frame* (unchanged from input).
+        Colors are ``uint8`` ``(M, 3)`` RGB.
     """
     if points_lidar.shape[0] == 0:
         return np.zeros((0, 3), np.float32), np.zeros((0, 3), np.uint8)
@@ -97,6 +106,17 @@ def color_pointcloud(
     # Project. Camera with identity pose because pts are already in cam frame.
     cam = Camera(camera_info, Pose())
     pixels, valid = cam.project(pts_cam)
+
+    if border_margin > 0:
+        W, H = camera_info.width, camera_info.height
+        u, v = pixels[:, 0], pixels[:, 1]
+        in_safe_area = (
+            (u >= border_margin)
+            & (u < W - border_margin)
+            & (v >= border_margin)
+            & (v < H - border_margin)
+        )
+        valid = valid & in_safe_area
 
     if not valid.any():
         return np.zeros((0, 3), np.float32), np.zeros((0, 3), np.uint8)
@@ -244,6 +264,7 @@ class LidarColorModule(Module):
             image=self._latest_image,
             camera_info=self._latest_camera_info,
             T_camera_lidar=tf.to_matrix(),
+            border_margin=self.config.border_margin,
         )
 
         if positions.shape[0] == 0:

@@ -176,6 +176,29 @@ def test_color_pointcloud_handles_bgr_format():
     np.testing.assert_array_equal(colors[0], [0, 0, 255])
 
 
+def test_color_pointcloud_fill_invalid_returns_all_points():
+    """``fill_invalid`` keeps out-of-FOV points and gives them the fill colour."""
+    info = _info(640, 480)
+    img = _solid_image(640, 480, 10, 20, 30)
+    pts = np.array(
+        [
+            [0.0, 0.0, 2.0],  # in front, on axis -> colored from image
+            [0.0, 0.0, -1.0],  # behind camera     -> filled gray
+            [100.0, 0.0, 1.0],  # off-axis          -> filled gray
+        ],
+        dtype=np.float32,
+    )
+    GRAY = (128, 128, 128)
+    positions, colors = color_pointcloud(
+        pts, img, info, T_camera_lidar=np.eye(4), fill_invalid=GRAY
+    )
+    assert positions.shape == (3, 3)
+    assert colors.shape == (3, 3)
+    np.testing.assert_array_equal(colors[0], [10, 20, 30])  # real color
+    np.testing.assert_array_equal(colors[1], GRAY)  # behind
+    np.testing.assert_array_equal(colors[2], GRAY)  # off-axis
+
+
 def test_color_pointcloud_empty_input():
     info = _info(640, 480)
     img = _solid_image(640, 480, 0, 0, 0)

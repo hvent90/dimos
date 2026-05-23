@@ -9,7 +9,7 @@ independently — so step one is a streaming temporal alignment.
 from dimos.memory2.store.sqlite import SqliteStore
 from dimos.utils.data import get_data
 
-store = SqliteStore(path=get_data("hk_village1.db"))
+store = SqliteStore(path=get_data("go2_hongkong_office.db"))
 lidar = store.streams.lidar
 color_image = store.streams.color_image
 print(lidar.summary())
@@ -59,11 +59,12 @@ fisheye is an equidistant Kannala-Brandt model — calibration ships with the
 repo as a YAML.
 
 ```python session=coloring
-from dimos.msgs.sensor_msgs.CameraInfo import CameraInfo
 from dimos.msgs.geometry_msgs.Pose import Pose
 from dimos.perception.pointcloud.projection import Camera
+from dimos.robot.unitree.go2.connection import _camera_info_static
 
-info = CameraInfo.from_yaml("dimos/robot/unitree/go2/front_camera_720.yaml")
+# Package-data lookup via importlib.resources — CWD-independent.
+info = _camera_info_static()
 camera = Camera(info=info, pose=Pose())  # identity pose: "points are in camera frame"
 print(f"sensor: {info.width}x{info.height}, model={info.distortion_model}")
 print(f"K[0,0]={info.K[0]:.1f}  K[1,1]={info.K[4]:.1f}  cx={info.K[2]:.1f}  cy={info.K[5]:.1f}")
@@ -124,3 +125,93 @@ Real coloring still needs one more thing: a static `T_camera_lidar` extrinsic
 so we can express each lidar point in the camera frame before `project()`.
 That goes into the coloring transform itself (next step), which takes the
 aligned `(lidar, color_image)` pairs and emits a colored pointcloud.
+
+## Coloring a global map (memory2 transform)
+
+The same projection works batch-style as a memory2 transform: pair each lidar
+frame with the nearest image (`.align`), color the points using the image's
+own optical-frame pose, then accumulate the colored frames into one global
+map via `VoxelMapTransformer`. Because the recording stores each
+`color_image.pose` as the camera optical frame in world coordinates (and the
+lidar points are already in world), we don't need any robot-specific
+`base→optical` extrinsic — the per-frame inverse of the image's own pose
+is the world→optical transform we hand to `color_pointcloud`.
+
+```python session=coloring
+import numpy as np
+import open3d as o3d
+import open3d.core as o3c
+
+from dimos.mapping.voxels import VoxelMapTransformer
+from dimos.msgs.geometry_msgs.Transform import Transform
+from dimos.msgs.sensor_msgs.PointCloud2 import PointCloud2
+from dimos.perception.lidar_color_module import color_pointcloud
+
+# Drop pixels within this many of the image edge — fisheye distortion is
+# unreliable near the rim, so a generous margin keeps colors honest.
+BORDER_MARGIN = 80
+
+
+def color_frame(obs):
+    pair = obs.data  # AlignedPair(lidar, color_image)
+    # The image carries its own camera-optical pose in world; invert -> world->optical.
+    T_world_optical = Transform.from_pose("camera_optical", pair.color_image.pose_stamped)
+    T_optical_world = -T_world_optical
+    positions, colors = color_pointcloud(
+        points_lidar=pair.lidar.data.points_f32(),  # already in world
+        image=pair.color_image.data,
+        camera_info=info,
+        T_camera_lidar=T_optical_world.to_matrix(),
+        border_margin=BORDER_MARGIN,
+    )
+    pcd = o3d.t.geometry.PointCloud()
+    pcd.point["positions"] = o3c.Tensor(positions, dtype=o3c.float32)
+    pcd.point["colors"]    = o3c.Tensor((colors.astype(np.float32) / 255.0), dtype=o3c.float32)
+    return obs.derive(data=PointCloud2(pointcloud=pcd, ts=pair.lidar.ts, frame_id="world"))
+
+colored_global = (
+    lidar.align(color_image, tolerance=0.05)
+         .map(color_frame)
+         .transform(VoxelMapTransformer(device="CPU:0", emit_every=0))
+         .last()
+         .data
+)
+t = colored_global.pointcloud_tensor
+pts = t.point["positions"].numpy()
+rgb = t.point["colors"].numpy()
+sampled = ~np.all(np.abs(rgb - 128 / 255) < 0.01, axis=1)
+print(f"{len(pts)} voxels — {sampled.sum()} with sampled colors, {(~sampled).sum()} outside any FOV")
+```
+
+```results
+12:01:15.182 [inf][dimos/mapping/voxels.py       ] VoxelGrid using device: CPU:0
+[1;33m[Open3D WARNING] Creating from an empty legacy PointCloud.[0;m
+93419 voxels — 89223 with sampled colors, 4196 outside any FOV
+```
+
+Top-down scatter so you can see the colors line up with the scene:
+
+```python session=coloring output=none
+import matplotlib
+import matplotlib.pyplot as plt
+matplotlib.use("Agg")
+
+fig, ax = plt.subplots(figsize=(10, 10), facecolor="black")
+ax.scatter(pts[:, 0], pts[:, 1], c=rgb, s=0.5, marker=".")
+ax.set_aspect("equal")
+ax.set_facecolor("black")
+ax.axis("off")
+plt.savefig(
+    "assets/colored_global_top_down.png",
+    facecolor="black", dpi=120, bbox_inches="tight", pad_inches=0,
+)
+plt.close()
+```
+
+![output](assets/colored_global_top_down.png)
+
+For an interactive 3D view of the same map, run [`demo_rerun.py`](./demo_rerun.py)
+next to this doc — same pipeline but ends in
+`Space().add(colored_global).to_rerun(...)`, which spawns the rerun viewer
+with the colored cloud loaded. `PointCloud2.to_rerun()` honours the per-voxel
+colors stored in the tensor, so no extra plumbing is needed.
