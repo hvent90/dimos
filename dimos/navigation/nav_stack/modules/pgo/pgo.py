@@ -21,9 +21,12 @@ from __future__ import annotations
 
 from pathlib import Path
 
+from reactivex.disposable import Disposable
+
 from dimos.core.core import rpc
 from dimos.core.native_module import NativeModule, NativeModuleConfig
 from dimos.core.stream import In, Out
+from dimos.msgs.geometry_msgs.Transform import Transform
 from dimos.msgs.nav_msgs.Graph3D import Graph3D
 from dimos.msgs.nav_msgs.GraphDelta3D import GraphDelta3D
 from dimos.msgs.nav_msgs.Odometry import Odometry
@@ -41,6 +44,7 @@ class PGOConfig(NativeModuleConfig):
 
     frame_id: str = "map"
     child_frame_id: str = "odom"
+    body_frame: str = "base_link"
 
     # Keyframe detection
     key_pose_delta_deg: float = 10.0
@@ -81,6 +85,7 @@ class PGO(NativeModule, LoopClosure):
     registered_scan: In[PointCloud2]
     odometry: In[Odometry]
     corrected_odometry: Out[Odometry]
+    correction: Out[Transform]
     global_map: Out[PointCloud2]
     pose_graph: Out[Graph3D]
     loop_closure_event: Out[GraphDelta3D]
@@ -88,8 +93,22 @@ class PGO(NativeModule, LoopClosure):
     @rpc
     def start(self) -> None:
         super().start()
+        self.tf.publish(
+            Transform(
+                frame_id=self.config.frame_id,
+                child_frame_id=self.config.child_frame_id,
+            )
+        )
+        self.register_disposable(
+            Disposable(
+                self.correction.transport.subscribe(self._on_correction_for_tf, self.correction)
+            )
+        )
         if self.config.debug:
             logger.info("PGO native module started (C++ iSAM2 + PCL ICP)")
+
+    def _on_correction_for_tf(self, msg: Transform) -> None:
+        self.tf.publish(msg)
 
     @rpc
     def stop(self) -> None:

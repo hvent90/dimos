@@ -237,10 +237,10 @@ int main(int argc, char** argv)
     dimos::NativeModule native_module(argc, argv);
 
     // Port topics
-    std::string tf_channel = "/tf#tf2_msgs.TFMessage";
     std::string scan_topic = native_module.topic("registered_scan");
     std::string odom_topic = native_module.topic("odometry");
     std::string corrected_odom_topic = native_module.topic("corrected_odometry");
+    std::string correction_topic = native_module.topic("correction");
     std::string global_map_topic = native_module.topic("global_map");
     std::string pose_graph_topic = native_module.topic("pose_graph");
     std::string loop_closure_event_topic = native_module.topic("loop_closure_event");
@@ -266,6 +266,7 @@ int main(int argc, char** argv)
     // Node-level config
     std::string frame_id = native_module.arg("frame_id", "map");
     std::string child_frame_id = native_module.arg("child_frame_id", "odom");
+    std::string body_frame = native_module.arg("body_frame", "base_link");
     float global_map_voxel_size = native_module.arg_float("global_map_voxel_size", 0.1f);
     float global_map_publish_rate = native_module.arg_float("global_map_publish_rate", 1.0f);
     double global_map_interval = global_map_publish_rate > 0
@@ -302,21 +303,10 @@ int main(int argc, char** argv)
         fprintf(stderr, "  registered_scan: %s\n", scan_topic.c_str());
         fprintf(stderr, "  odometry: %s\n", odom_topic.c_str());
         fprintf(stderr, "  corrected_odometry: %s\n", corrected_odom_topic.c_str());
+        fprintf(stderr, "  correction: %s\n", correction_topic.c_str());
         fprintf(stderr, "  global_map: %s\n", global_map_topic.c_str());
-        fprintf(stderr, "  tf_channel: %s\n", tf_channel.c_str());
         fprintf(stderr, "  pose_graph: %s\n", pose_graph_topic.c_str());
         fprintf(stderr, "  loop_closure_event: %s\n", loop_closure_event_topic.c_str());
-    }
-    // Seed identity TF so consumers can query the chain before the first
-    // odom message arrives.
-    {
-        double seed_ts =
-            std::chrono::duration<double>(
-                std::chrono::system_clock::now().time_since_epoch())
-                .count();
-        auto seed = build_tf_message(M3D::Identity(), V3D::Zero(), seed_ts,
-                                     frame_id, child_frame_id);
-        lcm.publish(tf_channel, &seed);
     }
 
     double last_global_map_time = 0.0;
@@ -371,12 +361,12 @@ int main(int argc, char** argv)
             M3D corr_r = pgo.offsetR() * cloud_with_pose.pose.r;
             V3D corr_t = pgo.offsetR() * cloud_with_pose.pose.t + pgo.offsetT();
             nav_msgs::Odometry corrected = build_odometry(
-                corr_r, corr_t, cur_time, frame_id, child_frame_id);
+                corr_r, corr_t, cur_time, frame_id, body_frame);
             lcm.publish(corrected_odom_topic, &corrected);
 
             auto tf_msg = build_tf_message(
                 pgo.offsetR(), pgo.offsetT(), cur_time, frame_id, child_frame_id);
-            lcm.publish(tf_channel, &tf_msg);
+            lcm.publish(correction_topic, &tf_msg);
 
             std::this_thread::sleep_for(std::chrono::milliseconds(timer_period_ms));
             continue;
@@ -419,12 +409,12 @@ int main(int argc, char** argv)
         M3D corr_r = pgo.offsetR() * cloud_with_pose.pose.r;
         V3D corr_t = pgo.offsetR() * cloud_with_pose.pose.t + pgo.offsetT();
         nav_msgs::Odometry corrected = build_odometry(
-            corr_r, corr_t, cur_time, frame_id, child_frame_id);
+            corr_r, corr_t, cur_time, frame_id, body_frame);
         lcm.publish(corrected_odom_topic, &corrected);
 
         auto tf_msg = build_tf_message(
             pgo.offsetR(), pgo.offsetT(), cur_time, frame_id, child_frame_id);
-        lcm.publish(tf_channel, &tf_msg);
+        lcm.publish(correction_topic, &tf_msg);
 
         // Publish pose graph (on every keyframe — iSAM2 may have
         // re-optimized prior poses on loop closure).

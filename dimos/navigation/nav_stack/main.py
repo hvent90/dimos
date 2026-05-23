@@ -167,6 +167,7 @@ def create_nav_stack(
             **{
                 "frame_id": map_frame,
                 "child_frame_id": odom_frame,
+                "body_frame": base_link_frame,
                 **(pgo or {}),
             }
         ).remappings([(PGO, "registered_scan", "lidar"), (PGO, "global_map", "_pgo_global_map")]),
