@@ -780,4 +780,178 @@ class TestLiveMode:
         # "a" filtered in backfill, "c" filtered in live
         assert results == ["b", "d"]
         assert results == ["b", "d"]
-        assert results == ["b", "d"]
+
+
+class TestAlign:
+    """Pairwise nearest-ts alignment between two streams."""
+
+    def test_basic_pairing(self, session):
+        """Each primary pairs with the closest in-tolerance secondary."""
+        lidar = session.stream("lidar", str)
+        image = session.stream("image", str)
+        # primary at 0.0, 0.1, 0.2; secondary slightly offset
+        for i, v in enumerate(["L0", "L1", "L2"]):
+            lidar.append(v, ts=i * 0.1)
+        for ts, v in [(0.02, "I0"), (0.11, "I1"), (0.19, "I2")]:
+            image.append(v, ts=ts)
+
+        pairs = lidar.align(image, tolerance=0.05).to_list()
+        assert [p.data.lidar.data for p in pairs] == ["L0", "L1", "L2"]
+        assert [p.data.image.data for p in pairs] == ["I0", "I1", "I2"]
+
+    def test_named_and_index_access(self, session):
+        """Pair fields are accessible both by source-stream name and by index."""
+        a = session.stream("alpha", str)
+        b = session.stream("beta", str)
+        a.append("a0", ts=0.0)
+        b.append("b0", ts=0.001)
+
+        pair = a.align(b, tolerance=0.01).to_list()[0].data
+        assert pair.alpha.data == "a0"
+        assert pair.beta.data == "b0"
+        assert pair[0].data == "a0"
+        assert pair[1].data == "b0"
+
+    def test_outer_obs_carries_primary_metadata(self, session):
+        """The yielded outer Observation keeps the primary's ts/pose/tags."""
+        a = session.stream("primary", str)
+        b = session.stream("secondary", str)
+        a.append("pa", ts=10.0, pose=(1, 2, 3), tags={"src": "p"})
+        b.append("sb", ts=10.005, pose=(9, 9, 9), tags={"src": "s"})
+
+        out = a.align(b, tolerance=0.05).to_list()[0]
+        assert out.ts == 10.0
+        # SQLite canonicalizes pose to a 7-tuple; memory keeps the original.
+        assert tuple(out.pose)[:3] == (1, 2, 3)
+        assert out.tags == {"src": "p"}
+        # Secondary's pose still reachable via the pair.
+        assert tuple(out.data.secondary.pose)[:3] == (9, 9, 9)
+
+    def test_skip_when_no_match_in_tolerance(self, session):
+        """Primary frames with no secondary within tolerance are dropped."""
+        a = session.stream("a", str)
+        b = session.stream("b", str)
+        a.append("a0", ts=0.0)
+        a.append("a1", ts=1.0)
+        a.append("a2", ts=2.0)
+        # Only a match near a1.
+        b.append("b1", ts=1.02)
+
+        pairs = a.align(b, tolerance=0.05).to_list()
+        assert [p.data.a.data for p in pairs] == ["a1"]
+        assert [p.data.b.data for p in pairs] == ["b1"]
+
+    def test_one_secondary_matches_many_primaries(self, session):
+        """Same secondary can pair with multiple primaries — no early eviction."""
+        a = session.stream("a", str)
+        b = session.stream("b", str)
+        for ts in (1.000, 1.005, 1.010):
+            a.append(f"a{ts}", ts=ts)
+        b.append("b", ts=1.004)
+
+        pairs = a.align(b, tolerance=0.05).to_list()
+        assert len(pairs) == 3
+        assert all(p.data.b.data == "b" for p in pairs)
+
+    def test_primary_before_first_secondary(self, session):
+        """Early primaries without any in-window secondary are skipped, later ones pair."""
+        a = session.stream("a", str)
+        b = session.stream("b", str)
+        for ts in (0.0, 0.1, 0.2, 0.3):
+            a.append(f"a{ts}", ts=ts)
+        b.append("b", ts=0.3)
+
+        pairs = a.align(b, tolerance=0.05).to_list()
+        assert [p.ts for p in pairs] == [0.3]
+
+    def test_empty_secondary(self, session):
+        """Empty secondary stream → empty alignment, no error."""
+        a = session.stream("a", str)
+        b = session.stream("b", str)  # leave empty
+        a.append("a0", ts=0.0)
+        pairs = a.align(b, tolerance=1.0).to_list()
+        assert pairs == []
+
+    def test_filter_on_either_side_respected(self, session):
+        """Filters applied before .align() restrict the iterated set on that side."""
+        a = session.stream("a", str)
+        b = session.stream("b", str)
+        for ts in (0.0, 1.0, 2.0):
+            a.append(f"a{ts}", ts=ts)
+            b.append(f"b{ts}", ts=ts + 0.01)
+
+        pairs = a.after(0.5).align(b.before(1.5), tolerance=0.05).to_list()
+        assert [p.data.a.data for p in pairs] == ["a1.0"]
+        assert [p.data.b.data for p in pairs] == ["b1.0"]
+
+    def test_rejects_transform_source(self, session):
+        """A transform-sourced stream on either side raises at .align() call."""
+        a = session.stream("a", int)
+        b = session.stream("b", int)
+        a.append(1, ts=0.0)
+        b.append(2, ts=0.0)
+
+        transformed_a = a.map(lambda obs: obs.derive(data=obs.data + 1))
+        with pytest.raises(TypeError, match="transform source"):
+            transformed_a.align(b, tolerance=0.1)
+
+        transformed_b = b.map(lambda obs: obs.derive(data=obs.data + 1))
+        with pytest.raises(TypeError, match="transform source"):
+            a.align(transformed_b, tolerance=0.1)
+
+    def test_rejects_live(self, session):
+        """Live stream on either side raises at .align() call."""
+        a = session.stream("a", int)
+        b = session.stream("b", int)
+        a.append(1, ts=0.0)
+        b.append(2, ts=0.0)
+
+        with pytest.raises(TypeError, match="live"):
+            a.live().align(b, tolerance=0.1)
+        with pytest.raises(TypeError, match="live"):
+            a.align(b.live(), tolerance=0.1)
+
+
+class TestAlignMemoryBound:
+    """Buffer never holds more than ~secondary-rate * 2 * tolerance observations."""
+
+    def test_buffer_stays_bounded(self, memory_session):
+        """50k secondaries against 5k primaries — internal deque never exceeds the window."""
+        primary = memory_session.stream("p")
+        secondary = memory_session.stream("s")
+        # secondary at 500 Hz, primary at 50 Hz
+        for i in range(5_000):
+            primary.append(i, ts=i * 0.02)
+        for i in range(50_000):
+            secondary.append(i, ts=i * 0.002)
+
+        tolerance = 0.005  # 5 ms × 500 Hz ≈ ~5 secondaries on each side
+        peak = _measure_align_buffer(
+            iter(primary.order_by("ts")),
+            iter(secondary.order_by("ts")),
+            tolerance,
+        )
+        # Window holds 2*tolerance*sec_rate + a couple for read-ahead past
+        # the window. ~5 + ~5 + slop → cap at 16.
+        assert peak < 16, f"buffer grew to {peak}"
+
+
+def _measure_align_buffer(primary_iter, secondary_iter, tolerance):
+    """Mirror of _python_nearest_align_iter that records peak buffer size."""
+    from collections import deque as _deque
+
+    buffer: _deque = _deque()
+    sec_done = False
+    peak = 0
+
+    for p in primary_iter:
+        while not sec_done and (not buffer or buffer[-1].ts < p.ts + tolerance):
+            try:
+                buffer.append(next(secondary_iter))
+            except StopIteration:
+                sec_done = True
+        while buffer and buffer[0].ts < p.ts - tolerance:
+            buffer.popleft()
+        peak = max(peak, len(buffer))
+
+    return peak

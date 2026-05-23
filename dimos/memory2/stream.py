@@ -14,6 +14,8 @@
 
 from __future__ import annotations
 
+from collections import deque, namedtuple
+from functools import cache
 import sys
 import time
 from typing import TYPE_CHECKING, Any, Generic, cast, overload
@@ -53,6 +55,63 @@ T = TypeVar("T")
 R = TypeVar("R")
 O = TypeVar("O", bound=Observation[Any], default=Observation[T])
 logger = setup_logger()
+
+
+@cache
+def _pair_class(name_a: str, name_b: str) -> type:
+    """Return a cached ``namedtuple`` class for an aligned pair.
+
+    Fields are named after the two source streams so callers can write
+    ``pair.lidar`` / ``pair.image`` as well as ``pair[0]`` / ``pair[1]``.
+    Cached so the same (name_a, name_b) reuses one class.
+    """
+    return namedtuple("AlignedPair", [name_a, name_b])  # type: ignore[misc]
+
+
+def _source_backend(stream: Stream[Any, Any]) -> Backend[Any] | None:
+    """Walk a Stream chain back to its source ``Backend``, or ``None`` if unbound."""
+    current: Any = stream
+    while isinstance(current, Stream):
+        current = current._source
+    if current is None:
+        return None
+    return cast("Backend[Any]", current)
+
+
+def _python_nearest_align_iter(
+    primary_iter: Iterator[Observation[Any]],
+    secondary_iter: Iterator[Observation[Any]],
+    tolerance: float,
+    pair_class: type,
+) -> Iterator[Observation[Any]]:
+    """Streaming two-pointer nearest-ts merge over ts-ordered iterators.
+
+    Holds only the secondaries within ``±tolerance`` of the current primary —
+    a bounded window, not the full secondary stream.
+    """
+    buffer: deque[Observation[Any]] = deque()
+    sec_done = False
+
+    for p in primary_iter:
+        # Pull from secondary until we've seen everything that could match p.
+        while not sec_done and (not buffer or buffer[-1].ts < p.ts + tolerance):
+            try:
+                buffer.append(next(secondary_iter))
+            except StopIteration:
+                sec_done = True
+
+        # Evict secondaries too old to match p or any future primary.
+        while buffer and buffer[0].ts < p.ts - tolerance:
+            buffer.popleft()
+
+        if not buffer:
+            continue
+
+        best = min(buffer, key=lambda s: abs(s.ts - p.ts))
+        if abs(best.ts - p.ts) > tolerance:
+            continue
+
+        yield p.derive(data=pair_class(p, best))
 
 
 class Stream(CompositeResource, Generic[T, O]):
@@ -275,6 +334,59 @@ class Stream(CompositeResource, Generic[T, O]):
         if not isinstance(xf, Transformer):
             xf = FnIterTransformer(xf)
         return Stream(source=self, transform=xf, query=StreamQuery())
+
+    def align(self, other: Stream[Any, Any], *, tolerance: float) -> Stream[Any]:
+        """Pair each observation with the nearest-in-time one from *other*.
+
+        Both streams iterate in ts order; the primary (``self``) drives, and
+        for each primary we find the secondary whose ``|Δts| <= tolerance``
+        is smallest. Primaries without a match in tolerance are skipped.
+
+        The output stream's outer ``Observation`` carries the primary's
+        ``ts``, ``pose``, ``tags``. ``obs.data`` is a ``namedtuple`` whose
+        fields are named after each side's backend (e.g. ``pair.lidar`` /
+        ``pair.image``), with index access (``pair[0]``, ``pair[1]``) also
+        available. Each field is the full :class:`Observation` from that
+        side — read ``.data``, ``.pose``, ``.ts``, ``.tags`` as usual.
+
+        Replay-only for now: live primary or live secondary raises
+        ``TypeError``. Both sides must resolve to a backend; unbound or
+        transform-source sides raise ``TypeError`` as well.
+        """
+        primary_backend = _source_backend(self)
+        secondary_backend = _source_backend(other)
+        if primary_backend is None or (
+            isinstance(self._source, Stream) and self._transform is not None
+        ):
+            raise TypeError("align: primary must be a backend-backed stream (no transform source)")
+        if secondary_backend is None or (
+            isinstance(other._source, Stream) and other._transform is not None
+        ):
+            raise TypeError(
+                "align: secondary must be a backend-backed stream (no transform source)"
+            )
+        if self.is_live() or other.is_live():
+            raise TypeError("align: live streams are not supported")
+
+        primary_name = primary_backend.name
+        secondary_name = secondary_backend.name
+        pair_class = _pair_class(primary_name, secondary_name)
+
+        # Force ts-ordered iteration on both sides (pushed down to SQL by
+        # SqliteObservationStore). The merge algorithm requires it.
+        secondary_ordered = other.order_by("ts")
+
+        # Captured here so the future SQL-pushdown branch can dispatch on
+        # backend type without re-walking the chains.
+        _primary_backend = primary_backend
+        _secondary_backend = secondary_backend
+
+        def _align(upstream: Iterator[Observation[Any]]) -> Iterator[Observation[Any]]:
+            return _python_nearest_align_iter(
+                upstream, iter(secondary_ordered), tolerance, pair_class
+            )
+
+        return self.order_by("ts").transform(FnIterTransformer(_align))
 
     def live(self, buffer: BackpressureBuffer[Observation[Any]] | None = None) -> Stream[T, O]:
         """Return a stream whose iteration never ends — backfill then live tail.
