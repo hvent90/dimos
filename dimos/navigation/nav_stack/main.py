@@ -26,6 +26,9 @@ from dimos.navigation.nav_stack.modules.far_planner.far_planner import FarPlanne
 from dimos.navigation.nav_stack.modules.local_planner.local_planner import LocalPlanner
 from dimos.navigation.nav_stack.modules.path_follower.path_follower import PathFollower
 from dimos.navigation.nav_stack.modules.pgo.pgo import PGO
+from dimos.navigation.nav_stack.modules.replanning_a_star_planner.replanning_a_star_planner import (
+    ReplanningAStarPlanner,
+)
 from dimos.navigation.nav_stack.modules.simple_planner.simple_planner import SimplePlanner
 from dimos.navigation.nav_stack.modules.tare_planner.tare_planner import TarePlanner
 from dimos.navigation.nav_stack.modules.terrain_analysis.terrain_analysis import TerrainAnalysis
@@ -149,6 +152,14 @@ def create_nav_stack(
             merged_simple_planner_config["ground_offset_below_robot"] = vehicle_height
         merged_simple_planner_config.update(simple_planner_config)
         modules.append(SimplePlanner.blueprint(**merged_simple_planner_config))
+    elif planner == "replanning_a_star":
+        # Reuses ground_offset_below_robot / goal_reached_threshold knobs from
+        # the simple_planner config dict so the same call sites work for both.
+        merged_replanning_config: dict[str, Any] = {}
+        if vehicle_height is not None:
+            merged_replanning_config["ground_offset_below_robot"] = vehicle_height
+        merged_replanning_config.update(simple_planner_config)
+        modules.append(ReplanningAStarPlanner.blueprint(**merged_replanning_config))
     elif planner == "far":
         modules.append(FarPlanner.blueprint(**far_planner_config))
     else:
