@@ -204,6 +204,10 @@ class TestPGOLoopClosure:
         finally:
             coordinator.stop()
 
+        playback_error = playback.playback_error()
+        if playback_error is not None:
+            pytest.fail(f"rosbag playback failed: {playback_error}")
+
         logger.info(f"\n[loop_closure_event] total events received: {len(events)}")
 
         if not events:

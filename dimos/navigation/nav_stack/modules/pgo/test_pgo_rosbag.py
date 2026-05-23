@@ -150,6 +150,10 @@ class TestPGORosbag:
         finally:
             coordinator.stop()
 
+        playback_error = playback.playback_error()
+        if playback_error is not None:
+            pytest.fail(f"rosbag playback failed: {playback_error}")
+
         # -- Analysis --
         corrected_count = len(corrected_positions)
         global_map_count = len(global_map_point_counts)
