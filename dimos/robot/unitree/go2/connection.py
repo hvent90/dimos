@@ -67,6 +67,10 @@ class Go2Mode(str, Enum):
 class ConnectionConfig(ModuleConfig):
     ip: str = Field(default_factory=lambda m: m["g"].robot_ip)
     mode: Go2Mode = Go2Mode.DEFAULT
+    frame_id: str | None = "base_link"
+    camera_link_frame: str = "camera_link"
+    camera_optical_frame: str = "camera_optical"
+    static_transform_publish_rate: float = 1.0
 
 
 class Go2ConnectionProtocol(Protocol):
@@ -94,21 +98,6 @@ _FRONT_CAMERA_720_YAML = resources.files("dimos.robot.unitree.go2").joinpath(
 def _camera_info_static() -> CameraInfo:
     with resources.as_file(_FRONT_CAMERA_720_YAML) as yaml_path:
         return CameraInfo.from_yaml(str(yaml_path))
-
-
-# Static camera mount chain: base_link -> camera_link -> camera_optical.
-# TODO we need a standardized way to specify this for all cameras in dimos
-BASE_TO_OPTICAL: Transform = Transform(
-    translation=Vector3(0.3, 0.0, 0.0),
-    rotation=Quaternion(0.0, 0.0, 0.0, 1.0),
-    frame_id="base_link",
-    child_frame_id="camera_link",
-) + Transform(
-    translation=Vector3(0.0, 0.0, 0.0),
-    rotation=Quaternion(-0.5, 0.5, -0.5, 0.5),
-    frame_id="camera_link",
-    child_frame_id="camera_optical",
-)
 
 
 def make_connection(ip: str | None, cfg: GlobalConfig) -> Go2ConnectionProtocol:
@@ -210,7 +199,22 @@ class GO2Connection(Module, Camera, Pointcloud):
 
     connection: Go2ConnectionProtocol
     camera_info_static: CameraInfo = _camera_info_static()
-    _camera_info_thread: Thread | None = None
+    static_transforms = dict(
+        # key=default child transform name
+        camera_link=Transform(
+            translation=Vector3(0.3, 0.0, 0.0),
+            rotation=Quaternion(0.0, 0.0, 0.0, 1.0),
+            frame_id="base_link",
+            child_frame_id="camera_link",
+        ),
+        camera_optical=Transform(
+            translation=Vector3(0.0, 0.0, 0.0),
+            rotation=Quaternion(-0.5, 0.5, -0.5, 0.5),
+            frame_id="camera_link",
+            child_frame_id="camera_optical",
+        ),
+    )
+    _static_publish_thread: Thread | None = None
     _latest_video_frame: Image | None = None
 
     @classmethod
@@ -246,11 +250,11 @@ class GO2Connection(Module, Camera, Pointcloud):
         self.register_disposable(self.connection.video_stream().subscribe(onimage))
         self.register_disposable(Disposable(self.cmd_vel.subscribe(self.move)))
 
-        self._camera_info_thread = Thread(
-            target=self.publish_camera_info,
+        self._static_publish_thread = Thread(
+            target=self._static_publish,
             daemon=True,
         )
-        self._camera_info_thread.start()
+        self._static_publish_thread.start()
 
         self.standup()
         time.sleep(3)
@@ -261,8 +265,6 @@ class GO2Connection(Module, Camera, Pointcloud):
 
         self.connection.set_obstacle_avoidance(self.config.g.obstacle_avoidance)
 
-        # self.record("go2_bigoffice")
-
     @rpc
     def stop(self) -> None:
         self.liedown()
@@ -270,45 +272,39 @@ class GO2Connection(Module, Camera, Pointcloud):
         if self.connection:
             self.connection.stop()
 
-        if self._camera_info_thread and self._camera_info_thread.is_alive():
-            self._camera_info_thread.join(timeout=DEFAULT_THREAD_JOIN_TIMEOUT)
+        if self._static_publish_thread and self._static_publish_thread.is_alive():
+            self._static_publish_thread.join(timeout=DEFAULT_THREAD_JOIN_TIMEOUT)
 
         super().stop()
 
-    @classmethod
-    def _odom_to_tf(cls, odom: PoseStamped) -> list[Transform]:
-        camera_link = Transform(
-            translation=Vector3(0.3, 0.0, 0.0),
-            rotation=Quaternion(0.0, 0.0, 0.0, 1.0),
-            frame_id="base_link",
-            child_frame_id="camera_link",
-            ts=odom.ts,
-        )
-
-        camera_optical = Transform(
-            translation=Vector3(0.0, 0.0, 0.0),
-            rotation=Quaternion(-0.5, 0.5, -0.5, 0.5),
-            frame_id="camera_link",
-            child_frame_id="camera_optical",
-            ts=odom.ts,
-        )
-
-        return [
-            Transform.from_pose("base_link", odom),
-            camera_link,
-            camera_optical,
-        ]
-
     def _publish_tf(self, msg: PoseStamped) -> None:
-        transforms = self._odom_to_tf(msg)
-        self.tf.publish(*transforms)
+        self.tf.publish(Transform.from_pose(self.frame_id, msg))
         if self.odom.transport:
             self.odom.publish(msg)
 
-    def publish_camera_info(self) -> None:
+    def _static_publish(self) -> None:
+        frame_remap = {
+            "base_link": self.frame_id,
+            "camera_link": self.config.camera_link_frame,
+            "camera_optical": self.config.camera_optical_frame,
+        }
+        stamped_statics = [
+            Transform(
+                translation=t.translation,
+                rotation=t.rotation,
+                frame_id=frame_remap.get(t.frame_id, t.frame_id),
+                child_frame_id=frame_remap.get(t.child_frame_id, t.child_frame_id),
+            )
+            for t in self.static_transforms.values()
+        ]
+        period = 1.0 / self.config.static_transform_publish_rate
         while True:
+            now = time.time()
+            for st in stamped_statics:
+                st.ts = now
+            self.tf.publish(*stamped_statics)
             self.camera_info.publish(self.camera_info_static)
-            time.sleep(1.0)
+            time.sleep(period)
 
     @rpc
     def move(self, twist: Twist, duration: float = 0.0) -> bool:
