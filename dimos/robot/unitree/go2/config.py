@@ -12,9 +12,21 @@
 # See the License for the specific language governing permissions and
 # limitations under the License.
 
+from importlib import resources
 from pathlib import Path
 
+from dimos.msgs.sensor_msgs.CameraInfo import CameraInfo
 from dimos.robot.config import RobotConfig
+
+_FRONT_CAMERA_720_YAML = resources.files("dimos.robot.unitree.go2").joinpath(
+    "front_camera_720.yaml"
+)
+
+
+def camera_info_static() -> CameraInfo:
+    with resources.as_file(_FRONT_CAMERA_720_YAML) as yaml_path:
+        return CameraInfo.from_yaml(str(yaml_path))
+
 
 Go2Config = RobotConfig(
     name="unitree_go2",

@@ -13,7 +13,6 @@
 # limitations under the License.
 
 from enum import Enum
-from importlib import resources
 import sys
 from threading import Thread
 import time
@@ -51,7 +50,7 @@ from dimos.msgs.sensor_msgs.CameraInfo import CameraInfo
 from dimos.msgs.sensor_msgs.Image import Image
 from dimos.msgs.sensor_msgs.PointCloud2 import PointCloud2
 from dimos.robot.unitree.connection import UnitreeWebRTCConnection
-from dimos.robot.unitree.go2.config import Go2Config
+from dimos.robot.unitree.go2.config import Go2Config, camera_info_static
 from dimos.utils.decorators.decorators import cached_property, simple_mcache
 
 if sys.version_info < (3, 13):
@@ -73,7 +72,10 @@ class ConnectionConfig(ModuleConfig):
     frame_id: str | None = DEFAULT_ROBOT_FRAME
     static_publish_rate: float = 1.0
     static_transforms: dict[str, Transform] = Field(
-        default_factory=lambda: dict(Go2Config.static_relative_transforms)
+        default_factory=lambda: dict(Go2Config.static_transforms)
+    )
+    frame_mapping: dict[str, str] = Field(
+        default_factory=lambda: {each: each for each in Go2Config.all_frame_ids}
     )
 
 
@@ -92,16 +94,6 @@ class Go2ConnectionProtocol(Protocol):
     def set_obstacle_avoidance(self, enabled: bool = True) -> None: ...
     def enable_rage_mode(self) -> bool: ...
     def publish_request(self, topic: str, data: dict) -> dict: ...  # type: ignore[type-arg]
-
-
-_FRONT_CAMERA_720_YAML = resources.files("dimos.robot.unitree.go2").joinpath(
-    "front_camera_720.yaml"
-)
-
-
-def _camera_info_static() -> CameraInfo:
-    with resources.as_file(_FRONT_CAMERA_720_YAML) as yaml_path:
-        return CameraInfo.from_yaml(str(yaml_path))
 
 
 def make_connection(ip: str | None, cfg: GlobalConfig) -> Go2ConnectionProtocol:
@@ -202,7 +194,7 @@ class GO2Connection(Module, Camera, Pointcloud):
     camera_info: Out[CameraInfo]
 
     connection: Go2ConnectionProtocol
-    camera_info_static: CameraInfo = _camera_info_static()
+    camera_info_static: CameraInfo = camera_info_static()
     _static_publish_thread: Thread | None = None
     _latest_video_frame: Image | None = None
 
@@ -272,18 +264,13 @@ class GO2Connection(Module, Camera, Pointcloud):
             self.odom.publish(msg)
 
     def _static_publish(self) -> None:
-        config_frame_remap = {
-            Go2Config.body_frame: self.frame_id,
-        }
-        # remape the frame_id
+        remap = {Go2Config.body_frame: self.frame_id, **self.config.frame_mapping}
         stamped_statics = [
             Transform(
                 translation=transform.translation,
                 rotation=transform.rotation,
-                frame_id=config_frame_remap.get(transform.frame_id, transform.frame_id),
-                child_frame_id=config_frame_remap.get(
-                    transform.child_frame_id, transform.child_frame_id
-                ),
+                frame_id=remap.get(transform.frame_id, transform.frame_id),
+                child_frame_id=remap.get(transform.child_frame_id, transform.child_frame_id),
             )
             for transform in self.config.static_transforms.values()
         ]
@@ -292,16 +279,18 @@ class GO2Connection(Module, Camera, Pointcloud):
             period = 1.0 / self.config.static_publish_rate
             while True:
                 now = time.time()
+                # reconstructed each iteration to refresh the timestamp
                 self.tf.publish(
-                    # reconstructed here to refresh the timestamp
-                    Transform(
-                        translation=transform.translation,
-                        rotation=transform.rotation,
-                        frame_id=transform.frame_id,
-                        child_frame_id=transform.child_frame_id,
-                        ts=now,
+                    *(
+                        Transform(
+                            translation=transform.translation,
+                            rotation=transform.rotation,
+                            frame_id=transform.frame_id,
+                            child_frame_id=transform.child_frame_id,
+                            ts=now,
+                        )
+                        for transform in stamped_statics
                     )
-                    for transform in stamped_statics
                 )
                 self.camera_info.publish(self.camera_info_static)
                 time.sleep(period)

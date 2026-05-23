@@ -192,6 +192,10 @@ class RobotConfig(BaseModel):
         return f"traj_{self.name}"
 
     @cached_property
+    def all_frame_ids(self) -> list[str]:
+        return list(self._ensure_parsed().links)
+
+    @cached_property
     def body_frame(self) -> str:
         """Returns the robot's root link from the urdf (usually base_link), skips past ``type="floating"`` and returns structural link ("world" can be the true root frame, but that is detached from the robot)"""
         model = self._ensure_parsed()
@@ -209,66 +213,29 @@ class RobotConfig(BaseModel):
             current = floating_joint.child_link
 
     @cached_property
-    def static_relative_transforms(self) -> dict[str, Transform]:
-        """The key is the absolute path to the joint, with the value being the relative tranform (one link, not all links)
+    def static_transforms(self) -> dict[str, Transform]:
+        """Key is the child frame, transform is parent to child
 
         Example::
-            print(RobotConfig(model_path="go2.urdf").static_relative_transforms)
+            print(RobotConfig(model_path="go2.urdf").static_transforms)
             # output:
             {
-                "base_link/camera_link": Transform(translation=(0.3, 0, 0), rotation=identity, frame_id="base_link", child_frame_id="camera_link"),
-                # NOTE: this is the transform from camera_link to camera_optical NOT baselink to camera_optical
-                "base_link/camera_link/camera_optical": Transform(translation=(0, 0, 0), rotation=(-0.5, 0.5, -0.5, 0.5), frame_id="camera_link", child_frame_id="camera_optical"),
+                "camera_link": Transform(translation=(0.3, 0, 0), rotation=identity, frame_id="base_link", child_frame_id="camera_link"),
+                "camera_optical": Transform(translation=(0, 0, 0), rotation=(-0.5, 0.5, -0.5, 0.5), frame_id="camera_link", child_frame_id="camera_optical"),
             }
         """
-        model = self._ensure_parsed()
-        by_child = {joint.child_link: joint for joint in model.joints if joint.child_link}
-
-        def path_to(link: str) -> str:
-            parts = [link]
-            current = link
-            while current in by_child:
-                current = by_child[current].parent_link
-                if not current:
-                    break
-                parts.append(current)
-            return "/".join(reversed(parts))
-
         result: dict[str, Transform] = {}
-        for joint in model.joints:
+        for joint in self._ensure_parsed().joints:
             if joint.type != "fixed" or not joint.child_link:
                 continue
             roll, pitch, yaw = joint.origin_rpy
             tx, ty, tz = joint.origin_xyz
-            result[path_to(joint.child_link)] = Transform(
+            result[joint.child_link] = Transform(
                 translation=Vector3(tx, ty, tz),
                 rotation=Quaternion.from_euler(Vector3(roll, pitch, yaw)),
                 frame_id=joint.parent_link,
                 child_frame_id=joint.child_link,
             )
-        return result
-
-    @cached_property
-    def static_absolute_transforms(self) -> dict[str, Transform]:
-        """Same keys as ``static_relative_transforms`` but each value is the cumulative
-        transform from the root link down to the leaf link (i.e. all hops composed).
-
-        Example::
-            print(RobotConfig(model_path="go2.urdf").static_absolute_transforms)
-            # output:
-            {
-                "base_link/camera_link": Transform(..., frame_id="base_link", child_frame_id="camera_link"),
-                "base_link/camera_link/camera_optical": Transform(..., frame_id="base_link", child_frame_id="camera_optical"),
-            }
-        """
-        relative_transforms = self.static_relative_transforms
-        # Process parents before children so each entry can build on the prior absolute.
-        result: dict[str, Transform] = {}
-        for path in sorted(relative_transforms.keys(), key=lambda path: path.count("/")):
-            parent_path = path.rsplit("/", 1)[0]
-            parent_absolute = result.get(parent_path)
-            relative = relative_transforms[path]
-            result[path] = parent_absolute + relative if parent_absolute is not None else relative
         return result
 
     # -- Converter methods ----------------------------------------------------

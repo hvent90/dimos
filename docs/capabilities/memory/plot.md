@@ -370,7 +370,9 @@ from dimos.msgs.geometry_msgs.Vector3 import Vector3
 # TODO We need a nicer way to get optical transform for image streams
 # depending on the source
 def world_to_optical(base_pose):
-    return -(Transform.from_pose("base_link", base_pose) + Go2Config.static_absolute_transforms["base_link/camera_link/camera_optical"])
+    statics = Go2Config.static_transforms
+    base_to_optical = statics["camera_link"] + statics["camera_optical"]
+    return -(Transform.from_pose("base_link", base_pose) + base_to_optical)
 
 drawing = Space()
 

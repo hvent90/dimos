@@ -226,9 +226,10 @@ def render(space: Space, app_id: str = "space", spawn: bool = True) -> None:
         img = _as_image(data)
         if img is not None:
             # TODO: fix there should be a standard way to set camera frames
-            base_to_optical = Go2Config.static_absolute_transforms[
-                "base_link/camera_link/camera_optical"
-            ]
+            base_to_optical = (
+                Go2Config.static_transforms["camera_link"]
+                + Go2Config.static_transforms["camera_optical"]
+            )
             world_T_optical = Transform.from_pose("world", obs.pose_stamped) + base_to_optical
             rr.log(path, world_T_optical.to_pose().to_rerun(), static=True)
             h, w = img.shape[:2]
