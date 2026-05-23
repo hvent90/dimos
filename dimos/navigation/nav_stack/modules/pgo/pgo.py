@@ -41,15 +41,6 @@ class PGOConfig(NativeModuleConfig):
 
     frame_id: str = "map"
     child_frame_id: str = "odom"
-    parent_frame: str = "world"
-    body_frame: str = "base_link"
-    tf_channel: str = "/tf#tf2_msgs.TFMessage"
-
-    # The C++ binary's CLI args use the legacy frame names.
-    cli_name_override: dict[str, str] = {
-        "frame_id": "world_frame",
-        "child_frame_id": "local_frame",
-    }
 
     # Keyframe detection
     key_pose_delta_deg: float = 10.0

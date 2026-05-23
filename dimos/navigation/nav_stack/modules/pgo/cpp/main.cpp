@@ -119,16 +119,11 @@ static geometry_msgs::TransformStamped build_tf(const M3D& r, const V3D& t, doub
 static tf2_msgs::TFMessage build_tf_message(const M3D& correction_r,
                                               const V3D& correction_t,
                                               double ts,
-                                              const std::string& parent_frame,
-                                              const std::string& world_frame,
-                                              const std::string& local_frame) {
+                                              const std::string& frame_id,
+                                              const std::string& child_frame_id) {
     tf2_msgs::TFMessage msg;
-    // Identity anchor parent_frame -> world_frame.
     msg.transforms.push_back(
-        build_tf(M3D::Identity(), V3D::Zero(), ts, parent_frame, world_frame));
-    // SLAM correction world_frame -> local_frame.
-    msg.transforms.push_back(
-        build_tf(correction_r, correction_t, ts, world_frame, local_frame));
+        build_tf(correction_r, correction_t, ts, frame_id, child_frame_id));
     msg.transforms_length = static_cast<int32_t>(msg.transforms.size());
     return msg;
 }
@@ -242,11 +237,11 @@ int main(int argc, char** argv)
     dimos::NativeModule native_module(argc, argv);
 
     // Port topics
+    std::string tf_channel = "/tf#tf2_msgs.TFMessage";
     std::string scan_topic = native_module.topic("registered_scan");
     std::string odom_topic = native_module.topic("odometry");
     std::string corrected_odom_topic = native_module.topic("corrected_odometry");
     std::string global_map_topic = native_module.topic("global_map");
-    std::string tf_channel = native_module.arg("tf_channel", "/tf#tf2_msgs.TFMessage");
     std::string pose_graph_topic = native_module.topic("pose_graph");
     std::string loop_closure_event_topic = native_module.topic("loop_closure_event");
 
@@ -269,10 +264,8 @@ int main(int argc, char** argv)
     config.scan_context_lidar_height_m = native_module.arg_float("scan_context_lidar_height_m", 2.0f);
 
     // Node-level config
-    std::string parent_frame = native_module.arg("parent_frame", "world");
-    std::string world_frame = native_module.arg("world_frame", "map");
-    std::string local_frame = native_module.arg("local_frame", "odom");
-    std::string body_frame = native_module.arg("body_frame", "base_link");
+    std::string frame_id = native_module.arg("frame_id", "map");
+    std::string child_frame_id = native_module.arg("child_frame_id", "odom");
     float global_map_voxel_size = native_module.arg_float("global_map_voxel_size", 0.1f);
     float global_map_publish_rate = native_module.arg_float("global_map_publish_rate", 1.0f);
     double global_map_interval = global_map_publish_rate > 0
@@ -322,7 +315,7 @@ int main(int argc, char** argv)
                 std::chrono::system_clock::now().time_since_epoch())
                 .count();
         auto seed = build_tf_message(M3D::Identity(), V3D::Zero(), seed_ts,
-                                     parent_frame, world_frame, local_frame);
+                                     frame_id, child_frame_id);
         lcm.publish(tf_channel, &seed);
     }
 
@@ -377,13 +370,12 @@ int main(int argc, char** argv)
             // Not a keyframe — still broadcast TF and corrected odom
             M3D corr_r = pgo.offsetR() * cloud_with_pose.pose.r;
             V3D corr_t = pgo.offsetR() * cloud_with_pose.pose.t + pgo.offsetT();
-
             nav_msgs::Odometry corrected = build_odometry(
-                corr_r, corr_t, cur_time, world_frame, body_frame);
+                corr_r, corr_t, cur_time, frame_id, child_frame_id);
             lcm.publish(corrected_odom_topic, &corrected);
 
             auto tf_msg = build_tf_message(
-                pgo.offsetR(), pgo.offsetT(), cur_time, parent_frame, world_frame, local_frame);
+                pgo.offsetR(), pgo.offsetT(), cur_time, frame_id, child_frame_id);
             lcm.publish(tf_channel, &tf_msg);
 
             std::this_thread::sleep_for(std::chrono::milliseconds(timer_period_ms));
@@ -408,7 +400,7 @@ int main(int argc, char** argv)
 
         if (had_loop) {
             dimos::GraphDelta3D loop_closure_event_msg = build_loop_closure_event(
-                pre_poses, pgo.keyPoses(), cur_time, world_frame);
+                pre_poses, pgo.keyPoses(), cur_time, frame_id);
             loop_closure_event_msg.publish(lcm, loop_closure_event_topic);
             if (debug) {
                 fprintf(stderr,
@@ -427,17 +419,17 @@ int main(int argc, char** argv)
         M3D corr_r = pgo.offsetR() * cloud_with_pose.pose.r;
         V3D corr_t = pgo.offsetR() * cloud_with_pose.pose.t + pgo.offsetT();
         nav_msgs::Odometry corrected = build_odometry(
-            corr_r, corr_t, cur_time, world_frame, body_frame);
+            corr_r, corr_t, cur_time, frame_id, child_frame_id);
         lcm.publish(corrected_odom_topic, &corrected);
 
         auto tf_msg = build_tf_message(
-            pgo.offsetR(), pgo.offsetT(), cur_time, parent_frame, world_frame, local_frame);
+            pgo.offsetR(), pgo.offsetT(), cur_time, frame_id, child_frame_id);
         lcm.publish(tf_channel, &tf_msg);
 
         // Publish pose graph (on every keyframe — iSAM2 may have
         // re-optimized prior poses on loop closure).
         dimos::Graph3D pose_graph_msg = build_pose_graph(
-            pgo.keyPoses(), pgo.historyPairs(), cur_time, world_frame);
+            pgo.keyPoses(), pgo.historyPairs(), cur_time, frame_id);
         pose_graph_msg.publish(lcm, pose_graph_topic);
 
         // Publish global map (throttled)
@@ -464,7 +456,7 @@ int main(int argc, char** argv)
                 voxel.setLeafSize(global_map_voxel_size, global_map_voxel_size, global_map_voxel_size);
                 voxel.filter(*filtered);
 
-                sensor_msgs::PointCloud2 map_msg = smartnav::from_pcl(*filtered, world_frame, now);
+                sensor_msgs::PointCloud2 map_msg = smartnav::from_pcl(*filtered, frame_id, now);
                 lcm.publish(global_map_topic, &map_msg);
             }
         }
