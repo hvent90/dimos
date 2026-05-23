@@ -448,6 +448,29 @@ async def bridge_datachannel(
         except Exception as e:
             log.warning("bridge: CF GET robot session failed: %r", e)
 
+        # ROOT-CAUSE FIX: the `tracks` array in /sessions/new is IGNORED by CF —
+        # GET robot session showed tracks:[] even though create_session declared
+        # the publisher there. CF only registers a LOCAL (publishable) track via
+        # an explicit POST /tracks/new with location:local. Without it the track
+        # is never exposed, so the operator's remote pull always gets
+        # not_found_track_error. Publish it here, now that the robot PC is
+        # connected (a /tracks/new requires the connected PC). Idempotent enough:
+        # if already published a re-publish is harmless / errors are logged.
+        try:
+            pub = await cf_client.add_tracks(
+                session.cf_session_id,
+                [
+                    {
+                        "location": "local",
+                        "mid": session.published_video_mid,
+                        "trackName": session.published_video_track_name,
+                    }
+                ],
+            )
+            log.warning("bridge: published robot local video track -> %r", pub)
+        except Exception as e:
+            log.error("bridge: failed to publish robot local video track: %r", e)
+
         # CF's tracks/new returns a PER-TRACK not_found_track_error ("Track not
         # found on remote peer ... make sure the publisher is connected and
         # sending packets") when the robot's RTP hasn't reached the SFU yet — a
