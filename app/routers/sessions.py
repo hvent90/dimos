@@ -428,6 +428,26 @@ async def bridge_datachannel(
         video_status = "no_published_track"
         log.warning("bridge: no published_video_track_name session=%s", session.id)
     else:
+        # DIAGNOSTIC: log what we're about to pull AND what CF actually reports
+        # on the robot's session. Comparing the declared trackName/sessionId
+        # against CF's track list distinguishes the failure cause:
+        #   - declared trackName IS in CF's tracks, just not flowing → timing
+        #     race (#1/#4) → retry catches it.
+        #   - declared trackName NOT in CF's tracks → identity mismatch (#2):
+        #     CF keyed the live track under a different name than we declared.
+        #   - no video track at all on the robot session → publisher never
+        #     bound (#3) or wrong session id (#6).
+        log.warning(
+            "bridge: about to pull video — robot_cf_session=%s declared_trackName=%s declared_mid=%s",
+            session.cf_session_id, session.published_video_track_name,
+            session.published_video_mid,
+        )
+        try:
+            robot_sess = await cf_client.get_session(session.cf_session_id)
+            log.warning("bridge: CF GET robot session -> %r", robot_sess)
+        except Exception as e:
+            log.warning("bridge: CF GET robot session failed: %r", e)
+
         # CF's tracks/new returns a PER-TRACK not_found_track_error ("Track not
         # found on remote peer ... make sure the publisher is connected and
         # sending packets") when the robot's RTP hasn't reached the SFU yet — a
