@@ -12,13 +12,13 @@
 # See the License for the specific language governing permissions and
 # limitations under the License.
 
-# NOTE: This lives under mapping/relocalization/ for now because the only
-# consumer is the premap export pipeline (`dimos map --export`). It is
-# temporary and can be moved/split out later when PGO grows other consumers.
+# Internal PGO/ICP machinery (gtsam-backed). Public consumers should use
+# the Stream-shaped API in pgo2.py — pgo_keyframes, keyframes_to_corrections,
+# make_interpolator, apply_corrections. The classes here (_SimplePGO, PGOConfig,
+# _KeyPose) are imported from pgo2 to do the heavy lifting.
 
 from __future__ import annotations
 
-from collections.abc import Callable
 from dataclasses import dataclass
 from typing import Any
 
@@ -30,7 +30,6 @@ from scipy.spatial import KDTree
 from scipy.spatial.transform import Rotation
 
 from dimos.core.module import ModuleConfig
-from dimos.msgs.sensor_msgs.PointCloud2 import PointCloud2
 from dimos.utils.logging_config import setup_logger
 
 FRAME_MAP = "world"
@@ -368,120 +367,3 @@ class _SimplePGO:
     @property
     def num_key_poses(self) -> int:
         return len(self._key_poses)
-
-
-def pgo_then_voxels(
-    stream: Any,
-    *,
-    voxel_size: float = 0.05,
-    block_count: int = 2_000_000,
-    device: str = "CUDA:0",
-    corrected_path_out: list[tuple[float, float, float]] | None = None,
-    pass1_on_frame: Callable[[Any], None] | None = None,
-    pass2_on_frame: Callable[[Any], None] | None = None,
-    **pgo_cfg: Any,
-) -> PointCloud2:
-    """Two-pass PGO mapping (eliminates duplicate-wall artifacts).
-
-    Pass 1 runs PGO over the lidar stream to build its corrected
-    keyframe trajectory.
-
-    Pass 2 re-streams every lidar frame through ``VoxelGrid``, but each
-    frame's world-frame cloud is first transformed by the rigid drift
-    correction interpolated (SLERP for rotation, linear for translation)
-    from the keyframe corrections at the frame's timestamp.
-
-    Each frame is therefore inserted exactly once at its converged
-    corrected pose, so walls collapse to a single layer instead of the
-    "smear of slightly-offset re-projections" that the single-pass
-    ``_SimplePGO.build_global_map`` produces.
-    """
-    from scipy.spatial.transform import Slerp
-
-    from dimos.mapping.voxels import VoxelGrid
-
-    cfg = PGOConfig(**pgo_cfg)
-    pgo = _SimplePGO(cfg)
-
-    n_frames = 0
-    for obs in stream:
-        if pass1_on_frame is not None:
-            pass1_on_frame(obs)
-        if obs.pose is None:
-            continue
-        x, y, z, qx, qy, qz, qw = obs.pose
-        # Skip placeholder poses: zero translation, or invalid (zero-norm) quaternion.
-        if x == 0 and y == 0 and z == 0:
-            continue
-        if qx == 0 and qy == 0 and qz == 0 and qw == 0:
-            continue
-        r = Rotation.from_quat([qx, qy, qz, qw]).as_matrix()
-        t = np.array([x, y, z])
-        points, _ = obs.data.as_numpy()
-        if len(points) == 0:
-            continue
-        body_pts = (
-            (r.T @ (points[:, :3].T - t[:, None])).T if cfg.unregister_input else points[:, :3]
-        )
-        if pgo.add_key_pose(r, t, obs.ts, body_pts):
-            pgo.search_for_loops()
-            pgo.smooth_and_update()
-        n_frames += 1
-
-    n_kf = pgo.num_key_poses
-    print(f"  Pass 1: {n_frames} frames, {n_kf} keyframes")
-
-    if corrected_path_out is not None:
-        corrected_path_out.extend(
-            (float(kp.t_global[0]), float(kp.t_global[1]), float(kp.t_global[2]))
-            for kp in pgo._key_poses
-        )
-
-    grid = VoxelGrid(voxel_size=voxel_size, block_count=block_count, device=device)
-    try:
-        if n_kf < 2:
-            for obs in stream:
-                if pass2_on_frame is not None:
-                    pass2_on_frame(obs)
-                grid.add_frame(obs.data)
-            return grid.get_global_pointcloud2()
-
-        # Sort + dedupe by timestamp: Slerp requires strictly increasing ts.
-        kps = sorted(pgo._key_poses, key=lambda kp: kp.timestamp)
-        kps = [kp for i, kp in enumerate(kps) if i == 0 or kp.timestamp > kps[i - 1].timestamp]
-        kf_ts = np.array([kp.timestamp for kp in kps])
-        # Per-keyframe rigid drift correction: T_corr = T_global @ T_local.inv()
-        R_corr_list = [kp.r_global @ kp.r_local.T for kp in kps]
-        t_corr_list = [kp.t_global - (kp.r_global @ kp.r_local.T) @ kp.t_local for kp in kps]
-        t_corrs = np.stack(t_corr_list)
-        rot_slerp = Slerp(kf_ts, Rotation.from_matrix(np.stack(R_corr_list)))
-
-        n_inserted = 0
-        for obs in stream:
-            if pass2_on_frame is not None:
-                pass2_on_frame(obs)
-            if obs.pose is None:
-                continue
-            ts = float(np.clip(obs.ts, kf_ts[0], kf_ts[-1]))
-            r_correction = rot_slerp([ts])[0].as_matrix()
-            idx = int(np.searchsorted(kf_ts, ts))
-            if idx == 0:
-                t_correction = t_corrs[0]
-            elif idx >= len(kf_ts):
-                t_correction = t_corrs[-1]
-            else:
-                t_lo, t_hi = kf_ts[idx - 1], kf_ts[idx]
-                alpha = (ts - t_lo) / (t_hi - t_lo) if t_hi > t_lo else 0.0
-                t_correction = (1 - alpha) * t_corrs[idx - 1] + alpha * t_corrs[idx]
-
-            points, _ = obs.data.as_numpy()
-            if len(points) == 0:
-                continue
-            corrected_pts = (r_correction @ points[:, :3].T).T + t_correction
-            grid.add_frame(PointCloud2.from_numpy(corrected_pts.astype(np.float32)))
-            n_inserted += 1
-
-        print(f"  Pass 2: {n_inserted} frames inserted with PGO-corrected poses")
-        return grid.get_global_pointcloud2()
-    finally:
-        grid.dispose()

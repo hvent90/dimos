@@ -95,19 +95,47 @@ def main(
     pgo_map = None
     pgo_path: list[tuple[float, float, float]] = []
     if pgo:
-        from dimos.mapping.relocalization.pgo import pgo_then_voxels
+        import numpy as np
+        from scipy.spatial.transform import Rotation
+
+        from dimos.mapping.relocalization.pgo2 import (
+            keyframes_to_corrections,
+            make_interpolator,
+            pgo_keyframes,
+        )
+        from dimos.mapping.voxels import VoxelGrid
+        from dimos.msgs.sensor_msgs.PointCloud2 import PointCloud2
 
         total = lidar.count()
         print("running PGO twopass map...")
-        pgo_map = pgo_then_voxels(
-            lidar,
-            voxel_size=voxel,
-            block_count=block_count,
-            device=device,
-            corrected_path_out=pgo_path,
-            pass1_on_frame=progress(total, "pgo pass 1 (optimizing)"),
-            pass2_on_frame=progress(total, "pgo pass 2 (rebuilding)"),
-        )
+        keyframes = pgo_keyframes(lidar, on_frame=progress(total, "pgo pass 1 (optimizing)"))
+        corrections = keyframes_to_corrections(keyframes)
+        interp = make_interpolator(corrections)
+
+        for obs in keyframes:
+            kp = obs.data
+            pgo_path.append((float(kp.t_global[0]), float(kp.t_global[1]), float(kp.t_global[2])))
+
+        pass2_pb = progress(total, "pgo pass 2 (rebuilding)")
+        grid = VoxelGrid(voxel_size=voxel, block_count=block_count, device=device)
+        try:
+            for obs in lidar:
+                pass2_pb(obs)
+                if obs.pose is None:
+                    continue
+                pts, _ = obs.data.as_numpy()
+                if len(pts) == 0:
+                    continue
+                tf = interp(obs.ts)
+                R = Rotation.from_quat(
+                    [tf.rotation.x, tf.rotation.y, tf.rotation.z, tf.rotation.w]
+                ).as_matrix()
+                t = np.array([tf.translation.x, tf.translation.y, tf.translation.z])
+                corrected = (R @ pts[:, :3].T).T + t
+                grid.add_frame(PointCloud2.from_numpy(corrected.astype(np.float32)))
+            pgo_map = grid.get_global_pointcloud2()
+        finally:
+            grid.dispose()
 
     global_map = (
         lidar.tap(collect_path)
