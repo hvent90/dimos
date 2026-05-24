@@ -220,11 +220,6 @@ def apply_corrections(
     return stream.transform(xf)
 
 
-# ---------------------------------------------------------------------------
-# Transform <-> (R, t) and obs.pose helpers (private)
-# ---------------------------------------------------------------------------
-
-
 def _r_t_from_transform(tf: Transform) -> tuple[np.ndarray, np.ndarray]:
     q = tf.rotation
     R = Rotation.from_quat([q.x, q.y, q.z, q.w]).as_matrix()
@@ -339,8 +334,6 @@ class _PGO:
                 )
             )
         return out
-
-    # ---------- internal ----------
 
     def _is_keyframe(self, local_pose: gtsam.Pose3) -> bool:
         if not self._key_poses:
