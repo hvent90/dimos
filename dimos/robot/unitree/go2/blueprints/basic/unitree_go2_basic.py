@@ -34,9 +34,18 @@ _mac_transports: dict[tuple[str, type], pSHMTransport[Image]] = {
     ),
 }
 
-_transports_base = (
-    autoconnect() if platform.system() == "Linux" else autoconnect().transports(_mac_transports)
-)
+
+def _platform_transports() -> Any:
+    """Darwin: pSHM for color_image only under LCM; under Zenoh use coordinator defaults."""
+    if platform.system() == "Linux":
+        return autoconnect()
+    if global_config.transport == "lcm":
+        return autoconnect().transports(_mac_transports)
+    # under Zenoh, do not override color_image to pSHM.
+    return autoconnect()
+
+
+_transports_base = _platform_transports()
 
 
 def _convert_camera_info(camera_info: Any) -> Any:
