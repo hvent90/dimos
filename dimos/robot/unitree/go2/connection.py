@@ -264,7 +264,7 @@ class GO2Connection(Module, Camera, Pointcloud):
             self.odom.publish(msg)
 
     def _static_publish(self) -> None:
-        remap = {Go2Config.body_frame: self.frame_id, **self.config.frame_mapping}
+        remap = {**self.config.frame_mapping, Go2Config.body_frame: self.frame_id}
         stamped_statics = [
             Transform(
                 translation=transform.translation,
