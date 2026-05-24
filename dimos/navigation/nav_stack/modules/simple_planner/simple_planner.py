@@ -34,9 +34,9 @@ from dimos.core.module import Module, ModuleConfig
 from dimos.core.stream import In, Out
 from dimos.msgs.geometry_msgs.PointStamped import PointStamped
 from dimos.msgs.geometry_msgs.PoseStamped import PoseStamped
+from dimos.msgs.geometry_msgs.Transform import Transform
 from dimos.msgs.nav_msgs.Path import Path
 from dimos.msgs.sensor_msgs.PointCloud2 import PointCloud2
-from dimos.navigation.nav_stack.frames import FRAME_BODY, FRAME_MAP, FRAME_SENSOR
 from dimos.utils.logging_config import setup_logger
 
 logger = setup_logger()
@@ -111,7 +111,6 @@ _NEIGHBOURS: tuple[tuple[int, int, float], ...] = tuple(
 
 _COSTMAP_PUBLISH_PERIOD = 0.5  # s (~2 Hz, plenty for rerun visualization)
 _COSTMAP_VIS_Z_LIFT = 0.1  # m above ground plane so costmap floats above terrain
-_TF_WARN_THROTTLE = 5.0  # s between repeated TF-missing warnings
 _COLOR_OBSTACLE = (1.0, 40.0 / 255.0, 40.0 / 255.0)  # red
 _COLOR_INFLATION = (1.0, 165.0 / 255.0, 0.0)  # orange
 
@@ -157,14 +156,6 @@ def progress_tick(
                 True,
             )
     return (state, False)
-
-
-def resolve_tf_chain(tf_buffer: Any, queries: list[tuple[str, str]]) -> Any:
-    for parent, child in queries:
-        tf = tf_buffer.get(parent, child)
-        if tf is not None:
-            return tf
-    return None
 
 
 def plan_on_costmap(
@@ -283,9 +274,8 @@ def astar(
 
 
 class SimplePlannerConfig(ModuleConfig):
-    world_frame: str = FRAME_MAP
-    body_frame: str = FRAME_BODY
-    sensor_frame: str = FRAME_SENSOR
+    world_frame: str = "world"
+    robot_frame: str = "base_link"
 
     cell_size: float = 0.3  # m per cell
     obstacle_height_threshold: float = 0.15  # m above ground
@@ -335,10 +325,6 @@ class SimplePlanner(Module):
         self._running = False
         self._thread: threading.Thread | None = None
         self._waypoint_thread: threading.Thread | None = None
-        self._robot_x = 0.0
-        self._robot_y = 0.0
-        self._robot_z = 0.0
-        self._has_odom = False
         self._goal_x: float | None = None
         self._goal_y: float | None = None
         self._goal_z = 0.0
@@ -361,7 +347,6 @@ class SimplePlanner(Module):
         # detect when the robot is about to reach it and advance early.
         self._current_wp: tuple[float, float] | None = None
         self._current_wp_is_goal = False
-        self._last_tf_warn = 0.0
         self._lock = threading.Lock()
         self._costmap_lock = threading.Lock()
         self._costmap = Costmap(
@@ -398,42 +383,8 @@ class SimplePlanner(Module):
         super().stop()
 
     @property
-    def _tf_pose_queries(self) -> list[tuple[str, str]]:
-        """Ordered (parent, child) TF lookups for the robot pose.
-        The first successful lookup wins. ``sensor`` is used by the Unity sim bridge."""
-        return [
-            (self.config.world_frame, self.config.body_frame),
-            (self.config.world_frame, self.config.sensor_frame),
-        ]
-
-    def _query_pose(self) -> bool:
-        """Update cached robot position from the TF tree.
-
-        Tries several ``(parent, child)`` pairs in priority order so the
-        planner works both on real hardware (``map → body`` via PGO +
-        FastLio2) and in simulation (``map → sensor`` from the Unity
-        bridge).
-
-        Returns True if a pose was obtained from any chain.
-        """
-        tf = resolve_tf_chain(self.tf, list(self._tf_pose_queries))
-        if tf is None:
-            now = time.monotonic()
-            if now - self._last_tf_warn > _TF_WARN_THROTTLE:
-                self._last_tf_warn = now
-                buffers = list(self.tf.buffers.keys()) if hasattr(self.tf, "buffers") else []
-                logger.warning(
-                    "TF lookup failed — no robot pose available",
-                    tried=[(p, c) for p, c in self._tf_pose_queries],
-                    available_frames=buffers,
-                )
-            return False
-        with self._lock:
-            self._robot_x = float(tf.translation.x)
-            self._robot_y = float(tf.translation.y)
-            self._robot_z = float(tf.translation.z)
-            self._has_odom = True
-        return True
+    def robot_transform(self) -> Transform | None:
+        return self.tf.get(self.config.world_frame, self.config.robot_frame)
 
     def _cancel_navigation(self, source: str) -> None:
         """Clear the active goal and tell LocalPlanner to hold position.
@@ -443,7 +394,7 @@ class SimplePlanner(Module):
         being pushed, so a stale "stop here" waypoint becomes a real
         target the local planner drives back to.
         """
-        self._query_pose()
+        pose = self.robot_transform
         with self._lock:
             already_idle = self._goal_x is None and self._goal_y is None
             self._goal_x = None
@@ -451,7 +402,11 @@ class SimplePlanner(Module):
             self._cached_path = None
             self._current_wp = None
             self._current_wp_is_goal = False
-            rx, ry, rz = self._robot_x, self._robot_y, self._robot_z
+        rx, ry, rz = (
+            (pose.translation.x, pose.translation.y, pose.translation.z)
+            if pose is not None
+            else (0.0, 0.0, 0.0)
+        )
         now = time.time()
         self.way_point.publish(
             PointStamped(ts=now, frame_id=self.config.world_frame, x=rx, y=ry, z=rz)
@@ -497,9 +452,6 @@ class SimplePlanner(Module):
             self._last_plan_time = 0.0
         logger.info("Goal received", x=round(msg.x, 2), y=round(msg.y, 2), z=round(msg.z, 2))
 
-    # Sensor height assumed for the G1 (m). Points below robot_z minus
-    # this offset are interpreted as floor; anything higher is obstacle.
-
     def _classify_points(self, points: np.ndarray, cm: Costmap) -> None:
         """Add points (Nx3) to ``cm`` using z-relative-to-ground as height.
 
@@ -512,8 +464,8 @@ class SimplePlanner(Module):
         """
         if len(points) == 0:
             return
-        with self._lock:
-            rz = self._robot_z if self._has_odom else 0.0
+        pose = self.robot_transform
+        rz = pose.translation.z if pose is not None else 0.0
         ground_z = rz - self.config.ground_offset_below_robot
         heights = points[:, 2] - ground_z
         mask = heights > 0.0
@@ -606,13 +558,15 @@ class SimplePlanner(Module):
 
     def _update_waypoint(self) -> None:
         """Recompute and publish the leading waypoint from the current pose and cached path."""
-        self._query_pose()
+        pose = self.robot_transform
+        if pose is None:
+            return
         with self._lock:
-            if not self._has_odom or self._goal_x is None:
+            if self._goal_x is None:
                 return
-            rx, ry = self._robot_x, self._robot_y
             gz = self._goal_z
             cached = self._cached_path
+        rx, ry = pose.translation.x, pose.translation.y
         if not cached:
             return
         wx, wy = self._lookahead(cached, rx, ry, self.config.lookahead_distance)
@@ -666,13 +620,14 @@ class SimplePlanner(Module):
         )
 
     def _replan_once(self) -> None:
-        self._query_pose()
-
+        pose = self.robot_transform
+        if pose is None:
+            return
         with self._lock:
-            if not self._has_odom or self._goal_x is None or self._goal_y is None:
+            if self._goal_x is None or self._goal_y is None:
                 return
-            rx, ry, rz = self._robot_x, self._robot_y, self._robot_z
             gx, gy, gz = self._goal_x, self._goal_y, self._goal_z
+        rx, ry, rz = pose.translation.x, pose.translation.y, pose.translation.z
 
         mono_now = time.monotonic()
         goal_dist = math.hypot(gx - rx, gy - ry)
