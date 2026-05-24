@@ -34,7 +34,7 @@ from __future__ import annotations
 import ipaddress
 from pathlib import Path
 import socket
-from typing import TYPE_CHECKING, Annotated
+from typing import TYPE_CHECKING, Annotated, Literal
 
 from pydantic.experimental.pipeline import validate_as
 
@@ -74,6 +74,11 @@ class FastLio2Config(NativeModuleConfig):
 
     frame_id: str = "odom"
     child_frame_id: str = "base_link"
+    # if base_link != lidar_mount_point, then set pointcloud_frame_id to the lidar mount point
+    pointcloud_frame_id: str | None = None
+
+    # "initial_odom": registered world cloud in frame_id; "self": raw sensor scan.
+    lidar_relative_to: Literal["initial_odom", "self"] = "initial_odom"
 
     # FAST-LIO internal processing rates
     msr_freq: float = 50.0
@@ -117,8 +122,8 @@ class FastLio2Config(NativeModuleConfig):
     config_path: str | None = None
 
     def model_post_init(self, __context: object) -> None:
-        """Resolve config_path."""
         super().model_post_init(__context)
+        self.pointcloud_frame_id = self.pointcloud_frame_id or self.child_frame_id
         cfg = self.config
         if not cfg.is_absolute():
             cfg = _CONFIG_DIR / cfg

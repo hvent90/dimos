@@ -67,6 +67,8 @@ static std::string g_odometry_topic;
 static std::string g_map_topic;
 static std::string g_frame_id;
 static std::string g_child_frame_id;
+static std::string g_pointcloud_frame_id;
+static bool g_relative_lidar = false;  // true when --lidar_relative_to=self
 static float g_frequency = 10.0f;
 const std::string g_tf_topic = "/tf#tf2_msgs.TFMessage";
 
@@ -90,18 +92,19 @@ using dimos::time_from_seconds;
 using dimos::make_header;
 
 // ---------------------------------------------------------------------------
-// Publish lidar (world-frame point cloud)
+// Publish lidar (point cloud)
 // ---------------------------------------------------------------------------
 
 static void publish_lidar(PointCloudXYZI::Ptr cloud, double timestamp,
-                          const std::string& topic = "") {
+                          const std::string& topic,
+                          const std::string& frame) {
     const std::string& chan = topic.empty() ? g_lidar_topic : topic;
     if (!g_lcm || !cloud || cloud->empty() || chan.empty()) return;
 
     int num_points = static_cast<int>(cloud->size());
 
     sensor_msgs::PointCloud2 pc;
-    pc.header = make_header(g_frame_id, timestamp);
+    pc.header = make_header(frame, timestamp);
     pc.height = 1;
     pc.width = num_points;
     pc.is_bigendian = 0;
@@ -338,8 +341,10 @@ int main(int argc, char** argv) {
     std::string host_ip = mod.arg("host_ip", "192.168.1.5");
     std::string lidar_ip = mod.arg("lidar_ip", "192.168.1.155");
     g_frequency = mod.arg_float("frequency", 10.0f);
-    g_child_frame_id = mod.arg_required("frame_id");
     g_frame_id = mod.arg_required("frame_id");
+    g_child_frame_id = mod.arg_required("child_frame_id");
+    g_pointcloud_frame_id = mod.arg("pointcloud_frame_id", g_child_frame_id);
+    g_relative_lidar = mod.arg("lidar_relative_to", std::string("initial_odom")) == "self";
     float pointcloud_freq = mod.arg_float("pointcloud_freq", 5.0f);
     float odom_freq = mod.arg_float("odom_freq", 50.0f);
     CloudFilterConfig filter_cfg;
@@ -470,11 +475,29 @@ int main(int argc, char** argv) {
             }
 
             if (!points.empty()) {
+                double raw_ts = static_cast<double>(frame_start) / 1e9;
+
+                // lidar_relative_to=self: raw scan from the Livox accumulator.
+                if (g_relative_lidar && !g_lidar_topic.empty()
+                    && now - last_pc_publish >= pc_interval) {
+                    PointCloudXYZI::Ptr raw(new PointCloudXYZI);
+                    raw->reserve(points.size());
+                    for (const auto& cp : points) {
+                        PointType p;
+                        p.x = static_cast<float>(cp.x);
+                        p.y = static_cast<float>(cp.y);
+                        p.z = static_cast<float>(cp.z);
+                        p.intensity = static_cast<float>(cp.reflectivity);
+                        raw->push_back(p);
+                    }
+                    publish_lidar(raw, raw_ts, g_lidar_topic, g_pointcloud_frame_id);
+                    last_pc_publish = now;
+                }
+
                 // Build CustomMsg
                 auto lidar_msg = boost::make_shared<custom_messages::CustomMsg>();
                 lidar_msg->header.seq = 0;
-                lidar_msg->header.stamp = custom_messages::Time().fromSec(
-                    static_cast<double>(frame_start) / 1e9);
+                lidar_msg->header.stamp = custom_messages::Time().fromSec(raw_ts);
                 lidar_msg->header.frame_id = "livox_frame";
                 lidar_msg->timebase = frame_start;
                 lidar_msg->lidar_id = 0;
@@ -502,13 +525,14 @@ int main(int argc, char** argv) {
             if (world_cloud && !world_cloud->empty()) {
                 auto filtered = filter_cloud<PointType>(world_cloud, filter_cfg);
 
-                // Per-scan publish at pointcloud_freq
-                if (!g_lidar_topic.empty() && now - last_pc_publish >= pc_interval) {
-                    publish_lidar(filtered, ts);
+                // lidar_relative_to=initial_odom (default): registered world cloud.
+                if (!g_relative_lidar && !g_lidar_topic.empty()
+                    && now - last_pc_publish >= pc_interval) {
+                    publish_lidar(filtered, ts, g_lidar_topic, g_frame_id);
                     last_pc_publish = now;
                 }
 
-                // Global map: insert, prune, and publish at map_freq
+                // Global map is always world-frame (it accumulates across scans).
                 if (global_map) {
                     global_map->insert<PointType>(filtered);
 
@@ -518,7 +542,7 @@ int main(int argc, char** argv) {
                             static_cast<float>(pose[1]),
                             static_cast<float>(pose[2]));
                         auto map_cloud = global_map->to_cloud<PointType>();
-                        publish_lidar(map_cloud, ts, g_map_topic);
+                        publish_lidar(map_cloud, ts, g_map_topic, g_frame_id);
                         last_map_publish = now;
                     }
                 }
