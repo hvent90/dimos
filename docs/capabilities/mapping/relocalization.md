@@ -77,16 +77,16 @@ standard `unitree-go2` stack plus `RelocalizationModule`:
 
 ```bash
 dimos --replay --replay-db {DB_NAME} run unitree-go2-relocalization \
-  -o relocalizationmodule.map_file={DB_NAME}_twopass_map
+  -o relocalizationmodule.map_file={DB_NAME}
 ```
 
-`{DB_NAME}_twopass_map` is resolved the same way as in section 2: cwd
+`{DB_NAME}` is resolved the same way as in section 2: cwd
 first, then `data/`.
 
 Sample log:
 
 ```
-12:58:51.469[inf][imos/mapping/relocalization.py] Relocalization module started: map_file='recording_go2_twopass_map'  loaded_map.frame_id='map'  placeholder TF 'world' -> 'map'  z_offset=20.0
+12:58:51.469[inf][imos/mapping/relocalization.py] Relocalization module started: map_file='recording_go2'  loaded_map.frame_id='map'  placeholder TF 'world' -> 'map'  z_offset=20.0
 12:58:56.528[war][imos/mapping/relocalization.py] relocalize skipped: n_pts=14198 < MIN_LOCAL_POINTS=20000
 12:59:04.777[war][imos/mapping/relocalization.py] relocalize rejected: fitness=0.466 < threshold=0.6 time_cost=5.3s n_pts=20231
 12:59:14.880[war][imos/mapping/relocalization.py] relocalize rejected: fitness=0.433 < threshold=0.6 time_cost=8.1s n_pts=37770
@@ -125,5 +125,5 @@ recorded `.db`:
 
 ```bash
 dimos --robot-ip {YOUR_ROBOT_IP} run unitree-go2-relocalization \
-  -o relocalizationmodule.map_file={DB_NAME}_twopass_map
+  -o relocalizationmodule.map_file={DB_NAME}
 ```
