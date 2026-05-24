@@ -43,6 +43,8 @@ unitree_g1_nav_onboard = (
             lidar_ip=os.getenv("LIDAR_IP", "192.168.123.120"),
             map_freq=1.0,
             config="default.yaml",
+            lidar_relative_to="self",
+            pointcloud_frame_id="mid360_link",
         ),
         CustomStaticTransforms.blueprint(
             # Mount: base_link -> mid360_link. FastLio2 publishes odom -> base_link
