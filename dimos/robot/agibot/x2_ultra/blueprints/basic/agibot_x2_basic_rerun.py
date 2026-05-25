@@ -43,7 +43,7 @@ agibot_x2_basic_rerun = (
             (WebsocketVisModule, "tele_cmd_vel", "cmd_vel"),
         ]
     )
-    .global_config(n_workers=4, robot_model="agibot_x2_ultra")
+    .global_config(n_workers=6, robot_model="agibot_x2_ultra")
 )
 
 __all__ = [
