@@ -180,6 +180,44 @@ class X2ConnectionBase(Module, ABC):
 
 class ConnectionConfig(ModuleConfig):
     ros_domain_id: int = Field(default=0, description="ROS_DOMAIN_ID matching the robot")
+    force_cyclonedds: bool = Field(
+        default=True,
+        description="Force CycloneDDS with an explicit peer/interface before rclpy init.",
+    )
+    clear_rmw_env: bool = Field(
+        default=False,
+        description="Clear inherited RMW_IMPLEMENTATION/CYCLONEDDS_URI before rclpy init.",
+    )
+    cyclone_interface: str = Field(
+        default="wlp0s20f3",
+        description="Network interface used when force_cyclonedds is enabled.",
+    )
+    cyclone_peer: str = Field(
+        default="10.0.0.209",
+        description="Static DDS peer address used when force_cyclonedds is enabled.",
+    )
+    enable_lidar: bool = Field(
+        default=False,
+        description="Subscribe to the chest lidar pointcloud and publish it to DimOS.",
+    )
+    enable_depth_cloud: bool = Field(
+        default=False,
+        description="Subscribe to the head depth pointcloud and publish it to DimOS.",
+    )
+
+
+def _cyclonedds_uri(interface: str, peer: str) -> str:
+    return (
+        "<CycloneDDS><Domain>"
+        "<General>"
+        f'<Interfaces><NetworkInterface name="{interface}"/></Interfaces>'
+        "</General>"
+        "<Discovery>"
+        f'<Peers><Peer address="{peer}"/></Peers>'
+        "<ParticipantIndex>auto</ParticipantIndex>"
+        "</Discovery>"
+        "</Domain></CycloneDDS>"
+    )
 
 
 def _clamp_velocity(value: float, min_mag: float, max_mag: float) -> float:
@@ -395,11 +433,23 @@ class X2Connection(X2ConnectionBase, Camera, Pointcloud, IMU, Lidar):
             import rclpy
 
             os.environ.setdefault("ROS_DOMAIN_ID", str(self.config.ros_domain_id))
+            if self.config.clear_rmw_env:
+                os.environ.pop("RMW_IMPLEMENTATION", None)
+                os.environ.pop("CYCLONEDDS_URI", None)
+            if self.config.force_cyclonedds:
+                # Laptop-to-robot runs may need CycloneDDS with a pinned peer.
+                # Bot-local runs should leave this disabled and use the robot's
+                # installed default RMW.
+                os.environ["RMW_IMPLEMENTATION"] = "rmw_cyclonedds_cpp"
+                os.environ.setdefault(
+                    "CYCLONEDDS_URI",
+                    _cyclonedds_uri(self.config.cyclone_interface, self.config.cyclone_peer),
+                )
             # dimos workers are forked from a forkserver, which can carry a
             # half-initialized DDS context into the child. Reusing it works
             # for the first message or two on high-bandwidth topics, then
             # silently drops. Tear it down and re-init in this worker so
-            # FastDDS owns a clean state.
+            # the DDS layer owns a clean state.
             try:
                 rclpy.init()
             except RuntimeError as init_exc:
@@ -450,6 +500,22 @@ class X2Connection(X2ConnectionBase, Camera, Pointcloud, IMU, Lidar):
         # any downstream module in this blueprint, so we leave them off.
         # If you need them later, re-enable here and confirm the camera
         # bridge still flows.
+        if self.config.enable_depth_cloud:
+            node.create_subscription(
+                self._import_msg("sensor_msgs.msg", "PointCloud2"),
+                _TOPIC_DEPTH_CLOUD,
+                self._on_depth_cloud,
+                sensor_qos,
+                callback_group=sensor_group,
+            )
+        if self.config.enable_lidar:
+            node.create_subscription(
+                self._import_msg("sensor_msgs.msg", "PointCloud2"),
+                _TOPIC_LIDAR,
+                self._on_lidar,
+                sensor_qos,
+                callback_group=sensor_group,
+            )
         node.create_subscription(
             self._import_msg("sensor_msgs.msg", "Imu"),
             _TOPIC_IMU,
@@ -904,23 +970,15 @@ class X2Connection(X2ConnectionBase, Camera, Pointcloud, IMU, Lidar):
 
         bridge = Path(__file__).parent / "_camera_bridge.py"
         env = _os.environ.copy()
-        env["RMW_IMPLEMENTATION"] = "rmw_cyclonedds_cpp"
-        env["CYCLONEDDS_URI"] = (
-            "<CycloneDDS><Domain>"
-            "<General>"
-            # Pin to enp2s0 so DDS uses the robot LAN, not wlp3s0.
-            '<Interfaces><NetworkInterface name="enp2s0"/></Interfaces>'
-            # Multicast stays enabled for data delivery (the publisher uses it
-            # for high-bandwidth topics); discovery is also fine over multicast
-            # but we add a static peer as a fallback in case the multicast
-            # route is broken by dimos's loopback route.
-            "</General>"
-            "<Discovery>"
-            '<Peers><Peer address="10.0.1.41"/></Peers>'
-            "<ParticipantIndex>auto</ParticipantIndex>"
-            "</Discovery>"
-            "</Domain></CycloneDDS>"
-        )
+        if self.config.clear_rmw_env:
+            env.pop("RMW_IMPLEMENTATION", None)
+            env.pop("CYCLONEDDS_URI", None)
+        if self.config.force_cyclonedds:
+            env["RMW_IMPLEMENTATION"] = "rmw_cyclonedds_cpp"
+            env["CYCLONEDDS_URI"] = _cyclonedds_uri(
+                self.config.cyclone_interface,
+                self.config.cyclone_peer,
+            )
         self._cam_stop = False
         self._cam_proc = subprocess.Popen(
             [sys.executable, str(bridge), _TOPIC_RGB_IMAGE],
@@ -1080,9 +1138,9 @@ class X2Connection(X2ConnectionBase, Camera, Pointcloud, IMU, Lidar):
         """Send a velocity command to the robot.
 
         Maps Twist fields:
-          linear.x  → forward velocity  (±0.2–1.0 m/s or 0)
-          linear.y  → lateral velocity  (±0.2–1.0 m/s or 0)
-          angular.z → angular velocity  (±0.1–1.0 rad/s or 0)
+          linear.x  → forward velocity  (±0.2-1.0 m/s or 0)
+          linear.y  → lateral velocity  (±0.2-1.0 m/s or 0)
+          angular.z → angular velocity  (±0.1-1.0 rad/s or 0)
         """
         if self._vel_publisher is None:
             return False

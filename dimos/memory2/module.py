@@ -34,7 +34,7 @@ from dimos.memory2.stream import Stream
 from dimos.memory2.transform import QualityWindow
 from dimos.memory2.type.observation import EmbeddedObservation, Observation
 from dimos.models.embedding.base import EmbeddingModel
-from dimos.models.embedding.clip import CLIPModel
+# from dimos.models.embedding.clip import None
 from dimos.msgs.geometry_msgs.PoseStamped import PoseStamped
 from dimos.msgs.sensor_msgs.Image import Image
 from dimos.utils.logging_config import setup_logger
@@ -249,7 +249,7 @@ class MemoryModule(Module):
 
 
 class SemanticSearchConfig(MemoryModuleConfig):
-    embedding_model: type[EmbeddingModel] = CLIPModel
+    embedding_model: type[EmbeddingModel] = None
 
 
 class SemanticSearch(MemoryModule):

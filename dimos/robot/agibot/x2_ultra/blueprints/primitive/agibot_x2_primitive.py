@@ -16,6 +16,7 @@
 
 """Minimal X2 Ultra stack: vis module only. Base for larger blueprints."""
 
+import math
 from typing import Any
 
 from dimos.core.global_config import global_config
@@ -25,8 +26,54 @@ from dimos.visualization.vis_module import vis_module
 def _convert_camera_info(camera_info: Any) -> Any:
     return camera_info.to_rerun(
         image_topic="/world/color_image",
-        optical_frame="camera_optical",
+        optical_frame="rgbd_head_front",
     )
+
+
+def _convert_color_image(image: Any) -> list[tuple[str, Any]]:
+    import rerun as rr
+
+    return [
+        ("world/color_image", image.to_rerun()),
+        ("world/color_image", rr.Transform3D(parent_frame="tf#/rgbd_head_front")),
+    ]
+
+
+def _convert_depth_pointcloud(pointcloud: Any) -> list[tuple[str, Any]]:
+    import rerun as rr
+
+    return [
+        ("world/pointcloud", pointcloud.to_rerun()),
+        ("world/pointcloud", rr.Transform3D(parent_frame="tf#/rgbd_head_front")),
+    ]
+
+
+def _convert_lidar(pointcloud: Any) -> list[tuple[str, Any]]:
+    import rerun as rr
+
+    return [
+        ("world/lidar", pointcloud.to_rerun()),
+        ("world/lidar", rr.Transform3D(parent_frame="tf#/lidar_chest_front")),
+    ]
+
+
+def _quat_xyzw_from_rpy(roll: float, pitch: float, yaw: float) -> list[float]:
+    cr = math.cos(roll * 0.5)
+    sr = math.sin(roll * 0.5)
+    cp = math.cos(pitch * 0.5)
+    sp = math.sin(pitch * 0.5)
+    cy = math.cos(yaw * 0.5)
+    sy = math.sin(yaw * 0.5)
+    return [
+        sr * cp * cy - cr * sp * sy,
+        cr * sp * cy + sr * cp * sy,
+        cr * cp * sy - sr * sp * cy,
+        cr * cp * cy + sr * sp * sy,
+    ]
+
+
+def _static_world_coords(rr: Any) -> Any:
+    return rr.ViewCoordinates.RIGHT_HAND_Z_UP
 
 
 def _static_base_link(rr: Any) -> list[Any]:
@@ -39,6 +86,48 @@ def _static_base_link(rr: Any) -> list[Any]:
         ),
         rr.Transform3D(parent_frame="tf#/base_link"),
     ]
+
+
+def _static_torso_link(rr: Any) -> Any:
+    return rr.Transform3D(
+        translation=[0.0, 0.0, 0.1550706468356796],
+        parent_frame="tf#/base_link",
+        child_frame="tf#/torso_link",
+    )
+
+
+def _static_head_yaw_link(rr: Any) -> Any:
+    return rr.Transform3D(
+        translation=[0.00834772789983268, 0.0, 0.309397077276121],
+        parent_frame="tf#/torso_link",
+        child_frame="tf#/head_yaw_link",
+    )
+
+
+def _static_head_pitch_link(rr: Any) -> Any:
+    return rr.Transform3D(
+        translation=[0.0, 0.0, 0.0889],
+        parent_frame="tf#/head_yaw_link",
+        child_frame="tf#/head_pitch_link",
+    )
+
+
+def _static_rgbd_head_front(rr: Any) -> Any:
+    return rr.Transform3D(
+        translation=[0.05761, -0.011183, -0.04837],
+        rotation=rr.Quaternion(xyzw=_quat_xyzw_from_rpy(2.2689, 0.0, 1.5708)),
+        parent_frame="tf#/head_pitch_link",
+        child_frame="tf#/rgbd_head_front",
+    )
+
+
+def _static_lidar_chest_front(rr: Any) -> Any:
+    return rr.Transform3D(
+        translation=[0.102632855873251, 0.0, 0.181586916322065],
+        rotation=rr.Quaternion(xyzw=_quat_xyzw_from_rpy(-1.5707963267949, 0.0, 0.0)),
+        parent_frame="tf#/torso_link",
+        child_frame="tf#/lidar_chest_front",
+    )
 
 
 def _x2_rerun_blueprint() -> Any:
@@ -64,11 +153,25 @@ def _x2_rerun_blueprint() -> Any:
 
 rerun_config = {
     "blueprint": _x2_rerun_blueprint,
+    "max_hz": {
+        "world/color_image": 3.0,
+        "world/lidar": 3.0,
+        "world/pointcloud": 3.0,
+    },
     "visual_override": {
+        "world/color_image": _convert_color_image,
         "world/camera_info": _convert_camera_info,
+        "world/pointcloud": _convert_depth_pointcloud,
+        "world/lidar": _convert_lidar,
     },
     "static": {
+        "world": _static_world_coords,
         "world/tf/base_link": _static_base_link,
+        "world/tf/torso_link": _static_torso_link,
+        "world/tf/head_yaw_link": _static_head_yaw_link,
+        "world/tf/head_pitch_link": _static_head_pitch_link,
+        "world/tf/rgbd_head_front": _static_rgbd_head_front,
+        "world/tf/lidar_chest_front": _static_lidar_chest_front,
     },
 }
 
