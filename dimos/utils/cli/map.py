@@ -104,12 +104,12 @@ def main(
         0.1, "--marker-size", help="Physical marker edge length in meters (--markers only)"
     ),
     marker_max_speed: float = typer.Option(
-        0.3,
+        0.1,
         "--marker-max-speed",
         help="Skip frames where robot is moving faster than this (m/s); 0 disables",
     ),
     marker_max_rot_rate: float = typer.Option(
-        30.0,
+        15,
         "--marker-max-rot-rate",
         help="Skip frames where robot is rotating faster than this (deg/s); 0 disables",
     ),
@@ -318,12 +318,23 @@ def main(
                 )
                 for d in marker_dets
             ]
-            unique_ids = sorted({d.data.marker_id for d in marker_dets})
-            id_to_color = {
-                mid: Color.from_cmap("tab10", (i % 10) / 10.0).rgb_u8()
-                for i, mid in enumerate(unique_ids)
-            }
-            colors = [id_to_color[d.data.marker_id] for d in marker_dets]
+            # Color mode: turbo over detection time vs. tab10 over marker id.
+            COLOR_BY_TIME = True
+            if COLOR_BY_TIME:
+                ts_min = min(d.ts for d in marker_dets)
+                ts_max = max(d.ts for d in marker_dets)
+                ts_span = ts_max - ts_min if ts_max > ts_min else 1.0
+                colors = [
+                    Color.from_cmap("turbo", (d.ts - ts_min) / ts_span).rgb_u8()
+                    for d in marker_dets
+                ]
+            else:
+                unique_ids = sorted({d.data.marker_id for d in marker_dets})
+                id_to_color = {
+                    mid: Color.from_cmap("tab10", (i % 10) / 10.0).rgb_u8()
+                    for i, mid in enumerate(unique_ids)
+                }
+                colors = [id_to_color[d.data.marker_id] for d in marker_dets]
             labels = [f"id={d.data.marker_id}" for d in marker_dets]
             rr.log(
                 "world/raw_map/markers/fill",
