@@ -104,14 +104,24 @@ def main(
         0.1, "--marker-size", help="Physical marker edge length in meters (--markers only)"
     ),
     marker_max_speed: float = typer.Option(
-        0.1,
+        0.5,
         "--marker-max-speed",
         help="Skip frames where robot is moving faster than this (m/s); 0 disables",
     ),
     marker_max_rot_rate: float = typer.Option(
-        15,
+        50.0,
         "--marker-max-rot-rate",
         help="Skip frames where robot is rotating faster than this (deg/s); 0 disables",
+    ),
+    marker_quality_window: float = typer.Option(
+        0.1,
+        "--marker-quality-window",
+        help="Sharpest-frame window for marker detection (s)",
+    ),
+    marker_smoothing: float = typer.Option(
+        7.5,
+        "--marker-smoothing",
+        help="Sliding-window track buffer for marker pose averaging (s); 0 disables (one box per raw detection)",
     ),
 ) -> None:
     db_path = resolve_named_path(dataset, ".db")
@@ -229,13 +239,14 @@ def main(
         xf = DetectMarkers(
             camera_info=_camera_info_static(),
             marker_length_m=marker_size,
+            smoothing_window=marker_smoothing,
         )
-        # 2Hz quality-gated: keep only the sharpest frame per 0.5s window,
-        # then drop frames where the robot was moving (linear + rotational)
-        # faster than the limits — speed/rate are averaged across the window.
+        # Keep the sharpest frame per --marker-quality-window window, then
+        # drop frames where the robot was moving (linear + rotational) faster
+        # than the limits. Defaults match markers_rrd.py so positions agree.
         pipeline: Stream[Image] = color_image.tap(
             progress(color_image.count(), "detecting markers")
-        ).transform(QualityWindow(lambda img: img.sharpness, window=0.5))
+        ).transform(QualityWindow(lambda img: img.sharpness, window=marker_quality_window))
         if marker_max_speed > 0:
             pipeline = pipeline.transform(
                 SpeedLimit(
@@ -243,9 +254,21 @@ def main(
                     max_dps=marker_max_rot_rate if marker_max_rot_rate > 0 else None,
                 )
             )
-        marker_dets = pipeline.transform(xf).to_list()
-        unique = sorted({obs.data.marker_id for obs in marker_dets})
-        print(f"markers: {len(marker_dets)} detections across {len(unique)} unique ids {unique}")
+        all_dets = pipeline.transform(xf).to_list()
+        if marker_smoothing > 0:
+            # Keep only the latest emission per track_id — that's the most
+            # averaged pose, drawn once per tracked marker session.
+            by_track: dict[int, Observation[Any]] = {}
+            for d in all_dets:
+                by_track[d.data.track_id] = d
+            marker_dets = list(by_track.values())
+        else:
+            marker_dets = all_dets
+        unique_ids = sorted({obs.data.marker_id for obs in marker_dets})
+        print(
+            f"markers: {len(marker_dets)} entries from {len(all_dets)} raw detections "
+            f"across {len(unique_ids)} unique ids {unique_ids}"
+        )
 
     if not no_gui:
         rerun_init("dimos map tool", spawn=True)
@@ -318,24 +341,12 @@ def main(
                 )
                 for d in marker_dets
             ]
-            # Color mode: turbo over detection time vs. tab10 over marker id.
-            COLOR_BY_TIME = True
-            if COLOR_BY_TIME:
-                ts_min = min(d.ts for d in marker_dets)
-                ts_max = max(d.ts for d in marker_dets)
-                ts_span = ts_max - ts_min if ts_max > ts_min else 1.0
-                colors = [
-                    Color.from_cmap("turbo", (d.ts - ts_min) / ts_span).rgb_u8()
-                    for d in marker_dets
-                ]
-            else:
-                unique_ids = sorted({d.data.marker_id for d in marker_dets})
-                id_to_color = {
-                    mid: Color.from_cmap("tab10", (i % 10) / 10.0).rgb_u8()
-                    for i, mid in enumerate(unique_ids)
-                }
-                colors = [id_to_color[d.data.marker_id] for d in marker_dets]
-            labels = [f"id={d.data.marker_id}" for d in marker_dets]
+            # One entry per tracked marker session — color stable per track_id.
+            colors = [
+                Color.from_cmap("tab10", (d.data.track_id % 10) / 10.0).rgb_u8()
+                for d in marker_dets
+            ]
+            labels = [f"track={d.data.track_id} id={d.data.marker_id}" for d in marker_dets]
             rr.log(
                 "world/raw_map/markers/fill",
                 rr.Boxes3D(
