@@ -104,7 +104,7 @@ class PGOConfig(BaseConfig):
     min_keyframes_for_loop_search: int = 10
     loop_closure_extra_iterations: int = 4
     submap_resolution: float = 0.2
-    min_loop_detect_duration: float = 5.0
+    min_loop_detect_duration: float = 3.0
 
     # ICP
     max_icp_iterations: int = 50
@@ -536,6 +536,12 @@ class _PGO:
         if not candidates and drift > self._cfg.loop_fallback_drift_thresh:
             loc_idxs = set(KDTree(loc_positions).query_ball_point(cur_loc_t, self._cfg.loop_search_radius_local))
             candidates = _collect(loc_idxs - opt_idxs, self._cfg.loop_time_thresh_local)
+            logger.info(
+                "loop fallback fired",
+                cur_idx=cur_idx,
+                drift=round(drift, 2),
+                n_candidates=len(candidates),
+            )
         if not candidates:
             return
 
