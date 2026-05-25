@@ -99,7 +99,7 @@ class PGOConfig(BaseConfig):
     loop_score_thresh: float = 0.3
     loop_score_thresh_tight: float = 0.05  # early-exit threshold: ICP rmse ~22cm
     loop_submap_half_range: int = 40
-    loop_candidates_per_iter: int = 5
+    loop_candidates_per_iter: int = 7
     min_icp_inliers: int = 10
     min_keyframes_for_loop_search: int = 10
     loop_closure_extra_iterations: int = 4
