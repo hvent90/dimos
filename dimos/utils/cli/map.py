@@ -20,11 +20,21 @@ import rerun as rr
 import rerun.blueprint as rrb
 import typer
 
-from dimos.mapping.voxels import VoxelMapTransformer
+from dimos.mapping.voxels import VoxelGrid
 from dimos.memory2.store.sqlite import SqliteStore
+from dimos.memory2.transform import QualityWindow
 from dimos.memory2.type.observation import Observation
+from dimos.memory2.vis.color import Color
+from dimos.msgs.geometry_msgs.Quaternion import Quaternion
+from dimos.msgs.geometry_msgs.Transform import Transform
+from dimos.msgs.geometry_msgs.Vector3 import Vector3
+from dimos.msgs.sensor_msgs.Image import Image
+from dimos.perception.fiducial.marker_transformer import DetectMarkers
+from dimos.robot.unitree.go2.connection import BASE_TO_OPTICAL, _camera_info_static
 from dimos.utils.data import resolve_named_path
 from dimos.visualization.rerun.init import rerun_init
+
+PATH_THICKNESS = 0.01
 
 
 def progress(total: int, label: str = "") -> Callable[[Observation[Any]], None]:
@@ -70,11 +80,11 @@ def main(
         help="Run pose graph optimization and rebuild from spatially-deduped frames",
     ),
     pgo_tol: float = typer.Option(
-        0.3, "--pgo-tol", help="Spatial dedup tolerance for --pgo (meters)"
+        0.3,
+        "--pgo-tol",
+        help="Spatial dedup tolerance (meters); applies to both raw and --pgo maps",
     ),
-    block_count: int = typer.Option(
-        2_000_000, "--block-count", help="VoxelBlockGrid capacity (--pgo only)"
-    ),
+    block_count: int = typer.Option(2_000_000, "--block-count", help="VoxelBlockGrid capacity"),
     export: bool = typer.Option(
         False,
         "--export",
@@ -86,6 +96,14 @@ def main(
         help="Also build a full-replay PGO map (every frame) for comparison (implies --pgo)",
     ),
     no_gui: bool = typer.Option(False, "--no-gui", help="Skip rerun visualization"),
+    markers: bool = typer.Option(
+        False,
+        "--markers",
+        help="Detect AprilTag markers in color_image and overlay them in rerun",
+    ),
+    marker_size: float = typer.Option(
+        0.1, "--marker-size", help="Physical marker edge length in meters (--markers only)"
+    ),
 ) -> None:
     db_path = resolve_named_path(dataset, ".db")
     if export or full_pgo:
@@ -96,18 +114,39 @@ def main(
 
     print(lidar.summary())
 
-    path: list[tuple[float, float, float]] = []
+    total = lidar.count()
 
-    def collect_path(obs: Observation[Any]) -> None:
+    # Spatial dedup: bucket frames by 3D cell using the raw pose, keep the
+    # latest per cell. Shared by raw and PGO rebuilds. Doesn't touch obs.data
+    # so it stays cheap (no pointcloud loading).
+    seen: dict[tuple[int, int, int], Observation[Any]] = {}
+    for obs in lidar:
         if obs.pose is None:
-            return
-        # Reject placeholder poses at the world origin (translation = 0,0,0).
+            continue
+        # Reject placeholder poses at the world origin.
         if obs.pose[0] == 0 and obs.pose[1] == 0 and obs.pose[2] == 0:
-            return
-        path.append((obs.pose[0], obs.pose[1], obs.pose[2]))
+            continue
+        cell = (
+            int(obs.pose[0] / pgo_tol),
+            int(obs.pose[1] / pgo_tol),
+            int(obs.pose[2] / pgo_tol),
+        )
+        seen[cell] = obs
+
+    n_kept = len(seen)
+    pct = 100 * n_kept / total if total else 0
+    print(f"dedup: kept [{n_kept}/{total}] frames ({pct:.1f}%) at tol={pgo_tol}m")
+
+    # Dict insertion order = lidar iteration order = chronological.
+    # `seen` only contains entries with non-None poses (filtered above).
+    path: list[tuple[float, float, float]] = [
+        (obs.pose[0], obs.pose[1], obs.pose[2]) for obs in seen.values() if obs.pose is not None
+    ]
 
     pgo_map = None
     pgo_path: list[tuple[float, float, float]] = []
+    loops: list[Any] = []
+    interp: Any | None = None
     if pgo:
         from dimos.mapping.relocalization.pgo import (
             LoopClosure,
@@ -115,43 +154,21 @@ def main(
             make_interpolator,
             pgo_keyframes,
         )
-        from dimos.mapping.voxels import VoxelGrid
 
-        total = lidar.count()
         print("running PGO twopass map...")
-        loops: list[LoopClosure] = []
+        pgo_loops: list[LoopClosure] = []
         keyframes = pgo_keyframes(
             lidar,
             on_frame=progress(total, "pgo pass 1 (optimizing)"),
-            loop_closures_out=loops,
+            loop_closures_out=pgo_loops,
         )
+        loops = list(pgo_loops)
         corrections = keyframes_to_corrections(keyframes)
         interp = make_interpolator(corrections)
 
         for kf_obs in keyframes:
             kf_t = kf_obs.data.optimized.translation
             pgo_path.append((kf_t.x, kf_t.y, kf_t.z))
-
-        # Canonical PGO rebuild: bucket frames by spatial cell using the raw
-        # odom pose, keep the latest per cell, transform with the interpolated
-        # correction. obs.data is not touched in the dedup loop so it stays
-        # cheap (no pointcloud loading).
-        seen: dict[tuple[int, int, int], Any] = {}
-        for obs in lidar:
-            if obs.pose is None:
-                continue
-            if obs.pose[0] == 0 and obs.pose[1] == 0 and obs.pose[2] == 0:
-                continue
-            cell = (
-                int(obs.pose[0] / pgo_tol),
-                int(obs.pose[1] / pgo_tol),
-                int(obs.pose[2] / pgo_tol),
-            )
-            seen[cell] = obs
-
-        n_kept = len(seen)
-        pct = 100 * n_kept / total if total else 0
-        print(f"pgo rebuild: kept [{n_kept}/{total}] frames ({pct:.1f}%) at tol={pgo_tol}m")
 
         pass2_pb = progress(n_kept, "pgo pass 2 (rebuilding)")
         grid = VoxelGrid(voxel_size=voxel, block_count=block_count, device=device)
@@ -167,6 +184,7 @@ def main(
 
     full_pgo_map = None
     if full_pgo:
+        assert interp is not None
         full_pb = progress(total, "full pgo (rebuilding)")
         full_grid = VoxelGrid(voxel_size=voxel, block_count=block_count, device=device)
         try:
@@ -179,43 +197,83 @@ def main(
         finally:
             full_grid.dispose()
 
-    global_map = (
-        lidar.tap(collect_path)
-        .transform(VoxelMapTransformer(voxel_size=voxel, device=device))
-        .tap(progress(lidar.count(), "reconstructing global map"))
-        .last()
-        .data
-    )
+    # Raw map: same dedup'd frames, no PGO correction.
+    raw_pb = progress(n_kept, "reconstructing global map")
+    raw_grid = VoxelGrid(voxel_size=voxel, block_count=block_count, device=device)
+    try:
+        for obs in seen.values():
+            raw_pb(obs)
+            if len(obs.data) == 0:
+                continue
+            raw_grid.add_frame(obs.data)
+        global_map = raw_grid.get_global_pointcloud2()
+    finally:
+        raw_grid.dispose()
+
+    marker_dets: list[Observation[Any]] = []
+    if markers:
+        color_image = store.stream("color_image", Image)
+
+        def _lift_pose_to_optical(obs: Observation[Image]) -> Observation[Image]:
+            # obs.pose is base_link-in-world; DetectMarkers wants optical-in-world.
+            if obs.pose is None:
+                return obs.derive(data=obs.data)
+            x, y, z, qx, qy, qz, qw = obs.pose
+            t_world_base = Transform(
+                translation=Vector3(x, y, z),
+                rotation=Quaternion(qx, qy, qz, qw),
+                frame_id="world",
+                child_frame_id="base_link",
+                ts=obs.ts,
+            )
+            return obs.derive(data=obs.data, pose=t_world_base + BASE_TO_OPTICAL)
+
+        xf = DetectMarkers(
+            camera_info=_camera_info_static(),
+            marker_length_m=marker_size,
+        )
+        # 2Hz quality-gated: keep only the sharpest frame per 0.5s window.
+        marker_dets = (
+            color_image.tap(progress(color_image.count(), "filtering frames"))
+            .transform(QualityWindow(lambda img: img.sharpness, window=0.5))
+            .map(_lift_pose_to_optical)
+            .transform(xf)
+            .to_list()
+        )
+        unique = sorted({obs.data.marker_id for obs in marker_dets})
+        print(f"markers: {len(marker_dets)} detections across {len(unique)} unique ids {unique}")
 
     if not no_gui:
         rerun_init("dimos map tool", spawn=True)
         rr.send_blueprint(rrb.Blueprint(rrb.Spatial3DView(origin="world")))
-        rr.log("world/raw_map/pointcloud", global_map.to_rerun(size=voxel), static=True)
+        rr.log("world/raw_map/pointcloud", global_map.to_rerun(voxel_size=voxel / 2), static=True)
         if path:
             rr.log(
                 "world/raw_map/path",
-                rr.LineStrips3D(strips=[path], colors=[[231, 76, 60]], radii=[0.05]),
+                rr.LineStrips3D(strips=[path], colors=[[231, 76, 60]], radii=[PATH_THICKNESS]),
                 static=True,
             )
         if pgo_map is not None:
-            rr.log("world/pgo_map/pointcloud", pgo_map.to_rerun(size=voxel), static=True)
+            rr.log("world/pgo_map/pointcloud", pgo_map.to_rerun(voxel_size=voxel / 2), static=True)
         if full_pgo_map is not None:
             rr.log(
                 "world/full_pgo_map/pointcloud",
-                full_pgo_map.to_rerun(size=voxel),
+                full_pgo_map.to_rerun(voxel_size=voxel / 2),
                 static=True,
             )
         STEM_HEIGHT = 2.0  # lift pose-graph viz above the map for legibility
         if pgo_path:
             rr.log(
                 "world/pgo_map/path",
-                rr.LineStrips3D(strips=[pgo_path], colors=[[255, 255, 255]], radii=[0.05]),
+                rr.LineStrips3D(
+                    strips=[pgo_path], colors=[[255, 255, 255]], radii=[PATH_THICKNESS]
+                ),
                 static=True,
             )
             hovered = [(x, y, z + STEM_HEIGHT) for (x, y, z) in pgo_path]
             rr.log(
                 "world/pgo_map/keyframes",
-                rr.Points3D(positions=hovered, colors=[[255, 255, 255]], radii=[0.05]),
+                rr.Points3D(positions=hovered, colors=[[255, 255, 255]], radii=[0.025]),
                 static=True,
             )
         if pgo and loops:
@@ -239,6 +297,54 @@ def main(
                 rr.LineStrips3D(strips=loop_strips, colors=[[231, 76, 60]], radii=[0.05]),
                 static=True,
             )
+        if marker_dets:
+            half = marker_size / 2.0
+            n = len(marker_dets)
+            fill_half = [(half, half, 0.005)] * n
+            # Outline sits just outside the fill so both stay visible.
+            outline_bump = marker_size * 0.05
+            outline_half = [(half + outline_bump, half + outline_bump, 0.006)] * n
+            centers = [(d.data.center.x, d.data.center.y, d.data.center.z) for d in marker_dets]
+            quaternions = [
+                (
+                    d.data.orientation.x,
+                    d.data.orientation.y,
+                    d.data.orientation.z,
+                    d.data.orientation.w,
+                )
+                for d in marker_dets
+            ]
+            unique_ids = sorted({d.data.marker_id for d in marker_dets})
+            id_to_color = {
+                mid: Color.from_cmap("tab10", (i % 10) / 10.0).rgb_u8()
+                for i, mid in enumerate(unique_ids)
+            }
+            colors = [id_to_color[d.data.marker_id] for d in marker_dets]
+            labels = [f"id={d.data.marker_id}" for d in marker_dets]
+            rr.log(
+                "world/markers/fill",
+                rr.Boxes3D(
+                    centers=centers,
+                    half_sizes=fill_half,
+                    quaternions=quaternions,
+                    colors=colors,
+                    fill_mode=rr.components.FillMode.Solid,
+                    labels=labels,
+                ),
+                static=True,
+            )
+            rr.log(
+                "world/markers/outline",
+                rr.Boxes3D(
+                    centers=centers,
+                    half_sizes=outline_half,
+                    quaternions=quaternions,
+                    colors=[(255, 255, 255)] * n,
+                    fill_mode=rr.components.FillMode.MajorWireframe,
+                    radii=0.002,
+                ),
+                static=True,
+            )
 
     if export and pgo_map is not None:
         from pathlib import Path
@@ -254,4 +360,7 @@ def main(
 
 
 if __name__ == "__main__":
+    typer.run(main)
+    typer.run(main)
+    typer.run(main)
     typer.run(main)

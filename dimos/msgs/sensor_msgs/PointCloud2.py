@@ -686,7 +686,6 @@ class PointCloud2(Timestamped):
         voxel_size: float = 0.05,
         colors: list[int] | None = None,
         mode: str = "spheres",
-        size: float | None = None,
         fill_mode: str = "solid",
         bottom_cutoff: float | None = None,
         **kwargs: object,
@@ -699,7 +698,6 @@ class PointCloud2(Timestamped):
                 If None, uses height-based turbo colormap via class_ids
                 (requires register_colormap_annotation() called once).
             mode: "points" for raw points, "boxes" for cubes (default), or "spheres" for sized spheres
-            size: Box size for mode="boxes" (e.g., voxel_size). Defaults to radii*2.
             fill_mode: Fill mode for boxes - "solid", "majorwireframe", or "densewireframe"
             **kwargs: Additional args (ignored for compatibility)
 
@@ -732,13 +730,10 @@ class PointCloud2(Timestamped):
 
         if mode == "points":
             return rr.Points3D(
-                positions=points,
-                colors=point_colors,
-                class_ids=class_ids,
+                positions=points, colors=point_colors, class_ids=class_ids, sizes=voxel_size
             )
         elif mode == "boxes":
-            box_size = size if size is not None else voxel_size
-            half = box_size / 2
+            half = voxel_size / 2
             return rr.Boxes3D(
                 centers=points,
                 half_sizes=[half, half, half],

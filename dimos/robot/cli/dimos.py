@@ -714,6 +714,14 @@ def map_cmd(
         help="Also build a full-replay PGO map (every frame) for comparison (implies --pgo)",
     ),
     no_gui: bool = typer.Option(False, "--no-gui", help="Skip rerun visualization"),
+    markers: bool = typer.Option(
+        False,
+        "--markers",
+        help="Detect AprilTag markers in color_image and overlay them in rerun",
+    ),
+    marker_size: float = typer.Option(
+        0.1, "--marker-size", help="Physical marker edge length in meters (--markers only)"
+    ),
 ) -> None:
     """Rebuild a voxel map from a recorded SQLite dataset and view it in rerun."""
     from dimos.utils.cli.map import main as map_main
@@ -728,6 +736,8 @@ def map_cmd(
         export=export,
         full_pgo=full_pgo,
         no_gui=no_gui,
+        markers=markers,
+        marker_size=marker_size,
     )
 
 
