@@ -675,26 +675,27 @@ def _icp(
 
     # Silence Open3D's "0 correspondence" warning — we deliberately use a
     # tight max_correspondence_distance and reject loops with poor fitness.
-    with o3d.utility.VerbosityContextManager(o3d.utility.VerbosityLevel.Error):
-        result = o3d.t.pipelines.registration.icp(
-            source=src_pcd,
-            target=tgt_pcd,
-            max_correspondence_distance=max_dist,
-            init_source_to_target=init_T,
-            estimation_method=o3d.t.pipelines.registration.TransformationEstimationPointToPlane(),
-            criteria=o3d.t.pipelines.registration.ICPConvergenceCriteria(
-                relative_fitness=tol,
-                relative_rmse=tol,
-                max_iteration=max_iter,
-            ),
-        )
+    # Treat singular-system failures as rejection rather than aborting.
+    try:
+        with o3d.utility.VerbosityContextManager(o3d.utility.VerbosityLevel.Error):
+            result = o3d.t.pipelines.registration.icp(
+                source=src_pcd,
+                target=tgt_pcd,
+                max_correspondence_distance=max_dist,
+                init_source_to_target=init_T,
+                estimation_method=o3d.t.pipelines.registration.TransformationEstimationPointToPlane(),
+                criteria=o3d.t.pipelines.registration.ICPConvergenceCriteria(
+                    relative_fitness=tol,
+                    relative_rmse=tol,
+                    max_iteration=max_iter,
+                ),
+            )
+    except RuntimeError:
+        return Transform.identity(), float("inf")
 
     if float(result.fitness) == 0.0:
         return Transform.identity(), float("inf")
 
-    T_mat = result.transformation.numpy()
-    rmse = float(result.inlier_rmse)
-    return _transform_from_r_t(T_mat[:3, :3], T_mat[:3, 3], ts=source.ts), rmse * rmse
     T_mat = result.transformation.numpy()
     rmse = float(result.inlier_rmse)
     return _transform_from_r_t(T_mat[:3, :3], T_mat[:3, 3], ts=source.ts), rmse * rmse
