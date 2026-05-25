@@ -308,6 +308,8 @@ class RerunBridgeModule(Module):
             self._subscribed_visual_transport_topics.add(topic)
             if hasattr(transport, "start"):
                 transport.start()
+            # If subscribe raises, the bridge still owns cleanup for the transport it started.
+            self.register_disposable(Disposable(transport.stop))
             transport_topic = getattr(transport, "topic", topic)
 
             def on_visual_message(msg: Any, transport_topic: Any = transport_topic) -> None:
@@ -320,7 +322,6 @@ class RerunBridgeModule(Module):
             )
             if unsub is not None:
                 self.register_disposable(Disposable(unsub))
-            self.register_disposable(Disposable(transport.stop))
 
     def _on_message(self, msg: Any, topic: Any) -> None:
         """Handle incoming message - log to rerun."""
