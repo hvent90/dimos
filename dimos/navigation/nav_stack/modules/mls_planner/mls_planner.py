@@ -22,7 +22,6 @@ piecewise.
 
 from __future__ import annotations
 
-import heapq
 import math
 import time
 from typing import Any
@@ -38,6 +37,8 @@ from dimos_lcm.std_msgs import Header as LCMHeader, Time as LCMTime
 import networkx as nx
 import numpy as np
 from scipy import ndimage
+from scipy.sparse import csr_matrix
+from scipy.sparse.csgraph import dijkstra
 
 from dimos.core.module import Module, ModuleConfig
 from dimos.core.stream import In, Out
@@ -185,73 +186,105 @@ def _build_surface_lookup(
     return {key: np.array(sorted(vs), dtype=np.int64) for key, vs in by_column.items()}
 
 
-def _surface_dijkstra(
+def _build_surface_adjacency(
     surface_lookup: dict[tuple[int, int], np.ndarray],
-    start: tuple[int, int, int],
     voxel_size: float,
     step_threshold_cells: int,
-    max_cost: float,
-    targets: set[tuple[int, int, int]],
-) -> tuple[dict[tuple[int, int, int], float], dict[tuple[int, int, int], tuple[int, int, int]]]:
-    """Single-source Dijkstra over surface cells with per-step delta-z cap.
+) -> tuple[csr_matrix, dict[tuple[int, int, int], int], list[tuple[int, int, int]]]:
+    """Build a sparse CSR adjacency over surface cells for ``scipy.csgraph.dijkstra``.
 
-    Explores until every cell in ``targets`` has been reached, the heap
-    drains, or every popped cell has g > ``max_cost``. Returns ``(g_score,
-    came_from)`` so callers can recover both costs and paths for any target
-    that's in ``g_score``.
+    Each surface cell becomes a row index. Edges connect 8-XY-adjacent cells
+    whose ``iz`` differs by at most ``step_threshold_cells``, with weight
+    equal to the 3D step distance in metres. Returns ``(adj, cell_to_idx,
+    idx_to_cell)``.
+
+    Fully vectorized over surface cells: for each of the eight ``(dx, dy)``
+    offsets, ``np.searchsorted`` finds the range of cells in each source's
+    neighbor column at once, and the ``|dz|`` cap is applied as a numpy
+    mask.
     """
-    heap: list[tuple[float, int, tuple[int, int, int]]] = [(0.0, 0, start)]
-    g_score: dict[tuple[int, int, int], float] = {start: 0.0}
-    came_from: dict[tuple[int, int, int], tuple[int, int, int]] = {}
-    remaining_targets = set(targets)
-    remaining_targets.discard(start)
-    counter = 0
+    n = sum(len(zs) for zs in surface_lookup.values())
+    if n == 0:
+        return csr_matrix((0, 0), dtype=np.float64), {}, []
 
-    while heap:
-        cur_g, _, current = heapq.heappop(heap)
-        if cur_g > g_score[current]:
+    ix = np.empty(n, dtype=np.int64)
+    iy = np.empty(n, dtype=np.int64)
+    iz = np.empty(n, dtype=np.int64)
+    cursor = 0
+    for (ix_col, iy_col), zs in surface_lookup.items():
+        k = len(zs)
+        ix[cursor : cursor + k] = int(ix_col)
+        iy[cursor : cursor + k] = int(iy_col)
+        iz[cursor : cursor + k] = zs
+        cursor += k
+
+    idx_to_cell: list[tuple[int, int, int]] = list(
+        zip(ix.tolist(), iy.tolist(), iz.tolist(), strict=True)
+    )
+    cell_to_idx: dict[tuple[int, int, int], int] = {cell: i for i, cell in enumerate(idx_to_cell)}
+
+    # Encode (ix, iy) → int64 column key. Padding keeps neighbor keys
+    # (with dx, dy ∈ {-1, 0, +1}) in non-colliding slots from each other.
+    ix_pos = ix - ix.min() + 1
+    iy_pos = iy - iy.min() + 1
+    y_range = int(iy_pos.max()) + 2
+    col_key = ix_pos * y_range + iy_pos
+
+    sort_order = np.lexsort((iz, col_key))
+    sorted_col_key = col_key[sort_order]
+    sorted_iz = iz[sort_order]
+
+    row_chunks: list[np.ndarray] = []
+    col_chunks: list[np.ndarray] = []
+    data_chunks: list[np.ndarray] = []
+    for dx, dy in ((-1, -1), (-1, 0), (-1, 1), (0, -1), (0, 1), (1, -1), (1, 0), (1, 1)):
+        neighbor_key = (ix_pos + dx) * y_range + (iy_pos + dy)
+        lo = np.searchsorted(sorted_col_key, neighbor_key, side="left")
+        hi = np.searchsorted(sorted_col_key, neighbor_key, side="right")
+        n_per_src = hi - lo
+        total = int(n_per_src.sum())
+        if total == 0:
             continue
-        remaining_targets.discard(current)
-        if not remaining_targets:
-            break
-        cx, cy, cz = current
-        for dx in (-1, 0, 1):
-            for dy in (-1, 0, 1):
-                if dx == 0 and dy == 0:
-                    continue
-                nx_, ny_ = cx + dx, cy + dy
-                surfaces_here = surface_lookup.get((nx_, ny_))
-                if surfaces_here is None:
-                    continue
-                for nz_arr in surfaces_here:
-                    nz = int(nz_arr)
-                    dz = nz - cz
-                    if abs(dz) > step_threshold_cells:
-                        continue
-                    step_cost = math.sqrt(dx * dx + dy * dy + dz * dz) * voxel_size
-                    new_g = cur_g + step_cost
-                    if new_g > max_cost:
-                        continue
-                    neighbor = (nx_, ny_, nz)
-                    if new_g < g_score.get(neighbor, float("inf")):
-                        came_from[neighbor] = current
-                        g_score[neighbor] = new_g
-                        counter += 1
-                        heapq.heappush(heap, (new_g, counter, neighbor))
+        src_flat = np.repeat(np.arange(n), n_per_src)
+        starts = np.zeros(n, dtype=np.int64)
+        starts[1:] = np.cumsum(n_per_src[:-1])
+        candidate_sorted_idx = lo[src_flat] + (np.arange(total) - starts[src_flat])
+        dz = sorted_iz[candidate_sorted_idx] - iz[src_flat]
+        valid = np.abs(dz) <= step_threshold_cells
+        if not valid.any():
+            continue
+        src_valid = src_flat[valid]
+        dst_valid = sort_order[candidate_sorted_idx[valid]]
+        dz_valid = dz[valid]
+        step_cost = np.sqrt(dx * dx + dy * dy + dz_valid * dz_valid) * voxel_size
+        row_chunks.append(src_valid)
+        col_chunks.append(dst_valid)
+        data_chunks.append(step_cost.astype(np.float64))
 
-    return g_score, came_from
+    if not row_chunks:
+        return csr_matrix((n, n), dtype=np.float64), cell_to_idx, idx_to_cell
+
+    rows = np.concatenate(row_chunks)
+    cols = np.concatenate(col_chunks)
+    data = np.concatenate(data_chunks)
+    return csr_matrix((data, (rows, cols)), shape=(n, n)), cell_to_idx, idx_to_cell
 
 
-def _reconstruct_path(
-    came_from: dict[tuple[int, int, int], tuple[int, int, int]],
-    end: tuple[int, int, int],
+def _reconstruct_path_from_predecessors(
+    predecessors: np.ndarray,
+    src_idx: int,
+    tgt_idx: int,
+    idx_to_cell: list[tuple[int, int, int]],
 ) -> np.ndarray:
-    path = [end]
-    while end in came_from:
-        end = came_from[end]
-        path.append(end)
-    path.reverse()
-    return np.array(path, dtype=np.int64)
+    path_indices = [tgt_idx]
+    cur = tgt_idx
+    while cur != src_idx:
+        cur = int(predecessors[cur])
+        if cur < 0:
+            break
+        path_indices.append(cur)
+    path_indices.reverse()
+    return np.array([idx_to_cell[i] for i in path_indices], dtype=np.int64)
 
 
 def place_nodes(
@@ -334,16 +367,18 @@ def add_node_edges(
 ) -> None:
     """Connect each node to nearby nodes the surface Dijkstra can reach.
 
-    For every node, runs a multi-target Dijkstra over surface cells against
-    any higher-id node whose cell sits within ``max_edge_cost`` (euclidean)
-    and adds an edge with the cached A* path whenever the constrained
-    shortest-path cost is also within ``max_edge_cost``.
+    Builds a sparse adjacency over surface cells once, then runs scipy's
+    native bounded Dijkstra from each node and looks up the cost to every
+    higher-id candidate within ``max_edge_cost`` (euclidean). Edges get the
+    reconstructed cell path stored under ``data["path"]``.
     """
     if graph.number_of_nodes() == 0:
         return
 
     step_cells = max(0, int(step_threshold / voxel_size))
     edge_radius_cells = max(1, int(max_edge_cost / voxel_size))
+
+    adj, cell_to_idx, idx_to_cell = _build_surface_adjacency(surface_lookup, voxel_size, step_cells)
 
     grid = _GridHash(edge_radius_cells)
     cells: dict[int, tuple[int, int, int]] = {}
@@ -366,22 +401,29 @@ def add_node_edges(
         if not candidate_cells:
             continue
 
-        g_score, came_from = _surface_dijkstra(
-            surface_lookup,
-            start=(cix, ciy, ciz),
-            voxel_size=voxel_size,
-            step_threshold_cells=step_cells,
-            max_cost=max_edge_cost,
-            targets=set(candidate_cells),
+        src_idx = cell_to_idx.get((cix, ciy, ciz))
+        if src_idx is None:
+            continue
+
+        dist, predecessors = dijkstra(
+            adj,
+            indices=src_idx,
+            limit=max_edge_cost,
+            return_predecessors=True,
         )
+
         for cell, other_id in candidate_cells.items():
-            if cell in g_score:
-                graph.add_edge(
-                    node_id,
-                    other_id,
-                    weight=float(g_score[cell]),
-                    path=_reconstruct_path(came_from, cell),
-                )
+            tgt_idx = cell_to_idx.get(cell)
+            if tgt_idx is None or not math.isfinite(dist[tgt_idx]):
+                continue
+            graph.add_edge(
+                node_id,
+                other_id,
+                weight=float(dist[tgt_idx]),
+                path=_reconstruct_path_from_predecessors(
+                    predecessors, src_idx, tgt_idx, idx_to_cell
+                ),
+            )
 
 
 class _PublishableLineSegments3D(LineSegments3D):
