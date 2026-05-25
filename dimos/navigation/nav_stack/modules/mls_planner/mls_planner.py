@@ -254,28 +254,25 @@ def _reconstruct_path(
     return np.array(path, dtype=np.int64)
 
 
-def build_node_graph(
+def place_nodes(
     surface_points: np.ndarray,
     voxel_size: float,
     *,
     node_spacing: float,
     node_z_tolerance: float,
-    step_threshold: float,
-    max_edge_cost: float,
     sub_sample_stride: int,
-) -> nx.Graph:
-    """Build a sparse node graph over the surface map.
+) -> tuple[nx.Graph, dict[tuple[int, int], np.ndarray]]:
+    """Place sparse nodes over the surface map; returns ``(graph, surface_lookup)``.
 
-    Iterates surface cells in deterministic lexicographic order, sub-sampled
-    by ``sub_sample_stride``. A node is added when no existing node
-    sits within a cylinder of XY radius ``node_spacing`` and half-height
-    ``node_z_tolerance``. Each new node is connected to any existing
-    node that the modified A* can reach within ``max_edge_cost`` subject
-    to the per-step delta-z cap.
+    Strides through surface cells in lex order and adds a node whenever no
+    existing node sits within a cylinder of XY radius ``node_spacing`` and
+    half-height ``node_z_tolerance``. Edges are added separately by
+    ``add_node_edges`` so callers can publish the node cloud as soon as
+    placement returns.
     """
     graph = nx.Graph()
     if len(surface_points) == 0:
-        return graph
+        return graph, {}
 
     sx = np.floor(surface_points[:, 0] / voxel_size).astype(np.int64)
     sy = np.floor(surface_points[:, 1] / voxel_size).astype(np.int64)
@@ -285,8 +282,6 @@ def build_node_graph(
 
     spacing_cells = max(1, int(node_spacing / voxel_size))
     z_tol_cells = max(0, int(node_z_tolerance / voxel_size))
-    step_cells = max(0, int(step_threshold / voxel_size))
-    edge_radius_cells = max(1, int(max_edge_cost / voxel_size))
 
     grid = _GridHash(spacing_cells)
     node_ix: list[int] = []
@@ -326,14 +321,48 @@ def build_node_graph(
             cell=(cix, ciy, ciz),
         )
 
-        candidate_ids = [c for c in grid.nearby(cix, ciy, edge_radius_cells) if c != new_id]
+    return graph, surface_lookup
+
+
+def add_node_edges(
+    graph: nx.Graph,
+    surface_lookup: dict[tuple[int, int], np.ndarray],
+    voxel_size: float,
+    *,
+    step_threshold: float,
+    max_edge_cost: float,
+) -> None:
+    """Connect each node to nearby nodes the surface Dijkstra can reach.
+
+    For every node, runs a multi-target Dijkstra over surface cells against
+    any higher-id node whose cell sits within ``max_edge_cost`` (euclidean)
+    and adds an edge with the cached A* path whenever the constrained
+    shortest-path cost is also within ``max_edge_cost``.
+    """
+    if graph.number_of_nodes() == 0:
+        return
+
+    step_cells = max(0, int(step_threshold / voxel_size))
+    edge_radius_cells = max(1, int(max_edge_cost / voxel_size))
+
+    grid = _GridHash(edge_radius_cells)
+    cells: dict[int, tuple[int, int, int]] = {}
+    for node_id, data in graph.nodes(data=True):
+        cix, ciy, ciz = data["cell"]
+        cells[node_id] = (cix, ciy, ciz)
+        grid.add(node_id, cix, ciy)
+
+    for node_id in sorted(graph.nodes()):
+        cix, ciy, ciz = cells[node_id]
         candidate_cells: dict[tuple[int, int, int], int] = {}
-        for c in candidate_ids:
-            ox, oy, oz = node_ix[c], node_iy[c], node_iz[c]
+        for other_id in grid.nearby(cix, ciy, edge_radius_cells):
+            if other_id <= node_id:
+                continue
+            ox, oy, oz = cells[other_id]
             dx, dy, dz = ox - cix, oy - ciy, oz - ciz
             if math.sqrt(dx * dx + dy * dy + dz * dz) * voxel_size > max_edge_cost:
                 continue
-            candidate_cells[(ox, oy, oz)] = c
+            candidate_cells[(ox, oy, oz)] = other_id
         if not candidate_cells:
             continue
 
@@ -348,13 +377,11 @@ def build_node_graph(
         for cell, other_id in candidate_cells.items():
             if cell in g_score:
                 graph.add_edge(
-                    new_id,
+                    node_id,
                     other_id,
                     weight=float(g_score[cell]),
                     path=_reconstruct_path(came_from, cell),
                 )
-
-    return graph
 
 
 class _PublishableLineSegments3D(LineSegments3D):
@@ -456,23 +483,19 @@ class MLSPlanner(Module):
         )
 
         logger.info(
-            "Building node graph",
+            "Placing nodes",
             spacing_m=NODE_SPACING_M,
-            max_edge_cost_m=NODE_MAX_EDGE_COST_M,
             stride=NODE_SUB_SAMPLE_STRIDE,
         )
         t1 = time.perf_counter()
-        graph = build_node_graph(
+        graph, surface_lookup = place_nodes(
             surface_points,
             self.config.voxel_size,
             node_spacing=NODE_SPACING_M,
             node_z_tolerance=NODE_Z_TOLERANCE_M,
-            step_threshold=NODE_STEP_THRESHOLD_M,
-            max_edge_cost=NODE_MAX_EDGE_COST_M,
             sub_sample_stride=NODE_SUB_SAMPLE_STRIDE,
         )
-        graph_ms = (time.perf_counter() - t1) * 1000
-        self._graph = graph
+        place_ms = (time.perf_counter() - t1) * 1000
         self.nodes.publish(
             PointCloud2.from_numpy(
                 _nodes_to_cloud(graph),
@@ -481,10 +504,26 @@ class MLSPlanner(Module):
             )
         )
         logger.info(
-            "Node graph done",
+            "Nodes placed",
             nodes=graph.number_of_nodes(),
+            place_ms=round(place_ms, 1),
+        )
+
+        logger.info("Building edges", max_edge_cost_m=NODE_MAX_EDGE_COST_M)
+        t2 = time.perf_counter()
+        add_node_edges(
+            graph,
+            surface_lookup,
+            self.config.voxel_size,
+            step_threshold=NODE_STEP_THRESHOLD_M,
+            max_edge_cost=NODE_MAX_EDGE_COST_M,
+        )
+        edges_ms = (time.perf_counter() - t2) * 1000
+        self._graph = graph
+        logger.info(
+            "Edges built",
             edges=graph.number_of_edges(),
-            graph_ms=round(graph_ms, 1),
+            edges_ms=round(edges_ms, 1),
         )
         self.node_edges.publish(
             _PublishableLineSegments3D(
