@@ -161,7 +161,7 @@ def main(
     verbose: bool = typer.Option(
         False, "--verbose", "-v", help="Show per-event PGO logs (loop closures, etc.)"
     ),
-    timeout: int = typer.Option(120, "--timeout", help="Hard wall-clock cap (s); 0 disables"),
+    timeout: int = typer.Option(420, "--timeout", help="Hard wall-clock cap (s); 0 disables"),
 ) -> None:
     names = datasets or DEFAULT_DATASETS
 
