@@ -32,6 +32,7 @@ import numpy as np
 from scipy import ndimage
 from scipy.sparse import csr_matrix
 from scipy.sparse.csgraph import dijkstra
+from scipy.spatial import cKDTree
 
 from dimos.core.module import Module, ModuleConfig
 from dimos.core.stream import In, Out
@@ -278,18 +279,16 @@ def place_nodes(
     if len(candidate_indices) == 0:
         return graph, adj, cell_to_idx, idx_to_cell
     order = candidate_indices[np.argsort(-dist[candidate_indices])]
+    positions = cell_positions[order]
 
-    placed_positions = np.empty((0, 3), dtype=np.float64)
-    spacing_sq = node_spacing * node_spacing
+    # kill points in batches with kd tree
+    tree = cKDTree(positions)
+    killed = np.zeros(len(order), dtype=bool)
 
-    for cell_idx in order:
-        pos = cell_positions[cell_idx]
-        if placed_positions.shape[0] > 0:
-            diff = placed_positions - pos
-            if (diff * diff).sum(-1).min() < spacing_sq:
-                continue
-        placed_positions = np.vstack([placed_positions, pos[None, :]])
-        cix, ciy, ciz = idx_to_cell[int(cell_idx)]
+    for i in range(len(order)):
+        if killed[i]:
+            continue
+        cix, ciy, ciz = idx_to_cell[int(order[i])]
         nid = graph.number_of_nodes()
         graph.add_node(
             nid,
@@ -300,6 +299,8 @@ def place_nodes(
             ),
             cell=(cix, ciy, ciz),
         )
+        nearby = tree.query_ball_point(positions[i], r=node_spacing)
+        killed[np.asarray(nearby, dtype=np.int64)] = True
 
     return graph, adj, cell_to_idx, idx_to_cell
 
