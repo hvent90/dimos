@@ -28,6 +28,9 @@ Usage:
 
 from __future__ import annotations
 
+import logging
+import signal
+import sys
 import time
 from typing import Any
 
@@ -70,8 +73,8 @@ def _eval_recording(
     marker_max_rot_rate: float,
     marker_quality_window: float,
     marker_smoothing: float,
-) -> tuple[float, float]:
-    """Returns (pgo_time_s, spread_m) for one recording."""
+) -> tuple[float, float, int, float, int]:
+    """Returns (pgo_time_s, spread_m, n_loops, loop_score_sum, n_keyframes)."""
     db_path = get_data(f"{name}.db")
     cam_info = _camera_info_static()
 
@@ -131,7 +134,8 @@ def _eval_recording(
             by_marker.setdefault(d.data.marker_id, []).append((t.x, t.y, t.z))
 
         spread = sum(_pairwise_sum(v) for v in by_marker.values())
-        return pgo_time, spread
+        loop_score_sum = sum(lc.score for lc in loops_out)
+        return pgo_time, spread, len(loops_out), loop_score_sum, len(keyframes)
 
 
 def main(
@@ -143,14 +147,41 @@ def main(
     marker_max_rot_rate: float = typer.Option(50.0, "--marker-max-rot-rate"),
     marker_quality_window: float = typer.Option(0.1, "--marker-quality-window"),
     marker_smoothing: float = typer.Option(7.5, "--marker-smoothing"),
+    verbose: bool = typer.Option(
+        False, "--verbose", "-v", help="Show per-event PGO logs (loop closures, etc.)"
+    ),
+    timeout: int = typer.Option(120, "--timeout", help="Hard wall-clock cap (s); 0 disables"),
 ) -> None:
     names = datasets or DEFAULT_DATASETS
+
+    if timeout > 0:
+        # SIGALRM fires reliably, but the Python handler only runs when
+        # control returns to Python — a C extension (gtsam, Open3D ICP)
+        # that blocks past `timeout` without yielding will delay the
+        # exit until it does. For an unkillable cap, wrap with the shell
+        # `timeout` command. In practice this is fine for v1.
+        def _on_timeout(signum: int, frame: Any) -> None:
+            print(
+                f"TIMEOUT: eval exceeded {timeout}s, aborting",
+                file=sys.stderr,
+                flush=True,
+            )
+            sys.exit(1)
+
+        signal.signal(signal.SIGALRM, _on_timeout)
+        signal.alarm(timeout)
+
+    if not verbose:
+        # The pgo logger uses the source-file path as its name; bump it to
+        # WARNING so per-event "Loop closure detected" lines don't drown
+        # the eval table. The aggregate count + score is in the table.
+        logging.getLogger("dimos/mapping/loop_closure/pgo.py").setLevel(logging.WARNING)
 
     # Sequential: PGO (Open3D) and marker detection (cv2/numpy) already
     # saturate available cores internally via OpenMP — process-level
     # parallelism only adds contention.
     wall_start = time.perf_counter()
-    results: dict[str, tuple[float, float]] = {}
+    results: dict[str, tuple[float, float, int, float, int]] = {}
     for name in names:
         print(f"eval {name}...")
         results[name] = _eval_recording(
@@ -161,23 +192,46 @@ def main(
             marker_quality_window=marker_quality_window,
             marker_smoothing=marker_smoothing,
         )
+    if timeout > 0:
+        signal.alarm(0)
     wall = time.perf_counter() - wall_start
 
     total_pgo = 0.0
     total_spread = 0.0
+    total_loops = 0
+    total_score = 0.0
+    total_keyframes = 0
     print()
-    print(f"{'recording':<14}  {'pgo_time_s':>10}  {'spread_m':>10}")
-    print("-" * 40)
+    header = (
+        f"{'recording':<14}  {'pgo_s':>7}  {'spread_m':>9}  "
+        f"{'loops':>6}  {'mean_score':>10}  {'keyframes':>9}"
+    )
+    print(header)
+    print("-" * len(header))
     for name in names:  # original order
-        pgo_time, spread = results[name]
-        print(f"{name:<14}  {pgo_time:>10.2f}  {spread:>10.3f}")
+        pgo_time, spread, n_loops, score_sum, n_kf = results[name]
+        mean_score = score_sum / n_loops if n_loops else 0.0
+        print(
+            f"{name:<14}  {pgo_time:>7.2f}  {spread:>9.3f}  "
+            f"{n_loops:>6d}  {mean_score:>10.4f}  {n_kf:>9d}"
+        )
         total_pgo += pgo_time
         total_spread += spread
-    print("-" * 40)
-    print(f"{'TOTAL':<14}  {total_pgo:>10.2f}  {total_spread:>10.3f}")
+        total_loops += n_loops
+        total_score += score_sum
+        total_keyframes += n_kf
+    total_mean_score = total_score / total_loops if total_loops else 0.0
+    print("-" * len(header))
+    print(
+        f"{'TOTAL':<14}  {total_pgo:>7.2f}  {total_spread:>9.3f}  "
+        f"{total_loops:>6d}  {total_mean_score:>10.4f}  {total_keyframes:>9d}"
+    )
     print()
     print(f"TOTAL_PGO_TIME={total_pgo:.2f}")
     print(f"TOTAL_SPREAD={total_spread:.3f}")
+    print(f"TOTAL_LOOPS={total_loops}")
+    print(f"TOTAL_LOOP_SCORE_MEAN={total_mean_score:.4f}")
+    print(f"TOTAL_KEYFRAMES={total_keyframes}")
     print(f"WALL_TIME={wall:.2f}")
 
 
