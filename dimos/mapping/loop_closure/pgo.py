@@ -330,6 +330,7 @@ class _LoopPair:
     target: int
     offset: gtsam.Pose3  # source pose in target's frame
     score: float
+    relocalizing: bool = False  # True if this loop was found via local-frame fallback
 
 
 class _PGO:
@@ -587,6 +588,7 @@ class _PGO:
                     target=loop_idx,
                     offset=offset,
                     score=fitness,
+                    relocalizing=relocalizing,
                 )
             )
             logger.info(
