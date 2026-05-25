@@ -15,13 +15,15 @@
 from __future__ import annotations
 
 from collections import defaultdict
-from collections.abc import Mapping, MutableMapping
+from collections.abc import Callable, Mapping, MutableMapping
 import importlib
+import inspect
 import shutil
 import sys
 import threading
-from typing import TYPE_CHECKING, Any, cast
+from typing import TYPE_CHECKING, Any, NamedTuple, cast
 
+from dimos.core.coordination.coordinator_rpc import CoordinatorRPC
 from dimos.core.coordination.worker_manager import WorkerManager
 from dimos.core.coordination.worker_manager_docker import WorkerManagerDocker
 from dimos.core.coordination.worker_manager_python import WorkerManagerPython
@@ -29,7 +31,7 @@ from dimos.core.global_config import GlobalConfig, global_config
 from dimos.core.module import ModuleBase, ModuleSpec
 from dimos.core.resource import Resource
 from dimos.core.transport import LCMTransport, PubSubTransport, pLCMTransport
-from dimos.spec.utils import spec_annotation_compliance, spec_structural_compliance
+from dimos.spec.utils import is_spec, spec_annotation_compliance, spec_structural_compliance
 from dimos.utils.generic import short_id
 from dimos.utils.logging_config import setup_logger
 from dimos.utils.safe_thread_map import safe_thread_map
@@ -39,6 +41,14 @@ if TYPE_CHECKING:
     from dimos.core.rpc_client import ModuleProxy, ModuleProxyProtocol
 
 logger = setup_logger()
+
+
+class ModuleDescriptor(NamedTuple):
+    """Returned by `Coordinator/list_modules` so a remote client can build a proxy."""
+
+    class_name: str
+    qualified_path: str
+    rpc_names: list[str]
 
 
 class ModuleCoordinator(Resource):
@@ -52,9 +62,7 @@ class ModuleCoordinator(Resource):
     ) -> None:
         self._global_config = g
         manager_types: list[type[WorkerManager]] = [WorkerManagerDocker, WorkerManagerPython]
-        self._managers: dict[str, WorkerManager] = {
-            cls.deployment_identifier: cls(g=g) for cls in manager_types
-        }
+        self._managers = {cls.deployment_identifier: cls(g=g) for cls in manager_types}
         self._deployed_modules = {}
         self._deployed_atoms: dict[type[ModuleBase], BlueprintAtom] = {}
         self._resolved_module_refs: dict[tuple[type[ModuleBase], str], type[ModuleBase]] = {}
@@ -62,6 +70,8 @@ class ModuleCoordinator(Resource):
         self._class_aliases: dict[type[ModuleBase], type[ModuleBase]] = {}
         self._module_transports: dict[type[ModuleBase], dict[str, PubSubTransport[Any]]] = {}
         self._started = False
+        self._modules_lock = threading.RLock()
+        self._coordinator_rpc: CoordinatorRPC | None = None
 
     def start(self) -> None:
         from dimos.core.o3dpickle import register_picklers
@@ -72,6 +82,10 @@ class ModuleCoordinator(Resource):
         self._started = True
 
     def stop(self) -> None:
+        if self._coordinator_rpc is not None:
+            self._coordinator_rpc.stop()
+            self._coordinator_rpc = None
+
         for module_class, module in reversed(self._deployed_modules.items()):
             logger.info("Stopping module...", module=module_class.__name__)
             try:
@@ -87,6 +101,51 @@ class ModuleCoordinator(Resource):
                 logger.error("Error stopping manager", manager=type(m).__name__, exc_info=True)
 
         safe_thread_map(tuple(self._managers.values()), _stop_manager)
+
+    def start_rpc_service(self) -> None:
+        """Expose the coordinator's API as @rpc methods over LCM."""
+        if self._coordinator_rpc is not None:
+            return
+        self._coordinator_rpc = CoordinatorRPC.serve(self)
+
+    @property
+    def rpcs(self) -> dict[str, Callable[..., Any]]:
+        """Methods exposed via the Coordinator @rpc service."""
+        return {
+            "ping": self.ping,
+            "list_modules": self.list_modules,
+            "load_blueprint_by_name": self.load_blueprint_by_name,
+            "load_blueprint": self.load_blueprint,
+            "restart_module_by_class_name": self.restart_module_by_class_name,
+        }
+
+    def ping(self) -> str:
+        """Used by clients to check if the coordinator is alive and responsive."""
+        return "pong"
+
+    def list_modules(self) -> list[ModuleDescriptor]:
+        with self._modules_lock:
+            descriptors: list[ModuleDescriptor] = []
+            for cls in self._deployed_modules:
+                qualified = f"{cls.__module__}.{cls.__name__}"
+                descriptors.append(
+                    ModuleDescriptor(
+                        class_name=cls.__name__,
+                        qualified_path=qualified,
+                        rpc_names=list(cls.rpcs.keys()),
+                    )
+                )
+            return descriptors
+
+    def load_blueprint_by_name(self, name: str) -> None:
+        # Avoid circular import.
+        from dimos.robot.get_all_blueprints import get_by_name
+
+        self.load_blueprint(get_by_name(name))
+
+    def list_module_names(self) -> list[str]:
+        with self._modules_lock:
+            return [cls.__name__ for cls in self._deployed_modules]
 
     def health_check(self) -> bool:
         return all(m.health_check() for m in self._managers.values())
@@ -111,7 +170,8 @@ class ModuleCoordinator(Resource):
         deployed_module = self._managers[module_class.deployment].deploy(
             module_class, global_config, kwargs
         )
-        self._deployed_modules[module_class] = deployed_module
+        with self._modules_lock:
+            self._deployed_modules[module_class] = deployed_module
         return deployed_module  # type: ignore[return-value]
 
     def deploy_parallel(
@@ -142,13 +202,14 @@ class ModuleCoordinator(Resource):
             self.stop()
             raise
 
-        self._deployed_modules.update(
-            {
-                cls: mod
-                for (cls, _, _), mod in zip(module_specs, results, strict=True)
-                if mod is not None
-            }
-        )
+        with self._modules_lock:
+            self._deployed_modules.update(
+                {
+                    cls: mod
+                    for (cls, _, _), mod in zip(module_specs, results, strict=True)
+                    if mod is not None
+                }
+            )
         return results
 
     def build_all_modules(self) -> None:
@@ -264,6 +325,14 @@ class ModuleCoordinator(Resource):
         if not self._started:
             raise RuntimeError("ModuleCoordinator not started; call start() first")
 
+        with self._modules_lock:
+            self._load_blueprint(blueprint, blueprint_args)
+
+    def _load_blueprint(
+        self,
+        blueprint: Blueprint,
+        blueprint_args: MutableMapping[str, Mapping[str, Any]] | None = None,
+    ) -> None:
         # Apply config overrides.
         self._global_config.update(**dict(blueprint.global_config_overrides))
         blueprint_args = blueprint_args or {}
@@ -320,6 +389,10 @@ class ModuleCoordinator(Resource):
         callers that expect the module to come back (e.g. ``restart_module``)
         are responsible for rewiring.
         """
+        with self._modules_lock:
+            self._unload_module(module_class)
+
+    def _unload_module(self, module_class: type[ModuleBase]) -> None:
         module_class = self._resolve_class(module_class)
         if module_class not in self._deployed_modules:
             raise ValueError(f"{module_class.__name__} is not deployed")
@@ -361,6 +434,19 @@ class ModuleCoordinator(Resource):
             if key[0] is not module_class and target is not module_class
         }
 
+    def restart_module_by_class_name(
+        self,
+        class_name: str,
+        *,
+        reload_source: bool = True,
+    ) -> None:
+        with self._modules_lock:
+            for cls in self._deployed_modules:
+                if cls.__name__ == class_name:
+                    self._restart_module(cls, reload_source=reload_source)
+                    return
+        raise ValueError(f"No deployed module with class name {class_name!r}")
+
     def restart_module(
         self,
         module_class: type[ModuleBase],
@@ -375,6 +461,15 @@ class ModuleCoordinator(Resource):
         transports, and re-injects the new proxy into every other module that
         held a reference to it.
         """
+        with self._modules_lock:
+            return self._restart_module(module_class, reload_source=reload_source)
+
+    def _restart_module(
+        self,
+        module_class: type[ModuleBase],
+        *,
+        reload_source: bool = True,
+    ) -> ModuleProxyProtocol:
         module_class = self._resolve_class(module_class)
         if module_class not in self._deployed_modules:
             raise ValueError(f"{module_class.__name__} is not deployed")
@@ -709,7 +804,7 @@ def _connect_module_refs(
 ) -> None:
     from dimos.core.coordination.blueprints import DisabledModuleProxy
     from dimos.core.module import is_module_type
-    from dimos.spec.utils import is_spec
+    from dimos.core.rpc_client import AsyncSpecProxy
 
     mod_and_mod_ref_to_proxy = {
         (module, name): replacement
@@ -717,11 +812,16 @@ def _connect_module_refs(
         if is_spec(replacement) or is_module_type(replacement)
     }
 
+    # Track the consumer's declared spec for each ref so we can wrap the proxy
+    # below if the spec contains async-declared methods.
+    declared_spec: dict[tuple[type[ModuleBase], str], Any] = {}
+
     disabled_ref_proxies: dict[tuple[type[ModuleBase], str], DisabledModuleProxy] = {}
     disabled_set = set(blueprint.disabled_modules_tuple)
 
     for bp in blueprint.active_blueprints:
         for module_ref in bp.module_refs:
+            declared_spec[bp.module, module_ref.name] = module_ref.spec
             spec = mod_and_mod_ref_to_proxy.get((bp.module, module_ref.name), module_ref.spec)
 
             if is_module_type(spec):
@@ -740,7 +840,10 @@ def _connect_module_refs(
 
     for (base_module, ref_name), target_module in mod_and_mod_ref_to_proxy.items():
         base_instance = module_coordinator.get_instance(base_module)
-        target_instance = module_coordinator.get_instance(target_module)  # type: ignore[arg-type]
+        target_instance: Any = module_coordinator.get_instance(target_module)  # type: ignore[arg-type]
+        async_methods = _async_methods_of_spec(declared_spec.get((base_module, ref_name)))
+        if async_methods:
+            target_instance = AsyncSpecProxy(target_instance, async_methods)
         setattr(base_instance, ref_name, target_instance)
         base_instance.set_module_ref(ref_name, target_instance)
         module_coordinator._resolved_module_refs[base_module, ref_name] = cast(
@@ -751,6 +854,21 @@ def _connect_module_refs(
         base_instance = module_coordinator.get_instance(base_module)
         setattr(base_instance, ref_name, proxy)
         base_instance.set_module_ref(ref_name, cast("Any", proxy))
+
+
+def _async_methods_of_spec(spec: Any) -> frozenset[str]:
+    if not is_spec(spec):
+        return frozenset()
+    names: set[str] = set()
+    for cls in spec.__mro__:
+        if cls is object:
+            continue
+        for attr_name, value in vars(cls).items():
+            if attr_name.startswith("_"):
+                continue
+            if inspect.iscoroutinefunction(value):
+                names.add(attr_name)
+    return frozenset(names)
 
 
 def _log_blueprint_graph(blueprint: Blueprint, module_coordinator: ModuleCoordinator) -> None:
