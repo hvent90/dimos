@@ -288,7 +288,7 @@ def main(
                 full_pgo_map.to_rerun(voxel_size=voxel / 2),
                 static=True,
             )
-        STEM_HEIGHT = 2.0  # lift pose-graph viz above the map for legibility
+        STEM_HEIGHT = 0  # lift pose-graph viz above the map for legibility
         if pgo_path:
             rr.log(
                 "world/pgo_map/path",
@@ -300,7 +300,7 @@ def main(
             hovered = [(x, y, z + STEM_HEIGHT) for (x, y, z) in pgo_path]
             rr.log(
                 "world/pgo_map/pgo/keyframes",
-                rr.Points3D(positions=hovered, colors=[[255, 255, 255]], radii=[0.025]),
+                rr.Points3D(positions=hovered, colors=[[255, 0, 0]], radii=[0.025]),
                 static=True,
             )
         if pgo and loops:
@@ -347,6 +347,12 @@ def main(
                 for d in marker_dets
             ]
             labels = [f"track={d.data.track_id} id={d.data.marker_id}" for d in marker_dets]
+            # Pin pattern (from dimos/memory2/vis/space/rerun.py): thin
+            # vertical line from each marker with the label floating at the
+            # top so multi-marker labels never overlap the boxes.
+            MARKER_STEM = 1.0
+            pin_strips = [[(cx, cy, cz), (cx, cy, cz + MARKER_STEM)] for (cx, cy, cz) in centers]
+            label_positions = [(cx, cy, cz + MARKER_STEM + 0.01) for (cx, cy, cz) in centers]
             rr.log(
                 "world/raw_map/markers/fill",
                 rr.Boxes3D(
@@ -355,7 +361,6 @@ def main(
                     quaternions=quaternions,
                     colors=colors,
                     fill_mode=rr.components.FillMode.Solid,
-                    labels=labels,
                 ),
                 static=True,
             )
@@ -368,6 +373,18 @@ def main(
                     colors=[(255, 255, 255)] * n,
                     fill_mode=rr.components.FillMode.MajorWireframe,
                     radii=0.002,
+                ),
+                static=True,
+            )
+            rr.log(
+                "world/raw_map/markers/pin",
+                rr.LineStrips3D(strips=pin_strips, colors=colors, radii=[0.005]),
+                static=True,
+            )
+            rr.log(
+                "world/raw_map/markers/label",
+                rr.Points3D(
+                    positions=label_positions, labels=labels, colors=colors, radii=[0.001] * n
                 ),
                 static=True,
             )
@@ -402,6 +419,12 @@ def main(
                             corrected.rotation.w,
                         )
                     )
+                pgo_pin_strips = [
+                    [(cx, cy, cz), (cx, cy, cz + MARKER_STEM)] for (cx, cy, cz) in pgo_centers
+                ]
+                pgo_label_positions = [
+                    (cx, cy, cz + MARKER_STEM + 0.01) for (cx, cy, cz) in pgo_centers
+                ]
                 rr.log(
                     "world/pgo_map/markers/fill",
                     rr.Boxes3D(
@@ -410,7 +433,6 @@ def main(
                         quaternions=pgo_quaternions,
                         colors=colors,
                         fill_mode=rr.components.FillMode.Solid,
-                        labels=labels,
                     ),
                     static=True,
                 )
@@ -423,6 +445,21 @@ def main(
                         colors=[(255, 255, 255)] * n,
                         fill_mode=rr.components.FillMode.MajorWireframe,
                         radii=0.002,
+                    ),
+                    static=True,
+                )
+                rr.log(
+                    "world/pgo_map/markers/pin",
+                    rr.LineStrips3D(strips=pgo_pin_strips, colors=colors, radii=[0.005]),
+                    static=True,
+                )
+                rr.log(
+                    "world/pgo_map/markers/label",
+                    rr.Points3D(
+                        positions=pgo_label_positions,
+                        labels=labels,
+                        colors=colors,
+                        radii=[0.001] * n,
                     ),
                     static=True,
                 )
