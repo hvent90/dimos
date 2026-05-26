@@ -72,6 +72,12 @@
         const CLOCK_SYNC_BURST_INTERVAL_MS = 400;  // …~400ms apart → converge in ~2s
         const CLOCK_SYNC_DRIFT_INTERVAL_MS = 30000; // then one every 30s for drift
 
+        // Video stats: poll pc.getStats() and report inbound-video health to the
+        // robot over state_reliable (fps/bitrate/loss/freezes), once per second.
+        let videoStatsTimer = null;
+        let videoStatsPrev = null;  // previous sample for byte/frame/loss deltas
+        const VIDEO_STATS_INTERVAL_MS = 1000;
+
         // Probed once at boot. Quest browser → true; desktop/mobile → false.
         let xrSupported = false;
         const xrDetection = (async () => {
@@ -725,7 +731,10 @@ angular.z = 0</pre>
                     id: bridge.state_channel_id,
                     ordered: true,
                 });
-                stateChannel.onopen = () => startClockSync(stateChannel);
+                stateChannel.onopen = () => {
+                    startClockSync(stateChannel);
+                    startVideoStats(stateChannel);
+                };
                 // Older brokers without state_back_channel_id: keep onmessage
                 // here as a fallback (CF won't actually route pongs through,
                 // but no harm). New brokers route pongs via stateBackChannel.
@@ -800,6 +809,61 @@ angular.z = 0</pre>
             if (clockSyncDriftTimer) { clearInterval(clockSyncDriftTimer); clockSyncDriftTimer = null; }
         }
 
+        // ─── Video stats (operator → robot over state_reliable) ──────────────
+        // getStats() lives only in the browser, so the operator samples the
+        // inbound-video track and reports health to the robot, where the
+        // benchmark module folds it into report.md. Rate/bitrate/loss are
+        // computed as deltas between consecutive 1s samples.
+        function startVideoStats(channel) {
+            videoStatsPrev = null;
+            videoStatsTimer = setInterval(async () => {
+                if (!channel || channel.readyState !== 'open' || !pc) return;
+                let inbound = null;
+                try {
+                    const stats = await pc.getStats();
+                    stats.forEach((r) => {
+                        if (r.type === 'inbound-rtp' && r.kind === 'video') inbound = r;
+                    });
+                } catch (_) { return; }
+                if (!inbound) return;
+
+                const now = inbound.timestamp;  // ms, getStats clock
+                const prev = videoStatsPrev;
+                videoStatsPrev = inbound;
+                if (!prev) return;  // need two samples for deltas
+
+                const dt = (now - prev.timestamp) / 1000;  // seconds
+                if (dt <= 0) return;
+                const dFrames = (inbound.framesDecoded ?? 0) - (prev.framesDecoded ?? 0);
+                const dBytes = (inbound.bytesReceived ?? 0) - (prev.bytesReceived ?? 0);
+                const dLost = (inbound.packetsLost ?? 0) - (prev.packetsLost ?? 0);
+                const dRecv = (inbound.packetsReceived ?? 0) - (prev.packetsReceived ?? 0);
+                const lossDen = dLost + dRecv;
+
+                const payload = {
+                    type: 'video_stats',
+                    fps: +(dFrames / dt).toFixed(1),
+                    kbps: +((dBytes * 8) / dt / 1000).toFixed(1),
+                    width: inbound.frameWidth ?? 0,
+                    height: inbound.frameHeight ?? 0,
+                    loss_pct: lossDen > 0 ? +((dLost / lossDen) * 100).toFixed(2) : 0,
+                    jitter_ms: +((inbound.jitter ?? 0) * 1000).toFixed(1),
+                    frames_dropped: inbound.framesDropped ?? 0,
+                    freezes: inbound.freezeCount ?? 0,
+                    jitter_buffer_ms:
+                        inbound.jitterBufferEmittedCount
+                            ? +((inbound.jitterBufferDelay / inbound.jitterBufferEmittedCount) * 1000).toFixed(1)
+                            : 0,
+                };
+                try { channel.send(JSON.stringify(payload)); } catch (_) {}
+            }, VIDEO_STATS_INTERVAL_MS);
+        }
+
+        function stopVideoStats() {
+            if (videoStatsTimer) { clearInterval(videoStatsTimer); videoStatsTimer = null; }
+            videoStatsPrev = null;
+        }
+
         function handleStateMessage(data) {
             let msg;
             try { msg = JSON.parse(data); } catch (_) { return; }
@@ -854,9 +918,10 @@ angular.z = 0</pre>
             gl.attachShader(quadProgram, _compileShader(gl.FRAGMENT_SHADER, fs));
             gl.linkProgram(quadProgram);
 
-            // Quad centered at origin, 1.6m wide × 0.9m tall (16:9). Interleaved
-            // pos(x,y) + uv. V flipped so the video isn't upside-down.
-            const w = 0.8, h = 0.45;
+            // Quad centered at origin, 1.2m wide × 0.675m tall (16:9), half-
+            // extents below. Interleaved pos(x,y) + uv; V flipped so the video
+            // isn't upside-down.
+            const w = 0.6, h = 0.3375;
             const verts = new Float32Array([
                 -w, -h, 0, 1,   w, -h, 1, 1,   w, h, 1, 0,
                 -w, -h, 0, 1,   w, h, 1, 0,   -w, h, 0, 0,
@@ -898,12 +963,15 @@ angular.z = 0</pre>
             return o;
         }
 
-        // Model matrix: place the quad `dist` metres in front of the viewer at
-        // eye height, facing them. Uses only translation (panel stays world-axis
-        // aligned, fixed in front), which reads fine for a forward camera feed.
+        // Model matrix: place the quad `dist` metres in front of the viewer,
+        // dropped `QUAD_DROP` below eye level so it sits in the lower-forward
+        // FOV rather than dead-center. View-space translation only (panel locked
+        // in front of the head).
+        const QUAD_DROP = 0.2;  // metres below eye level
         function quadModelMatrix(dist) {
             const m = new Float32Array([1,0,0,0, 0,1,0,0, 0,0,1,0, 0,0,0,1]);
-            m[14] = -dist;  // forward (−Z) in view space
+            m[13] = -QUAD_DROP;  // down (−Y) in view space
+            m[14] = -dist;       // forward (−Z) in view space
             return m;
         }
 
@@ -1062,6 +1130,7 @@ angular.z = 0</pre>
 
             stopKeyboardLoop();
             stopClockSync();
+            stopVideoStats();
             if (xrSession) { await xrSession.end().catch(() => {}); xrSession = null; }
             if (cmdChannel) { try { cmdChannel.close(); } catch (_) {} cmdChannel = null; }
             if (stateChannel) { try { stateChannel.close(); } catch (_) {} stateChannel = null; }
