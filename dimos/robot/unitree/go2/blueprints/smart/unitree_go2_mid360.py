@@ -29,8 +29,8 @@ Usage::
 
 from __future__ import annotations
 
-import time
 from pathlib import Path
+import time
 from typing import Any
 
 from reactivex.disposable import Disposable
@@ -102,9 +102,11 @@ unitree_go2_mid360_memory = (
         ),
         Go2Mid360Memory.blueprint(),
     )
-    .remappings([
-        (GO2Connection, "lidar", "go2_lidar"),
-    ])
+    .remappings(
+        [
+            (GO2Connection, "lidar", "go2_lidar"),
+        ]
+    )
     .global_config(n_workers=6, robot_model="unitree_go2")
 )
 
