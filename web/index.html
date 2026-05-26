@@ -610,6 +610,23 @@ angular.z = 0</pre>
             if (el) el.textContent = msg;
         }
 
+        // Returns the #robot-cam <video> (the WebRTC sink + GL-quad texture
+        // source), creating a hidden one if the active view didn't render it
+        // (the VR/teleop view shows the feed on a quad, not as a DOM element).
+        function ensureRobotCam() {
+            let v = document.getElementById('robot-cam');
+            if (!v) {
+                v = document.createElement('video');
+                v.id = 'robot-cam';
+                v.autoplay = true;
+                v.muted = true;
+                v.playsInline = true;
+                v.style.display = 'none';
+                document.body.appendChild(v);
+            }
+            return v;
+        }
+
         // ─── WebRTC ─────────────────────────────────────────────────────────
         async function setupWebRTC(sessionId) {
             setStatus('Negotiating WebRTC...');
@@ -624,10 +641,13 @@ angular.z = 0</pre>
             pc.addTransceiver('video', { direction: 'recvonly' });
             pc.ontrack = (e) => {
                 if (e.track.kind !== 'video') return;
-                const v = document.getElementById('robot-cam');
-                if (!v) return;
+                // The keyboard view has a visible <video id="robot-cam">; the VR
+                // view doesn't (the feed is drawn on a GL quad instead). Either
+                // way we need the element as the stream sink + quad texture
+                // source, so create a hidden one if the current view lacks it.
+                const v = ensureRobotCam();
                 v.srcObject = e.streams[0] || new MediaStream([e.track]);
-                v.style.display = 'block';
+                v.play?.().catch(() => {});  // immersive has no user-gesture; nudge autoplay
             };
 
             const iceFailed = new Promise((_, reject) => {
@@ -893,6 +913,9 @@ angular.z = 0</pre>
             const pose = frame.getViewerPose(xrRefSpace);
             if (!pose) return;
 
+            // HUD-style panel: always visible, no depth occlusion.
+            gl.disable(gl.DEPTH_TEST);
+
             gl.bindTexture(gl.TEXTURE_2D, quadTex);
             gl.texImage2D(gl.TEXTURE_2D, 0, gl.RGBA, gl.RGBA, gl.UNSIGNED_BYTE, v);
 
@@ -1011,6 +1034,12 @@ angular.z = 0</pre>
             }
 
             xrSession = session;
+            // Real Quest requires the GL context to be explicitly marked
+            // XR-compatible before building the XRWebGLLayer (the xrCompatible:
+            // true at context-creation isn't enough on-device — the emulator is
+            // lenient, hardware is strict). Without this the layer's framebuffer
+            // setup fails (GL_INVALID_OPERATION) and nothing renders.
+            await gl.makeXRCompatible();
             const glLayer = new XRWebGLLayer(session, gl);
             await session.updateRenderState({ baseLayer: glLayer });
             xrRefSpace = await session.requestReferenceSpace('local-floor');
@@ -1038,7 +1067,13 @@ angular.z = 0</pre>
             if (stateChannel) { try { stateChannel.close(); } catch (_) {} stateChannel = null; }
             if (stateBackChannel) { try { stateBackChannel.close(); } catch (_) {} stateBackChannel = null; }
             const v = document.getElementById('robot-cam');
-            if (v) { v.srcObject = null; v.style.display = 'none'; }
+            if (v) {
+                v.srcObject = null;
+                // Remove the dynamically-created (VR) element; leave the
+                // keyboard view's static one in place (it's re-rendered anyway).
+                if (!v.parentElement || v.parentElement === document.body) v.remove();
+                else v.style.display = 'none';
+            }
             if (pc) { try { pc.close(); } catch (_) {} pc = null; }
             clockOffsetMs = 0;
             bestRttMs = Infinity;
