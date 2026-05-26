@@ -14,14 +14,15 @@
 
 """Blueprint + entrypoint for the path-planner evaluator.
 
-Wires the Evaluator and StraightLinePlanner together and bridges all
-streams to rerun. Run with::
+Wires the Evaluator and MLSPlanner together and bridges all streams to rerun.
+Run with::
 
     python -m dimos.navigation.nav_stack.evaluator.main
 """
 
 from __future__ import annotations
 
+from functools import partial
 from typing import Any
 
 import numpy as np
@@ -33,13 +34,15 @@ from dimos.navigation.nav_stack.evaluator.evaluator import Evaluator
 from dimos.navigation.nav_stack.modules.mls_planner.mls_planner import (
     NODE_STEP_THRESHOLD_M,
     MLSPlanner,
-    _build_surface_adjacency,
-    _build_surface_lookup,
+    MLSPlannerConfig,
+    build_surface_adjacency,
+    build_surface_lookup,
 )
 from dimos.visualization.rerun.bridge import RerunBridgeModule
 
 _POSE_MARKER_RADIUS = 0.4
-_SURFACE_VOXEL = 0.1
+# Small lift so graph artifacts render visibly above the surface points instead of z-fighting.
+_GRAPH_Z_LIFT = 0.05
 _SURFACE_COMPONENT_PALETTE = np.array(
     [
         [220, 50, 50],
@@ -62,7 +65,7 @@ def _render_start_pose(msg: Any) -> Any:
 
     return rr.Points3D(
         positions=[[msg.x, msg.y, msg.z]],
-        colors=[[0, 255, 0]],  # green
+        colors=[[0, 255, 0]],
         radii=[_POSE_MARKER_RADIUS],
     )
 
@@ -72,26 +75,27 @@ def _render_goal_pose(msg: Any) -> Any:
 
     return rr.Points3D(
         positions=[[msg.x, msg.y, msg.z]],
-        colors=[[255, 0, 0]],  # red
+        colors=[[255, 0, 0]],
         radii=[_POSE_MARKER_RADIUS],
     )
 
 
 def _render_global_map(msg: Any) -> Any:
-    return msg.to_rerun(voxel_size=0.03, colors=[128, 128, 128])  # gray
+    return msg.to_rerun(voxel_size=0.03, colors=[128, 128, 128])
 
 
-def _render_surface_map(msg: Any) -> Any:
+def _render_surface_map(voxel_size: float, msg: Any) -> Any:
+    """Render surface points colored by connected component."""
     import rerun as rr
 
     pts, _ = msg.as_numpy()
     if pts is None or len(pts) == 0:
         return rr.Points3D([])
-    indices = np.floor(pts / _SURFACE_VOXEL).astype(np.int64)
+    indices = np.floor(pts / voxel_size).astype(np.int64)
     ix, iy, iz = indices[:, 0], indices[:, 1], indices[:, 2]
-    surface_lookup = _build_surface_lookup(ix, iy, iz)
-    step_cells = max(0, int(NODE_STEP_THRESHOLD_M / _SURFACE_VOXEL))
-    adj, cell_to_idx, _ = _build_surface_adjacency(surface_lookup, _SURFACE_VOXEL, step_cells)
+    surface_lookup = build_surface_lookup(ix, iy, iz)
+    step_cells = max(0, int(NODE_STEP_THRESHOLD_M / voxel_size))
+    adj, cell_to_idx, _ = build_surface_adjacency(surface_lookup, voxel_size, step_cells)
     _, labels = connected_components(adj, directed=False)
     point_labels = np.array(
         [
@@ -104,10 +108,6 @@ def _render_surface_map(msg: Any) -> Any:
     return rr.Points3D(positions=pts, colors=colors, radii=[0.05])
 
 
-# raise the path and way points out of the surface
-_GRAPH_Z_LIFT = 0.1
-
-
 def _render_nodes(msg: Any) -> Any:
     import rerun as rr
 
@@ -116,7 +116,7 @@ def _render_nodes(msg: Any) -> Any:
         return rr.Points3D([])
     pts = pts.copy()
     pts[:, 2] += _GRAPH_Z_LIFT
-    return rr.Points3D(positions=pts, colors=[[75, 156, 211]], radii=[0.15])  # Carolina Blue
+    return rr.Points3D(positions=pts, colors=[[75, 156, 211]], radii=[0.15])
 
 
 def _render_node_edges(msg: Any) -> Any:
@@ -124,6 +124,7 @@ def _render_node_edges(msg: Any) -> Any:
 
 
 def create_evaluator_blueprint() -> Blueprint:
+    planner_voxel = MLSPlannerConfig().voxel_size
     return autoconnect(
         Evaluator.blueprint(),
         MLSPlanner.blueprint(),
@@ -132,7 +133,7 @@ def create_evaluator_blueprint() -> Blueprint:
                 "world/start_pose": _render_start_pose,
                 "world/goal_pose": _render_goal_pose,
                 "world/global_map": _render_global_map,
-                "world/surface_map": _render_surface_map,
+                "world/surface_map": partial(_render_surface_map, planner_voxel),
                 "world/nodes": _render_nodes,
                 "world/node_edges": _render_node_edges,
             }

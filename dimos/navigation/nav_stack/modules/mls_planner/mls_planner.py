@@ -16,6 +16,7 @@
 
 from __future__ import annotations
 
+from dataclasses import dataclass, field
 import time
 from typing import Any
 
@@ -45,8 +46,8 @@ from dimos.utils.logging_config import setup_logger
 
 logger = setup_logger()
 
-SURFACE_DILATION_PASSES = 3
-SURFACE_EROSION_PASSES = 3
+SURFACE_DILATION_PASSES = 2
+SURFACE_EROSION_PASSES = 2
 
 NODE_SPACING_M = 2.0
 NODE_WALL_BUFFER_M = 0.3
@@ -59,6 +60,34 @@ class MLSPlannerConfig(ModuleConfig):
     robot_height: float = 1.5
 
 
+def surface_point_xyz(ix: int, iy: int, iz: int, voxel_size: float) -> tuple[float, float, float]:
+    """Standing-surface coord for one cell. XY centered in the cell, Z at the cell's top face."""
+    return ((ix + 0.5) * voxel_size, (iy + 0.5) * voxel_size, (iz + 1.0) * voxel_size)
+
+
+def surface_points_xyz(cells: np.ndarray, voxel_size: float) -> np.ndarray:
+    """Vectorized surface_point_xyz. (N, 3) int cell indices to (N, 3) world XYZ."""
+    offset = np.array([0.5 * voxel_size, 0.5 * voxel_size, voxel_size])
+    return cells * voxel_size + offset
+
+
+@dataclass
+class SurfaceGraph:
+    """Surface-cell grid plus its waypoint-node overlay.
+
+    place_nodes populates the first five fields. add_node_edges fills source_cells
+    and cell_idx_to_nid and adds edges to graph.
+    """
+
+    graph: nx.Graph
+    adj: csr_matrix
+    cell_to_idx: dict[tuple[int, int, int], int]
+    idx_to_cell: list[tuple[int, int, int]]
+    surface_lookup: dict[tuple[int, int], np.ndarray]
+    source_cells: np.ndarray = field(default_factory=lambda: np.zeros(0, dtype=np.int64))
+    cell_idx_to_nid: dict[int, int] = field(default_factory=dict)
+
+
 def _extract_surfaces(points: np.ndarray, voxel_size: float, robot_height: float) -> np.ndarray:
     """For each XY column, mark cells with at least robot_height of free space above as surfaces."""
     if len(points) == 0:
@@ -68,59 +97,58 @@ def _extract_surfaces(points: np.ndarray, voxel_size: float, robot_height: float
     ix, iy, iz = indices[:, 0], indices[:, 1], indices[:, 2]
 
     order = np.lexsort((iz, iy, ix))
-    sx, sy, sz = ix[order], iy[order], iz[order]
+    ix_sorted, iy_sorted, iz_sorted = ix[order], iy[order], iz[order]
 
     height_cells = int(np.ceil(robot_height / voxel_size))
 
-    next_same_col = np.zeros(len(sx), dtype=bool)
-    next_same_col[:-1] = (sx[:-1] == sx[1:]) & (sy[:-1] == sy[1:])
+    next_same_col = np.zeros(len(ix_sorted), dtype=bool)
+    next_same_col[:-1] = (ix_sorted[:-1] == ix_sorted[1:]) & (iy_sorted[:-1] == iy_sorted[1:])
 
-    gap = np.empty(len(sx), dtype=np.int64)
-    gap[:-1] = sz[1:] - sz[:-1]
+    gap = np.empty(len(ix_sorted), dtype=np.int64)
+    gap[:-1] = iz_sorted[1:] - iz_sorted[:-1]
     gap[-1] = 0
 
     is_surface = (~next_same_col) | (gap > height_cells)
 
-    surf_ix = sx[is_surface]
-    surf_iy = sy[is_surface]
-    surf_iz = sz[is_surface]
+    surface_ix = ix_sorted[is_surface]
+    surface_iy = iy_sorted[is_surface]
+    surface_iz = iz_sorted[is_surface]
 
-    surf_ix, surf_iy, surf_iz = _close_surface_holes(
-        surf_ix, surf_iy, surf_iz, SURFACE_DILATION_PASSES, SURFACE_EROSION_PASSES
+    surface_ix, surface_iy, surface_iz = _close_surface_holes(
+        surface_ix, surface_iy, surface_iz, SURFACE_DILATION_PASSES, SURFACE_EROSION_PASSES
     )
 
-    x = (surf_ix.astype(np.float32) + 0.5) * voxel_size
-    y = (surf_iy.astype(np.float32) + 0.5) * voxel_size
-    z = (surf_iz.astype(np.float32) + 1.0) * voxel_size
-    return np.column_stack([x, y, z]).astype(np.float32)
+    cells = np.column_stack([surface_ix, surface_iy, surface_iz])
+    return surface_points_xyz(cells, voxel_size).astype(np.float32)
 
 
 def _close_surface_holes(
-    surf_ix: np.ndarray,
-    surf_iy: np.ndarray,
-    surf_iz: np.ndarray,
+    surface_ix: np.ndarray,
+    surface_iy: np.ndarray,
+    surface_iz: np.ndarray,
     dilation_passes: int,
     erosion_passes: int,
 ) -> tuple[np.ndarray, np.ndarray, np.ndarray]:
-    """Do dilation then erosion on the surface map at each z level.
+    """Dilate then erode the surface map at each z level.
 
-    Closes a lot of small holes that are artifacts missing lidar points.
+    Closes small holes from missing lidar points.
     """
-    if len(surf_ix) == 0 or (dilation_passes <= 0 and erosion_passes <= 0):
-        return surf_ix, surf_iy, surf_iz
+    if len(surface_ix) == 0 or (dilation_passes <= 0 and erosion_passes <= 0):
+        return surface_ix, surface_iy, surface_iz
 
     pad = max(dilation_passes, 0)
     new_ix: list[np.ndarray] = []
     new_iy: list[np.ndarray] = []
     new_iz: list[np.ndarray] = []
-    for level_iz in np.unique(surf_iz):
-        sel = surf_iz == level_iz
-        lx = surf_ix[sel]
-        ly = surf_iy[sel]
+    for level_iz in np.unique(surface_iz):
+        sel = surface_iz == level_iz
+        lx = surface_ix[sel]
+        ly = surface_iy[sel]
         x0, x1 = int(lx.min()), int(lx.max())
         y0, y1 = int(ly.min()), int(ly.max())
         w = x1 - x0 + 1 + 2 * pad
         h = y1 - y0 + 1 + 2 * pad
+        # numpy mask is indexed (row, col) = (y, x).
         mask = np.zeros((h, w), dtype=bool)
         mask[ly - y0 + pad, lx - x0 + pad] = True
         if dilation_passes > 0:
@@ -139,22 +167,28 @@ def _close_surface_holes(
     )
 
 
-def _build_surface_lookup(
-    sx: np.ndarray, sy: np.ndarray, sz: np.ndarray
+def build_surface_lookup(
+    ix: np.ndarray, iy: np.ndarray, iz: np.ndarray
 ) -> dict[tuple[int, int], np.ndarray]:
-    """Group surface cells by XY column."""
+    """Group surface cells by XY column.
+
+    Public so downstream code can recompute the same lookup the planner uses.
+    """
     by_column: dict[tuple[int, int], list[int]] = {}
-    for ix_, iy_, iz_ in zip(sx.tolist(), sy.tolist(), sz.tolist(), strict=True):
+    for ix_, iy_, iz_ in zip(ix.tolist(), iy.tolist(), iz.tolist(), strict=True):
         by_column.setdefault((ix_, iy_), []).append(iz_)
     return {key: np.array(sorted(vs), dtype=np.int64) for key, vs in by_column.items()}
 
 
-def _build_surface_adjacency(
+def build_surface_adjacency(
     surface_lookup: dict[tuple[int, int], np.ndarray],
     voxel_size: float,
     step_threshold_cells: int,
 ) -> tuple[csr_matrix, dict[tuple[int, int, int], int], list[tuple[int, int, int]]]:
-    """Sparse 8-connected adjacency over surface cells, with a per-step dz cap."""
+    """Sparse 8-connected adjacency over surface cells, with a per-step dz cap.
+
+    Public so downstream code can recompute the same adjacency the planner uses.
+    """
     n = sum(len(zs) for zs in surface_lookup.values())
     if n == 0:
         return csr_matrix((0, 0), dtype=np.float64), {}, []
@@ -175,11 +209,11 @@ def _build_surface_adjacency(
     )
     cell_to_idx: dict[tuple[int, int, int], int] = {cell: i for i, cell in enumerate(idx_to_cell)}
 
-    # Pack (ix, iy) into one int64 key. Padding leaves room for dx, dy in -1, 0, 1.
-    ix_pos = ix - ix.min() + 1
-    iy_pos = iy - iy.min() + 1
-    y_range = int(iy_pos.max()) + 2
-    col_key = ix_pos * y_range + iy_pos
+    # Pack (ix, iy) into one int64 key. Offsets leave room for dx, dy in -1, 0, 1.
+    ix_offset = ix - ix.min() + 1
+    iy_offset = iy - iy.min() + 1
+    y_stride = int(iy_offset.max()) + 2
+    col_key = ix_offset * y_stride + iy_offset
 
     sort_order = np.lexsort((iz, col_key))
     sorted_col_key = col_key[sort_order]
@@ -189,23 +223,25 @@ def _build_surface_adjacency(
     col_chunks: list[np.ndarray] = []
     data_chunks: list[np.ndarray] = []
     for dx, dy in ((-1, -1), (-1, 0), (-1, 1), (0, -1), (0, 1), (1, -1), (1, 0), (1, 1)):
-        neighbor_key = (ix_pos + dx) * y_range + (iy_pos + dy)
+        # For each source cell, range-scan the (dx, dy) neighbor column for its surface cells,
+        # then keep only the dz transitions that are within the per-step limit.
+        neighbor_key = (ix_offset + dx) * y_stride + (iy_offset + dy)
         lo = np.searchsorted(sorted_col_key, neighbor_key, side="left")
         hi = np.searchsorted(sorted_col_key, neighbor_key, side="right")
         n_per_src = hi - lo
         total = int(n_per_src.sum())
         if total == 0:
             continue
-        src_flat = np.repeat(np.arange(n), n_per_src)
+        src_per_candidate = np.repeat(np.arange(n), n_per_src)
         starts = np.zeros(n, dtype=np.int64)
         starts[1:] = np.cumsum(n_per_src[:-1])
-        candidate_sorted_idx = lo[src_flat] + (np.arange(total) - starts[src_flat])
-        dz = sorted_iz[candidate_sorted_idx] - iz[src_flat]
+        candidate_in_sorted = lo[src_per_candidate] + (np.arange(total) - starts[src_per_candidate])
+        dz = sorted_iz[candidate_in_sorted] - iz[src_per_candidate]
         valid = np.abs(dz) <= step_threshold_cells
         if not valid.any():
             continue
-        src_valid = src_flat[valid]
-        dst_valid = sort_order[candidate_sorted_idx[valid]]
+        src_valid = src_per_candidate[valid]
+        dst_valid = sort_order[candidate_in_sorted[valid]]
         dz_valid = dz[valid]
         step_cost = np.sqrt(dx * dx + dy * dy + dz_valid * dz_valid) * voxel_size
         row_chunks.append(src_valid)
@@ -243,52 +279,64 @@ def place_nodes(
     node_spacing: float,
     wall_buffer: float,
     step_threshold: float,
-) -> tuple[
-    nx.Graph,
-    csr_matrix,
-    dict[tuple[int, int, int], int],
-    list[tuple[int, int, int]],
-    dict[tuple[int, int], np.ndarray],
-]:
+) -> SurfaceGraph:
     """Place nodes by greedy NMS on the dist-to-wall field from one Dijkstra.
 
     Run multisource Dijkstra with the surface edges as sources to find distance from wall.
-    Then place nodes spaced throughout based on that distance."""
+    Then place nodes spaced throughout based on that distance.
+    """
     graph = nx.Graph()
     if len(surface_points) == 0:
-        empty_adj = csr_matrix((0, 0), dtype=np.float64)
-        return graph, empty_adj, {}, [], {}
+        return SurfaceGraph(
+            graph=graph,
+            adj=csr_matrix((0, 0), dtype=np.float64),
+            cell_to_idx={},
+            idx_to_cell=[],
+            surface_lookup={},
+        )
 
     sx = np.floor(surface_points[:, 0] / voxel_size).astype(np.int64)
     sy = np.floor(surface_points[:, 1] / voxel_size).astype(np.int64)
     sz = np.floor(surface_points[:, 2] / voxel_size).astype(np.int64)
-    surface_lookup = _build_surface_lookup(sx, sy, sz)
+    surface_lookup = build_surface_lookup(sx, sy, sz)
 
     step_cells = max(0, int(step_threshold / voxel_size))
-    adj, cell_to_idx, idx_to_cell = _build_surface_adjacency(surface_lookup, voxel_size, step_cells)
+    adj, cell_to_idx, idx_to_cell = build_surface_adjacency(surface_lookup, voxel_size, step_cells)
 
     n_cells = adj.shape[0]
     if n_cells == 0:
-        return graph, adj, cell_to_idx, idx_to_cell, surface_lookup
+        return SurfaceGraph(
+            graph=graph,
+            adj=adj,
+            cell_to_idx=cell_to_idx,
+            idx_to_cell=idx_to_cell,
+            surface_lookup=surface_lookup,
+        )
 
-    neighbor_counts = np.diff(adj.indptr)
-    boundary_indices = np.where(neighbor_counts < 8)[0]
-    if len(boundary_indices) == 0:
-        boundary_indices = np.array([0], dtype=np.int64)
+    # Cells with fewer than 8 surface neighbors sit on a wall or hole edge.
+    surface_neighbor_count = np.diff(adj.indptr)
+    wall_adjacent_indices = np.where(surface_neighbor_count < 8)[0]
+    if len(wall_adjacent_indices) == 0:
+        wall_adjacent_indices = np.array([0], dtype=np.int64)
 
-    dist = dijkstra(adj, indices=boundary_indices, min_only=True)
+    dist = dijkstra(adj, indices=wall_adjacent_indices, min_only=True)
 
     cells_arr = np.array(idx_to_cell, dtype=np.float64)
-    cell_positions = cells_arr * voxel_size + np.array([0.5 * voxel_size, 0.5 * voxel_size, 0.0])
+    cell_positions = surface_points_xyz(cells_arr, voxel_size)
 
     candidate_mask = np.isfinite(dist) & (dist >= wall_buffer)
     candidate_indices = np.where(candidate_mask)[0]
     if len(candidate_indices) == 0:
-        return graph, adj, cell_to_idx, idx_to_cell, surface_lookup
+        return SurfaceGraph(
+            graph=graph,
+            adj=adj,
+            cell_to_idx=cell_to_idx,
+            idx_to_cell=idx_to_cell,
+            surface_lookup=surface_lookup,
+        )
     order = candidate_indices[np.argsort(-dist[candidate_indices])]
     positions = cell_positions[order]
 
-    # kill points in batches with kd tree
     tree = cKDTree(positions)
     killed = np.zeros(len(order), dtype=bool)
 
@@ -299,57 +347,58 @@ def place_nodes(
         nid = graph.number_of_nodes()
         graph.add_node(
             nid,
-            pos=(
-                (cix + 0.5) * voxel_size,
-                (ciy + 0.5) * voxel_size,
-                ciz * voxel_size,
-            ),
+            pos=surface_point_xyz(cix, ciy, ciz, voxel_size),
             cell=(cix, ciy, ciz),
         )
         nearby = tree.query_ball_point(positions[i], r=node_spacing)
         killed[np.asarray(nearby, dtype=np.int64)] = True
 
-    return graph, adj, cell_to_idx, idx_to_cell, surface_lookup
+    return SurfaceGraph(
+        graph=graph,
+        adj=adj,
+        cell_to_idx=cell_to_idx,
+        idx_to_cell=idx_to_cell,
+        surface_lookup=surface_lookup,
+    )
 
 
-def add_node_edges(
-    graph: nx.Graph,
-    adj: csr_matrix,
-    cell_to_idx: dict[tuple[int, int, int], int],
-    idx_to_cell: list[tuple[int, int, int]],
-) -> tuple[np.ndarray, dict[int, int]]:
-    """Add Voronoi-adjacency edges between placed nodes.
+def add_node_edges(sg: SurfaceGraph) -> None:
+    """Add Voronoi-adjacency edges between placed nodes, mutating sg in place.
 
     One multi-source Dijkstra labels each cell with its nearest node. The cheapest
     boundary crossing per node-pair becomes an edge with the cell path on data["path"].
-    Returns source_cells (per-cell owner) and cell_idx_to_nid for pose-snapping.
+    Also fills sg.source_cells (per-cell owner) and sg.cell_idx_to_nid for pose-snapping.
     """
-    if graph.number_of_nodes() == 0:
-        return np.full(adj.shape[0], -9999, dtype=np.int64), {}
+    if sg.graph.number_of_nodes() == 0:
+        sg.source_cells = np.full(sg.adj.shape[0], -9999, dtype=np.int64)
+        sg.cell_idx_to_nid = {}
+        return
 
-    node_ids = list(graph.nodes())
+    node_ids = list(sg.graph.nodes())
     source_cell_indices = np.empty(len(node_ids), dtype=np.int64)
     cell_idx_to_nid: dict[int, int] = {}
     for nid in node_ids:
-        cell_idx = cell_to_idx[graph.nodes[nid]["cell"]]
+        cell_idx = sg.cell_to_idx[sg.graph.nodes[nid]["cell"]]
         source_cell_indices[nid] = cell_idx
         cell_idx_to_nid[cell_idx] = nid
 
     dist, predecessors, source_cells = dijkstra(
-        adj,
+        sg.adj,
         indices=source_cell_indices,
         min_only=True,
         return_predecessors=True,
     )
 
-    rows = np.repeat(np.arange(adj.shape[0]), np.diff(adj.indptr))
-    cols = adj.indices
-    weights = adj.data
+    rows = np.repeat(np.arange(sg.adj.shape[0]), np.diff(sg.adj.indptr))
+    cols = sg.adj.indices
+    weights = sg.adj.data
     src_u = source_cells[rows]
     src_v = source_cells[cols]
     boundary = (src_u != src_v) & (src_u >= 0) & (src_v >= 0)
+    sg.source_cells = source_cells
+    sg.cell_idx_to_nid = cell_idx_to_nid
     if not boundary.any():
-        return source_cells, cell_idx_to_nid
+        return
 
     b_rows = rows[boundary]
     b_cols = cols[boundary]
@@ -357,7 +406,7 @@ def add_node_edges(
     b_src_u = src_u[boundary]
     b_src_v = src_v[boundary]
 
-    # Keep the min-cost boundary crossing per (node_a, node_b) pair.
+    # Keep the min-cost boundary crossing per node pair.
     best: dict[tuple[int, int], tuple[float, int, int]] = {}
     for i in range(len(b_costs)):
         nid_a = cell_idx_to_nid[int(b_src_u[i])]
@@ -373,17 +422,19 @@ def add_node_edges(
             best[(nid_a, nid_b)] = (cost, u_a, u_b)
 
     for (nid_a, nid_b), (cost, u_a, u_b) in best.items():
-        path_a = _walk_predecessors(predecessors, u_a, idx_to_cell)
-        path_b = _walk_predecessors(predecessors, u_b, idx_to_cell)
+        path_a = _walk_predecessors(predecessors, u_a, sg.idx_to_cell)
+        path_b = _walk_predecessors(predecessors, u_b, sg.idx_to_cell)
         path_a.reverse()
         full_path = np.array(path_a + path_b, dtype=np.int64)
-        graph.add_edge(nid_a, nid_b, weight=cost, path=full_path)
-
-    return source_cells, cell_idx_to_nid
+        sg.graph.add_edge(nid_a, nid_b, weight=cost, path=full_path)
 
 
-class _PublishableLineSegments3D(LineSegments3D):
-    """LineSegments3D with a Python lcm_encode. Upstream only implements decode."""
+class _LineSegmentsAsPath(LineSegments3D):
+    """Pack LineSegments3D into nav_msgs/Path until a dedicated message exists.
+
+    Segment endpoints alternate as poses (p1, p2, p1, p2, ...) and traversability rides
+    on each pose's orientation.w.
+    """
 
     def lcm_encode(self) -> bytes:
         lcm_msg = LCMPath()
@@ -429,13 +480,12 @@ def _edges_to_segments(
         for i in range(len(path_cells) - 1):
             a = path_cells[i]
             b = path_cells[i + 1]
-            ax = (float(a[0]) + 0.5) * voxel_size
-            ay = (float(a[1]) + 0.5) * voxel_size
-            az = float(a[2]) * voxel_size
-            bx = (float(b[0]) + 0.5) * voxel_size
-            by = (float(b[1]) + 0.5) * voxel_size
-            bz = float(b[2]) * voxel_size
-            segments.append(((ax, ay, az), (bx, by, bz)))
+            segments.append(
+                (
+                    surface_point_xyz(int(a[0]), int(a[1]), int(a[2]), voxel_size),
+                    surface_point_xyz(int(b[0]), int(b[1]), int(b[2]), voxel_size),
+                )
+            )
     return segments
 
 
@@ -453,17 +503,14 @@ class MLSPlanner(Module):
     def __init__(self, **kwargs: Any) -> None:
         super().__init__(**kwargs)
         self._latest_start: Odometry | None = None
-        self._graph: nx.Graph | None = None
-        self._cell_to_idx: dict[tuple[int, int, int], int] | None = None
-        self._surface_lookup: dict[tuple[int, int], np.ndarray] | None = None
-        self._source_cells: np.ndarray | None = None
-        self._cell_idx_to_nid: dict[int, int] | None = None
+        self._surface_graph: SurfaceGraph | None = None
 
     async def handle_global_map(self, msg: PointCloud2) -> None:
         points, _ = msg.as_numpy()
         if points is None or len(points) == 0:
             return
 
+        # 1. Surface extraction
         t0 = time.perf_counter()
         surface_points = _extract_surfaces(points, self.config.voxel_size, self.config.robot_height)
         surfaces_ms = (time.perf_counter() - t0) * 1000
@@ -478,9 +525,10 @@ class MLSPlanner(Module):
             surface_ms=round(surfaces_ms, 1),
         )
 
+        # 2. Node placement
         logger.info("Placing nodes", spacing_m=NODE_SPACING_M)
         t1 = time.perf_counter()
-        graph, adj, cell_to_idx, idx_to_cell, surface_lookup = place_nodes(
+        sg = place_nodes(
             surface_points,
             self.config.voxel_size,
             node_spacing=NODE_SPACING_M,
@@ -490,49 +538,50 @@ class MLSPlanner(Module):
         place_ms = (time.perf_counter() - t1) * 1000
         self.nodes.publish(
             PointCloud2.from_numpy(
-                _nodes_to_cloud(graph),
+                _nodes_to_cloud(sg.graph),
                 frame_id=self.config.world_frame,
                 timestamp=time.time(),
             )
         )
         logger.info(
             "Nodes placed",
-            nodes=graph.number_of_nodes(),
+            nodes=sg.graph.number_of_nodes(),
             place_ms=round(place_ms, 1),
         )
 
+        # 3. Edge construction
         logger.info("Building edges")
         t2 = time.perf_counter()
-        source_cells, cell_idx_to_nid = add_node_edges(graph, adj, cell_to_idx, idx_to_cell)
+        add_node_edges(sg)
         edges_ms = (time.perf_counter() - t2) * 1000
         logger.info(
             "Edges built",
-            edges=graph.number_of_edges(),
+            edges=sg.graph.number_of_edges(),
             edges_ms=round(edges_ms, 1),
         )
 
-        self._graph = graph
-        self._cell_to_idx = cell_to_idx
-        self._surface_lookup = surface_lookup
-        self._source_cells = source_cells
-        self._cell_idx_to_nid = cell_idx_to_nid
-
+        self._surface_graph = sg
         self.node_edges.publish(
-            _PublishableLineSegments3D(
+            _LineSegmentsAsPath(
                 ts=time.time(),
                 frame_id=self.config.world_frame,
-                segments=_edges_to_segments(graph, self.config.voxel_size),
+                segments=_edges_to_segments(sg.graph, self.config.voxel_size),
             )
         )
 
     async def handle_start_pose(self, msg: Odometry) -> None:
         self._latest_start = msg
 
+    def _publish_empty_path(self) -> None:
+        """Clear any previously published path so the visualizer drops the stale plan."""
+        self.path.publish(Path(ts=time.time(), frame_id=self.config.world_frame, poses=[]))
+
     async def handle_goal_pose(self, msg: Odometry) -> None:
         if self._latest_start is None:
             logger.warning("MLSPlanner received goal before start; skipping")
             return
-        if self._graph is None or self._graph.number_of_nodes() == 0:
+        sg = self._surface_graph
+        if sg is None or sg.graph.number_of_nodes() == 0:
             logger.warning("MLSPlanner received goal before graph was built; skipping")
             return
 
@@ -540,8 +589,8 @@ class MLSPlanner(Module):
         start = (self._latest_start.x, self._latest_start.y, self._latest_start.z)
         goal = (msg.x, msg.y, msg.z)
 
-        start_node = self._snap_pose_to_node(start)
-        goal_node = self._snap_pose_to_node(goal)
+        start_node = self._snap_pose_to_node(sg, start)
+        goal_node = self._snap_pose_to_node(sg, goal)
         if start_node is None or goal_node is None:
             logger.warning(
                 "Could not snap pose to graph",
@@ -550,21 +599,21 @@ class MLSPlanner(Module):
                 start_node=start_node,
                 goal_node=goal_node,
             )
+            self._publish_empty_path()
             return
-        assert self._graph is not None
         logger.info(
             "Snapped poses to graph nodes",
             start_pose=start,
             start_node=start_node,
-            start_node_pos=self._graph.nodes[start_node]["pos"],
+            start_node_pos=sg.graph.nodes[start_node]["pos"],
             goal_pose=goal,
             goal_node=goal_node,
-            goal_node_pos=self._graph.nodes[goal_node]["pos"],
+            goal_node_pos=sg.graph.nodes[goal_node]["pos"],
         )
 
         try:
             node_seq = nx.shortest_path(
-                self._graph, source=start_node, target=goal_node, weight="weight"
+                sg.graph, source=start_node, target=goal_node, weight="weight"
             )
         except nx.NetworkXNoPath:
             logger.warning(
@@ -572,9 +621,10 @@ class MLSPlanner(Module):
                 start_node=start_node,
                 goal_node=goal_node,
             )
+            self._publish_empty_path()
             return
 
-        waypoints = self._assemble_waypoints(node_seq, start, goal)
+        waypoints = self._assemble_waypoints(sg, node_seq, start, goal)
         plan_ms = (time.perf_counter() - t0) * 1000
 
         now = time.time()
@@ -599,21 +649,15 @@ class MLSPlanner(Module):
             plan_ms=round(plan_ms, 1),
         )
 
-    def _snap_pose_to_node(self, pose_xyz: tuple[float, float, float]) -> int | None:
+    def _snap_pose_to_node(
+        self, sg: SurfaceGraph, pose_xyz: tuple[float, float, float]
+    ) -> int | None:
         """Snap pose to its owning node via the precomputed Voronoi labels.
 
         Finds the surface cell in the pose's column, looks up its owner in source_cells.
         Falls back to nearby columns if the pose's own column has no surface.
         """
-        if (
-            self._graph is None
-            or self._cell_to_idx is None
-            or self._surface_lookup is None
-            or self._source_cells is None
-            or self._cell_idx_to_nid is None
-        ):
-            return None
-        if self._graph.number_of_nodes() == 0:
+        if sg.graph.number_of_nodes() == 0:
             return None
 
         voxel = self.config.voxel_size
@@ -623,7 +667,7 @@ class MLSPlanner(Module):
         target_iz = int(np.floor(z / voxel)) - 1
         tolerance_cells = int(np.ceil(self.config.robot_height / voxel))
 
-        cell = self._best_iz_in_column(ix, iy, target_iz, tolerance_cells)
+        cell = self._best_iz_in_column(sg, ix, iy, target_iz, tolerance_cells)
         if cell is None:
             # Pose's column has no surface. Try nearby columns.
             search_radius = 5
@@ -633,7 +677,7 @@ class MLSPlanner(Module):
                 for diy in range(-search_radius, search_radius + 1):
                     if dix == 0 and diy == 0:
                         continue
-                    c = self._best_iz_in_column(ix + dix, iy + diy, target_iz, tolerance_cells)
+                    c = self._best_iz_in_column(sg, ix + dix, iy + diy, target_iz, tolerance_cells)
                     if c is None:
                         continue
                     d2 = dix * dix + diy * diy
@@ -644,21 +688,19 @@ class MLSPlanner(Module):
             if cell is None:
                 return None
 
-        cell_idx = self._cell_to_idx.get(cell)
+        cell_idx = sg.cell_to_idx.get(cell)
         if cell_idx is None:
             return None
-        owner_cell_idx = int(self._source_cells[cell_idx])
+        owner_cell_idx = int(sg.source_cells[cell_idx])
         if owner_cell_idx < 0:
             return None
-        return self._cell_idx_to_nid.get(owner_cell_idx)
+        return sg.cell_idx_to_nid.get(owner_cell_idx)
 
     def _best_iz_in_column(
-        self, ix: int, iy: int, target_iz: int, tolerance_cells: int
+        self, sg: SurfaceGraph, ix: int, iy: int, target_iz: int, tolerance_cells: int
     ) -> tuple[int, int, int] | None:
         """Surface iz in column (ix, iy) closest to target_iz, within tolerance."""
-        if self._surface_lookup is None:
-            return None
-        zs = self._surface_lookup.get((ix, iy))
+        zs = sg.surface_lookup.get((ix, iy))
         if zs is None or len(zs) == 0:
             return None
         distances = np.abs(zs - target_iz)
@@ -669,17 +711,17 @@ class MLSPlanner(Module):
 
     def _assemble_waypoints(
         self,
+        sg: SurfaceGraph,
         node_seq: list[int],
         start_pose: tuple[float, float, float],
         goal_pose: tuple[float, float, float],
     ) -> list[tuple[float, float, float]]:
         """Chain cached edge paths into a continuous waypoint list, bracketed by the actual poses."""
-        assert self._graph is not None
         voxel = self.config.voxel_size
         cells: list[tuple[int, int, int]] = []
         for i in range(len(node_seq) - 1):
             a, b = node_seq[i], node_seq[i + 1]
-            edge_path: np.ndarray = self._graph[a][b]["path"]
+            edge_path: np.ndarray = sg.graph[a][b]["path"]
             # Stored path runs from min(a, b) to max(a, b). Reverse if traversing the other way.
             if a > b:
                 edge_path = edge_path[::-1]
@@ -689,6 +731,6 @@ class MLSPlanner(Module):
 
         waypoints: list[tuple[float, float, float]] = [start_pose]
         for cix, ciy, ciz in cells:
-            waypoints.append(((cix + 0.5) * voxel, (ciy + 0.5) * voxel, (ciz + 1.0) * voxel))
+            waypoints.append(surface_point_xyz(cix, ciy, ciz, voxel))
         waypoints.append(goal_pose)
         return waypoints
