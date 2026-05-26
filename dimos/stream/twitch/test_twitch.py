@@ -18,6 +18,10 @@ from __future__ import annotations
 
 import time
 
+import pytest
+
+pytest.importorskip("twitchio")
+
 from dimos.stream.twitch.module import TwitchMessage
 from dimos.stream.twitch.votes import (
     _tally_majority,

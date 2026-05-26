@@ -30,15 +30,16 @@ import time
 from typing import Any
 
 try:
-    import twitchio  # type: ignore[import-untyped]
-    from twitchio.ext import commands as twitch_commands  # type: ignore[import-untyped]
+    import twitchio
+    from twitchio.ext import commands as twitch_commands
 except ImportError:
-    raise ImportError(
+    raise ModuleNotFoundError(
         "[TwitchChat] The 'twitchio' package is not installed.\n"
         "Install it with:\n"
         "    uv pip install 'twitchio>=2.0,<3.0'\n"
         "or:\n"
-        "    pip install 'twitchio>=2.0,<3.0'"
+        "    pip install 'twitchio>=2.0,<3.0'",
+        name="twitchio",
     ) from None
 
 _twitchio_version = getattr(twitchio, "__version__", "unknown")
