@@ -1452,14 +1452,14 @@ class X2Connection(X2ConnectionBase, Camera, Pointcloud, IMU, Lidar):
         cloud.pointcloud.rotate(R, center=(0.0, 0.0, 0.0))
         cloud.pointcloud.translate(np.array(_LIDAR_IN_BASE_LINK))
 
-        # Lift base_link → odom using the latest IMU-integrated pose so the
-        # cloud accumulates in the world frame as the robot moves.
-        with self._odom_tf_lock:
-            R_odom = self._odom_tf_R
-            t_odom = self._odom_tf_t
-        if R_odom is not None:
-            cloud.pointcloud.rotate(R_odom, center=(0.0, 0.0, 0.0))
-            cloud.pointcloud.translate(t_odom)
+        # # Lift base_link → odom using the latest IMU-integrated pose so the
+        # # cloud accumulates in the world frame as the robot moves.
+        # with self._odom_tf_lock:
+        #     R_odom = self._odom_tf_R
+        #     t_odom = self._odom_tf_t
+        # if R_odom is not None:
+        #     cloud.pointcloud.rotate(R_odom, center=(0.0, 0.0, 0.0))
+        #     cloud.pointcloud.translate(t_odom)
 
         self.lidar.publish(cloud)
 
@@ -1508,36 +1508,36 @@ class X2Connection(X2ConnectionBase, Camera, Pointcloud, IMU, Lidar):
             self._odom_tf_R = R
             self._odom_tf_t = self._odom_pos.copy()
 
-        self.odometry.publish(
-            Odometry(
-                ts=imu.ts,
-                frame_id="odom",
-                child_frame_id=imu.frame_id,
-                pose=Pose(
-                    position=self._odom_pos.tolist(),
-                    orientation=[
-                        imu.orientation.x,
-                        imu.orientation.y,
-                        imu.orientation.z,
-                        imu.orientation.w,
-                    ],
-                ),
-                twist=Twist(
-                    linear=Vector3(*self._odom_vel.tolist()),
-                    angular=imu.angular_velocity,
-                ),
-            )
-        )
+        # self.odometry.publish(
+        #     Odometry(
+        #         ts=imu.ts,
+        #         frame_id="odom",
+        #         child_frame_id=imu.frame_id,
+        #         pose=Pose(
+        #             position=self._odom_pos.tolist(),
+        #             orientation=[
+        #                 imu.orientation.x,
+        #                 imu.orientation.y,
+        #                 imu.orientation.z,
+        #                 imu.orientation.w,
+        #             ],
+        #         ),
+        #         twist=Twist(
+        #             linear=Vector3(*self._odom_vel.tolist()),
+        #             angular=imu.angular_velocity,
+        #         ),
+        #     )
+        # )
 
-        self.tf.publish(
-            Transform(
-                translation=Vector3(*self._odom_pos.tolist()),
-                rotation=imu.orientation,
-                frame_id="odom",
-                child_frame_id=imu.frame_id,
-                ts=imu.ts,
-            )
-        )
+        # self.tf.publish(
+        #     Transform(
+        #         translation=Vector3(*self._odom_pos.tolist()),
+        #         rotation=imu.orientation,
+        #         frame_id="odom",
+        #         child_frame_id=imu.frame_id,
+        #         ts=imu.ts,
+        #     )
+        # )
 
     def _on_camera_info(self, msg: Any) -> None:
         self.camera_info.publish(_ros_camera_info_to_dimos(msg))

@@ -30,12 +30,12 @@ from dimos.navigation.nav_stack.modules.pgo.pgo import PGO
 agibot_x2_basic_rerun = (
     autoconnect(
         agibot_x2_primitive,
-        RayTracingVoxelMap.blueprint().remappings([
-            (RayTracingVoxelMap, "odometry", "corrected_odometry")
-        ]),
-        PGO.blueprint().remappings([
-            (PGO, "registered_scan", "lidar")
-        ]),
+        # RayTracingVoxelMap.blueprint().remappings([
+            # (RayTracingVoxelMap, "odometry", "corrected_odometry")
+        # ]),
+        # PGO.blueprint().remappings([
+        #     (PGO, "registered_scan", "lidar")
+        # ]),
         X2Connection.blueprint(
             clear_rmw_env=True,
             enable_lidar=True,
