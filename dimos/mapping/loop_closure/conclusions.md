@@ -5,14 +5,14 @@
 Baseline `TOTAL_SPREAD = 48.655 m`. Tuned `pgo.py` to **22.289 m**, a
 **-54.2%** reduction over 37 commits.
 
-| dataset      | baseline | final | change |
-|--------------|---------:|------:|-------:|
-| hk_village1  |     5.83 |  6.20 |  +6%   |
-| hk_village2  |    19.53 |  6.49 | **-67%** |
-| hk_village3  |     5.00 |  3.78 |  -24%  |
-| hk_village4  |    13.14 |  2.39 | **-82%** |
-| hk_village5  |     2.80 |  2.14 |  -24%  |
-| hk_village6  |     1.74 |  1.59 |   -9%  |
+| dataset     | baseline | final |   change |
+|-------------|---------:|------:|---------:|
+| hk_village1 |     5.83 |  6.20 |      +6% |
+| hk_village2 |    19.53 |  6.49 | **-67%** |
+| hk_village3 |     5.00 |  3.78 |     -24% |
+| hk_village4 |    13.14 |  2.39 | **-82%** |
+| hk_village5 |     2.80 |  2.14 |     -24% |
+| hk_village6 |     1.74 |  1.59 |      -9% |
 
 hk_village2 and hk_village4 were dominating the baseline metric; both
 contain a clear "robot was disturbed" event mid-trajectory that the
@@ -55,22 +55,22 @@ under-corrected the *true* drift by ~36%.
 Each line in the table is roughly a real win — bigger pieces of the
 total improvement at the top.
 
-| change | spread |
-|---|---:|
-| baseline | 48.66 |
-| tighten loop rot_var 0.05 → 0.01 then → 0.003 | 47.75 → 37.98 |
-| `loop_submap_half_range` 10 → 40 (more ICP context) | 39.92 |
-| tighten ICP `max_correspondence_dist` 1.0 → 0.5 | 38.82 |
-| drift-gated local-frame fallback (radius 15 m, drift > 0.5 m) | 34.06 |
-| multi-loop accept inside fallback (K=7 candidates) | 31.40 |
-| `min_loop_detect_duration` 5s → 3s | 33.66 → 31.26 |
-| **drift-aware chain variance** (8e-4 if prev kf drift > 1.3 m) | 27.39 |
-| nearest-neighbor interp (vs linear blend) | 27.33 |
-| ISAM2 Dogleg optimizer | 27.33 |
-| trans_var floor 0.01 → 0.005 | 30.24 |
-| **second-pass loop rescan** over converged optimized poses | 24.62 |
-| rescan opt-only (no fallback) + `submap_half_range=38` | 22.60 |
-| rescan `time_thresh_override=13s` | **22.29** |
+| change                                                         |        spread |
+|----------------------------------------------------------------|--------------:|
+| baseline                                                       |         48.66 |
+| tighten loop rot_var 0.05 → 0.01 then → 0.003                  | 47.75 → 37.98 |
+| `loop_submap_half_range` 10 → 40 (more ICP context)            |         39.92 |
+| tighten ICP `max_correspondence_dist` 1.0 → 0.5                |         38.82 |
+| drift-gated local-frame fallback (radius 15 m, drift > 0.5 m)  |         34.06 |
+| multi-loop accept inside fallback (K=7 candidates)             |         31.40 |
+| `min_loop_detect_duration` 5s → 3s                             | 33.66 → 31.26 |
+| **drift-aware chain variance** (8e-4 if prev kf drift > 1.3 m) |         27.39 |
+| nearest-neighbor interp (vs linear blend)                      |         27.33 |
+| ISAM2 Dogleg optimizer                                         |         27.33 |
+| trans_var floor 0.01 → 0.005                                   |         30.24 |
+| **second-pass loop rescan** over converged optimized poses     |         24.62 |
+| rescan opt-only (no fallback) + `submap_half_range=38`         |         22.60 |
+| rescan `time_thresh_override=13s`                              |     **22.29** |
 
 The two structural changes (chain-variance-by-drift and second-pass
 rescan) account for most of the improvement. The rest is parameter

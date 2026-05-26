@@ -236,6 +236,7 @@ def main(
         # (verified: matches lidar_base_pose + BASE_TO_OPTICAL to ~1mm).
         # No mount composition needed.
         color_image = store.stream("color_image", Image)
+
         xf = DetectMarkers(
             camera_info=_camera_info_static(),
             marker_length_m=marker_size,
@@ -255,6 +256,7 @@ def main(
                 )
             )
         all_dets = pipeline.transform(xf).to_list()
+
         if marker_smoothing > 0:
             # Keep only the latest emission per track_id — that's the most
             # averaged pose, drawn once per tracked marker session.
