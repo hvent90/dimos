@@ -213,6 +213,42 @@ class MultiTBuffer:
 
         return None
 
+    def tree_str(self) -> str:
+        if not self.buffers:
+            return "(empty)"
+
+        children: dict[str, list[str]] = {}
+        all_children: set[str] = set()
+        for parent, child in self.buffers:
+            children.setdefault(parent, []).append(child)
+            all_children.add(child)
+
+        roots = [frame for frame in children if frame not in all_children]
+        if not roots:
+            roots = sorted(children.keys())[:1]
+
+        for root in roots:
+            children.setdefault(root, [])
+        for frame_list in children.values():
+            frame_list.sort()
+
+        lines: list[str] = []
+
+        def walk(frame: str, prefix: str, is_last: bool, is_root: bool) -> None:
+            connector = "" if is_root else ("└── " if is_last else "├── ")
+            lines.append(f"{prefix}{connector}{frame}")
+            child_prefix = prefix if is_root else prefix + ("    " if is_last else "│   ")
+            kids = children.get(frame, [])
+            for index, kid in enumerate(kids):
+                walk(kid, child_prefix, index == len(kids) - 1, False)
+
+        for index, root in enumerate(sorted(roots)):
+            if index > 0:
+                lines.append("")
+            walk(root, "", index == len(roots) - 1, True)
+
+        return "\n".join(lines)
+
     def graph(self) -> str:
         import subprocess
 

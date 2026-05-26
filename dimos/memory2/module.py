@@ -332,6 +332,7 @@ class Recorder(MemoryModule):
                     ts,
                     getattr(msg, "ts", None),
                 )
+                logger.warn(self.tf.tree_str())
             stream.append(msg, ts=ts, pose=pose)
 
         self.register_disposable(Disposable(input_topic.subscribe(on_msg)))
