@@ -14,7 +14,9 @@
 
 from collections.abc import Callable, Iterator
 from contextlib import contextmanager
+import json
 import math
+from pathlib import Path
 import pickle
 import threading
 import time
@@ -186,3 +188,47 @@ class LcmSpy(LCMService):
             f"Failed to get to position x={x}, y={y}",
             timeout,
         )
+
+    def wait_until_within_asset(
+        self,
+        asset_id: str,
+        objects_path: str | Path,
+        threshold: float = 0.5,
+        timeout: float = 60,
+    ) -> None:
+        """Wait until /odom xy is within ``threshold`` metres of asset's AABB.
+
+        ``objects_path`` is the cooker's per-scene ``objects.json`` sidecar;
+        load it from a ``ScenePackage.objects_path`` or pass the path directly.
+        Distance is measured against the AABB surface in xy (so a robot sitting
+        adjacent to a couch counts as within=0).
+        """
+        aabb = _load_asset_aabb(asset_id, Path(objects_path))
+        x_min, y_min, _ = aabb["min"]
+        x_max, y_max, _ = aabb["max"]
+        threshold_sq = threshold * threshold
+
+        def predicate(msg: PoseStamped) -> bool:
+            pos = msg.position
+            dx = max(x_min - pos.x, 0.0, pos.x - x_max)
+            dy = max(y_min - pos.y, 0.0, pos.y - y_max)
+            return (dx * dx + dy * dy) <= threshold_sq
+
+        self.wait_for_message_result(
+            "/odom#geometry_msgs.PoseStamped",
+            PoseStamped,
+            predicate,
+            f"Failed to get within {threshold} m of asset {asset_id!r}",
+            timeout,
+        )
+
+
+def _load_asset_aabb(asset_id: str, objects_path: Path) -> dict[str, list[float]]:
+    payload = json.loads(objects_path.read_text())
+    for entry in payload.get("objects", []):
+        if entry.get("id") == asset_id or entry.get("prim_path") == asset_id:
+            aabb: dict[str, list[float]] = entry["aabb"]
+            if not (len(aabb["min"]) == 3 and len(aabb["max"]) == 3):
+                raise ValueError(f"asset {asset_id!r} has malformed aabb: {aabb}")
+            return aabb
+    raise KeyError(f"asset {asset_id!r} not found in {objects_path}")
