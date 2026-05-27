@@ -19,18 +19,7 @@ import pytest
     "sim_client",
     [
         pytest.param("dimsim", marks=pytest.mark.dimsim),
-        pytest.param(
-            "pimsim",
-            marks=[
-                pytest.mark.pimsim,
-                pytest.mark.skip(
-                    reason=(
-                        "needs BabylonSceneViewerModule wired into "
-                        "unitree-go2-agentic for --simulation=pimsim"
-                    )
-                ),
-            ],
-        ),
+        pytest.param("pimsim", marks=pytest.mark.pimsim),
     ],
     indirect=True,
 )

@@ -82,19 +82,32 @@ def follow_points(lcm_spy: LcmSpy):
 def start_blueprint(mcp_port: int) -> Iterator[Callable[..., DimosCliCall]]:
     dimos_robot_call = DimosCliCall()
     dimos_robot_call.mcp_port = mcp_port
+    headless_browser: object | None = None  # HeadlessBrowser when pimsim is used
 
     def set_name_and_start(
         *demo_args: str,
         simulator: str | None = None,
     ) -> DimosCliCall:
+        nonlocal headless_browser
         dimos_robot_call.demo_args = list(demo_args)
         if simulator is not None:
             dimos_robot_call.simulator = simulator
         dimos_robot_call.start()
+        if dimos_robot_call.simulator in ("pimsim", "babylon"):
+            # Pimsim's broadcast loop only fires when a browser tab is
+            # connected. The HeadlessBrowser blocks until window.__pimsimReady
+            # is true, so this also acts as our readiness barrier.
+            from dimos.experimental.pimsim.headless import HeadlessBrowser
+
+            browser = HeadlessBrowser()
+            browser.start()
+            headless_browser = browser
         return dimos_robot_call
 
     yield set_name_and_start
 
+    if headless_browser is not None:
+        headless_browser.stop()  # type: ignore[attr-defined]
     dimos_robot_call.stop()
 
 
