@@ -49,7 +49,9 @@ from dimos.msgs.sensor_msgs.PointCloud2 import PointCloud2
 from dimos.navigation.nav_stack.frames import FRAME_ODOM
 from dimos.robot.unitree.go2.blueprints.basic.unitree_go2_basic import unitree_go2_basic
 from dimos.robot.unitree.go2.connection import GO2Connection
+from dimos.teleop.phone.phone_extensions import SimplePhoneTeleop
 from dimos.utils.logging_config import setup_logger
+from dimos.visualization.rerun.bridge import RerunBridgeModule
 
 logger = setup_logger()
 
@@ -109,6 +111,7 @@ class Go2Mid360Memory(Recorder):
 unitree_go2_mid360_memory = (
     autoconnect(
         unitree_go2_basic,
+        SimplePhoneTeleop.blueprint(),
         FastLio2.blueprint(
             voxel_size=_voxel_size,
             map_voxel_size=_voxel_size,
@@ -121,6 +124,10 @@ unitree_go2_mid360_memory = (
             },
         ),
         Go2Mid360Memory.blueprint(),
+        # Override the bridge from unitree_go2_basic: keep the viewer open
+        # (so RerunWebSocketServer can receive keyboard input) but skip pubsub
+        # subscriptions so no topics get logged during recording.
+        RerunBridgeModule.blueprint(pubsubs=[]),
     )
     .remappings(
         [
