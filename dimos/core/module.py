@@ -113,7 +113,7 @@ class ModuleConfig(BaseConfig):
     # TODO: in the future we should make self.tf.publish error if it tried to publish a transform that references a frame that is not mentioned in this dict (same with self.tf.get)
     # TODO: later expose frame remappings, somehow, at the blueprint level
     frame_mapping: dict[str, str] = Field(default_factory=dict)
-    static_publish_rate: float = 1.0
+    static_publish_interval: float = 1.0
     g: GlobalConfig = global_config
 
 
@@ -190,9 +190,9 @@ class ModuleBase(Configurable, CompositeResource):
 
     @rpc
     def start(self) -> None:
+        self._start_static_publish()
         self._start_main()
         self._auto_bind_handlers()
-        self._start_static_publish()
 
     @rpc
     def stop(self) -> None:
@@ -256,33 +256,20 @@ class ModuleBase(Configurable, CompositeResource):
         return final_frame_mapping, static_transforms_final
 
     def _start_static_publish(self) -> None:
-        if not self.config.static_transforms or self.config.static_publish_rate <= 0:
+        self._static_publish()
+        if not self.config.static_transforms or self.config.static_publish_interval <= 0:
             return
         self._static_publish_stop.clear()
         self._static_publish_thread = threading.Thread(
-            target=self._static_publish,
+            target=self._static_publisher,
             daemon=True,
         )
         self._static_publish_thread.start()
 
-    # TODO: we're only using this until self.tf.publish_static is implemented
     def _static_publish(self) -> None:
-        period = 1.0 / self.config.static_publish_rate
-        while not self._static_publish_stop.wait(period):
-            now = time.time()
-            self.tf.publish(
-                *(
-                    Transform(
-                        translation=transform.translation,
-                        rotation=transform.rotation,
-                        frame_id=transform.frame_id,
-                        child_frame_id=transform.child_frame_id,
-                        ts=now,
-                    )
-                    for transform in self.static_transforms.values()
-                )
-            )
-            tfs = list(
+        now = time.time()
+        self.tf.publish_static(
+            *(
                 Transform(
                     translation=transform.translation,
                     rotation=transform.rotation,
@@ -292,11 +279,13 @@ class ModuleBase(Configurable, CompositeResource):
                 )
                 for transform in self.static_transforms.values()
             )
-            for each in tfs:
-                print(f"""each.frame_id = {each.frame_id}""")
-                print(f"""each.child_frame_id = {each.child_frame_id}""")
-            print(f"""tfs = {tfs}""")
-            self._on_static_publish()
+        )
+        self._on_static_publish()
+
+    # TODO: we're only using this until self.tf.publish_static is implemented
+    def _static_publisher(self) -> None:
+        while not self._static_publish_stop.wait(self.config.static_publish_interval):
+            self._static_publish()
 
     def _on_static_publish(self) -> None:
         """

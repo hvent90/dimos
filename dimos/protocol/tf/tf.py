@@ -115,6 +115,7 @@ class MultiTBuffer:
     def __init__(self, buffer_size: float = 10.0) -> None:
         self.buffers: dict[tuple[str, str], TBuffer] = {}
         self.buffer_size = buffer_size
+        self._static_keys: set[tuple[str, str]] = set()
         self._cv = threading.Condition()
 
     def receive_transform(self, *args: Transform) -> None:
@@ -123,6 +124,8 @@ class MultiTBuffer:
                 key = (transform.frame_id, transform.child_frame_id)
                 if key not in self.buffers:
                     self.buffers[key] = TBuffer(self.buffer_size)
+                if transform.static:
+                    self._static_keys.add(key)
                 self.buffers[key].add(transform)
             self._cv.notify_all()
 
@@ -163,12 +166,14 @@ class MultiTBuffer:
             # Check forward direction
             key = (parent_frame, child_frame)
             if key in self.buffers:
-                return self.buffers[key].get(time_point, time_tolerance)  # type: ignore[arg-type]
+                tolerance = None if key in self._static_keys else time_tolerance
+                return self.buffers[key].get(time_point, tolerance)  # type: ignore[arg-type]
 
             # Check reverse direction and return inverse
             reverse_key = (child_frame, parent_frame)
             if reverse_key in self.buffers:
-                transform = self.buffers[reverse_key].get(time_point, time_tolerance)  # type: ignore[arg-type]
+                tolerance = None if reverse_key in self._static_keys else time_tolerance
+                transform = self.buffers[reverse_key].get(time_point, tolerance)  # type: ignore[arg-type]
                 return transform.inverse() if transform else None
 
     def get(self, *args, **kwargs) -> Transform | None:  # type: ignore[no-untyped-def]
@@ -408,7 +413,21 @@ class PubSubTF(MultiTBuffer, TFSpec):
             self.pubsub.publish(topic, TFMessage(*args))
 
     def publish_static(self, *args: Transform) -> None:
-        raise NotImplementedError("Static transforms not implemented in PubSubTF.")
+        static_transforms = tuple(
+            Transform(
+                translation=transform.translation,
+                rotation=transform.rotation,
+                frame_id=transform.frame_id,
+                child_frame_id=transform.child_frame_id,
+                ts=transform.ts,
+                static=True,
+            )
+            for transform in args
+        )
+        self.receive_transform(*static_transforms)
+        topic = getattr(self.config, "topic", None)
+        if topic:
+            self.pubsub.publish(topic, TFMessage(*static_transforms))
 
     def publish_all(self) -> None:
         """Publish all transforms currently stored in all buffers."""

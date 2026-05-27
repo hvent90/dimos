@@ -49,6 +49,7 @@ class Transform(Timestamped):
         frame_id: str = "world",
         child_frame_id: str = "unset",
         ts: float = 0.0,
+        static: bool = False,
         **kwargs,
     ) -> None:
         self.frame_id = frame_id
@@ -56,6 +57,7 @@ class Transform(Timestamped):
         self.ts = ts if ts != 0.0 else time.time()
         self.translation = translation if translation is not None else Vector3()
         self.rotation = rotation if rotation is not None else Quaternion()
+        self.static = static
 
     def now(self) -> Transform:
         """Return a copy of this Transform with the current timestamp."""
