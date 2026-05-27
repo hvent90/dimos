@@ -26,6 +26,7 @@ so the simulator only needs a kinematic base to track.
 from __future__ import annotations
 
 from importlib import resources
+import importlib.util
 import os
 from pathlib import Path
 from typing import Any
@@ -47,6 +48,26 @@ logger = setup_logger()
 
 _GO2_PROXY_MJCF = resources.files("dimos.robot.unitree.go2").joinpath("go2_proxy.xml")
 _DEFAULT_BABYLON_PORT = 8091
+
+# Go2 L1 LiDAR is mounted on the head module, ~15 cm forward and ~10 cm
+# above the trunk center. The menagerie XML names the trunk "base"; sensor
+# offsets here are relative to that body, since /odom tracks the trunk pose.
+_GO2_LIDAR_FRAME_ID = "lidar_link"
+_GO2_LIDAR_SENSOR_X_M = 0.15
+_GO2_LIDAR_SENSOR_Y_M = 0.0
+_GO2_LIDAR_SENSOR_Z_M = 0.10
+_GO2_LIDAR_SENSOR_ROLL_DEG = 0.0
+_GO2_LIDAR_SENSOR_PITCH_DEG = 0.0
+_GO2_LIDAR_SENSOR_YAW_DEG = 0.0
+# Use Mid-360-style scan as a stand-in; the real Go2 ships a Livox L1,
+# but the rust raycaster's scan_model just picks azimuth/elevation
+# distributions and the mid360 pattern is dense enough for nav.
+_GO2_LIDAR_SCAN_MODEL = "mid360"
+_GO2_LIDAR_POINT_RATE = 200_000
+_GO2_LIDAR_ELEVATION_MIN_DEG = -52.0
+_GO2_LIDAR_ELEVATION_MAX_DEG = 52.0
+_GO2_LIDAR_MIN_RANGE_M = 0.1
+_GO2_LIDAR_MAX_RANGE_M = 40.0
 
 
 def _env_int(name: str, default: int) -> int:
@@ -70,21 +91,44 @@ def _babylon_enabled() -> bool:
     return _env_bool("DIMOS_ENABLE_BABYLON", True)
 
 
+def _go2_menagerie_mjcf() -> Path | None:
+    spec = importlib.util.find_spec("mujoco_playground")
+    if spec is None or not spec.submodule_search_locations:
+        return None
+    root = Path(next(iter(spec.submodule_search_locations)))
+    path = root / "external_deps" / "mujoco_menagerie" / "unitree_go2" / "go2.xml"
+    return path if path.exists() else None
+
+
+def _viewer_mjcf_path() -> str:
+    override = os.getenv("DIMOS_GO2_VIEWER_MJCF")
+    if override:
+        return override
+
+    menagerie = _go2_menagerie_mjcf()
+    if menagerie is not None:
+        return str(menagerie)
+
+    logger.warning("Go2 babylon: bundled menagerie model not found; using box proxy")
+    with resources.as_file(_GO2_PROXY_MJCF) as proxy_path:
+        return str(proxy_path)
+
+
 def _scene_package() -> Any:
     """Load the cooked scene package if one is configured, else ``None``."""
     scene = getattr(global_config, "scene", "")
     if not scene:
         return None
-    from dimos.simulation.scene_assets.spec import load_scene_package
+    # Reuse the same catalog as the G1 path. The Go2 doesn't care about
+    # the MuJoCo wrapper artifact (Babylon owns physics in pimsim mode),
+    # so robot_mjcf_path stays None — same cooked package serves both.
+    from dimos.simulation.scenes.catalog import resolve_scene_package
 
-    candidates = [
-        Path.home() / ".cache" / "dimos" / "scene_packages" / scene / "scene.meta.json",
-    ]
-    for path in candidates:
-        if path.exists():
-            return load_scene_package(path)
-    logger.info("Go2 babylon: no cooked scene package found for scene=%r", scene)
-    return None
+    try:
+        return resolve_scene_package(scene, robot_mjcf_path=None, meshdir=None)
+    except (FileNotFoundError, ValueError) as exc:
+        logger.warning("Go2 babylon: cannot load scene %r: %s", scene, exc)
+        return None
 
 
 def go2_babylon_blueprint() -> Blueprint | None:
@@ -99,11 +143,8 @@ def go2_babylon_blueprint() -> Blueprint | None:
 
     from dimos.experimental.pimsim.module import BabylonSceneViewerModule
 
-    with resources.as_file(_GO2_PROXY_MJCF) as proxy_path:
-        viewer_mjcf_path = str(proxy_path)
-
     kwargs: dict[str, Any] = dict(
-        mjcf_path=viewer_mjcf_path,
+        mjcf_path=_viewer_mjcf_path(),
         port=_env_int("DIMOS_BABYLON_PORT", _DEFAULT_BABYLON_PORT),
         # Babylon integrates cmd_vel directly — no MuJoCo at runtime.
         enable_sim=True,
@@ -156,4 +197,67 @@ def go2_babylon_blueprint() -> Blueprint | None:
     )
 
 
-__all__ = ["go2_babylon_blueprint"]
+def go2_scene_lidar_blueprint() -> Blueprint | None:
+    """Wire the rust SceneLidarModule when a cooked scene is configured.
+
+    Real Go2 hardware publishes ``/lidar`` from the onboard L1 over
+    WebRTC; ``PimSimConnection.lidar_stream()`` is an empty ``Subject``
+    by design. So in pimsim mode the rust raycaster against the cooked
+    browser collision mesh becomes the publisher. Returns ``None`` when
+    lidar is explicitly disabled, no scene is cooked, or the rust
+    binary isn't available.
+    """
+    if _env_bool("DIMOS_DISABLE_LIDAR", False):
+        return None
+    scene_package = _scene_package()
+    if scene_package is None or scene_package.browser_collision_path is None:
+        return None
+    if not _env_bool("DIMOS_ENABLE_NATIVE_SCENE_LIDAR", True):
+        return None
+
+    from dimos.simulation.sensors.scene_lidar import SceneLidarModule
+
+    return SceneLidarModule.blueprint(
+        scene_metadata_path=str(scene_package.metadata_path),
+        collision_path=str(scene_package.browser_collision_path),
+        scan_model=os.environ.get("DIMOS_SCENE_LIDAR_SCAN_MODEL", _GO2_LIDAR_SCAN_MODEL),
+        frame_id=os.environ.get("DIMOS_SCENE_LIDAR_FRAME_ID", _GO2_LIDAR_FRAME_ID),
+        hz=_env_float("DIMOS_SCENE_LIDAR_HZ", 10.0),
+        point_rate=_env_int("DIMOS_SCENE_LIDAR_POINT_RATE", _GO2_LIDAR_POINT_RATE),
+        horizontal_samples=_env_int("DIMOS_SCENE_LIDAR_HORIZONTAL_SAMPLES", 720),
+        vertical_samples=_env_int("DIMOS_SCENE_LIDAR_VERTICAL_SAMPLES", 16),
+        elevation_min_deg=_env_float(
+            "DIMOS_SCENE_LIDAR_ELEVATION_MIN_DEG", _GO2_LIDAR_ELEVATION_MIN_DEG
+        ),
+        elevation_max_deg=_env_float(
+            "DIMOS_SCENE_LIDAR_ELEVATION_MAX_DEG", _GO2_LIDAR_ELEVATION_MAX_DEG
+        ),
+        min_range=_env_float("DIMOS_SCENE_LIDAR_MIN_RANGE", _GO2_LIDAR_MIN_RANGE_M),
+        max_range=_env_float("DIMOS_SCENE_LIDAR_MAX_RANGE", _GO2_LIDAR_MAX_RANGE_M),
+        sensor_x=_env_float("DIMOS_SCENE_LIDAR_SENSOR_X", _GO2_LIDAR_SENSOR_X_M),
+        sensor_y=_env_float("DIMOS_SCENE_LIDAR_SENSOR_Y", _GO2_LIDAR_SENSOR_Y_M),
+        sensor_z=_env_float("DIMOS_SCENE_LIDAR_SENSOR_Z", _GO2_LIDAR_SENSOR_Z_M),
+        sensor_roll_deg=_env_float("DIMOS_SCENE_LIDAR_SENSOR_ROLL_DEG", _GO2_LIDAR_SENSOR_ROLL_DEG),
+        sensor_pitch_deg=_env_float(
+            "DIMOS_SCENE_LIDAR_SENSOR_PITCH_DEG", _GO2_LIDAR_SENSOR_PITCH_DEG
+        ),
+        sensor_yaw_deg=_env_float("DIMOS_SCENE_LIDAR_SENSOR_YAW_DEG", _GO2_LIDAR_SENSOR_YAW_DEG),
+        yaw_offset_deg=_env_float("DIMOS_SCENE_LIDAR_YAW_OFFSET_DEG", 0.0),
+        output_voxel_size=_env_float("DIMOS_SCENE_LIDAR_OUTPUT_VOXEL_SIZE", 0.03),
+        support_floor=_env_bool("DIMOS_SCENE_LIDAR_SUPPORT_FLOOR", True),
+        support_floor_z=_env_float("DIMOS_SCENE_SUPPORT_FLOOR_Z", 0.0),
+        support_floor_size=_env_float("DIMOS_SCENE_SUPPORT_FLOOR_SIZE", 0.0),
+    ).transports(
+        {
+            ("pose", PoseStamped): LCMTransport("/odom", PoseStamped),
+            ("lidar", PointCloud2): LCMTransport("/lidar", PointCloud2),
+            # Picks up dynamic entities (Add-button spawns / wall RPCs) so
+            # the lidar pointcloud folds them into per-ray intersections.
+            ("entity_states", EntityStateBatch): LCMTransport(
+                "/entity_state_batch", EntityStateBatch
+            ),
+        }
+    )
+
+
+__all__ = ["go2_babylon_blueprint", "go2_scene_lidar_blueprint"]
