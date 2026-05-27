@@ -70,9 +70,8 @@ class BridgeDatachannelResponse(BaseModel):
     # robot published no video or the pull failed (video degrades, datachannels
     # still work). Operator answers it via /renegotiate-answer.
     video_offer: str | None = None
-    # Debug breadcrumb: why video_offer is null. "ok" | "no_published_track" |
-    # "pull_no_renegotiation" | "pull_error: ...". Surfaced to the browser so
-    # the failure reason is visible without EC2 access.
+    # Why video_offer is null, surfaced to the operator console: "ok" |
+    # "no_published_track" | "publish_error" | "pull_error" | "no_offer".
     video_status: str = "ok"
 
 
@@ -130,28 +129,17 @@ async def create_session(
     for old in existing.scalars():
         old.state = "disconnected"
 
-    # Declare the robot's sendonly m=video as a publisher track in the SAME
-    # /sessions/new call. CF binds it during the initial offer/answer so the
-    # robot's PC connects with media set up. Deferring this to a later
-    # /tracks/new can't work: CF won't let the PC reach 'connected' while the
-    # m=video is unbound, and /tracks/new requires 'connected' — deadlock.
+    # Record the robot's sendonly m=video (mid + trackName) from the offer. The
+    # actual publish happens later via /tracks/new in bridge_datachannel — CF
+    # ignores a `tracks` array on /sessions/new, so we only stash the ids here.
     published_mid: str | None = None
     published_track_name: str | None = None
-    tracks: list[dict] | None = None
     video = extract_video_track(body.sdp_offer)
     if video is not None:
         published_mid, published_track_name = video
-        tracks = [
-            {"location": "local", "mid": published_mid, "trackName": published_track_name}
-        ]
-        log.info(
-            "Declaring robot video publisher robot=%s mid=%s trackName=%s",
-            robot_id, published_mid, published_track_name,
-        )
 
-    # Create CF session (with the publisher track declared, if any)
     try:
-        cf_result = await cf_client.create_session(body.sdp_offer, tracks=tracks)
+        cf_result = await cf_client.create_session(body.sdp_offer)
     except CloudflareRealtimeError as e:
         raise HTTPException(status_code=502, detail=f"Cloudflare error: {e.detail}")
     except Exception as e:
@@ -275,15 +263,8 @@ async def join_session(
                 detail=f"Session already has operator: {session.operator_id}",
             )
 
-    # Operator joins datachannels-clean: NO remote video track declared here.
-    # Pulling the robot's video at /sessions/new sets
-    # requiresImmediateRenegotiation, which the single-shot join can't satisfy
-    # — leaving the operator session half-negotiated so every later
-    # /datachannels/new returns "session not ready". The bare recvonly m=video
-    # the operator's offer already carries is fine on its own (proven: a
-    # video-disabled robot still bridged). Video is pulled AFTER the bridge,
-    # once the operator PC is connected and can renegotiate — see
-    # bridge_datachannel.
+    # Join datachannels-clean (no video track here). Video is pulled after the
+    # bridge, once the operator PC is connected — see bridge_datachannel.
     try:
         cf_result = await cf_client.create_session(body.sdp_offer)
     except CloudflareRealtimeError as e:
@@ -311,6 +292,72 @@ async def join_session(
     )
 
 
+# Backoff for the operator video pull. CF's tracks/new returns a per-track
+# not_found_track_error when the robot's RTP hasn't reached the SFU yet (a
+# propagation race right after connect); retry until the packets are visible.
+_PULL_RETRY_DELAYS = (0.3, 0.6, 1.0, 1.5, 2.0)
+
+
+async def _pull_robot_video(session: TeleopSession) -> tuple[str | None, str]:
+    """Publish the robot's local video track, then pull it onto the operator.
+
+    Returns ``(video_offer, video_status)``. CF ignores a `tracks` array on
+    /sessions/new, so the publisher is registered here via /tracks/new once the
+    robot PC is connected; the operator then pulls it (a remote pull returns
+    CF's renegotiation offer). All best-effort — the caller degrades to no-video
+    on any failure rather than failing the bridge.
+    """
+    if not session.published_video_track_name:
+        return None, "no_published_track"
+
+    # Register the robot's local (publishable) track. /sessions/new's tracks
+    # array is silently ignored by CF, so this explicit publish is what actually
+    # exposes the track for the operator to pull.
+    try:
+        await cf_client.add_tracks(
+            session.cf_session_id,
+            [{
+                "location": "local",
+                "mid": session.published_video_mid,
+                "trackName": session.published_video_track_name,
+            }],
+        )
+    except Exception as e:
+        log.error("video: publish robot track failed session=%s: %r", session.id, e)
+        return None, "publish_error"
+
+    for attempt in range(1 + len(_PULL_RETRY_DELAYS)):
+        try:
+            pull = await cf_client.add_tracks(
+                session.operator_cf_session_id,
+                [{
+                    "location": "remote",
+                    "sessionId": session.cf_session_id,
+                    "trackName": session.published_video_track_name,
+                }],
+            )
+        except Exception as e:
+            log.error("video: pull failed session=%s: %r", session.id, e)
+            return None, "pull_error"
+
+        sd = pull.get("sessionDescription") or {}
+        if sd.get("sdp"):
+            # Use CF's offer whenever present — don't also require
+            # requiresImmediateRenegotiation (CF omits it when the operator's
+            # recvonly m=video section already existed).
+            return sd["sdp"], "ok"
+
+        track_errs = [t.get("errorCode") for t in pull.get("tracks", []) if t.get("errorCode")]
+        if "not_found_track_error" in track_errs and attempt < len(_PULL_RETRY_DELAYS):
+            await asyncio.sleep(_PULL_RETRY_DELAYS[attempt])
+            continue
+
+        log.warning("video: pull gave no offer session=%s errs=%s", session.id, track_errs)
+        return None, "no_offer"
+
+    return None, "no_offer"
+
+
 @router.post(
     "/{session_id}/bridge-datachannel",
     response_model=BridgeDatachannelResponse,
@@ -330,20 +377,9 @@ async def bridge_datachannel(
     if not session.operator_cf_session_id or not session.cf_session_id:
         raise HTTPException(status_code=409, detail="CF sessions not ready")
 
-    # Robot video PUBLISH is declared at create_session (CF /sessions/new
-    # tracks array) — the only way a publisher binds cleanly. The operator
-    # video SUBSCRIBE is pulled at the end of THIS handler, after datachannels
-    # are bridged: a remote pull triggers renegotiation that only works on the
-    # connected operator PC. Datachannels are bridged first so a video failure
-    # can degrade gracefully without losing commands/clock-sync.
-
-    # CF constraint: each /datachannels/new request body's `dataChannels`
-    # array must be homogeneous in direction — all `location: "local"` OR
-    # all `location: "remote"`. Mixing them yields
-    #   errorCode=invalid_params
-    #   errorDescription="Pushing and Pulling in the same request is currently unsupported"
-    # So this is 4 separate calls (operator pub, robot sub, robot pub, operator sub),
-    # not 2 bundled ones. Don't re-bundle in a future refactor.
+    # CF requires each /datachannels/new call to be one direction (all local OR
+    # all remote) — mixing errors "Pushing and Pulling ... unsupported". Hence 4
+    # separate calls below, not 2; don't re-bundle.
     forward_names = [CMD_CHANNEL_NAME, STATE_CHANNEL_NAME]
     try:
         # operator → robot: cmd + state. Operator publishes, robot subscribes.
@@ -417,114 +453,9 @@ async def bridge_datachannel(
         STATE_BACK_CHANNEL_NAME: robot_pub_ids[STATE_BACK_CHANNEL_NAME],
     }
 
-    # Pull the robot's video onto the now-connected operator session. A remote
-    # pull sets requiresImmediateRenegotiation — return CF's offer so the
-    # operator can answer it via /renegotiate-answer. Best-effort: a pull
-    # failure must NOT 502 the bridge (commands + clock-sync already work, so
-    # degrade to no-video rather than tearing down a working session).
-    video_offer: str | None = None
-    video_status = "ok"
-    if not session.published_video_track_name:
-        video_status = "no_published_track"
-        log.warning("bridge: no published_video_track_name session=%s", session.id)
-    else:
-        # DIAGNOSTIC: log what we're about to pull AND what CF actually reports
-        # on the robot's session. Comparing the declared trackName/sessionId
-        # against CF's track list distinguishes the failure cause:
-        #   - declared trackName IS in CF's tracks, just not flowing → timing
-        #     race (#1/#4) → retry catches it.
-        #   - declared trackName NOT in CF's tracks → identity mismatch (#2):
-        #     CF keyed the live track under a different name than we declared.
-        #   - no video track at all on the robot session → publisher never
-        #     bound (#3) or wrong session id (#6).
-        log.warning(
-            "bridge: about to pull video — robot_cf_session=%s declared_trackName=%s declared_mid=%s",
-            session.cf_session_id, session.published_video_track_name,
-            session.published_video_mid,
-        )
-        try:
-            robot_sess = await cf_client.get_session(session.cf_session_id)
-            log.warning("bridge: CF GET robot session -> %r", robot_sess)
-        except Exception as e:
-            log.warning("bridge: CF GET robot session failed: %r", e)
-
-        # ROOT-CAUSE FIX: the `tracks` array in /sessions/new is IGNORED by CF —
-        # GET robot session showed tracks:[] even though create_session declared
-        # the publisher there. CF only registers a LOCAL (publishable) track via
-        # an explicit POST /tracks/new with location:local. Without it the track
-        # is never exposed, so the operator's remote pull always gets
-        # not_found_track_error. Publish it here, now that the robot PC is
-        # connected (a /tracks/new requires the connected PC). Idempotent enough:
-        # if already published a re-publish is harmless / errors are logged.
-        try:
-            pub = await cf_client.add_tracks(
-                session.cf_session_id,
-                [
-                    {
-                        "location": "local",
-                        "mid": session.published_video_mid,
-                        "trackName": session.published_video_track_name,
-                    }
-                ],
-            )
-            log.warning("bridge: published robot local video track -> %r", pub)
-        except Exception as e:
-            log.error("bridge: failed to publish robot local video track: %r", e)
-
-        # CF's tracks/new returns a PER-TRACK not_found_track_error ("Track not
-        # found on remote peer ... make sure the publisher is connected and
-        # sending packets") when the robot's RTP hasn't reached the SFU yet — a
-        # propagation race right after connect. The robot IS sending (verified
-        # robot-side: recv() active, currentDirection=sendonly), so retry with
-        # backoff until CF sees the packets — mirrors the add_datachannels
-        # session-not-ready retry.
-        _PULL_RETRY_DELAYS = (0.3, 0.6, 1.0, 1.5, 2.0)
-        pull: dict = {}
-        for attempt in range(1 + len(_PULL_RETRY_DELAYS)):
-            try:
-                pull = await cf_client.add_tracks(
-                    session.operator_cf_session_id,
-                    [
-                        {
-                            "location": "remote",
-                            "sessionId": session.cf_session_id,
-                            "trackName": session.published_video_track_name,
-                        }
-                    ],
-                )
-            except Exception as e:
-                video_status = f"pull_error: {e}"
-                log.error("Video pull failed session=%s: %r", session.id, e)
-                break
-
-            sd = pull.get("sessionDescription") or {}
-            if sd.get("sdp"):
-                # Use CF's offer whenever present — don't also require the
-                # requiresImmediateRenegotiation flag (CF omits it when the
-                # operator's recvonly m=video section already existed).
-                video_offer = sd["sdp"]
-                video_status = "ok"
-                break
-
-            track_errs = [
-                t.get("errorCode") for t in pull.get("tracks", []) if t.get("errorCode")
-            ]
-            if "not_found_track_error" in track_errs and attempt < len(_PULL_RETRY_DELAYS):
-                delay = _PULL_RETRY_DELAYS[attempt]
-                log.warning(
-                    "bridge: video pull not_found_track (publisher packets not "
-                    "visible yet) session=%s attempt=%d retrying in %.2fs",
-                    session.id, attempt + 1, delay,
-                )
-                await asyncio.sleep(delay)
-                continue
-
-            video_status = f"pull_no_offer: {track_errs or 'no_sdp'}"
-            log.warning(
-                "bridge: video pull gave no offer session=%s track=%s resp=%r",
-                session.id, session.published_video_track_name, pull,
-            )
-            break
+    # Pull the robot's video onto the operator session (best-effort: a failure
+    # degrades to no-video, never 502s the now-working datachannel bridge).
+    video_offer, video_status = await _pull_robot_video(session)
 
     return BridgeDatachannelResponse(
         cmd_channel_id=op_pub_ids[CMD_CHANNEL_NAME],

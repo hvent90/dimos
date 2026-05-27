@@ -39,20 +39,14 @@ class CloudflareRealtime:
             "Content-Type": "application/json",
         }
 
-    async def create_session(
-        self, sdp_offer: str, tracks: list[dict] | None = None
-    ) -> dict:
-        """Create a new CF session. Returns sessionId + SDP answer.
+    async def create_session(self, sdp_offer: str) -> dict:
+        """Create a new CF session from the offer. Returns sessionId + answer.
 
-        Pass `tracks` to declare publisher (location=local) or subscriber
-        (location=remote) tracks during the initial offer/answer. CF binds
-        them as part of session setup, so the PC connects with media properly
-        negotiated. Declaring an m=video here is required — a /tracks/new
-        call deferred to after connect can't work, because the PC won't reach
-        'connected' while the m-section is unbound (chicken-and-egg)."""
+        Tracks are NOT declared here — CF ignores a `tracks` array on
+        /sessions/new; publish/subscribe is done via /tracks/new (add_tracks)
+        once the PC is connected.
+        """
         body: dict = {"sessionDescription": {"type": "offer", "sdp": sdp_offer}}
-        if tracks:
-            body["tracks"] = tracks
         async with httpx.AsyncClient() as client:
             resp = await client.post(
                 f"{self.base_url}/sessions/new",
@@ -121,10 +115,6 @@ class CloudflareRealtime:
         last_err: CloudflareRealtimeError | None = None
 
         for attempt in range(1, attempts + 1):
-            log.info(
-                "CF add_datachannels POST %s attempt=%d/%d body=%s",
-                url, attempt, attempts, channels,
-            )
             try:
                 async with httpx.AsyncClient() as client:
                     resp = await client.post(
@@ -136,10 +126,6 @@ class CloudflareRealtime:
             except httpx.HTTPError as e:
                 log.error("CF add_datachannels %s failed: %r", type(e).__name__, e)
                 raise
-            log.info(
-                "CF add_datachannels attempt=%d status=%s body=%s",
-                attempt, resp.status_code, resp.text[:500],
-            )
             if resp.status_code not in (200, 201):
                 raise CloudflareRealtimeError(resp.status_code, resp.text)
             data = resp.json()
@@ -164,26 +150,6 @@ class CloudflareRealtime:
 
         assert last_err is not None
         raise last_err
-
-    async def get_session(self, session_id: str) -> dict | None:
-        """Get session info. Returns None if not found."""
-        async with httpx.AsyncClient() as client:
-            resp = await client.get(
-                f"{self.base_url}/sessions/{session_id}",
-                headers=self.headers,
-                timeout=10.0,
-            )
-        if resp.status_code == 404:
-            return None
-        if resp.status_code != 200:
-            raise CloudflareRealtimeError(resp.status_code, resp.text)
-        return resp.json()
-
-    async def close_session(self, session_id: str) -> None:
-        """Close all tracks on a session (effectively ends it)."""
-        # CF doesn't have a delete session endpoint — closing all tracks ends it.
-        # Sessions auto-expire when no tracks remain.
-        pass
 
 
 cf_client = CloudflareRealtime()
