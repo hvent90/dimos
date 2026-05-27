@@ -60,7 +60,6 @@ const bodyNodeList = [];
 const bodyNameList = [];
 const sceneMeshes = [];
 const sceneMeshSet = new Set();
-let sceneRoot = null;
 const collisionMeshes = [];
 const collisionMeshSet = new Set();
 const robotMeshes = [];
@@ -297,10 +296,6 @@ function setAllEntityVisualsVisible(visible) {
 
 function setSceneVisibility(visible) {
   sceneVisible = visible;
-  // setEnabled on sceneRoot recursively disables the whole imported tree,
-  // including any nested GLB nodes that wouldn't be reached by setting
-  // isVisible on the flat sceneMeshes list alone.
-  if (sceneRoot) sceneRoot.setEnabled(visible);
   for (const mesh of sceneMeshes) setRenderableVisible(mesh, visible);
   setAllEntityVisualsVisible(visible);
   setButtonActive("toggleScene", visible);
@@ -859,8 +854,6 @@ async function loadSceneAsset(config) {
   root.position = vec3(config.scenePosition);
   root.scaling = new BABYLON.Vector3(config.sceneScale, config.sceneScale, config.sceneScale);
   root.rotationQuaternion = quatWxyz(config.sceneWxyz);
-  sceneRoot = root;
-  sceneRoot.setEnabled(sceneVisible);
 
   engine.stopRenderLoop(renderFrame);
   let result = null;
