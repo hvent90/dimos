@@ -88,7 +88,7 @@ def _path_xy(path: Path) -> NDArray[np.float64]:
     return np.array([[p.position.x, p.position.y] for p in path.poses], dtype=np.float64)
 
 
-def _nearest_segment(
+def nearest_segment(
     pt: NDArray[np.float64], path_xy: NDArray[np.float64]
 ) -> tuple[int, float, float]:
     """Find nearest path segment to ``pt``.
@@ -165,7 +165,7 @@ def score_run(reference_path: Path, executed: ExecutedTrajectory) -> ScoreResult
 
     for tick in executed.ticks:
         pt = np.array([tick.pose.position.x, tick.pose.position.y], dtype=np.float64)
-        seg_idx, d, _ = _nearest_segment(pt, path_xy)
+        seg_idx, d, _ = nearest_segment(pt, path_xy)
         cte_abs.append(d)
         cte_sq.append(d * d)
 

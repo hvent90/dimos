@@ -58,6 +58,7 @@ from dimos.utils.trigonometry import angle_diff
 if TYPE_CHECKING:
     from dimos.core.global_config import GlobalConfig
     from dimos.msgs.nav_msgs.Path import Path
+    from dimos.navigation.reference_governor import PathSpeedCapProtocol
 
 logger = setup_logger()
 
@@ -99,6 +100,7 @@ class BaselinePathFollowerTask(BaseControlTask):
         name: str,
         config: BaselinePathFollowerTaskConfig,
         global_config: GlobalConfig,
+        external_profile_cap: PathSpeedCapProtocol | None = None,
     ) -> None:
         if len(config.joint_names) != 3:
             raise ValueError(
@@ -120,8 +122,14 @@ class BaselinePathFollowerTask(BaseControlTask):
         self._ff: FeedforwardGainCompensator | None = (
             FeedforwardGainCompensator(config.ff_config) if config.ff_config else None
         )
-        self._profile_cap: PathSpeedCap | None = (
-            PathSpeedCap(config.velocity_profile_config)
+        # external_profile_cap (e.g. a ReferenceGovernor) wins over the
+        # auto-built PathSpeedCap from velocity_profile_config. Either
+        # path produces a duck-typed PathSpeedCapProtocol object that
+        # .compute() drives in the same way.
+        self._profile_cap: PathSpeedCapProtocol | None = (
+            external_profile_cap
+            if external_profile_cap is not None
+            else PathSpeedCap(config.velocity_profile_config)
             if config.velocity_profile_config is not None
             else None
         )
@@ -296,12 +304,18 @@ class BaselinePathFollowerTask(BaseControlTask):
         k_angular: float | None = None,
         ff_config: FeedforwardGainConfig | None | object = _UNSET,
         velocity_profile_config: VelocityProfileConfig | None | object = _UNSET,
+        external_profile_cap: PathSpeedCapProtocol | None | object = _UNSET,
     ) -> bool:
-        """Override per-run knobs before start_path. ``ff_config`` and
-        ``velocity_profile_config`` use a sentinel so callers can
-        explicitly clear them by passing ``None`` (distinct from "don't
-        touch"). Only valid while idle/arrived/aborted — refuses while
-        the task is actively driving the robot.
+        """Override per-run knobs before start_path. ``ff_config``,
+        ``velocity_profile_config`` and ``external_profile_cap`` use a
+        sentinel so callers can explicitly clear them by passing ``None``
+        (distinct from "don't touch"). Only valid while
+        idle/arrived/aborted — refuses while the task is actively
+        driving the robot.
+
+        ``external_profile_cap`` wins over ``velocity_profile_config``
+        when both are set; this is how a ReferenceGovernor is installed
+        as the per-tick cap source.
         """
         if self.is_active():
             logger.warning(
@@ -317,7 +331,13 @@ class BaselinePathFollowerTask(BaseControlTask):
         if ff_config is not _UNSET:
             self._config.ff_config = ff_config  # type: ignore[assignment]
             self._ff = FeedforwardGainCompensator(ff_config) if ff_config is not None else None
-        if velocity_profile_config is not _UNSET:
+        # external_profile_cap takes precedence over velocity_profile_config.
+        if external_profile_cap is not _UNSET:
+            self._profile_cap = external_profile_cap  # type: ignore[assignment]
+            # Track in config only when we're falling back to the auto-built path;
+            # external_profile_cap is not serialisable into VelocityProfileConfig.
+            self._config.velocity_profile_config = None
+        elif velocity_profile_config is not _UNSET:
             self._config.velocity_profile_config = velocity_profile_config  # type: ignore[assignment]
             self._profile_cap = (
                 PathSpeedCap(velocity_profile_config)

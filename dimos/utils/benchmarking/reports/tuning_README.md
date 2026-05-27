@@ -193,3 +193,180 @@ above, not pytest.
 The MPC/RPP/Lyapunov bake-off, command smoothers, sweeps, and plotting
 R&D were the evidence for "baseline + FF + curvature profile"; they are
 the appendix, archived off-repo, not the product.
+
+## Reference governor (precision → per-waypoint v)
+
+The artifact is the *static* tuning. The reference governor is the
+*runtime* layer that consumes a corridor half-width `e_max` (metres)
+and produces a per-waypoint velocity profile. It is intentionally
+**open-loop, model-based** — no measured-CTE feedback, no new
+controller, no toppra; just one new closed-form constraint composed
+with the existing curvature MVC + accel passes.
+
+Data flow:
+
+```
+            ┌──────────────────────────────────────────────┐
+nav path ──▶│  ReferenceGovernor (Module)                  │
+            │  • Loads TuningConfig artifact (plant + caps)│
+e_max ─────▶│  • Composes 4 constraints (one is NEW):      │
+            │      v ≤ v_max               (geometric)     │
+            │      v ≤ ω_max / κ           (saturation)    │
+            │      v ≤ √(a_lat / κ)        (lateral)       │
+            │      v ≤ e_max / max(τ+L per channel)        │
+            │           ── precision; NEW                 │
+            │  • Forward/backward accel passes (reused)    │
+            │  • Atomic-snapshot read API                  │
+            └──────────────────────────────────────────────┘
+                              │
+                              ▼  installed as external_profile_cap
+            ┌──────────────────────────────────────────────┐
+            │  BaselinePathFollowerTask                    │
+            │  (control law unchanged; only cap source     │
+            │   swaps from VelocityProfileConfig→governor) │
+            └──────────────────────────────────────────────┘
+```
+
+### The precision constraint
+
+The straight-line CTE floor of a velocity-commanded FOPDT base is
+`(τ_vx + L_vx) · v` (issue #921 characterization, see
+`project_go2_plant_and_diagnostic`). On *curved* segments the dominant
+lag is the wz channel rather than vx — the heading-tracking lag of
+`τ_wz + L_wz` produces a comparable CTE term. Empirically (sim runs
+on `smooth_corner`, `slalom`, `figure_eight`), using only the vx
+channel under-predicts CTE on curved paths by ~2×. The shipped
+constraint takes the worse channel:
+
+    v  ≤  e_max / max(τ_vx + L_vx, τ_wz + L_wz)
+
+For the vendored Go2 plant this gives `max(0.46, 0.65) = 0.65 s`, so
+e_max=5 cm caps v at 0.077 m/s (was 0.109 m/s under the vx-only
+formula). This is the *only* new math. The other three caps already
+lived in `velocity_profiler.py` (geometric/lateral) or in the artifact
+(saturation envelope). The constraint set composes with `min()` per
+waypoint; the existing accel passes run on top.
+
+The remaining residual on continuously-curving paths (~30% above the
+predicted floor) reflects closed-loop heading-chase dynamics that no
+single-segment FOPDT model captures. Closing the loop on measured CTE
+is the next layer — see the demo's `cte_max` print for the residual on
+each path.
+
+### Where it lives
+
+| Path | What |
+|---|---|
+| `dimos/navigation/reference_governor/reference_governor.py` | Module + 4 constraint classes + `solve_profile` |
+| `dimos/control/tasks/baseline_path_follower_task.py` | Added `external_profile_cap` injection seam (control law unchanged) |
+| `examples/go2_reference_governor_demo.py` | End-to-end demo (in-process FOPDT sim) |
+
+### Demo
+
+```
+# Static e_max (5 cm corridor on the canonical 90° corner)
+uv run python examples/go2_reference_governor_demo.py --path single_corner --e-max 0.05
+
+# Time-varying e_max (loose → tight every 2s) — exercises the
+# atomic-snapshot recompute path on a hot stream
+uv run python examples/go2_reference_governor_demo.py --path circle --mode square-wave \
+    --e-max-high 0.10 --e-max-low 0.02 --period 4.0
+```
+
+A `*.png` plot is written to `/tmp/reference_governor_demo.png` by
+default: reference path + executed trajectory, plus an e_max(t) vs
+commanded `|vx|(t)` overlay in square-wave mode.
+
+### Open-loop assumption — what the calibration plot would tell you
+
+The model predicts `cte ≈ max(τ_vx+L_vx, τ_wz+L_wz) · v_binding`. The
+demo prints actual `cte_max` from `score_run` so you can compare
+against the predicted floor for each `e_max`. On the vendored Go2
+plant (max τ+L = 0.65 s), `--e-max 0.05` predicts ~5 cm CTE; sim runs
+on `single_corner` measure ~8 cm and on `smooth_corner` measure ~7 cm.
+The ~30–50% residual is the heading-chase term the open-loop model
+doesn't see.
+
+For a systematic precision-vs-speed sweep, lean on the existing
+benchmark harness:
+
+```
+uv run python -m dimos.utils.benchmarking.benchmark \
+    --robot go2 --config <artifact> --mode sim --profile
+```
+
+(the `--profile` arm exercises the static curvature profiler — directly
+analogous to the governor in the `e_max → ∞` limit). For the
+governor's precision axis specifically, drive the demo script across a
+grid of `--e-max` values and read off the per-run `cte_max` it prints.
+
+### Scope honesty
+
+The constraint set is validated against the same path battery used by
+the static tuning (`straight_line`, `single_corner`, `square`, `circle`,
+`smooth_corner` etc.). For geometries with materially different local
+curvature distributions (cusps, near-zero-radius corners no arc-radius
+blend smooths), the characterization → derive → governor chain must be
+re-checked. The governor is open-loop by design: it does *not* see the
+live CTE, so a model gap manifests as silently wider-than-predicted
+tracking error. The demo's `cte_max` print is your sanity check.
+
+### Closed-loop α-feedback variant — NEGATIVE result (shipped, opt-in, default OFF)
+
+A closed-loop variant is wired and shipped behind the `--closed-loop`
+flag on the demo (and the `closed_loop=True` config field on
+`ReferenceGovernor`). It observes per-tick measured CTE via
+`scoring.nearest_segment`, runs a PI law on `(cte - e_max)` with
+anti-windup + EMA filter, and applies a multiplicative α ∈ [α_min,
+1.0] scaling to the open-loop profile output. The architecture and
+unit tests pass cleanly. **The empirical result on the canonical path
+battery, however, does not show convergence:**
+
+| Path | OL (option A) | CL default | Final α | Bare follower |
+|---|---|---|---|---|
+| `single_corner` | 8.8 cm | **8.8 cm** | 1.000 | 10.3 cm |
+| `smooth_corner` | 9.9 cm | **10.0 cm** | 1.000 | 7.7 cm |
+| `slalom` | 9.8 cm | **10.4 cm** | 0.722 | 5.0 cm |
+| `figure_eight` | 11.9 cm | **12.1 cm** | 0.852 | 5.2 cm |
+
+Two failure modes:
+
+1. **Spike-CTE paths** (`single_corner`, `smooth_corner`): α stays at
+   1.0 because the high-CTE excursion at the corner is too brief — the
+   EMA filter dampens it before the PI integrator can wind up. Could
+   be addressed with more aggressive gains (`kp_alpha ≈ 20`,
+   `cte_ema_alpha ≈ 0.7`), but the corner is anyway a transient
+   feature.
+2. **Sustained-CTE paths** (`slalom`, `figure_eight`): α DOES drop
+   (0.72–0.85, the loop is actuating) — but `cte_max` gets slightly
+   *worse*, not better. Slowing further does not help because the
+   bottleneck on these paths is **wz authority**, and the cap's
+   geometry-preserving scaling reduces `wz` proportionally with `vx`.
+   The controller loses turning authority at exactly the moment it
+   needs more. The closed-loop is doing the algebraically correct
+   thing for the wrong physics model.
+
+The fix is structural, not a gain tune. Three options, all larger
+than the V1 closed-loop scope:
+
+- **Decouple α** into `α_vx` and `α_wz`. The cap stops preserving
+  turn radius when wz is the bottleneck. Simplest concept; adds a
+  second feedback channel.
+- **Per-waypoint α gating** — apply α only at waypoints where
+  precision binds (not saturation/lateral). Requires the solver to
+  track binding constraints.
+- **Adapt e_max** — when wz is the binding bottleneck, widen the
+  corridor instead of slowing the robot. Concedes the precision
+  promise but stays inside the open-loop framework.
+
+The V1 closed-loop is left in place (opt-in, default off) so the
+machinery exists for the structural follow-up. The demo prints a
+"converged?" line and an α(t) overlay to make this state visible.
+
+### Non-goals
+
+- No toppra dependency. The constraint-generator architecture is
+  future-ready for a toppra swap but does not pull it in.
+- No new control law in the follower.
+- The shipped closed-loop variant is wired but does not converge on
+  the canonical battery — see "Closed-loop α-feedback variant" above.
