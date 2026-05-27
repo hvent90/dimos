@@ -22,6 +22,9 @@ their entity path (no parent transform). Entities written:
 - ``world/fastlio_lidar`` — fastlio_lidar raw cloud (if present)
 - ``world/fastlio_voxels``— accumulated voxel map of fastlio_lidar (``--map``)
 - ``world/fastlio``       — fastlio_odometry pose axis (if present)
+- ``world/fastlio_path``  — fastlio_odometry trajectory (growing LineStrips3D)
+- ``world/odom``          — Go2 onboard odom pose axis (if present)
+- ``world/odom_path``     — Go2 onboard odom trajectory (growing LineStrips3D)
 - ``world/camera``        — color_image camera pose (static pinhole + Transform3D)
 - ``world/camera/image``  — color_image frames
 
@@ -108,6 +111,42 @@ def _log_clouds(
         cb(obs)
         rr.set_time(TIMELINE, timestamp=obs.ts)
         rr.log(entity, obs.data.to_rerun(voxel_size=voxel, mode=point_mode))
+
+
+def _log_path(
+    label: str,
+    stream: Stream[Any],
+    entity: str,
+    color: tuple[int, int, int],
+    *,
+    emit_every: int = 10,
+) -> None:
+    """Iterate a pose-bearing stream and log a growing :class:`LineStrips3D` to
+    ``entity`` every ``emit_every`` poses (and once more at the end). Frames
+    without a pose are skipped.
+    """
+    n = stream.count()
+    cb = _progress(n, label)
+    points: list[tuple[float, float, float]] = []
+    last_ts: float | None = None
+    emit_count = 0
+    for obs in stream:
+        cb(obs)
+        if obs.pose is None:
+            continue
+        points.append((float(obs.pose[0]), float(obs.pose[1]), float(obs.pose[2])))
+        last_ts = obs.ts
+        emit_count += 1
+        if emit_every > 0 and emit_count % emit_every == 0 and len(points) >= 2:
+            rr.set_time(TIMELINE, timestamp=obs.ts)
+            rr.log(entity, rr.LineStrips3D([points], colors=[color]))
+    if (
+        last_ts is not None
+        and len(points) >= 2
+        and (emit_every <= 0 or emit_count % emit_every != 0)
+    ):
+        rr.set_time(TIMELINE, timestamp=last_ts)
+        rr.log(entity, rr.LineStrips3D([points], colors=[color]))
 
 
 def main(
@@ -206,7 +245,7 @@ def main(
                     total=max(1, livox.count() // max(map_emit_every, 1)),
                 )
 
-        # ---- fastlio pose axis from fastlio_odometry stream ----
+        # ---- fastlio pose axis + path from fastlio_odometry stream ----
         if "fastlio_odometry" in store.streams:
             odometry = store.stream("fastlio_odometry", Odometry)
             cb = _progress(odometry.count(), "fastlio_odometry")
@@ -223,8 +262,14 @@ def main(
                         quaternion=rr.Quaternion(xyzw=[qx, qy, qz, qw]),
                     ),
                 )
+            _log_path(
+                "  fastlio_path",
+                store.stream("fastlio_odometry", Odometry),
+                "world/fastlio_path",
+                color=(255, 165, 0),  # orange
+            )
 
-        # ---- Go2 native odom pose axis ----
+        # ---- Go2 native odom pose axis + path ----
         if "odom" in store.streams:
             odom = store.stream("odom", PoseStamped)
             cb = _progress(odom.count(), "        odom")
@@ -241,6 +286,12 @@ def main(
                         quaternion=rr.Quaternion(xyzw=[qx, qy, qz, qw]),
                     ),
                 )
+            _log_path(
+                "     odom_path",
+                store.stream("odom", PoseStamped),
+                "world/odom_path",
+                color=(0, 200, 100),  # green
+            )
 
         # ---- pass 2: camera pose + image per color_image ----
         cam_pipeline = (
