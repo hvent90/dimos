@@ -241,6 +241,7 @@ class RecorderConfig(MemoryModuleConfig):
     overwrite: bool = True
     default_frame_id: str = "base_link"
     tf_tolerance: float = 0.5
+    tf_warning_interval: float = 5.0
     db_path: str | Path = "recording.db"
 
 
@@ -302,6 +303,8 @@ class Recorder(MemoryModule):
 
         default_frame_id = self.config.default_frame_id
         tf_tolerance = self.config.tf_tolerance
+        tf_warning_interval = self.config.tf_warning_interval
+        last_warn_times: dict[str, float] = {}
 
         def on_msg(msg: Any) -> None:
             ts = getattr(msg, "ts", None) or time.time()
@@ -310,9 +313,13 @@ class Recorder(MemoryModule):
             pose = transform.to_pose() if transform is not None else None
 
             if not pose:
-                logger.warning(
-                    f"""[{name}] No tf available for frame {frame_id!r} at time {ts} (msg ts: {getattr(msg, "ts", None)}), storing without pose\n{self.tf.tree_str}"""
-                )
+                now = time.monotonic()
+                # throtle is per-frame so we don't miss anything important
+                if now - last_warn_times.get(frame_id, 0.0) > tf_warning_interval:
+                    last_warn_times[frame_id] = now
+                    logger.warning(
+                        f"""[{name}] No tf available for frame {frame_id!r} at time {ts} (msg ts: {getattr(msg, "ts", None)}), storing without pose\n{self.tf.tree_str}"""
+                    )
             stream.append(msg, ts=ts, pose=pose)
 
         self.register_disposable(Disposable(input_topic.subscribe(on_msg)))
