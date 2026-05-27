@@ -40,6 +40,7 @@ def _metadata(tmp_path: Path) -> dict[str, object]:
         "artifacts": {
             "browser_visual": str(tmp_path / "visual.glb"),
             "browser_collision": str(tmp_path / "collision.glb"),
+            "objects": str(tmp_path / "objects.json"),
             "mujoco_model": str(tmp_path / "compiled.mjb"),
             "mujoco_wrapper": str(tmp_path / "wrapper.xml"),
         },
@@ -79,7 +80,52 @@ def test_load_scene_package_accepts_expected_artifact_frames(tmp_path: Path) -> 
 
     assert package.visual_path == tmp_path / "visual.glb"
     assert package.browser_collision_path == tmp_path / "collision.glb"
+    assert package.objects_path == tmp_path / "objects.json"
     assert package.mujoco_model_path == tmp_path / "compiled.mjb"
+
+
+def test_load_scene_package_tolerates_missing_objects_sidecar(tmp_path: Path) -> None:
+    raw = _metadata(tmp_path)
+    # Older cooked packages without the semantic sidecar should still load.
+    raw["artifacts"].pop("objects")  # type: ignore[union-attr]
+    metadata_path = tmp_path / "scene.meta.json"
+    metadata_path.write_text(json.dumps(raw))
+
+    package = load_scene_package(metadata_path)
+
+    assert package.objects_path is None
+
+
+def test_extract_scene_objects_emits_per_prim_aabb() -> None:
+    from dimos.simulation.scene_assets.browser_collision import extract_scene_objects
+
+    triangles = np.array([[0, 1, 2]], dtype=np.int32)
+    prims = [
+        ScenePrimMesh(
+            name="Sectional_seat",
+            prim_path="/Apt/Living/Sectional/seat",
+            vertices=np.array(
+                [[-1.0, -2.0, 0.0], [2.0, -2.0, 0.5], [-1.0, 1.0, 1.0]],
+                dtype=np.float32,
+            ),
+            triangles=triangles,
+        ),
+        ScenePrimMesh(
+            name="Empty_prim",
+            prim_path="/Apt/Living/Empty",
+            vertices=np.empty((0, 3), dtype=np.float32),
+            triangles=np.empty((0, 3), dtype=np.int32),
+        ),
+    ]
+
+    objects = extract_scene_objects(prims)
+
+    assert len(objects) == 1  # empty prim filtered
+    entry = objects[0]
+    assert entry["id"] == "Sectional_seat"
+    assert entry["prim_path"] == "/Apt/Living/Sectional/seat"
+    assert entry["aabb"]["min"] == [-1.0, -2.0, 0.0]
+    assert entry["aabb"]["max"] == [2.0, 1.0, 1.0]
 
 
 def test_load_scene_package_preserves_packaged_entities(tmp_path: Path) -> None:

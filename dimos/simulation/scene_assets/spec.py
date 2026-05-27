@@ -89,6 +89,7 @@ class ScenePackage:
     alignment: SceneMeshAlignment
     visual_path: Path | None = None
     browser_collision_path: Path | None = None
+    objects_path: Path | None = None
     mujoco_model_path: Path | None = None
     mujoco_wrapper_path: Path | None = None
     metadata_path: Path | None = None
@@ -106,6 +107,7 @@ class ScenePackage:
                 "browser_collision": (
                     str(self.browser_collision_path) if self.browser_collision_path else None
                 ),
+                "objects": str(self.objects_path) if self.objects_path else None,
                 "mujoco_model": str(self.mujoco_model_path) if self.mujoco_model_path else None,
                 "mujoco_wrapper": (
                     str(self.mujoco_wrapper_path) if self.mujoco_wrapper_path else None
@@ -137,6 +139,7 @@ def load_scene_package(path: str | Path) -> ScenePackage:
         browser_collision_path=(
             Path(artifacts["browser_collision"]) if artifacts.get("browser_collision") else None
         ),
+        objects_path=Path(artifacts["objects"]) if artifacts.get("objects") else None,
         mujoco_model_path=Path(artifacts["mujoco_model"])
         if artifacts.get("mujoco_model")
         else None,

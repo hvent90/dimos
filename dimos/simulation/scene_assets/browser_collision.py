@@ -17,6 +17,7 @@
 from __future__ import annotations
 
 from dataclasses import dataclass
+import json
 from pathlib import Path
 from typing import Any
 
@@ -37,11 +38,14 @@ from dimos.utils.logging_config import setup_logger
 
 logger = setup_logger()
 
+OBJECTS_SIDECAR_NAME = "objects.json"
+
 
 @dataclass(frozen=True)
 class BrowserCollisionCookResult:
     path: Path
     stats: dict[str, Any]
+    objects_path: Path | None = None
 
 
 def cook_browser_collision(
@@ -67,32 +71,48 @@ def cook_browser_collision(
     out_dir = Path(output_dir).expanduser().resolve()
     out_dir.mkdir(parents=True, exist_ok=True)
     out_path = out_dir / browser_spec.output_name
-    if out_path.exists() and not rebake:
+    objects_path = out_dir / OBJECTS_SIDECAR_NAME
+
+    mesh_cached = out_path.exists() and not rebake
+    objects_cached = objects_path.exists() and not rebake
+    if mesh_cached and objects_cached:
         return BrowserCollisionCookResult(
             path=out_path,
             stats=inspect_scene_asset(out_path).to_json_dict(),
+            objects_path=objects_path,
         )
 
-    mesh = _load_collision_mesh(source, alignment=alignment, collision_spec=collision_spec)
-    original_triangles = len(mesh.triangles)
-    target_faces = int(browser_spec.target_faces)
-    if target_faces > 0 and original_triangles > target_faces:
-        logger.info(
-            "browser collision: simplifying %s triangles -> %s",
-            original_triangles,
-            target_faces,
+    prims = _load_collision_prims(source, alignment=alignment, collision_spec=collision_spec)
+    stats: dict[str, Any]
+    if mesh_cached:
+        stats = inspect_scene_asset(out_path).to_json_dict()
+    else:
+        mesh = _build_fused_collision_mesh(
+            prims, collision_spec or CollisionSpec.auto_discover(source)
         )
-        mesh = mesh.simplify_quadric_decimation(target_number_of_triangles=target_faces)
-        mesh.remove_degenerate_triangles()
-        mesh.remove_duplicated_triangles()
-        mesh.remove_duplicated_vertices()
-        mesh.remove_non_manifold_edges()
+        original_triangles = len(mesh.triangles)
+        target_faces = int(browser_spec.target_faces)
+        if target_faces > 0 and original_triangles > target_faces:
+            logger.info(
+                "browser collision: simplifying %s triangles -> %s",
+                original_triangles,
+                target_faces,
+            )
+            mesh = mesh.simplify_quadric_decimation(target_number_of_triangles=target_faces)
+            mesh.remove_degenerate_triangles()
+            mesh.remove_duplicated_triangles()
+            mesh.remove_duplicated_vertices()
+            mesh.remove_non_manifold_edges()
+        _write_glb(mesh, out_path)
+        stats = inspect_scene_asset(out_path).to_json_dict()
+        stats["source_triangles"] = original_triangles
+        stats["target_faces"] = target_faces
 
-    _write_glb(mesh, out_path)
-    stats = inspect_scene_asset(out_path).to_json_dict()
-    stats["source_triangles"] = original_triangles
-    stats["target_faces"] = target_faces
-    return BrowserCollisionCookResult(path=out_path, stats=stats)
+    objects = extract_scene_objects(prims)
+    if not objects_cached:
+        _write_objects_json(objects_path, objects)
+    stats["objects"] = len(objects)
+    return BrowserCollisionCookResult(path=out_path, stats=stats, objects_path=objects_path)
 
 
 def _write_glb(mesh: o3d.geometry.TriangleMesh, path: Path) -> None:
@@ -103,12 +123,12 @@ def _write_glb(mesh: o3d.geometry.TriangleMesh, path: Path) -> None:
     trimesh.Trimesh(vertices=vertices, faces=faces, process=False).export(str(path))
 
 
-def _load_collision_mesh(
+def _load_collision_prims(
     source: Path,
     *,
     alignment: SceneMeshAlignment | None,
     collision_spec: CollisionSpec | None,
-) -> o3d.geometry.TriangleMesh:
+) -> list[ScenePrimMesh]:
     spec = collision_spec or CollisionSpec.auto_discover(source)
     source_alignment = alignment or SceneMeshAlignment(y_up=False)
 
@@ -134,6 +154,13 @@ def _load_collision_mesh(
                 split_stats["emitted_components"],
                 split_stats["dropped_components"],
             )
+    return prims
+
+
+def _build_fused_collision_mesh(
+    prims: list[ScenePrimMesh],
+    spec: CollisionSpec,
+) -> o3d.geometry.TriangleMesh:
     vertices: list[np.ndarray] = []
     faces: list[np.ndarray] = []
     vertex_offset = 0
@@ -151,6 +178,37 @@ def _load_collision_mesh(
     if not vertices:
         raise RuntimeError("browser collision sidecar skipped every prim")
     return _mesh_from_arrays(np.concatenate(vertices, axis=0), np.concatenate(faces, axis=0))
+
+
+def extract_scene_objects(prims: list[ScenePrimMesh]) -> list[dict[str, Any]]:
+    """Per-prim semantic metadata (id, prim_path, AABB in source frame).
+
+    Emitted independently of the fused collision GLB so the runtime can
+    answer ``findAsset("sectional")``-style queries without paying a
+    per-object PhysicsAggregate cost. AABB shares the collision GLB
+    frame (source / z-up after alignment).
+    """
+    objects: list[dict[str, Any]] = []
+    for prim in prims:
+        v = np.asarray(prim.vertices, dtype=np.float64)
+        if v.size == 0:
+            continue
+        objects.append(
+            {
+                "id": prim.name,
+                "prim_path": prim.prim_path,
+                "aabb": {
+                    "min": v.min(axis=0).tolist(),
+                    "max": v.max(axis=0).tolist(),
+                },
+            }
+        )
+    return objects
+
+
+def _write_objects_json(path: Path, objects: list[dict[str, Any]]) -> None:
+    payload = {"frame": "source", "objects": objects}
+    path.write_text(json.dumps(payload, indent=2, sort_keys=True) + "\n")
 
 
 def _mesh_for_prim(
@@ -183,4 +241,9 @@ def _mesh_from_arrays(vertices: np.ndarray, faces: np.ndarray) -> o3d.geometry.T
     return mesh
 
 
-__all__ = ["BrowserCollisionCookResult", "cook_browser_collision"]
+__all__ = [
+    "OBJECTS_SIDECAR_NAME",
+    "BrowserCollisionCookResult",
+    "cook_browser_collision",
+    "extract_scene_objects",
+]

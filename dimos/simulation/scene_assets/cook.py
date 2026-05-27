@@ -178,6 +178,7 @@ def cook_scene_package(
         alignment=align,
         visual_path=visual_result.path if visual_result else None,
         browser_collision_path=browser_collision_result.path if browser_collision_result else None,
+        objects_path=browser_collision_result.objects_path if browser_collision_result else None,
         mujoco_model_path=mujoco_model_path,
         mujoco_wrapper_path=mujoco_wrapper_path,
         metadata_path=package_dir / "scene.meta.json",
