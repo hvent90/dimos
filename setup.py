@@ -19,6 +19,7 @@ import sys
 
 from pybind11.setup_helpers import Pybind11Extension, build_ext
 from setuptools import find_packages, setup
+from setuptools_rust import Binding, RustExtension
 
 
 def python_is_macos_universal_binary(executable: str | None = None) -> bool:
@@ -77,9 +78,19 @@ ext_modules = [
     ),
 ]
 
+rust_extensions = [
+    RustExtension(
+        "dimos.mapping.ray_tracing._voxel_ray_tracing",
+        path="dimos/mapping/ray_tracing/rust/Cargo.toml",
+        binding=Binding.PyO3,
+        debug=False,
+    ),
+]
+
 setup(
     packages=find_packages(),
     package_dir={"": "."},
     ext_modules=ext_modules,
+    rust_extensions=rust_extensions,
     cmdclass={"build_ext": build_ext},
 )

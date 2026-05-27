@@ -4,6 +4,7 @@
 use ahash::{AHashMap, AHashSet};
 use lcm_msgs::sensor_msgs::{PointCloud2, PointField};
 use lcm_msgs::std_msgs::{Header, Time};
+use pyo3::prelude::*;
 use serde::Deserialize;
 
 pub type VoxelKey = (i32, i32, i32);
@@ -391,6 +392,11 @@ pub fn build_pointclouds(
     };
 
     (global_cloud, local_cloud)
+}
+
+#[pymodule]
+fn _voxel_ray_tracing(_py: Python<'_>, _m: &Bound<'_, PyModule>) -> PyResult<()> {
+    Ok(())
 }
 
 #[cfg(test)]
