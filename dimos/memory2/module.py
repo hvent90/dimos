@@ -24,7 +24,7 @@ from pydantic import field_validator
 from reactivex.disposable import Disposable
 
 from dimos.agents.annotation import skill
-from dimos.constants import DIMOS_PROJECT_ROOT
+from dimos.constants import DEFAULT_WORLD_FRAME, DIMOS_PROJECT_ROOT
 from dimos.core.core import rpc
 from dimos.core.module import Module, ModuleConfig
 from dimos.memory2.embed import EmbedImages
@@ -309,7 +309,9 @@ class Recorder(MemoryModule):
         def on_msg(msg: Any) -> None:
             ts = getattr(msg, "ts", None) or time.time()
             frame_id = getattr(msg, "frame_id", None) or default_frame_id
-            transform = self.tf.get("world", frame_id, time_point=ts, time_tolerance=tf_tolerance)
+            transform = self.tf.get(
+                DEFAULT_WORLD_FRAME, frame_id, time_point=ts, time_tolerance=tf_tolerance
+            )
             pose = transform.to_pose() if transform is not None else None
 
             if not pose:
