@@ -37,6 +37,7 @@ from reactivex.disposable import Disposable
 
 from dimos.constants import DEFAULT_WORLD_FRAME
 from dimos.core.coordination.blueprints import autoconnect
+from dimos.core.core import rpc
 from dimos.core.stream import In, Out
 from dimos.hardware.sensors.lidar.fastlio2.module import FastLio2
 from dimos.memory2.module import MemoryModule, MemoryModuleConfig, Recorder, RecorderConfig
@@ -152,6 +153,7 @@ class Go2Mid360Replay(MemoryModule):
     odometry: Out[Odometry]
     odom: Out[PoseStamped]
 
+    @rpc
     def start(self) -> None:
         super().start()
         speed = self.config.speed
