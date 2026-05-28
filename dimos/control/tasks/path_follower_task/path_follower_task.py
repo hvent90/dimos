@@ -58,9 +58,11 @@ from dimos.utils.logging_config import setup_logger
 from dimos.utils.trigonometry import angle_diff
 
 if TYPE_CHECKING:
+    from dimos.control.tasks.precision_path_follower_task.reference_governor import (
+        PathSpeedCapProtocol,
+    )
     from dimos.core.global_config import GlobalConfig
     from dimos.msgs.nav_msgs.Path import Path
-    from dimos.navigation.reference_governor import PathSpeedCapProtocol
 
 logger = setup_logger()
 

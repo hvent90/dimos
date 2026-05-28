@@ -36,14 +36,14 @@ from dimos.control.tasks.path_follower_task.path_follower_task import (
     PathFollowerTask,
     PathFollowerTaskConfig,
 )
-from dimos.core.global_config import global_config as _gc
-from dimos.navigation.reference_governor.reference_governor import (
+from dimos.control.tasks.precision_path_follower_task.reference_governor import (
     GeometricMVC,
     LateralMVC,
     PrecisionMVC,
     SaturationMVC,
     solve_profile,
 )
+from dimos.core.global_config import global_config as _gc
 from dimos.protocol.service.spec import BaseConfig
 from dimos.utils.benchmarking.tuning import TuningConfig
 from dimos.utils.logging_config import setup_logger
