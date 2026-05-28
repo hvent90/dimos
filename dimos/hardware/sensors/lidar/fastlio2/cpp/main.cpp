@@ -32,6 +32,7 @@
 
 #include "cloud_filter.hpp"
 #include "dimos_native_module.hpp"
+#include "pcap_replay.hpp"
 #include "voxel_map.hpp"
 
 // dimos LCM message headers
@@ -58,6 +59,21 @@ using livox_common::DATA_TYPE_CARTESIAN_LOW;
 static std::atomic<bool> g_running{true};
 static lcm::LCM* g_lcm = nullptr;
 static FastLio* g_fastlio = nullptr;
+
+// Virtual clock: in replay mode, tracks the pcap timestamp of the packet
+// currently being fed so publish_*() reports the original capture time
+// instead of replay wall time. Live mode leaves it at 0 and publish_*()
+// falls back to system_clock::now().
+static std::atomic<bool> g_replay_mode{false};
+static std::atomic<uint64_t> g_virtual_clock_ns{0};
+
+static double get_publish_ts() {
+    if (g_replay_mode.load()) {
+        return static_cast<double>(g_virtual_clock_ns.load()) / 1e9;
+    }
+    return std::chrono::duration<double>(
+        std::chrono::system_clock::now().time_since_epoch()).count();
+}
 
 static std::string g_lidar_topic;
 static std::string g_odometry_topic;
@@ -430,6 +446,13 @@ int main(int argc, char** argv) {
     ports.host_imu_data   = mod.arg_int("host_imu_data_port", port_defaults.host_imu_data);
     ports.host_log_data   = mod.arg_int("host_log_data_port", port_defaults.host_log_data);
 
+    // Replay mode (offline). When --replay_pcap is given the SDK is not
+    // initialized; a feeder thread reads the pcap and calls the existing
+    // on_point_cloud / on_imu_data callbacks directly. publish_*() uses
+    // the pcap timestamps as the clock so outputs match the original run.
+    std::string replay_pcap = mod.arg("replay_pcap", "");
+    g_replay_mode.store(!replay_pcap.empty());
+
     // Initial pose offset [x, y, z, qx, qy, qz, qw]
     {
         std::string init_str = mod.arg("init_pose", "");
@@ -490,25 +513,51 @@ int main(int argc, char** argv) {
     g_fastlio = &fast_lio;
     if (debug) printf("[fastlio2] FAST-LIO initialized.\n");
 
-    // Init Livox SDK (in-memory config, no temp files).
-    // Pass `debug` so the SDK's spdlog console sink is disabled when off.
-    if (!livox_common::init_livox_sdk(host_ip, lidar_ip, ports, debug)) {
-        return 1;
+    // Source of point/IMU packets:
+    //   live mode  -> Livox SDK opens UDP sockets + dispatches via callbacks
+    //   replay mode -> a feeder thread reads a pcap and calls the same
+    //                  callbacks. SDK is not initialized.
+    std::thread replay_thread;
+    if (g_replay_mode.load()) {
+        if (debug) printf("[fastlio2] REPLAY mode, pcap=%s\n", replay_pcap.c_str());
+        replay_thread = std::thread([&]() {
+            pcap_replay::Replayer rep;
+            rep.path = replay_pcap;
+            rep.host_point_port = static_cast<uint16_t>(ports.host_point_data);
+            rep.host_imu_port = static_cast<uint16_t>(ports.host_imu_data);
+            rep.on_point = [](LivoxLidarEthernetPacket* p) {
+                on_point_cloud(0, 0, p, nullptr);
+            };
+            rep.on_imu = [](LivoxLidarEthernetPacket* p) {
+                on_imu_data(0, 0, p, nullptr);
+            };
+            rep.on_clock = [](uint64_t pcap_ts_ns) {
+                g_virtual_clock_ns.store(pcap_ts_ns);
+            };
+            rep.running = &g_running;
+            rep.realtime = true;
+            rep.run();
+            // Allow FAST-LIO main loop to drain remaining state before exit.
+            std::this_thread::sleep_for(std::chrono::milliseconds(500));
+            g_running.store(false);
+        });
+    } else {
+        if (!livox_common::init_livox_sdk(host_ip, lidar_ip, ports, debug)) {
+            return 1;
+        }
+
+        SetLivoxLidarPointCloudCallBack(on_point_cloud, nullptr);
+        SetLivoxLidarImuDataCallback(on_imu_data, nullptr);
+        SetLivoxLidarInfoChangeCallback(on_info_change, nullptr);
+
+        if (!LivoxLidarSdkStart()) {
+            fprintf(stderr, "Error: LivoxLidarSdkStart failed\n");
+            LivoxLidarSdkUninit();
+            return 1;
+        }
+
+        if (debug) printf("[fastlio2] SDK started, waiting for device...\n");
     }
-
-    // Register SDK callbacks
-    SetLivoxLidarPointCloudCallBack(on_point_cloud, nullptr);
-    SetLivoxLidarImuDataCallback(on_imu_data, nullptr);
-    SetLivoxLidarInfoChangeCallback(on_info_change, nullptr);
-
-    // Start SDK
-    if (!LivoxLidarSdkStart()) {
-        fprintf(stderr, "Error: LivoxLidarSdkStart failed\n");
-        LivoxLidarSdkUninit();
-        return 1;
-    }
-
-    if (debug) printf("[fastlio2] SDK started, waiting for device...\n");
 
     // Main loop
     auto frame_interval = std::chrono::microseconds(
@@ -578,8 +627,7 @@ int main(int argc, char** argv) {
         // Check for new results and accumulate/publish (rate-limited)
         auto pose = fast_lio.get_pose();
         if (!pose.empty() && (pose[0] != 0.0 || pose[1] != 0.0 || pose[2] != 0.0)) {
-            double ts = std::chrono::duration<double>(
-                std::chrono::system_clock::now().time_since_epoch()).count();
+            double ts = get_publish_ts();
 
             auto world_cloud = fast_lio.get_world_cloud();
             if (world_cloud && !world_cloud->empty()) {
@@ -629,7 +677,8 @@ int main(int argc, char** argv) {
     // Cleanup
     if (debug) printf("[fastlio2] Shutting down...\n");
     g_fastlio = nullptr;
-    LivoxLidarSdkUninit();
+    if (replay_thread.joinable()) replay_thread.join();
+    if (!g_replay_mode.load()) LivoxLidarSdkUninit();
     g_lcm = nullptr;
 
     if (debug) printf("[fastlio2] Done.\n");
