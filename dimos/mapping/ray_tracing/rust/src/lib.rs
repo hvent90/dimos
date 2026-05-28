@@ -243,6 +243,12 @@ pub fn find_misses_along_ray(
             continue;
         }
 
+        // don't remove points in the same xy plane as the hit, unless the plane only walks that plane
+        // we do this to preserve floors, which is more important than some missed points
+        if origin_voxel.2 != endpoint.2 && z == endpoint.2 {
+            continue;
+        }
+
         let cx = x as f32 * voxel_size + half;
         let cy = y as f32 * voxel_size + half;
         let cz = z as f32 * voxel_size + half;
