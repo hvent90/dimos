@@ -83,7 +83,6 @@ class RayTraceMap(Transformer[PointCloud2, PointCloud2]):
         pcd = o3d.t.geometry.PointCloud()
         pcd.point["positions"] = o3c.Tensor.from_numpy(positions)
         cloud = PointCloud2(pointcloud=pcd, frame_id="world", ts=last_obs.ts)
-        # pose=None: global map is in world frame, per-observation pose is meaningless
         return last_obs.derive(
             data=cloud,
             pose=None,
