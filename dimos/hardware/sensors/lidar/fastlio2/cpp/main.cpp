@@ -344,10 +344,14 @@ static void on_point_cloud(const uint32_t /*handle*/, const uint8_t /*dev_type*/
     // Update the deterministic-mode virtual clock INSIDE the accumulator
     // mutex so the main loop can never observe a clock advance without
     // also seeing the matching points (race that drifts scan composition).
+    // Monotonic update: SDK threads can deliver packets slightly out of
+    // sensor-ts order, and we must not let a later store(lower_ts) undo
+    // a previous store(higher_ts).
     if (g_deterministic_clock.load()) {
         uint64_t expected = 0;
         g_first_packet_clock_ns.compare_exchange_strong(expected, ts_ns);
-        g_virtual_clock_ns.store(ts_ns);
+        uint64_t cur = g_virtual_clock_ns.load();
+        while (cur < ts_ns && !g_virtual_clock_ns.compare_exchange_weak(cur, ts_ns)) {}
     }
 
     if (!g_frame_has_timestamp) {
@@ -425,14 +429,14 @@ static void on_imu_data(const uint32_t /*handle*/, const uint8_t /*dev_type*/,
 
     // Advance the deterministic-mode virtual clock AFTER feed_imu has
     // queued the sample, holding g_pc_mutex so this is fully serialized
-    // with on_point_cloud / the main-loop scan swap. Same mutex on all
-    // sides means scan boundaries depend only on packet content, not on
-    // SDK-thread vs main-thread interleaving.
+    // with on_point_cloud / the main-loop scan swap. Monotonic CAS so
+    // out-of-order SDK delivery can't roll the clock backward.
     if (g_deterministic_clock.load()) {
         std::lock_guard<std::mutex> lock(g_pc_mutex);
         uint64_t expected = 0;
         g_first_packet_clock_ns.compare_exchange_strong(expected, pkt_ts_ns);
-        g_virtual_clock_ns.store(pkt_ts_ns);
+        uint64_t cur = g_virtual_clock_ns.load();
+        while (cur < pkt_ts_ns && !g_virtual_clock_ns.compare_exchange_weak(cur, pkt_ts_ns)) {}
     }
 }
 
