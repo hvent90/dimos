@@ -79,7 +79,6 @@ def _eval_recording(
     with store:
         lidar = store.streams.lidar
 
-        # --- PGO (timed) ---
         # .tap() captures each keyframe as make_interpolator iterates the
         # corrections stream, so no extra pass over lidar.
         keyframes: list[Any] = []
@@ -91,7 +90,7 @@ def _eval_recording(
         interp = make_interpolator(keyframes_to_corrections(kf_stream))
         pgo_time = time.perf_counter() - t0
 
-        # --- Marker detection (same pipeline as dimos map / markers_rrd) ---
+        # Marker detection pipeline: same shape as dimos map / markers_rrd.
         color_image = store.stream("color_image", Image)
         xf = DetectMarkers(
             camera_info=cam_info,

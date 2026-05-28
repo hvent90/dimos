@@ -60,7 +60,7 @@ def _to_tuple(p: Any) -> PoseTuple | None:
     """
     if p is None:
         return None
-    if isinstance(p, tuple):
+    if isinstance(p, (tuple, list)):
         if len(p) == 7:
             return cast("PoseTuple", tuple(float(v) for v in p))
         if len(p) == 3:

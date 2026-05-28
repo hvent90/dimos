@@ -170,18 +170,15 @@ def pgo_keyframes(
     for obs in stream:
         if on_frame is not None:
             on_frame(obs)
-        p = obs.pose_tuple
-        if p is None:
+        pose = obs.pose
+        if pose is None:
             continue
-        # Skip placeholder poses written before odom converges:
-        # all-zero translation OR all-zero (uninitialized) quaternion.
-        # An identity quaternion (qw=1) is valid and must not be filtered.
-        if p[0] == 0 and p[1] == 0 and p[2] == 0:
+        # Skip placeholder poses written before odom converges: zero
+        # translation or uninitialized (all-zero) quaternion. Identity
+        # rotation (qw=1) is valid and must not be filtered.
+        if pose.position.is_zero() or pose.orientation.is_zero():
             continue
-        if p[3] == 0 and p[4] == 0 and p[5] == 0 and p[6] == 0:
-            continue
-        local_pose = _obs_to_pose3(obs)
-        pgo.process(local_pose, obs.ts, obs.data)
+        pgo.process(_obs_to_pose3(obs), obs.ts, obs.data)
 
     mem = MemoryStore()
     out: Stream[Keyframe] = mem.stream("keyframes", Keyframe)
@@ -280,16 +277,16 @@ def apply_corrections(
 
 
 def _obs_to_pose3(obs: Observation[Any]) -> gtsam.Pose3:
-    """Convert an observation's stored pose tuple directly to a `gtsam.Pose3`."""
+    """Convert an observation's pose to a `gtsam.Pose3`."""
     import gtsam  # type: ignore[import-not-found,import-untyped]
 
-    p = obs.pose_tuple
-    if p is None:
+    pose = obs.pose
+    if pose is None:
         raise LookupError("No pose set on this observation")
-    x, y, z, qx, qy, qz, qw = p
+    t, r = pose.position, pose.orientation
     return gtsam.Pose3(
-        gtsam.Rot3.Quaternion(float(qw), float(qx), float(qy), float(qz)),
-        gtsam.Point3(float(x), float(y), float(z)),
+        gtsam.Rot3.Quaternion(r.w, r.x, r.y, r.z),
+        gtsam.Point3(t.x, t.y, t.z),
     )
 
 

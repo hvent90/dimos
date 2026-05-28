@@ -14,8 +14,6 @@
 
 from __future__ import annotations
 
-from pathlib import Path
-
 import numpy as np
 import pytest
 from scipy.spatial.transform import Rotation
@@ -293,13 +291,10 @@ class TestKeyframeType:
         assert isinstance(kf.optimized, Transform)
 
 
-# Real-recording smoke test. ~45-60s on go2_short.db. Skipped when the LFS
-# file isn't present (CI without LFS pulled, fresh clone, etc.).
-_DATA_DB = Path(__file__).resolve().parents[3] / "data" / "go2_short.db"
-
-
-@pytest.mark.skipif(not _DATA_DB.exists(), reason=f"requires LFS file {_DATA_DB}")
+# Real-recording smoke test. ~45-60s on go2_short.db. get_data() auto-pulls
+# the LFS archive on first use.
 class TestRealRecording:
+    @pytest.mark.self_hosted
     def test_pgo_pipeline_against_go2_short(self) -> None:
         """Run the full PGO pipeline on a real 60-second go2 recording.
 
@@ -308,8 +303,9 @@ class TestRealRecording:
         keyframes, apply_corrections preserves input frame count.
         """
         from dimos.memory2.store.sqlite import SqliteStore
+        from dimos.utils.data import get_data
 
-        store = SqliteStore(path=_DATA_DB)
+        store = SqliteStore(path=get_data("go2_short.db"))
         lidar = store.streams.lidar
         in_count = lidar.count()
         assert in_count > 0, "recording is empty"
