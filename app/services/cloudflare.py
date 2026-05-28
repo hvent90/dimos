@@ -151,5 +151,28 @@ class CloudflareRealtime:
         assert last_err is not None
         raise last_err
 
+    async def close_datachannels(self, session_id: str, ids: list[int]) -> None:
+        """Close datachannels by their numeric id (PUT /datachannels/close).
+
+        CF keeps a local datachannel push registered until explicitly closed —
+        it is NOT auto-reaped when the subscriber leaves (the 30s GC is
+        media-only). So the robot's reverse push (state_reliable_back) must be
+        closed on operator disconnect, else re-push errors repeated_local_track.
+        Best-effort: log and swallow failures (the channel may already be gone).
+        """
+        url = f"{self.base_url}/sessions/{session_id}/datachannels/close"
+        try:
+            async with httpx.AsyncClient() as client:
+                resp = await client.put(
+                    url,
+                    headers=self.headers,
+                    json={"dataChannels": [{"id": i} for i in ids]},
+                    timeout=10.0,
+                )
+            if resp.status_code not in (200, 201):
+                log.warning("CF close_datachannels %s: %s", resp.status_code, resp.text[:200])
+        except Exception as e:
+            log.warning("CF close_datachannels failed: %r", e)
+
 
 cf_client = CloudflareRealtime()

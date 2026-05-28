@@ -381,12 +381,17 @@ async def bridge_datachannel(
     # all remote) — mixing errors "Pushing and Pulling ... unsupported". Hence 4
     # separate calls below, not 2; don't re-bundle.
     forward_names = [CMD_CHANNEL_NAME, STATE_CHANNEL_NAME]
-    # The robot's CF session persists for the whole blueprint run, so its LOCAL
-    # publish of state_reliable_back survives a disconnect. On reconnect CF
-    # refuses to re-push it (repeated_local_track_error → no `id` → 502). So we
-    # push it once, persist the id on the SESSION ROW (not the operator-cleared
-    # _robot_channel_ids map — leave() wipes that), and reuse it on reconnect.
-    prior_state_back_id = session.state_back_channel_id
+    # The robot's CF session is long-lived, so its previous state_reliable_back
+    # local push lingers across a disconnect (CF doesn't auto-reap datachannel
+    # pushes). If we re-push without closing it → repeated_local_track_error.
+    # So close the stale push (by its stored id) before re-pushing fresh, then
+    # the new operator can subscribe cleanly. cmd/state are operator-published
+    # (robot just re-subscribes), so they don't have this problem.
+    if session.state_back_channel_id is not None:
+        await cf_client.close_datachannels(
+            session.cf_session_id, [session.state_back_channel_id]
+        )
+        session.state_back_channel_id = None
     try:
         # operator → robot: cmd + state. Operator publishes, robot subscribes.
         op_pub = await cf_client.add_datachannels(
@@ -404,13 +409,12 @@ async def bridge_datachannel(
                 for name in forward_names
             ],
         )
-        # robot → operator: state_back. Robot publishes pongs once (the publish
-        # persists across reconnects); operator subscribes fresh each connect.
-        if prior_state_back_id is None:
-            robot_pub = await cf_client.add_datachannels(
-                session.cf_session_id,
-                [{"location": "local", "dataChannelName": STATE_BACK_CHANNEL_NAME}],
-            )
+        # robot → operator: state_back. Fresh push each connect (stale one closed
+        # above); operator subscribes to it.
+        robot_pub = await cf_client.add_datachannels(
+            session.cf_session_id,
+            [{"location": "local", "dataChannelName": STATE_BACK_CHANNEL_NAME}],
+        )
         op_sub = await cf_client.add_datachannels(
             session.operator_cf_session_id,
             [
@@ -432,24 +436,13 @@ async def bridge_datachannel(
             detail=f"Datachannel bridge failed ({type(e).__name__}): {e}",
         )
 
-    # TEMP DEBUG (reconnect): which call lacks `id` now that re-push is skipped?
-    log.warning(
-        "bridge resp (prior_state_back=%s): op_pub=%r robot_sub=%r op_sub=%r robot_pub=%r",
-        prior_state_back_id, op_pub, robot_sub, op_sub,
-        (robot_pub if prior_state_back_id is None else "skipped"),
-    )
-
     # Index by dataChannelName from the response, not by request position —
     # don't assume CF preserves order across the array.
     try:
         op_pub_ids = {entry["dataChannelName"]: int(entry["id"]) for entry in op_pub}
         robot_sub_ids = {entry["dataChannelName"]: int(entry["id"]) for entry in robot_sub}
         op_sub_ids = {entry["dataChannelName"]: int(entry["id"]) for entry in op_sub}
-        # Reuse the persisted state_back id on reconnect; otherwise read the fresh push.
-        if prior_state_back_id is not None:
-            robot_pub_ids = {STATE_BACK_CHANNEL_NAME: prior_state_back_id}
-        else:
-            robot_pub_ids = {e["dataChannelName"]: int(e["id"]) for e in robot_pub}
+        robot_pub_ids = {entry["dataChannelName"]: int(entry["id"]) for entry in robot_pub}
     except (KeyError, TypeError, ValueError) as e:
         raise HTTPException(
             status_code=502,
@@ -471,11 +464,11 @@ async def bridge_datachannel(
         **robot_sub_ids,
         STATE_BACK_CHANNEL_NAME: robot_pub_ids[STATE_BACK_CHANNEL_NAME],
     }
-    # Persist the state_back push id on the session row so a reconnect (which
-    # clears _robot_channel_ids via leave) knows the local track is still pushed.
-    if session.state_back_channel_id is None:
-        session.state_back_channel_id = robot_pub_ids[STATE_BACK_CHANNEL_NAME]
-        await db.commit()
+    # Persist the fresh state_back push id on the session row (survives operator
+    # leave, unlike _robot_channel_ids) so the NEXT reconnect can close this
+    # stale push before re-pushing.
+    session.state_back_channel_id = robot_pub_ids[STATE_BACK_CHANNEL_NAME]
+    await db.commit()
 
     # Pull the robot's video onto the operator session (best-effort: a failure
     # degrades to no-video, never 502s the now-working datachannel bridge).
