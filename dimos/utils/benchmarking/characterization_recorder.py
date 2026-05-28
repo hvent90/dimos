@@ -12,16 +12,21 @@
 # See the License for the specific language governing permissions and
 # limitations under the License.
 
-"""Telemetry recorder for the Go2 characterization blueprint.
+"""Telemetry recorder for the Go2 characterization / benchmark blueprints.
 
-Captures the live streams a characterization session produces — commanded
-twist, coord-aggregated joint_state, raw odom, and operator gate events
-— into a per-session SQLite DB so post-process tools can re-fit, dissect
+Captures the live streams a session produces — commanded twist,
+coord-aggregated joint_state, raw odom, and operator gate events —
+into a per-session SQLite DB so post-process tools can re-fit, dissect
 spikes, or compare runs without re-running on hardware.
 
-The DB lands next to the JSON+PNG artifact at
-``<repo>/data/characterization/<robot_id>/<robot_id>_recording_<date>_<sha>.db``
-by default. Read it back with::
+Per-session DB filenames have a ``tag`` to differentiate use cases
+(characterization runs vs benchmark runs land in separate DBs even on
+the same date+sha): ``<robot_id>_<tag>_<date>_<sha>.db``. By default
+files land in ``<repo>/data/characterization/<robot_id>/`` — both the
+``out_dir`` and ``tag`` are config-settable so the benchmark blueprint
+can route to ``<repo>/data/benchmark/<robot_id>/`` with ``tag="benchmark"``.
+
+Read back with::
 
     from dimos.memory2.store.sqlite import SqliteStore
     store = SqliteStore(path="<the .db file>")
@@ -51,11 +56,12 @@ DEFAULT_OUT_DIR = get_project_root() / "data" / "characterization"
 
 class CharacterizationRecorderConfig(RecorderConfig):
     """Same as :class:`RecorderConfig` but with per-session db_path
-    resolution from ``out_dir`` + ``robot_id``. Set ``db_path`` explicitly
-    to bypass the default naming convention."""
+    resolution from ``out_dir`` + ``robot_id`` + ``tag``. Set ``db_path``
+    explicitly to bypass the default naming convention."""
 
-    out_dir: str | None = None  # None -> <repo>/data/characterization/
+    out_dir: str | None = None  # None -> DEFAULT_OUT_DIR / <robot_id>
     robot_id: str = "go2"
+    tag: str = "recording"  # filename discriminator: "recording" (char), "benchmark" (bench)
     # Timestamped filenames make rerun-safe defaults; never silently
     # clobber prior recordings.
     overwrite: bool = False
@@ -90,7 +96,8 @@ class CharacterizationRecorder(Recorder):
         )
         out_dir.mkdir(parents=True, exist_ok=True)
         self.config.db_path = (
-            out_dir / f"{self.config.robot_id}_recording_{date.today().isoformat()}_{git_sha()}.db"
+            out_dir
+            / f"{self.config.robot_id}_{self.config.tag}_{date.today().isoformat()}_{git_sha()}.db"
         )
         super().start()
 
