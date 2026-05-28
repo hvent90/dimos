@@ -113,10 +113,6 @@ class TickLoop:
         self._tick_thread: threading.Thread | None = None
         self._last_tick_time: float = 0.0
         self._tick_count: int = 0
-        # Cached most-recently-built state. Off-thread consumers (the
-        # coord's LCM stream handlers, e.g. _on_path) read this to
-        # snapshot odom without racing on read_state().
-        self._latest_state: CoordinatorState | None = None
 
     @property
     def tick_count(self) -> int:
@@ -127,12 +123,6 @@ class TickLoop:
     def is_running(self) -> bool:
         """Whether the tick loop is currently running."""
         return not self._stop_event.is_set()
-
-    @property
-    def latest_state(self) -> CoordinatorState | None:
-        """Most-recently-built CoordinatorState, or None before the first
-        tick."""
-        return self._latest_state
 
     def start(self) -> None:
         """Start the tick loop in a daemon thread."""
@@ -187,8 +177,6 @@ class TickLoop:
         joint_states = self._read_all_hardware()
         imu_states = self._read_all_imu()
         state = CoordinatorState(joints=joint_states, imu=imu_states, t_now=t_now, dt=dt)
-
-        self._latest_state = state
 
         commands = self._compute_all_tasks(state)
 

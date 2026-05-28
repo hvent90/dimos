@@ -56,9 +56,7 @@ from dimos.hardware.drive_trains.spec import (
 from dimos.hardware.manipulators.spec import ManipulatorAdapter
 from dimos.hardware.whole_body.spec import WholeBodyAdapter
 from dimos.msgs.geometry_msgs.PoseStamped import PoseStamped
-from dimos.msgs.geometry_msgs.Quaternion import Quaternion
 from dimos.msgs.geometry_msgs.Twist import Twist
-from dimos.msgs.geometry_msgs.Vector3 import Vector3
 from dimos.msgs.nav_msgs.Path import Path
 from dimos.msgs.sensor_msgs.JointState import JointState
 from dimos.msgs.std_msgs.Float32 import Float32
@@ -165,10 +163,10 @@ class ControlCoordinator(Module):
     # Input: Live RG corridor half-width (m) for tasks with set_e_max().
     e_max: In[Float32]
 
-    # Input: Planned path for tasks with set_path(). Typical source is the
-    # nav stack (FarPlanner/LocalPlanner). The coord snapshots the latest
-    # odom from its tick state and passes it alongside the path so the
-    # task's anchoring isn't racing the first compute() tick.
+    # Input: Planned path for tasks with set_path(). Typical source is a
+    # nav-stack planner (e.g. ReplanningAStarPlanner). The coord just
+    # forwards the path; tasks read their own latest odom from internal
+    # state populated by compute() each tick.
     path: In[Path]
 
     # Arming and dry-run are one-shot RPCs, not streams.
@@ -544,51 +542,13 @@ class ControlCoordinator(Module):
                 if set_e_max is not None:
                     set_e_max(value)
 
-    def _snapshot_odom(self) -> PoseStamped | None:
-        """Reconstruct a PoseStamped from the tick loop's latest cached
-        state. Looks at the first twist-base hardware's [x, y, yaw]
-        joints (same convention PathFollowerTask.compute uses). Returns
-        None if no tick has fired yet or no twist-base is registered."""
-        if self._tick_loop is None:
-            return None
-        state = self._tick_loop.latest_state
-        if state is None:
-            return None
-        positions = state.joints.joint_positions
-        with self._hardware_lock:
-            for hw in self._hardware.values():
-                if hw.component.hardware_type != HardwareType.BASE:
-                    continue
-                names = hw.joint_names
-                if len(names) < 3:
-                    continue
-                x = positions.get(names[0])
-                y = positions.get(names[1])
-                yaw = positions.get(names[2])
-                if x is None or y is None or yaw is None:
-                    return None
-                return PoseStamped(
-                    ts=state.t_now,
-                    position=Vector3(float(x), float(y), 0.0),
-                    orientation=Quaternion.from_euler(Vector3(0.0, 0.0, float(yaw))),
-                )
-        return None
-
     def _on_path(self, msg: Path) -> None:
-        """Forward a planned path to any task with set_path(path, odom).
-        Snapshots latest odom from the tick loop's cached state so the
-        task's anchoring doesn't race the first compute() tick."""
-        odom = self._snapshot_odom()
-        if odom is None:
-            logger.warning(
-                "ControlCoordinator received path but no odom snapshot available yet; dropping."
-            )
-            return
+        """Forward a planned path to any task with set_path(path)."""
         with self._task_lock:
             for task in self._tasks.values():
                 set_path = getattr(task, "set_path", None)
                 if set_path is not None:
-                    set_path(msg, odom)
+                    set_path(msg)
 
     @rpc
     def set_activated(self, engaged: bool) -> None:

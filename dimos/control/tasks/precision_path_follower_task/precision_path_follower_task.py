@@ -94,18 +94,24 @@ class PrecisionPathFollowerTask(PathFollowerTask):
         if self._path is not None:
             self._recompute_profile()
 
-    def set_path(self, path: Path, current_odom: PoseStamped) -> None:
-        """Coordinator broadcast hook for nav-stack-emitted paths. The
-        coord snapshots the latest odom from its tick state and passes
-        it here so anchoring doesn't race the first compute() tick.
-        Delegates to the regular start_path lifecycle (which the override
-        on this class extends with the lazy artifact load + solve_profile
-        recompute)."""
+    def set_path(self, path: Path) -> None:
+        """Coordinator broadcast hook for nav-stack-emitted paths.
+        Pulls the latest odom from ``self._current_odom`` (populated by
+        the parent task's compute() every tick from CoordinatorState).
+        If no compute tick has fired yet, ``_current_odom`` is None and
+        we drop the path with a warning — the race window is one tick
+        wide at startup and shouldn't fire in practice."""
+        if self._current_odom is None:
+            logger.warning(
+                f"PrecisionPathFollowerTask '{self._name}': received path "
+                f"but no odom yet; dropping (race at startup)."
+            )
+            return
         logger.info(
             f"PrecisionPathFollowerTask '{self._name}': received path "
             f"from stream (n={len(path.poses)})"
         )
-        self.start_path(path, current_odom)
+        self.start_path(path, self._current_odom)
 
     # ------------------------------------------------------------------
     # Path lifecycle
