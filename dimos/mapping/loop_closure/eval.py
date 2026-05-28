@@ -33,12 +33,7 @@ from typing import Any
 
 import typer
 
-from dimos.mapping.loop_closure.pgo import (
-    LoopClosure,
-    keyframes_to_corrections,
-    make_interpolator,
-    pgo_keyframes,
-)
+from dimos.mapping.loop_closure.pgo import PGO
 from dimos.memory2.store.sqlite import SqliteStore
 from dimos.memory2.stream import Stream
 from dimos.memory2.transform import QualityWindow, SpeedLimit
@@ -79,15 +74,8 @@ def _eval_recording(
     with store:
         lidar = store.streams.lidar
 
-        # .tap() captures each keyframe as make_interpolator iterates the
-        # corrections stream, so no extra pass over lidar.
-        keyframes: list[Any] = []
-        loops_out: list[LoopClosure] = []
         t0 = time.perf_counter()
-        kf_stream = pgo_keyframes(lidar, loop_closures_out=loops_out).tap(
-            lambda obs: keyframes.append(obs.data)
-        )
-        interp = make_interpolator(keyframes_to_corrections(kf_stream))
+        graph = lidar.transform(PGO()).last().data
         pgo_time = time.perf_counter() - t0
 
         # Marker detection pipeline: same shape as dimos map / markers_rrd.
@@ -125,7 +113,7 @@ def _eval_recording(
                 child_frame_id=f"marker_{d.data.marker_id}",
                 ts=d.ts,
             )
-            corrected = interp(d.ts) + raw_tf
+            corrected = graph.correct(raw_tf)
             t = corrected.translation
             by_marker.setdefault(d.data.marker_id, []).append((t.x, t.y, t.z))
 

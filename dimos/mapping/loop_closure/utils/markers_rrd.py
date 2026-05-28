@@ -20,17 +20,15 @@ Walks a recorded SQLite dataset and writes an rrd containing:
 - per detection: marker box in world frame, at the detection timestamp
 
 Usage:
-    uv run python -m dimos.utils.cli.markers_rrd hk_village1 --out hk.rrd
+    uv run python -m dimos.mapping.loop_closure.utils.markers_rrd hk_village1 --out hk.rrd
     rerun hk.rrd
 
-Throwaway script next to ``map.py``; remove once the apriltag reliability work
-lands.
+Throwaway script; remove once the apriltag reliability work lands.
 """
 
 from __future__ import annotations
 
 from pathlib import Path
-from typing import Any
 
 import rerun as rr
 import typer
@@ -119,7 +117,7 @@ def main(
 
         # Pass 3: marker detections, filtered the same way as `dimos map`.
         xf = DetectMarkers(camera_info=cam_info, marker_length_m=marker_size)
-        pipeline: Stream[Any] = color_image.transform(
+        pipeline: Stream[Image] = color_image.transform(
             QualityWindow(lambda img: img.sharpness, window=quality_window)
         )
         if marker_max_speed > 0:
@@ -185,7 +183,7 @@ def main(
                 marker_length_m=marker_size,
                 smoothing_window=smoothing_window,
             )
-            pipeline_tracked: Stream[Any] = color_image.transform(
+            pipeline_tracked: Stream[Image] = color_image.transform(
                 QualityWindow(lambda img: img.sharpness, window=quality_window)
             )
             if marker_max_speed > 0:

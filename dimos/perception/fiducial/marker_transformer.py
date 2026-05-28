@@ -85,6 +85,9 @@ def _average_marker_pose(
         qsz += s * q.z
         qsw += s * q.w
     norm = math.sqrt(qsx * qsx + qsy * qsy + qsz * qsz + qsw * qsw)
+    if norm < 1e-12:
+        # Signs cancelled exactly — pathological, fall back to the hemisphere ref.
+        return (Vector3(cx, cy, cz), ref)
     return (
         Vector3(cx, cy, cz),
         Quaternion(qsx / norm, qsy / norm, qsz / norm, qsw / norm),
@@ -230,8 +233,11 @@ class DetectMarkers(Transformer[Image, Detection3DMarker]):
                     )
                     buf.add(det)
                     avg_center, avg_orient = _average_marker_pose(buf)
+                    # Drop `transform` (camera-in-world): the averaged pose is
+                    # built from many frames, so any single camera transform is
+                    # inconsistent with center/orientation.
                     yielded_det = dataclasses.replace(
-                        det, center=avg_center, orientation=avg_orient
+                        det, center=avg_center, orientation=avg_orient, transform=None
                     )
                     yielded_pose = Transform(
                         translation=avg_center,

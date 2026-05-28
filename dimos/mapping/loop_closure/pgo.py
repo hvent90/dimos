@@ -12,59 +12,48 @@
 # See the License for the specific language governing permissions and
 # limitations under the License.
 
-"""PGO drift corrections as composable Stream stages.
+"""PGO drift corrections as a memory2 Transformer.
 
 A lidar/odom stream comes in with poses that drift over time — the robot's
 estimate of where it is in the world slowly diverges from ground truth as
 small per-frame errors accumulate. PGO ("pose graph optimization") detects
 revisited places via loop closure and pulls the trajectory back into
-self-consistency. The result is a stream of *corrections*: a Transform per
-keyframe that maps every drifted ("raw") pose to its corrected one.
+self-consistency.
 
-Pipeline:
+Two public types:
 
-    lidar: Stream[PointCloud2]                         # pose-stamped scans
-        -> pgo_keyframes(...)             -> Stream[Keyframe]    # one per kf
-        -> keyframes_to_corrections(...)  -> Stream[Transform]   # world_corrected <- world_raw
-        -> apply_corrections(any_stream, corrections) -> Stream[T]  # obs.pose shuffled
+- ``PGO`` is ``Transformer[PointCloud2, PoseGraph]``. Apply it to a lidar
+  stream and it emits one cumulative ``PoseGraph`` snapshot per loop-closure
+  event (the only state changes that meaningfully restructure the optimized
+  poses), plus a final emit at end-of-stream so ``.last()`` always returns
+  something even on loop-less recordings.
+- ``PoseGraph`` is a frozen dataclass carrying ``keyframes`` (nodes) and
+  ``loops`` (edges), *and* is itself ``Transformer[Any, Any]``. Apply via
+  ``stream.transform(graph)`` to rewrite ``obs.pose`` from the raw to the
+  drift-corrected frame; or call ``graph.correct(pose)`` for a one-off.
 
-`pgo_keyframes` runs ISAM2 + ICP loop closure across the input, emitting
-each kept keyframe with both its raw odom pose (`local`) and its optimized
-pose (`optimized`) as Transforms. Pass `loop_closures_out=[]` to also
-collect each accepted ICP loop edge as a `LoopClosure` (source+target
-optimized poses + ICP fitness) — useful for visualizing the pose graph.
+Typical usage::
 
-`keyframes_to_corrections` is pure arithmetic: per keyframe, the drift
-correction is `optimized @ local^-1` (Transform composition). The resulting
-stream has one entry per keyframe — sparse in time.
+    graph = lidar.transform(PGO()).last().data        # batch
+    corrected = some_stream.transform(graph)          # apply
+    for snapshot in lidar.transform(PGO()): ...       # live viz
 
-`make_interpolator` materializes the sparse correction stream into a
-ts -> Transform function: SLERP for rotation, linear lerp for translation,
-clipping out-of-range queries to the endpoints.
-
-`apply_corrections` shuffles `obs.pose` on any stream using the interpolated
-correction at each obs.ts. It's read-only on `obs.data`, so the same lidar
-stream can be re-applied — or a different recording from the same physical
-space, if the corrections generalize.
-
-`gtsam` is imported lazily inside hot helpers so importing this module
-stays cheap and gtsam-free for consumers that only need `Keyframe` /
-`apply_corrections`.
+``gtsam`` is imported lazily inside hot helpers so importing this module
+stays cheap and gtsam-free for consumers that only need ``PoseGraph``.
 """
 
 from __future__ import annotations
 
 from collections.abc import Callable, Iterator
 from dataclasses import dataclass
-from typing import TYPE_CHECKING, Any, TypedDict, TypeVar, Unpack
+from typing import TYPE_CHECKING, Any, Literal, TypedDict, TypeVar, Unpack, cast
 
 import numpy as np
 import open3d as o3d  # type: ignore[import-untyped]
 import open3d.core as o3c  # type: ignore[import-untyped]
 from scipy.spatial.transform import Rotation, Slerp
 
-from dimos.memory2.store.memory import MemoryStore
-from dimos.memory2.stream import Stream
+from dimos.memory2.transform import Transformer
 from dimos.memory2.type.observation import Observation
 from dimos.msgs.geometry_msgs.Quaternion import Quaternion
 from dimos.msgs.geometry_msgs.Transform import Transform
@@ -113,7 +102,7 @@ class PGOConfig(BaseConfig):
     odom_trans_var_z: float = 1e-6
 
     # Loop-closure rotation variance. Translation variance is supplied
-    # per-edge from ICP fitness, floored at 0.01 (sigma_trans ~ 10 cm).
+    # per-edge from ICP fitness, floored at 1e-4 (sigma_trans ~ 1 cm).
     loop_rot_var: float = 0.05
 
 
@@ -167,128 +156,146 @@ class LoopClosure:
     score: float
 
 
-def pgo_keyframes(
-    stream: Stream[PointCloud2],
-    *,
-    on_frame: Callable[[Any], None] | None = None,
-    loop_closures_out: list[LoopClosure] | None = None,
-    **pgo_cfg: Unpack[PGOKwargs],
-) -> Stream[Keyframe]:
-    """Run PGO across a pose-stamped point-cloud stream; emit one obs per keyframe.
+@dataclass(frozen=True)
+class PoseGraph(Transformer[Any, Any]):
+    """Output of PGO: the keyframe nodes and loop edges of the optimized graph.
 
-    If `loop_closures_out` is provided, accepted loop edges are appended to
-    it (in detection order) using each keyframe's final optimized pose.
+    Apply via ``stream.transform(graph)`` to rewrite each obs's pose into
+    the drift-corrected frame; the data payload passes through untouched.
+    For one-off pose corrections call :meth:`correct` directly.
     """
-    cfg = PGOConfig(**pgo_cfg)
-    pgo = _PGO(cfg)
 
-    for obs in stream:
-        if on_frame is not None:
-            on_frame(obs)
-        pose = obs.pose
-        if pose is None:
-            continue
-        # Skip placeholder poses written before odom converges: zero
-        # translation or uninitialized (all-zero) quaternion. Identity
-        # rotation (qw=1) is valid and must not be filtered.
-        if pose.position.is_zero() or pose.orientation.is_zero():
-            continue
-        pgo.process(_obs_to_pose3(obs), obs.ts, obs.data)
+    keyframes: tuple[Keyframe, ...] = ()
+    loops: tuple[LoopClosure, ...] = ()
 
-    mem = MemoryStore()
-    out: Stream[Keyframe] = mem.stream("keyframes", Keyframe)
-    for kf in pgo.finalize():
-        out.append(kf, ts=kf.ts)
-    if loop_closures_out is not None:
-        loop_closures_out.extend(pgo.loop_closures())
-    return out
+    def correct(self, pose: Transform) -> Transform:
+        """Map a raw-world pose into the drift-corrected frame at ``pose.ts``."""
+        # Transform.__add__ composes: (T_corr + T_raw) applies T_corr after T_raw.
+        return self.correction_at(pose.ts) + pose
 
+    def correction_at(self, ts: float) -> Transform:
+        """The raw ``world_corrected <- world_raw`` transform at ``ts``.
 
-def keyframes_to_corrections(keyframes: Stream[Keyframe]) -> Stream[Transform]:
-    """Per-keyframe drift correction as Transform(world_corrected <- world_raw)."""
-    mem = MemoryStore()
-    out: Stream[Transform] = mem.stream("corrections", Transform)
-    for obs in keyframes:
-        kf = obs.data
-        # world_corrected <- body <- world_raw composes to world_corrected <- world_raw.
-        drift = kf.optimized + kf.local.inverse()
-        out.append(drift, ts=kf.ts)
-    return out
+        Useful when applying the correction to non-pose data (e.g. point
+        clouds): ``pointcloud.transform(graph.correction_at(obs.ts))``.
+        """
+        return self._interp()(ts)
 
-
-def make_interpolator(corrections: Stream[Transform]) -> Callable[[float], Transform]:
-    """Materialize corrections once; return a fast ts -> Transform lookup."""
-    ts_list: list[float] = []
-    quat_list: list[np.ndarray] = []
-    t_list: list[np.ndarray] = []
-    for obs in corrections:
-        tf = obs.data
-        # obs.ts is authoritative; obs.data.ts can be mutated by Transform's
-        # ts=0.0 -> time.time() fallback in its constructor.
-        ts_list.append(obs.ts)
-        quat_list.append(tf.rotation.to_numpy())
-        t_list.append(tf.translation.to_numpy())
-
-    if not ts_list:
-        raise ValueError("empty corrections stream")
-
-    # Slerp needs ≥2 keyframes. Pad len==1 with a duplicate so the
-    # general path handles it; clip-to-endpoints behavior is unchanged.
-    if len(ts_list) == 1:
-        ts_list.append(ts_list[0] + 1e-6)
-        quat_list.append(quat_list[0])
-        t_list.append(t_list[0])
-
-    ts_arr = np.array(ts_list)
-    t_stack = np.stack(t_list)
-    slerp = Slerp(ts_arr, Rotation.from_quat(np.stack(quat_list)))
-
-    def interp(ts: float) -> Transform:
-        ts_clip = float(np.clip(ts, ts_arr[0], ts_arr[-1]))
-        R = slerp([ts_clip])[0].as_matrix()
-        idx = int(np.searchsorted(ts_arr, ts_clip))
-        if idx == 0:
-            t = t_stack[0]
-        elif idx >= len(ts_arr):
-            t = t_stack[-1]
-        else:
-            t_lo, t_hi = ts_arr[idx - 1], ts_arr[idx]
-            alpha = (ts_clip - t_lo) / (t_hi - t_lo) if t_hi > t_lo else 0.0
-            t = (1 - alpha) * t_stack[idx - 1] + alpha * t_stack[idx]
-        return Transform(
-            translation=Vector3(t),
-            rotation=Quaternion.from_rotation_matrix(R),
-            frame_id=FRAME_WORLD_CORRECTED,
-            child_frame_id=FRAME_WORLD_RAW,
-            ts=float(ts),
-        )
-
-    return interp
-
-
-def apply_corrections(
-    stream: Stream[T],
-    corrections: Stream[Transform],
-) -> Stream[T]:
-    """Shuffle obs.pose on `stream` by the interpolated correction at each obs.ts.
-
-    `obs.data` is untouched. Frames with `obs.pose is None` pass through
-    unchanged. Out-of-range `obs.ts` get the endpoint correction (clipped).
-    """
-    interp = make_interpolator(corrections)
-
-    def xf(upstream: Iterator[Observation[T]]) -> Iterator[Observation[T]]:
+    def __call__(self, upstream: Iterator[Observation[Any]]) -> Iterator[Observation[Any]]:
+        """Rewrite obs.pose via :meth:`correct`; pass through pose-less obs unchanged."""
         for obs in upstream:
             ps = obs.pose_stamped
             if ps is None:
                 yield obs
                 continue
             raw_tf = Transform.from_pose(FRAME_BODY, ps)
-            # Transform.__add__ composes: (T_corr + T_raw) applies T_corr after T_raw.
-            corrected = interp(obs.ts) + raw_tf
-            yield obs.derive(data=obs.data, pose=corrected)
+            yield obs.derive(data=obs.data, pose=self.correct(raw_tf))
 
-    return stream.transform(xf)
+    def _interp(self) -> Callable[[float], Transform]:
+        """Lazy slerp/lerp drift-correction lookup keyed by ts."""
+        cached = self.__dict__.get("_interp_cache")
+        if cached is not None:
+            return cast("Callable[[float], Transform]", cached)
+
+        if not self.keyframes:
+            raise ValueError("PoseGraph has no keyframes")
+
+        # Per-keyframe drift: world_corrected <- body <- world_raw.
+        ts_list = [kf.ts for kf in self.keyframes]
+        drifts = [(kf.optimized + kf.local.inverse()) for kf in self.keyframes]
+        quat_list = [tf.rotation.to_numpy() for tf in drifts]
+        t_list = [tf.translation.to_numpy() for tf in drifts]
+
+        # Slerp needs ≥2 keyframes; pad a len==1 list with a near-duplicate.
+        if len(ts_list) == 1:
+            ts_list.append(ts_list[0] + 1e-6)
+            quat_list.append(quat_list[0])
+            t_list.append(t_list[0])
+
+        ts_arr = np.array(ts_list)
+        t_stack = np.stack(t_list)
+        slerp = Slerp(ts_arr, Rotation.from_quat(np.stack(quat_list)))
+
+        def interp(ts: float) -> Transform:
+            ts_clip = float(np.clip(ts, ts_arr[0], ts_arr[-1]))
+            R = slerp([ts_clip])[0].as_matrix()
+            idx = int(np.searchsorted(ts_arr, ts_clip))
+            if idx == 0:
+                t = t_stack[0]
+            elif idx >= len(ts_arr):
+                t = t_stack[-1]
+            else:
+                t_lo, t_hi = ts_arr[idx - 1], ts_arr[idx]
+                alpha = (ts_clip - t_lo) / (t_hi - t_lo) if t_hi > t_lo else 0.0
+                t = (1 - alpha) * t_stack[idx - 1] + alpha * t_stack[idx]
+            return Transform(
+                translation=Vector3(t),
+                rotation=Quaternion.from_rotation_matrix(R),
+                frame_id=FRAME_WORLD_CORRECTED,
+                child_frame_id=FRAME_WORLD_RAW,
+                ts=float(ts),
+            )
+
+        # frozen=True blocks plain attribute writes; use object.__setattr__.
+        object.__setattr__(self, "_interp_cache", interp)
+        return interp
+
+
+class PGO(Transformer[PointCloud2, "PoseGraph"]):
+    """Pose-graph optimization as a memory2 Transformer.
+
+    Emits one cumulative :class:`PoseGraph` snapshot per state change. By
+    default (``emit_on="loop"``) that's one emit per accepted loop closure
+    plus a final emit at end-of-stream so ``.last()`` always returns
+    something even on loop-less recordings. ``emit_on="keyframe"`` emits on
+    every new keyframe — noisier, useful for live progress viz.
+    """
+
+    def __init__(
+        self,
+        *,
+        emit_on: Literal["loop", "keyframe"] = "loop",
+        **cfg: Unpack[PGOKwargs],
+    ) -> None:
+        self._cfg = PGOConfig(**cfg)
+        self._emit_on = emit_on
+
+    def __call__(
+        self, upstream: Iterator[Observation[PointCloud2]]
+    ) -> Iterator[Observation[PoseGraph]]:
+        pgo = _PGOState(self._cfg)
+        last_kf_count = 0
+        last_loop_count = 0
+        last_kf_ts: float | None = None
+
+        for obs in upstream:
+            pose = obs.pose
+            if pose is None:
+                continue
+            # Placeholder filter: zero translation OR uninitialized (all-zero)
+            # quaternion. Identity rotation (qw=1) is valid and stays.
+            if pose.position.is_zero() or pose.orientation.is_zero():
+                continue
+            pgo.process(_obs_to_pose3(obs), obs.ts, obs.data)
+
+            n_kf = len(pgo._key_poses)
+            n_loops = len(pgo._accepted_loops)
+            if n_kf == last_kf_count and n_loops == last_loop_count:
+                continue
+            last_kf_ts = pgo._key_poses[-1].timestamp if pgo._key_poses else last_kf_ts
+
+            should_emit = (self._emit_on == "loop" and n_loops > last_loop_count) or (
+                self._emit_on == "keyframe"
+            )
+            last_kf_count = n_kf
+            last_loop_count = n_loops
+            if should_emit and last_kf_ts is not None:
+                yield Observation(ts=last_kf_ts, data_type=PoseGraph, _data=pgo.snapshot())
+
+        # Final emit: guarantees `.last()` returns something even on
+        # loop-less recordings (and catches any tail state since the last emit).
+        if last_kf_ts is not None:
+            yield Observation(ts=last_kf_ts, data_type=PoseGraph, _data=pgo.snapshot())
 
 
 def _obs_to_pose3(obs: Observation[Any]) -> gtsam.Pose3:
@@ -321,7 +328,7 @@ class _LoopPair:
     score: float
 
 
-class _PGO:
+class _PGOState:
     """Incremental PGO: gtsam ISAM2 over keyframes with ICP loop closures.
 
     Call `process` per frame (odom pose + body-frame points). Call
@@ -420,6 +427,13 @@ class _PGO:
                 )
             )
         return out
+
+    def snapshot(self) -> PoseGraph:
+        """Immutable view of the current pose graph."""
+        return PoseGraph(
+            keyframes=tuple(self.finalize()),
+            loops=tuple(self.loop_closures()),
+        )
 
     def _is_keyframe(self, local_pose: gtsam.Pose3) -> bool:
         if not self._key_poses:
@@ -589,7 +603,9 @@ class _PGO:
             # *translation* variance and a generous fixed rotation variance
             # — loops shouldn't be trusted to fix rotation tightly without
             # normals + p2plane.
-            trans_var = max(0.01, float(pair.score))  # >= sigma_trans = 10 cm
+            # Floor at 1e-4 m² (sigma_trans ~ 1 cm) so a near-perfect ICP isn't
+            # forced to a slack 10 cm prior; a fitness score of 0.01 still wins.
+            trans_var = max(1e-4, float(pair.score))
             rot_var = self._cfg.loop_rot_var
             noise = gtsam.noiseModel.Diagonal.Variances(
                 np.array([rot_var, rot_var, rot_var, trans_var, trans_var, trans_var])
@@ -599,7 +615,8 @@ class _PGO:
         self._pending_loops.clear()
 
         self._isam2.update(self._graph, self._values)
-        self._isam2.update()
+        # Extra linearization iterations only when a loop edge lands; odom-only
+        # adds don't move the state much and a single update suffices.
         if has_loop:
             for _ in range(self._cfg.loop_closure_extra_iterations):
                 self._isam2.update()

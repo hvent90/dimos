@@ -13,6 +13,7 @@
 # limitations under the License.
 
 from collections.abc import Callable, Iterable
+import math
 from pathlib import Path
 import time
 from typing import Any
@@ -21,6 +22,7 @@ import rerun as rr
 import rerun.blueprint as rrb
 import typer
 
+from dimos.mapping.loop_closure.pgo import PGO, PoseGraph
 from dimos.mapping.voxels import VoxelMapTransformer
 from dimos.memory2.store.sqlite import SqliteStore
 from dimos.memory2.stream import Stream
@@ -54,8 +56,6 @@ def _log_markers(
     labels: list[str],
 ) -> None:
     """Render per-marker fill + outline + pin-stem + label as four static entities."""
-    import rerun as rr
-
     n = len(centers)
     pin_strips = [[(cx, cy, cz), (cx, cy, cz + MARKER_STEM)] for (cx, cy, cz) in centers]
     label_positions = [(cx, cy, cz + MARKER_STEM + 0.01) for (cx, cy, cz) in centers]
@@ -100,7 +100,7 @@ def _accumulate(
     voxel: float,
     block_count: int,
     device: str,
-    interp: Callable[[float], Transform] | None = None,
+    graph: PoseGraph | None = None,
     progress_cb: Callable[[Observation[Any]], None] | None = None,
 ) -> PointCloud2 | None:
     """Accumulate a voxel map from `obs_iter`, optionally PGO-correcting each frame.
@@ -115,10 +115,10 @@ def _accumulate(
                 progress_cb(obs)
             if len(obs.data) == 0:
                 continue
-            if interp is not None:
+            if graph is not None:
                 if obs.pose_tuple is None:
                     continue
-                yield obs.derive(data=obs.data.transform(interp(obs.ts)))
+                yield obs.derive(data=obs.data.transform(graph.correction_at(obs.ts)))
             else:
                 yield obs
 
@@ -252,7 +252,9 @@ def main(
         if pose.position.is_zero() or pose.orientation.is_zero():
             continue
         t = pose.position
-        cell = (int(t.x / pgo_tol), int(t.y / pgo_tol), int(t.z / pgo_tol))
+        # math.floor so negative coords bucket consistently; int() truncates
+        # toward zero and silently folds -0.5 and 0.5 into the same cell.
+        cell = (math.floor(t.x / pgo_tol), math.floor(t.y / pgo_tol), math.floor(t.z / pgo_tol))
         seen[cell] = obs
 
     n_kept = len(seen)
@@ -267,49 +269,35 @@ def main(
 
     pgo_map = None
     pgo_path: list[tuple[float, float, float]] = []
-    loops: list[Any] = []
-    interp: Any | None = None
+    graph: PoseGraph | None = None
     if pgo:
-        from dimos.mapping.loop_closure.pgo import (
-            LoopClosure,
-            keyframes_to_corrections,
-            make_interpolator,
-            pgo_keyframes,
-        )
-
         print("running PGO twopass map...")
-        pgo_loops: list[LoopClosure] = []
-        keyframes = pgo_keyframes(
-            lidar,
-            on_frame=progress(total, "pgo pass 1 (optimizing)"),
-            loop_closures_out=pgo_loops,
-        )
-        loops = list(pgo_loops)
-        corrections = keyframes_to_corrections(keyframes)
-        interp = make_interpolator(corrections)
+        prog = progress(total, "pgo pass 1 (optimizing)")
+        graph = lidar.tap(prog).transform(PGO()).last().data
 
-        for kf_obs in keyframes:
-            kf_t = kf_obs.data.optimized.translation
-            pgo_path.append((kf_t.x, kf_t.y, kf_t.z))
+        pgo_path = [
+            (kf.optimized.translation.x, kf.optimized.translation.y, kf.optimized.translation.z)
+            for kf in graph.keyframes
+        ]
 
         pgo_map = _accumulate(
             seen.values(),
             voxel=voxel,
             block_count=block_count,
             device=device,
-            interp=interp,
+            graph=graph,
             progress_cb=progress(n_kept, "pgo pass 2 (rebuilding)"),
         )
 
     full_pgo_map = None
     if full_pgo:
-        assert interp is not None
+        assert graph is not None
         full_pgo_map = _accumulate(
             lidar,
             voxel=voxel,
             block_count=block_count,
             device=device,
-            interp=interp,
+            graph=graph,
             progress_cb=progress(total, "full pgo (rebuilding)"),
         )
 
@@ -398,13 +386,13 @@ def main(
                 rr.Points3D(positions=pgo_path, colors=[[255, 0, 0]], radii=[0.025]),
                 static=True,
             )
-        if pgo and loops:
+        if graph is not None and graph.loops:
             loop_strips = [
                 [
                     (lc.source.translation.x, lc.source.translation.y, lc.source.translation.z),
                     (lc.target.translation.x, lc.target.translation.y, lc.target.translation.z),
                 ]
-                for lc in loops
+                for lc in graph.loops
             ]
             rr.log(
                 "world/pgo_map/pgo/loop_closures",
@@ -445,10 +433,9 @@ def main(
                 labels=labels,
             )
 
-            if interp is not None:
-                # PGO-corrected marker poses. interp(ts) maps raw_world →
-                # pgo_world; composing with each raw marker transform lifts
-                # it into the corrected frame so it lines up with pgo_map.
+            if graph is not None:
+                # PGO-correct each raw marker pose: lift it from world_raw
+                # into world_corrected so it lines up with pgo_map.
                 pgo_centers: list[tuple[float, float, float]] = []
                 pgo_quats: list[tuple[float, float, float, float]] = []
                 for d in marker_dets:
@@ -459,7 +446,7 @@ def main(
                         child_frame_id=f"marker_{d.data.marker_id}",
                         ts=d.ts,
                     )
-                    corrected = interp(d.ts) + raw_tf
+                    corrected = graph.correct(raw_tf)
                     pgo_centers.append(
                         (
                             corrected.translation.x,

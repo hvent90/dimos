@@ -19,14 +19,12 @@ import pytest
 from scipy.spatial.transform import Rotation
 
 from dimos.mapping.loop_closure.pgo import (
+    PGO,
     Keyframe,
     PGOConfig,
+    PoseGraph,
     _obs_to_pose3,
     _pose3_to_transform,
-    apply_corrections,
-    keyframes_to_corrections,
-    make_interpolator,
-    pgo_keyframes,
 )
 from dimos.memory2.store.memory import MemoryStore
 from dimos.memory2.stream import Stream
@@ -160,25 +158,18 @@ def _make_lidar_stream(n_frames: int = 12, points_per_frame: int = 500) -> Strea
 class TestPipelineEndToEnd:
     def test_straight_line_produces_keyframes(self) -> None:
         lidar = _make_lidar_stream(n_frames=12)
-        kfs = pgo_keyframes(lidar)
+        graph = lidar.transform(PGO()).last().data
         # 12 frames spaced 1m apart with key_pose_delta_trans=0.5 -> every frame
         # after the first triggers a keyframe; some may dedupe but ~11 emitted.
-        n = kfs.count()
+        n = len(graph.keyframes)
         assert 10 <= n <= 12
-
-    def test_keyframes_to_corrections_size(self) -> None:
-        lidar = _make_lidar_stream(n_frames=12)
-        kfs = pgo_keyframes(lidar)
-        corr = keyframes_to_corrections(kfs)
-        assert corr.count() == kfs.count()
 
     def test_apply_identity_corrections_preserves_poses(self) -> None:
         # With no loop closures the optimization is a no-op -> drift = identity ->
-        # apply_corrections is a no-op on input poses.
+        # stream.transform(graph) is a no-op on input poses.
         lidar = _make_lidar_stream(n_frames=12)
-        kfs = pgo_keyframes(lidar)
-        corr = keyframes_to_corrections(kfs)
-        corrected = apply_corrections(lidar, corr)
+        graph = lidar.transform(PGO()).last().data
+        corrected = lidar.transform(graph)
         in_poses = [o.pose_tuple for o in lidar if o.pose_tuple is not None]
         out_poses = [o.pose_tuple for o in corrected if o.pose_tuple is not None]
         assert len(in_poses) == len(out_poses)
@@ -187,19 +178,29 @@ class TestPipelineEndToEnd:
                 assert a == pytest.approx(b, abs=1e-6)
 
 
-def _make_corrections(transforms: list[Transform]) -> Stream[Transform]:
-    mem = MemoryStore()
-    stream: Stream[Transform] = mem.stream("corrections", Transform)
-    for tf in transforms:
-        stream.append(tf, ts=tf.ts)
-    return stream
+def _graph_with_drift_at(drifts: list[Transform]) -> PoseGraph:
+    """PoseGraph whose drift correction equals each ``drifts[i]`` at ``drifts[i].ts``.
+
+    Trick: drift = optimized + local^-1. With local=identity, drift==optimized.
+    """
+    identity = Vector3(0.0, 0.0, 0.0)
+    identity_rot = Quaternion(0.0, 0.0, 0.0, 1.0)
+    return PoseGraph(
+        keyframes=tuple(
+            Keyframe(
+                ts=d.ts,
+                local=Transform(translation=identity, rotation=identity_rot, ts=d.ts),
+                optimized=Transform(translation=d.translation, rotation=d.rotation, ts=d.ts),
+            )
+            for d in drifts
+        )
+    )
 
 
-class TestInterpolator:
-    def test_empty_stream_raises(self) -> None:
-        empty = _make_corrections([])
+class TestPoseGraphCorrection:
+    def test_empty_raises(self) -> None:
         with pytest.raises(ValueError):
-            make_interpolator(empty)
+            PoseGraph().correction_at(0.0)
 
     def test_single_keyframe_returns_constant(self) -> None:
         R = Rotation.from_euler("z", np.pi / 4).as_matrix()
@@ -208,33 +209,32 @@ class TestInterpolator:
             rotation=Quaternion.from_rotation_matrix(R),
             ts=10.0,
         )
-        interp = make_interpolator(_make_corrections([only]))
+        graph = _graph_with_drift_at([only])
         for query_ts in (0.0, 10.0, 100.0):
-            out = interp(query_ts)
+            out = graph.correction_at(query_ts)
             assert out.translation.x == pytest.approx(1.0, abs=1e-10)
             assert out.translation.y == pytest.approx(2.0, abs=1e-10)
             assert out.translation.z == pytest.approx(3.0, abs=1e-10)
 
     def test_out_of_range_clips_to_endpoints(self) -> None:
-        # Note: Transform's constructor maps ts=0.0 -> time.time(); use ts>0
-        # so test timestamps are deterministic.
+        # Transform's ctor maps ts=0.0 -> time.time(); use ts>0 for determinism.
         a = Transform(translation=Vector3(0.0, 0.0, 0.0), ts=1.0)
         b = Transform(translation=Vector3(10.0, 0.0, 0.0), ts=11.0)
-        # _make_corrections uses tf.ts; obs.ts ends up the same.
-        mem = MemoryStore()
-        stream: Stream[Transform] = mem.stream("corrections", Transform)
-        stream.append(a, ts=1.0)
-        stream.append(b, ts=11.0)
-        interp = make_interpolator(stream)
+        graph = _graph_with_drift_at([a, b])
         # Below range -> clipped to a
-        assert interp(-5.0).translation.x == pytest.approx(0.0, abs=1e-10)
+        assert graph.correction_at(-5.0).translation.x == pytest.approx(0.0, abs=1e-10)
         # Above range -> clipped to b
-        assert interp(100.0).translation.x == pytest.approx(10.0, abs=1e-10)
+        assert graph.correction_at(100.0).translation.x == pytest.approx(10.0, abs=1e-10)
         # In-range midpoint
-        assert interp(6.0).translation.x == pytest.approx(5.0, abs=1e-10)
+        assert graph.correction_at(6.0).translation.x == pytest.approx(5.0, abs=1e-10)
+
+    def test_frozen(self) -> None:
+        graph = PoseGraph()
+        with pytest.raises(Exception):
+            graph.keyframes = (Keyframe(ts=0, local=Transform(), optimized=Transform()),)  # type: ignore[misc]
 
 
-class TestApplyCorrections:
+class TestApplyAsTransformer:
     def test_pure_translation_shifts_poses(self) -> None:
         # Build a stream of 3 frames at the origin (identity pose) with a known
         # correction that shifts everything by +5 in x. Expected: corrected
@@ -247,17 +247,13 @@ class TestApplyCorrections:
                 ts=float(i + 1),
                 pose=(0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 1.0),
             )
-
-        # Constant correction: translate by (5, 0, 0), identity rotation.
-        c_a = Transform(translation=Vector3(5.0, 0.0, 0.0), ts=1.0)
-        c_b = Transform(translation=Vector3(5.0, 0.0, 0.0), ts=3.0)
-        mem2 = MemoryStore()
-        corr: Stream[Transform] = mem2.stream("corrections", Transform)
-        corr.append(c_a, ts=1.0)
-        corr.append(c_b, ts=3.0)
-
-        corrected = apply_corrections(lidar, corr)
-        for obs in corrected:
+        graph = _graph_with_drift_at(
+            [
+                Transform(translation=Vector3(5.0, 0.0, 0.0), ts=1.0),
+                Transform(translation=Vector3(5.0, 0.0, 0.0), ts=3.0),
+            ]
+        )
+        for obs in lidar.transform(graph):
             p = obs.pose_tuple
             assert p is not None
             assert p[0] == pytest.approx(5.0, abs=1e-9)
@@ -272,14 +268,13 @@ class TestApplyCorrections:
             ts=1.0,
             pose=None,
         )
-        c_a = Transform(translation=Vector3(5.0, 0.0, 0.0), ts=1.0)
-        c_b = Transform(translation=Vector3(5.0, 0.0, 0.0), ts=2.0)
-        mem2 = MemoryStore()
-        corr: Stream[Transform] = mem2.stream("corrections", Transform)
-        corr.append(c_a, ts=1.0)
-        corr.append(c_b, ts=2.0)
-        corrected = apply_corrections(lidar, corr)
-        for obs in corrected:
+        graph = _graph_with_drift_at(
+            [
+                Transform(translation=Vector3(5.0, 0.0, 0.0), ts=1.0),
+                Transform(translation=Vector3(5.0, 0.0, 0.0), ts=2.0),
+            ]
+        )
+        for obs in lidar.transform(graph):
             assert obs.pose is None
 
 
@@ -316,8 +311,8 @@ class TestRealRecording:
         in_count = lidar.count()
         assert in_count > 0, "recording is empty"
 
-        kfs = pgo_keyframes(lidar)
-        n_kf = kfs.count()
+        graph = lidar.transform(PGO()).last().data
+        n_kf = len(graph.keyframes)
         assert n_kf > 0, "PGO emitted no keyframes"
         # 60s recording at ~0.5m keyframe spacing -> at least a handful.
         assert n_kf >= 5
@@ -327,16 +322,14 @@ class TestRealRecording:
         # a no-op and local == optimized for every keyframe.
         drifted = sum(
             1
-            for obs in kfs
-            if obs.data.local.translation != obs.data.optimized.translation
-            or obs.data.local.rotation != obs.data.optimized.rotation
+            for kf in graph.keyframes
+            if kf.local.translation != kf.optimized.translation
+            or kf.local.rotation != kf.optimized.rotation
         )
         assert drifted > 0, "expected loop closures to drift at least one keyframe"
+        # loop_closures_out side-channel is gone — graph.loops carries them.
+        assert len(graph.loops) > 0
 
-        corr = keyframes_to_corrections(kfs)
-        assert corr.count() == n_kf
-
-        # apply_corrections preserves frame count, including pose=None rows.
-        corrected = apply_corrections(lidar, corr)
-        out_count = sum(1 for _ in corrected)
+        # PoseGraph-as-Transformer preserves frame count, including pose=None rows.
+        out_count = sum(1 for _ in lidar.transform(graph))
         assert out_count == in_count

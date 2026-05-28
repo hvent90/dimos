@@ -19,6 +19,9 @@ import sys
 import threading
 from typing import TYPE_CHECKING, Any, Generic, TypeVar, cast
 
+from dimos.msgs.geometry_msgs.Pose import Pose
+from dimos.msgs.geometry_msgs.PoseStamped import PoseStamped
+
 if sys.version_info >= (3, 11):
     from typing import Self
 else:
@@ -28,8 +31,6 @@ if TYPE_CHECKING:
     from collections.abc import Callable
 
     from dimos.models.embedding.base import Embedding
-    from dimos.msgs.geometry_msgs.Pose import Pose
-    from dimos.msgs.geometry_msgs.PoseStamped import PoseStamped
 
 T = TypeVar("T")
 R = TypeVar("R")
@@ -154,7 +155,6 @@ class Observation(Generic[T]):
         """Typed :class:`Pose` (or None). Allocates per access — read :attr:`pose_tuple` in hot loops."""
         if self.pose_tuple is None:
             return None
-        from dimos.msgs.geometry_msgs.Pose import Pose
 
         return Pose(*self.pose_tuple)
 
@@ -166,10 +166,7 @@ class Observation(Generic[T]):
         from dimos.msgs.geometry_msgs.PoseStamped import PoseStamped
 
         x, y, z, qx, qy, qz, qw = self.pose_tuple
-        return cast(
-            "PoseStamped",
-            PoseStamped(ts=self.ts, position=(x, y, z), orientation=(qx, qy, qz, qw)),
-        )
+        return PoseStamped(ts=self.ts, position=(x, y, z), orientation=(qx, qy, qz, qw))
 
     @property
     def data(self) -> T:
