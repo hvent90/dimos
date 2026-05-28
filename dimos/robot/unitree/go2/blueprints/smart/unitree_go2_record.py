@@ -35,13 +35,10 @@ from dimos.utils.logging_config import setup_logger
 
 # dimos --no-obstacle-avoidance --robot-ip 192.168.124.177 run unitree-go2-record
 # python -m dimos.mapping.loop_closure.utils.map_rrd recording_go2_mid360 --out map.rrd --camera-hz 0 && rerun map.rrd
+# mv recording_go2_mid360.db NAME
 # uv run python -m dimos.mapping.loop_closure.utils.summary recording_go2_mid360_short_upstairs
 # uv run python -m dimos.mapping.loop_closure.utils.map_rrd recording_go2_mid360_short_upstairs --out map.rrd --camera-hz 0
 logger = setup_logger()
-
-# FastLIO ports stamped by the C++ binary with hardware clock; must be
-# overridden to time.time() so they align with color_image (also time.time()).
-_FASTLIO_PORTS = frozenset({"lidar", "odometry"})
 
 
 class Go2Mid360MemoryConfig(RecorderConfig):
@@ -59,41 +56,6 @@ class Go2Mid360Memory(Recorder):
     odom: In[PoseStamped]
     fastlio_lidar: In[PointCloud2]
     fastlio_odometry: In[Odometry]
-
-    # def _port_to_stream(self, name: str, input_topic: In[Any], stream: Stream[Any]) -> None:
-    #     if name not in _FASTLIO_PORTS:
-    #         super()._port_to_stream(name, input_topic, stream)
-    #         return
-
-    #     # Force time.time() so FastLIO hardware timestamps match image timestamps.
-    #     default_frame_id = self.config.default_frame_id
-    #     tf_tolerance = self.config.tf_tolerance
-
-    #     def on_msg(msg: Any) -> None:
-    #         ts = time.time()
-    #         msg_ts = getattr(msg, "ts", None) or ts
-    #         frame_id = (
-    #             getattr(msg, "child_frame_id", None)
-    #             or getattr(msg, "frame_id", None)
-    #             or default_frame_id
-    #         )
-    #         if frame_id == "world":
-    #             frame_id = default_frame_id
-    #         transform = self.tf.get(
-    #             "world", frame_id, time_point=msg_ts, time_tolerance=tf_tolerance
-    #         )
-    #         pose = transform.to_pose() if transform is not None else None
-    #         if not pose:
-    #             logger.warning(
-    #                 "[%s] No tf available for frame '%s' at time %s (msg ts: %s), storing without pose",
-    #                 name,
-    #                 frame_id,
-    #                 msg_ts,
-    #                 getattr(msg, "ts", None),
-    #             )
-    #         stream.append(msg, ts=ts, pose=pose)
-
-    #     self.register_disposable(Disposable(input_topic.subscribe(on_msg)))
 
     def _port_to_stream(self, name: str, input_topic: In[Any], stream: Stream[Any]) -> None:
         """Append each message from *input_topic* to *stream*, attaching world pose via tf.
