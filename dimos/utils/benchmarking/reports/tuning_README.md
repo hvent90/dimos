@@ -80,6 +80,64 @@ data/benchmark/go2/
 └── go2_benchmark_<date>_<sha>.db   ← raw streams
 ```
 
+## Step 3 — precision-controlled nav (end-to-end)
+
+```
+dimos run unitree-go2-precision-nav
+```
+
+Bundles the Go2 coord + rerun viewer + click-to-goal planning chain
+(VoxelGridMapper + CostMapper + ReplanningAStarPlanner) + KeyboardTeleop
+(0-9 e_max slider, WASD/QE disabled) + per-session recorder. Stock Go2
+hardware (L1 lidar, GO2Connection odom) is sufficient — **no Mid360 /
+FastLio2 required**. One terminal.
+
+Composition mirrors the working smart-tier Go2 nav blueprint and swaps
+only the actuation seam: instead of `MovementManager` mixing
+`nav_cmd_vel` into `cmd_vel` and driving GO2Connection directly,
+`ReplanningAStarPlanner.path` flows into `ControlCoordinator.path`, the
+coord broadcasts `set_path(path, odom)` to the `precision_follower`
+task, and the precision controller drives the robot via the coord's
+tick loop.
+
+Operator flow:
+
+1. Open rerun (auto-launches with the blueprint).
+2. Click a point on the map. `RerunWebSocketServer` emits a
+   `clicked_point: PointStamped`.
+3. `ReplanningAStarPlanner` consumes the click + the live costmap (from
+   `VoxelGridMapper → CostMapper`) + GO2Connection's `odom: PoseStamped`
+   and emits `path: Path`.
+4. `ControlCoordinator.path` receives the planned path; `_on_path`
+   snapshots the latest odom and broadcasts `set_path(path, odom)` to
+   any task with the method.
+5. `PrecisionPathFollowerTask.set_path` delegates to its existing
+   `start_path` (which lazy-loads the artifact, solves
+   `solve_profile()`, and starts the state machine).
+6. The coord's tick loop drives the precision controller's velocity
+   commands to GO2Connection.
+
+Live-tune precision: keys **0-9** in the pygame window set corridor
+half-width 0.0-0.9 m. `PrecisionPathFollowerTask` re-solves the profile
+on each keypress and atomically swaps the per-waypoint cap mid-path.
+
+**Output**:
+
+```
+data/precision_nav/go2/
+└── go2_precision_nav_<date>_<sha>.db    ← cmd_vel, joint_state, odom, gate
+```
+
+**Hardware notes**:
+
+- L1 lidar has narrow FOV — the costmap is sparser than what Mid360
+  would provide. Quality of click-to-plan paths is limited accordingly.
+  Mid360 + FastLio2 is the upgrade path if you want the proper
+  nav-stack pipeline (see `unitree-g1-nav-onboard` for that variant).
+- `ReplanningAStarPlanner.nav_cmd_vel: Out[Twist]` is intentionally
+  unwired — the precision controller, not the planner, drives the
+  robot. The planner is only used as a path source.
+
 ## Reading recordings
 
 ```python
@@ -90,7 +148,7 @@ for obs in store.stream("joint_state", JointState):
     ts, msg = obs.ts, obs.data   # re-fit, plot, etc.
 ```
 
-Streams: `cmd_vel` (Twist), `joint_state` (JointState, x/y/yaw), `odom` (PoseStamped, raw), `gate` (Int8, operator events).
+Streams: `cmd_vel` (Twist), `joint_state` (JointState, x/y/yaw), `odom` (PoseStamped, raw), `gate` (Int8, operator events). The Step 3 (precision-nav) recording adds nothing new — same schema, different `tag`.
 
 ## Troubleshooting
 
