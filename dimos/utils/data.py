@@ -111,7 +111,13 @@ def get_data_dir(extra_path: str | None = None) -> Path:
     return get_project_root() / "data"
 
 
-def resolve_named_path(name: str | Path, suffix: str = "") -> Path:
+def resolve_named_path(name: str | Path, suffix: str = "", *, pull: bool = True) -> Path:
+    """Resolve a bare name / partial path to an absolute Path.
+
+    If ``pull`` is True (default), fall back to :func:`get_data` (which may
+    download from LFS) when the file isn't found locally. Set ``pull=False``
+    to fail fast with ``FileNotFoundError`` instead.
+    """
     s = str(name)
     p = Path(s)
     if p.is_absolute() or p.exists():
@@ -120,6 +126,8 @@ def resolve_named_path(name: str | Path, suffix: str = "") -> Path:
         p = Path(s + suffix)
         if p.is_absolute() or p.exists():
             return p
+    if not pull:
+        raise FileNotFoundError(f"{name!r} not found locally (pull=False)")
     return get_data(p.name)
 
 
