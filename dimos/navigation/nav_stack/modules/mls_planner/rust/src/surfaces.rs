@@ -118,7 +118,7 @@ fn close_at_z(
     erosion_passes: u32,
     clearance_cells: i32,
 ) -> Vec<VoxelKey> {
-    let pad = dilation_passes as i32;
+    let pad = (dilation_passes + erosion_passes) as i32;
     let mut min_x = i32::MAX;
     let mut max_x = i32::MIN;
     let mut min_y = i32::MAX;
