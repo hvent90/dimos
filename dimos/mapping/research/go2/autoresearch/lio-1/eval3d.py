@@ -50,6 +50,14 @@ T_LINK2BASE = np.array([0.3, 0.0, 0.0])  # camera_link  -> base_link
 VISIT_GAP_S = 15.0  # time gap that splits a tag's detections into separate visits
 TRIM_S = 3.0  # trim each floor window's edges (annotation times are approximate)
 
+# Total |Δz| the robot really travels in a recording = Σ |floor-gap| over its stair
+# transitions, from the tape-measured floor levels. Hardcoded per dataset on purpose
+# (do not read annotations for it). Keyed by a substring of the mcap path.
+Z_TRAVEL_M = {
+    "go2dds_data2": 2.090,  # 2.5F<->2F, descend + ascend (1.045 x2)
+    "go2dds_data3": 23.090,  # 1.045 x2 + 3.5 x6 across 1F / 2F / 2.5F / 3F
+}
+
 
 # --- minimal CDR (matches go2-station/scripts/go2_cdr.py) -------------------
 class _Cur:
@@ -190,6 +198,19 @@ def _floor_before_after(ann, idx):
     return before, after
 
 
+def _path_len(P):
+    P = np.asarray(P)
+    return float(np.sum(np.linalg.norm(np.diff(P, axis=0), axis=1)))
+
+
+def _dataset_z_travel(mcap_path):
+    s = str(mcap_path)
+    for k, v in Z_TRAVEL_M.items():
+        if k in s:
+            return v
+    return None
+
+
 # --- C2: floor flatness/level ----------------------------------------------
 def c2_z_floor(t, z, ann):
     per, _errs = {}, []
@@ -303,7 +324,7 @@ def c1_tag_spread(t_rel, pos, R, first_lidar_pub_ns, mcap_path):
 
 
 # --- top-level --------------------------------------------------------------
-def score_3d(t_rel, pos, R, first_lidar_pub_ns, mcap_path, ann, with_tags=True):
+def score_3d(t_rel, pos, R, first_lidar_pub_ns, mcap_path, ann, gt_xy_path, with_tags=True):
     z = _anchor_z(t_rel, pos[:, 2].copy(), ann)
     out = {}
     out.update(c2_z_floor(t_rel, z, ann))
@@ -314,6 +335,33 @@ def score_3d(t_rel, pos, R, first_lidar_pub_ns, mcap_path, ann, with_tags=True):
         except Exception as e:  # cv2/mcap missing or no tags — keep z criteria usable
             out["tag_spread_m"] = None
             out["tag_error"] = repr(e)
+
+    # --- two separate path-length scores: horizontal jitter vs vertical travel ---
+    # xy: horizontal path length vs the gt horizontal path (over-travel = jitter).
+    # z : total floor change actually traversed = Σ per-transition |net Δz| (bob-robust;
+    #     NOT total-variation, which is dominated by body-bob noise) vs the measured total.
+    lio_xy = _path_len(pos[:, :2])
+    climbed = float(sum(abs(tr["net_dz"]) for tr in out.get("z_ramp_by_transition", [])))
+    exp_z = _dataset_z_travel(mcap_path)
+    xy_path_score = max(0.0, lio_xy / gt_xy_path - 1.0) if gt_xy_path else None
+    z_path_score = abs(climbed / exp_z - 1.0) if exp_z else None
+    out["xy_path_score"] = xy_path_score
+    out["z_path_score"] = z_path_score
+    out["path"] = {
+        "lio_xy_m": lio_xy,
+        "gt_xy_m": gt_xy_path,
+        "climbed_z_m": climbed,
+        "expected_z_m": exp_z,
+    }
+
+    # --- combined score (lower = better; None terms drop to 0) ---
+    out["score"] = float(
+        (out.get("tag_spread_m") or 0.0)
+        + (out.get("z_floor_err_m") or 0.0)
+        + (out.get("z_ramp_err_m") or 0.0)
+        + (xy_path_score or 0.0)
+        + (z_path_score or 0.0)
+    )
     return out
 
 
@@ -328,10 +376,11 @@ if __name__ == "__main__":
     ap.add_argument("--no-tags", action="store_true")
     a = ap.parse_args()
     ann = json.load(open(a.ann))
-    _, _, _, flp = load_robot_odom(a.mcap) if a.traj else (None, None, None, None)
+    rt_t, rt_pos, rt_R, flp = load_robot_odom(a.mcap)  # gt horizontal reference + lidar clock
+    gt_xy_path = _path_len(rt_pos[:, :2])
     if a.traj:
         t, pos, R = load_mat_out(a.traj)
     else:
-        t, pos, R, flp = load_robot_odom(a.mcap)
-    res = score_3d(t, pos, R, flp, a.mcap, ann, with_tags=not a.no_tags)
+        t, pos, R = rt_t, rt_pos, rt_R
+    res = score_3d(t, pos, R, flp, a.mcap, ann, gt_xy_path, with_tags=not a.no_tags)
     print(json.dumps(res, indent=2))
