@@ -2,6 +2,8 @@
 // SPDX-License-Identifier: Apache-2.0
 
 mod adjacency;
+mod dijkstra;
+mod edges;
 mod nodes;
 mod surfaces;
 mod voxel;

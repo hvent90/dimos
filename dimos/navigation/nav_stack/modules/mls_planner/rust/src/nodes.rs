@@ -7,14 +7,12 @@
 
 #![allow(dead_code)] // consumed incrementally
 
-use std::cmp::Ordering;
-use std::collections::BinaryHeap;
-
 use ahash::AHashMap;
 
 use crate::adjacency::{
     build_surface_adjacency, build_surface_lookup, CsrAdjacency, SurfaceAdjacency, SurfaceLookup,
 };
+use crate::dijkstra::dijkstra;
 use crate::voxel::{surface_point_xyz, VoxelKey};
 
 pub struct NodeData {
@@ -56,7 +54,7 @@ pub fn place_nodes(
     }
 
     let wall_seeds = wall_adjacent_cells(&adj, &idx_to_cell);
-    let dist = dijkstra_multi_source(&adj, &wall_seeds);
+    let dist = dijkstra(&adj, &wall_seeds).dist;
 
     let mut candidates: Vec<u32> = (0..n as u32)
         .filter(|&i| {
@@ -90,8 +88,8 @@ pub fn place_nodes(
     }
 }
 
-/// Cells with fewer than 4 same-z neighbors are the boundary of standable
-/// terrain and act as Dijkstra seeds for distance-from-wall.
+/// Cells that are missing any of the 4 neighbors are considered
+/// on the edge of walkable terrain.
 fn wall_adjacent_cells(adj: &CsrAdjacency, idx_to_cell: &[VoxelKey]) -> Vec<u32> {
     let n = adj.n as usize;
     let mut same_z = vec![0u8; n];
@@ -113,56 +111,8 @@ fn wall_adjacent_cells(adj: &CsrAdjacency, idx_to_cell: &[VoxelKey]) -> Vec<u32>
     wall
 }
 
-struct Scored(f32, u32);
-
-impl PartialEq for Scored {
-    fn eq(&self, other: &Self) -> bool {
-        self.0.total_cmp(&other.0) == Ordering::Equal && self.1 == other.1
-    }
-}
-impl Eq for Scored {}
-impl PartialOrd for Scored {
-    fn partial_cmp(&self, other: &Self) -> Option<Ordering> {
-        Some(self.cmp(other))
-    }
-}
-impl Ord for Scored {
-    fn cmp(&self, other: &Self) -> Ordering {
-        // Min-heap: smallest f32 pops first.
-        other.0.total_cmp(&self.0).then(self.1.cmp(&other.1))
-    }
-}
-
-fn dijkstra_multi_source(adj: &CsrAdjacency, sources: &[u32]) -> Vec<f32> {
-    let n = adj.n as usize;
-    let mut dist = vec![f32::INFINITY; n];
-    let mut heap: BinaryHeap<Scored> = BinaryHeap::new();
-    for &s in sources {
-        dist[s as usize] = 0.0;
-        heap.push(Scored(0.0, s));
-    }
-    while let Some(Scored(d, u)) = heap.pop() {
-        if d > dist[u as usize] {
-            continue;
-        }
-        let lo = adj.indptr[u as usize] as usize;
-        let hi = adj.indptr[u as usize + 1] as usize;
-        for k in lo..hi {
-            let v = adj.indices[k];
-            let w = adj.data[k];
-            let nd = d + w;
-            if nd < dist[v as usize] {
-                dist[v as usize] = nd;
-                heap.push(Scored(nd, v));
-            }
-        }
-    }
-    dist
-}
-
 /// Bin placed nodes by node_spacing-sized cells. For each candidate, scan the
-/// 27 nearby bins for any node within Euclidean node_spacing. Replaces the
-/// Python's cKDTree.
+/// 27 nearby bins for any node within Euclidean node_spacing.
 fn nms_grid(
     candidates_sorted: &[u32],
     idx_to_cell: &[VoxelKey],
@@ -333,7 +283,7 @@ mod tests {
             adj, idx_to_cell, ..
         } = build_surface_adjacency(&lookup, VOXEL, 2);
         let seeds = wall_adjacent_cells(&adj, &idx_to_cell);
-        let dist = dijkstra_multi_source(&adj, &seeds);
+        let dist = dijkstra(&adj, &seeds).dist;
 
         let center = idx_to_cell.iter().position(|&c| c == (2, 2, 0)).unwrap();
         let corner = idx_to_cell.iter().position(|&c| c == (0, 0, 0)).unwrap();
