@@ -14,7 +14,7 @@
 
 """Blueprint for the path-planner evaluator.
 
-Wires the Evaluator and MLSPlanner together and bridges all streams to rerun.
+Wires the Evaluator and MLSPlannerNative together and bridges all streams to rerun.
 Run with::
 
     dimos run path-planner-eval
@@ -22,25 +22,17 @@ Run with::
 
 from __future__ import annotations
 
-from functools import partial
 from typing import Any
 
 import numpy as np
-from scipy.sparse.csgraph import connected_components
 
 from dimos.core.coordination.blueprints import autoconnect
 from dimos.navigation.nav_stack.evaluator.evaluator import Evaluator
 from dimos.navigation.nav_stack.modules.click_start_goal_router.click_start_goal_router import (
     ClickStartGoalRouter,
 )
-from dimos.navigation.nav_stack.modules.mls_planner.mls_planner import (
-    NODE_STEP_THRESHOLD_M,
-    build_surface_adjacency,
-    build_surface_lookup,
-)
 from dimos.navigation.nav_stack.modules.mls_planner.mls_planner_native import (
     MLSPlannerNative,
-    MLSPlannerNativeConfig,
 )
 from dimos.visualization.rerun.bridge import RerunBridgeModule
 from dimos.visualization.rerun.websocket_server import RerunWebSocketServer
@@ -48,21 +40,6 @@ from dimos.visualization.rerun.websocket_server import RerunWebSocketServer
 _POSE_MARKER_RADIUS = 0.4
 # Small lift so graph artifacts render visibly above the surface points instead of z-fighting.
 _GRAPH_Z_LIFT = 0.05
-_SURFACE_COMPONENT_PALETTE = np.array(
-    [
-        [245, 140, 150],
-        [245, 185, 120],
-        [245, 225, 125],
-        [170, 220, 135],
-        [125, 220, 195],
-        [130, 195, 230],
-        [170, 160, 230],
-        [210, 160, 230],
-        [230, 160, 195],
-        [225, 200, 145],
-    ],
-    dtype=np.uint8,
-)
 
 
 def _render_start_pose(msg: Any) -> Any:
@@ -89,29 +66,8 @@ def _render_global_map(msg: Any) -> Any:
     return msg.to_rerun(voxel_size=0.03, colors=[128, 128, 128])
 
 
-def _render_surface_map(voxel_size: float, msg: Any) -> Any:
-    """Render surface points colored by connected component."""
-    import rerun as rr
-
-    pts, _ = msg.as_numpy()
-    if pts is None or len(pts) == 0:
-        return rr.Points3D([])
-    pts = pts.astype(np.float32)
-    indices = np.floor(pts / voxel_size).astype(np.int64)
-    ix, iy, iz = indices[:, 0], indices[:, 1], indices[:, 2]
-    surface_lookup = build_surface_lookup(ix, iy, iz)
-    step_cells = max(0, int(NODE_STEP_THRESHOLD_M / voxel_size))
-    adj, cell_to_idx, _ = build_surface_adjacency(surface_lookup, voxel_size, step_cells)
-    _, labels = connected_components(adj, directed=False)
-    point_labels = np.array(
-        [
-            labels[cell_to_idx[cell]]
-            for cell in zip(ix.tolist(), iy.tolist(), iz.tolist(), strict=True)
-        ],
-        dtype=np.int64,
-    )
-    colors = _SURFACE_COMPONENT_PALETTE[point_labels % len(_SURFACE_COMPONENT_PALETTE)]
-    return rr.Points3D(positions=pts, colors=colors, radii=[0.05])
+def _render_surface_map(msg: Any) -> Any:
+    return msg.to_rerun(voxel_size=0.1, colors=[40, 75, 130])
 
 
 def _render_nodes(msg: Any) -> Any:
@@ -150,8 +106,6 @@ def _render_node_edges(msg: Any) -> Any:
     return rr.LineStrips3D(strips, colors=colors, radii=[0.04] * len(strips))
 
 
-_planner_voxel = MLSPlannerNativeConfig().voxel_size
-
 path_planner_eval = autoconnect(
     Evaluator.blueprint(),
     MLSPlannerNative.blueprint(),
@@ -162,7 +116,7 @@ path_planner_eval = autoconnect(
             "world/start_pose": _render_start_pose,
             "world/goal_pose": _render_goal_pose,
             "world/global_map": _render_global_map,
-            "world/surface_map": partial(_render_surface_map, _planner_voxel),
+            "world/surface_map": _render_surface_map,
             "world/nodes": _render_nodes,
             "world/node_edges": _render_node_edges,
         }
