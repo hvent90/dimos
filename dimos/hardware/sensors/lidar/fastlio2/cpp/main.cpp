@@ -34,6 +34,7 @@
 #include "cloud_filter.hpp"
 #include "dimos_native_module.hpp"
 #include "pcap_replay.hpp"
+#include "timing.hpp"
 #include "voxel_map.hpp"
 
 // dimos LCM message headers
@@ -652,7 +653,24 @@ int main(int argc, char** argv) {
             static_cast<int64_t>(1e6 / map_freq));
     }
 
+    // Per-section timing counters for `run_main_iter`. Active only when
+    // --debug is on (Scope's constructor reads `fastlio_debug` and no-ops
+    // otherwise). `timing::maybe_flush(now)` at the bottom prints a per-
+    // section summary every second of wall clock so we can see both how
+    // often each part fires and how long each call takes.
+    static timing::Section t_iter{"run_main_iter"};
+    static timing::Section t_emit_check{"emit.lock+swap"};
+    static timing::Section t_feed_lidar{"fast_lio.feed_lidar"};
+    static timing::Section t_process{"fast_lio.process"};
+    static timing::Section t_get_world_cloud{"fast_lio.get_world_cloud"};
+    static timing::Section t_filter_cloud{"filter_cloud"};
+    static timing::Section t_publish_lidar{"publish_lidar"};
+    static timing::Section t_map_insert{"global_map.insert"};
+    static timing::Section t_map_publish{"global_map.publish"};
+    static timing::Section t_publish_odom{"publish_odometry"};
+
     auto run_main_iter = [&](std::chrono::steady_clock::time_point now) {
+        timing::Scope iter_scope(t_iter);
         // Lazy-seed all rate-limit bookmarks on the first iteration so they
         // line up with the chosen clock (wall in live, pcap in replay) and
         // don't fire immediately based on an arbitrary "since program start"
@@ -690,6 +708,7 @@ int main(int argc, char** argv) {
         std::vector<custom_messages::CustomPoint> points;
         uint64_t frame_start = 0;
         {
+            timing::Scope s(t_emit_check);
             std::lock_guard<std::mutex> lock(g_pc_mutex);
             auto check_now = now;
             if (g_deterministic_clock.load()) {
@@ -720,23 +739,34 @@ int main(int argc, char** argv) {
             for (int i = 0; i < 3; i++) lidar_msg->rsvd[i] = 0;
             lidar_msg->point_num = static_cast<uli>(points.size());
             lidar_msg->points = std::move(points);
+            timing::Scope s(t_feed_lidar);
             fast_lio.feed_lidar(lidar_msg);
         }
 
         // Run one FAST-LIO IESKF step. Cheap when the IMU/lidar queues
         // are empty; the heavy work happens after a feed_lidar above.
-        fast_lio.process();
+        {
+            timing::Scope s(t_process);
+            fast_lio.process();
+        }
 
         // Check for new SLAM results and publish (rate-limited).
         auto pose = fast_lio.get_pose();
         if (!pose.empty() && (pose[0] != 0.0 || pose[1] != 0.0 || pose[2] != 0.0)) {
             double ts = get_publish_ts();
-            auto world_cloud = fast_lio.get_world_cloud();
+            auto world_cloud = ([&]() {
+                timing::Scope s(t_get_world_cloud);
+                return fast_lio.get_world_cloud();
+            })();
             if (world_cloud && !world_cloud->empty()) {
-                auto filtered = filter_cloud<PointType>(world_cloud, filter_cfg);
+                auto filtered = ([&]() {
+                    timing::Scope s(t_filter_cloud);
+                    return filter_cloud<PointType>(world_cloud, filter_cfg);
+                })();
 
                 // Per-scan world-frame cloud at pointcloud_freq.
                 if (!g_lidar_topic.empty() && now - *last_pc_publish >= pc_interval) {
+                    timing::Scope s(t_publish_lidar);
                     publish_lidar(filtered, ts);
                     last_pc_publish = now;
                 }
@@ -744,8 +774,12 @@ int main(int argc, char** argv) {
                 // Global voxel map: insert this scan, prune, then publish
                 // a snapshot at map_freq.
                 if (global_map) {
-                    global_map->insert<PointType>(filtered);
+                    {
+                        timing::Scope s(t_map_insert);
+                        global_map->insert<PointType>(filtered);
+                    }
                     if (now - *last_map_publish >= map_interval) {
+                        timing::Scope s(t_map_publish);
                         global_map->prune(
                             static_cast<float>(pose[0]),
                             static_cast<float>(pose[1]),
@@ -759,10 +793,14 @@ int main(int argc, char** argv) {
 
             // Pose + covariance, rate-limited to odom_freq.
             if (!g_odometry_topic.empty() && now - *last_odom_publish >= odom_interval) {
+                timing::Scope s(t_publish_odom);
                 publish_odometry(fast_lio.get_odometry(), ts);
                 last_odom_publish = now;
             }
         }
+
+        // Periodic per-section summary to stderr (no-op when --debug off).
+        timing::maybe_flush(std::chrono::steady_clock::now());
     };
 
     // Source of point/IMU packets:
