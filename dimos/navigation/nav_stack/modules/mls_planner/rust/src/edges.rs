@@ -3,20 +3,16 @@
 
 //! Node-graph edge construction.
 //!
-//! Run multi-source Dijkstra from every node cell to partition the surface
-//! into Voronoi regions (one per node). Walk every cell-level edge that
-//! straddles a region boundary; for each ordered node pair keep the cheapest
-//! crossing as a node-level edge.
-//!
-//! Each `NodeEdge` stores only the two boundary cells and the total cost.
-//! The cell-by-cell path along an edge is reconstructed lazily in plan.rs
-//! by walking the saved predecessor array.
+//! Build edges by running multi-source Dijkstra from all the start nodes.
+//! This labels the surface with each cells closest source, also known as
+//! the Voronoi region. We use the boundaries of these regions to build the
+//! edges between start nodes.
 
 #![allow(dead_code)]
 
 use ahash::AHashMap;
 
-use crate::adjacency::{CsrAdjacency, SurfaceLookup};
+use crate::adjacency::{SurfaceAdjacency, SurfaceLookup};
 use crate::dijkstra::{dijkstra, DijkstraResult};
 use crate::nodes::{NodeData, SurfaceGraph};
 use crate::voxel::VoxelKey;
@@ -26,52 +22,40 @@ pub struct NodeEdge {
     pub b: u32,
     pub cost: f32,
     /// Cell on a's side of the cheapest Voronoi boundary crossing.
-    pub boundary_u: u32,
+    pub boundary_u: VoxelKey,
     /// Cell on b's side.
-    pub boundary_v: u32,
+    pub boundary_v: VoxelKey,
 }
 
 pub struct PlannerGraph {
-    pub adj: CsrAdjacency,
-    pub idx_to_cell: Vec<VoxelKey>,
-    pub cell_to_idx: AHashMap<VoxelKey, u32>,
+    pub adj: SurfaceAdjacency,
     pub surface_lookup: SurfaceLookup,
     pub nodes: Vec<NodeData>,
     pub node_edges: Vec<NodeEdge>,
-    /// node_id -> indices into `node_edges`. Adjacency for the node-level
-    /// shortest-path query in Stage D.
     pub node_adj: Vec<Vec<u32>>,
-    /// Per-cell predecessor along the multi-source Dijkstra from node seeds.
-    /// -1 marks source cells and unreachable cells. Used by plan.rs to walk
-    /// cell paths for the edges on a chosen route.
-    pub cell_predecessors: Vec<i32>,
+    pub cell_predecessors: AHashMap<VoxelKey, VoxelKey>,
 }
 
 pub fn add_node_edges(sg: SurfaceGraph) -> PlannerGraph {
     let SurfaceGraph {
         adj,
-        idx_to_cell,
-        cell_to_idx,
         surface_lookup,
         nodes,
     } = sg;
 
     if nodes.is_empty() {
-        let n = adj.n as usize;
         return PlannerGraph {
             adj,
-            idx_to_cell,
-            cell_to_idx,
             surface_lookup,
             nodes,
             node_edges: Vec::new(),
             node_adj: Vec::new(),
-            cell_predecessors: vec![-1; n],
+            cell_predecessors: AHashMap::new(),
         };
     }
 
-    let source_indices: Vec<u32> = nodes.iter().map(|n| cell_to_idx[&n.cell]).collect();
-    let DijkstraResult { dist, pred, source } = dijkstra(&adj, &source_indices);
+    let source_cells: Vec<VoxelKey> = nodes.iter().map(|n| n.cell).collect();
+    let DijkstraResult { dist, pred, source } = dijkstra(&adj, &source_cells);
     let node_edges = best_boundary_edges(&adj, &dist, &source);
 
     let mut node_adj: Vec<Vec<u32>> = vec![Vec::new(); nodes.len()];
@@ -82,8 +66,6 @@ pub fn add_node_edges(sg: SurfaceGraph) -> PlannerGraph {
 
     PlannerGraph {
         adj,
-        idx_to_cell,
-        cell_to_idx,
         surface_lookup,
         nodes,
         node_edges,
@@ -93,8 +75,7 @@ pub fn add_node_edges(sg: SurfaceGraph) -> PlannerGraph {
 }
 
 /// Walk every node-graph edge and emit one segment per consecutive cell pair
-/// along the reconstructed cell path. Each segment carries the edge's total
-/// cost as its traversability so renderers can color the whole edge uniformly.
+/// along the reconstructed cell path.
 pub fn edges_to_segments(plg: &PlannerGraph, _voxel_size: f32) -> Vec<(VoxelKey, VoxelKey, f32)> {
     let mut segments = Vec::new();
     for edge in &plg.node_edges {
@@ -110,49 +91,51 @@ pub fn edges_to_segments(plg: &PlannerGraph, _voxel_size: f32) -> Vec<(VoxelKey,
     segments
 }
 
-/// Walk the cell-predecessor array from `start_cell` back to its owning source.
-/// Returns cells in walk order (start_cell first, source cell last).
-pub fn walk_preds_to_source(plg: &PlannerGraph, start_cell: u32) -> Vec<VoxelKey> {
-    let mut cells = vec![plg.idx_to_cell[start_cell as usize]];
-    let mut cur = start_cell as i32;
-    while plg.cell_predecessors[cur as usize] >= 0 {
-        cur = plg.cell_predecessors[cur as usize];
-        cells.push(plg.idx_to_cell[cur as usize]);
+pub fn walk_preds_to_source(plg: &PlannerGraph, start_cell: VoxelKey) -> Vec<VoxelKey> {
+    let mut cells = vec![start_cell];
+    let mut cur = start_cell;
+    while let Some(&p) = plg.cell_predecessors.get(&cur) {
+        cur = p;
+        cells.push(cur);
     }
     cells
 }
 
-fn best_boundary_edges(adj: &CsrAdjacency, dist: &[f32], source: &[i32]) -> Vec<NodeEdge> {
+fn best_boundary_edges(
+    adj: &SurfaceAdjacency,
+    dist: &AHashMap<VoxelKey, f32>,
+    source: &AHashMap<VoxelKey, u32>,
+) -> Vec<NodeEdge> {
     let mut best: AHashMap<(u32, u32), NodeEdge> = AHashMap::new();
 
-    for u in 0..adj.n as usize {
-        let sa = source[u];
-        if sa < 0 {
+    for u in adj.cells() {
+        let Some(&sa) = source.get(&u) else {
             continue;
-        }
-        let lo = adj.indptr[u] as usize;
-        let hi = adj.indptr[u + 1] as usize;
-        for k in lo..hi {
-            let v = adj.indices[k] as usize;
-            let sb = source[v];
-            if sb < 0 || sa == sb {
+        };
+        let du = dist[&u];
+        for edge in adj.neighbors(u) {
+            let v = edge.dst;
+            let Some(&sb) = source.get(&v) else {
+                continue;
+            };
+            if sa == sb {
                 continue;
             }
-            let edge_w = adj.data[k];
-            let cost = dist[u] + edge_w + dist[v];
+            let dv = dist[&v];
+            let cost = du + edge.cost + dv;
 
-            let (key_a, key_b, bu, bv) = if (sa as u32) < (sb as u32) {
-                (sa as u32, sb as u32, u as u32, v as u32)
+            let (key_a, key_b, bu, bv) = if sa < sb {
+                (sa, sb, u, v)
             } else {
-                (sb as u32, sa as u32, v as u32, u as u32)
+                (sb, sa, v, u)
             };
 
             let entry = best.entry((key_a, key_b)).or_insert(NodeEdge {
                 a: key_a,
                 b: key_b,
                 cost: f32::INFINITY,
-                boundary_u: 0,
-                boundary_v: 0,
+                boundary_u: (0, 0, 0),
+                boundary_v: (0, 0, 0),
             });
             if cost < entry.cost {
                 entry.cost = cost;
@@ -170,7 +153,7 @@ fn best_boundary_edges(adj: &CsrAdjacency, dist: &[f32], source: &[i32]) -> Vec<
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::adjacency::{build_surface_adjacency, build_surface_lookup, SurfaceAdjacency};
+    use crate::adjacency::{build_surface_adjacency, build_surface_lookup};
     use crate::voxel::surface_point_xyz;
 
     const VOXEL: f32 = 0.1;
@@ -180,11 +163,7 @@ mod tests {
     /// place_nodes so the test author controls which cells become nodes.
     fn graph_with_nodes(surface_cells: &[VoxelKey], node_cells: &[VoxelKey]) -> SurfaceGraph {
         let surface_lookup = build_surface_lookup(surface_cells);
-        let SurfaceAdjacency {
-            adj,
-            idx_to_cell,
-            cell_to_idx,
-        } = build_surface_adjacency(&surface_lookup, VOXEL, 2);
+        let adj = build_surface_adjacency(&surface_lookup, VOXEL, 2);
         let nodes: Vec<NodeData> = node_cells
             .iter()
             .map(|&c| NodeData {
@@ -194,8 +173,6 @@ mod tests {
             .collect();
         SurfaceGraph {
             adj,
-            idx_to_cell,
-            cell_to_idx,
             surface_lookup,
             nodes,
         }
@@ -263,22 +240,22 @@ mod tests {
         assert_eq!(pg.node_edges.len(), 1);
         let e = &pg.node_edges[0];
 
-        let cell_a = pg.cell_to_idx[&pg.nodes[0].cell];
-        let cell_b = pg.cell_to_idx[&pg.nodes[1].cell];
+        let cell_a = pg.nodes[0].cell;
+        let cell_b = pg.nodes[1].cell;
 
-        let mut cur = e.boundary_u as i32;
+        let mut cur = e.boundary_u;
         let mut hops = 0;
-        while pg.cell_predecessors[cur as usize] >= 0 {
-            cur = pg.cell_predecessors[cur as usize];
+        while let Some(&p) = pg.cell_predecessors.get(&cur) {
+            cur = p;
             hops += 1;
             assert!(hops < 1000, "predecessor walk did not terminate");
         }
-        assert_eq!(cur as u32, cell_a, "u-side preds must reach node a");
+        assert_eq!(cur, cell_a, "u-side preds must reach node a");
 
-        let mut cur = e.boundary_v as i32;
-        while pg.cell_predecessors[cur as usize] >= 0 {
-            cur = pg.cell_predecessors[cur as usize];
+        let mut cur = e.boundary_v;
+        while let Some(&p) = pg.cell_predecessors.get(&cur) {
+            cur = p;
         }
-        assert_eq!(cur as u32, cell_b, "v-side preds must reach node b");
+        assert_eq!(cur, cell_b, "v-side preds must reach node b");
     }
 }

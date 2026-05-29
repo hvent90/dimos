@@ -5,8 +5,9 @@
 //! the node graph, and stitch cached edge cell paths into XYZ waypoints.
 #![allow(dead_code)]
 
-use crate::adjacency::CsrAdjacency;
-use crate::dijkstra::dijkstra;
+use std::cmp::Ordering;
+use std::collections::BinaryHeap;
+
 use crate::edges::{walk_preds_to_source, PlannerGraph};
 use crate::voxel::{surface_point_xyz, VoxelKey};
 
@@ -56,41 +57,43 @@ pub fn shortest_path_nodes(plg: &PlannerGraph, start: u32, goal: u32) -> Option<
     if start == goal {
         return Some(vec![start]);
     }
-    let csr = build_node_csr(plg);
-    let r = dijkstra(&csr, &[start]);
-    if !r.dist[goal as usize].is_finite() {
+    let n = plg.nodes.len();
+    let mut dist = vec![f32::INFINITY; n];
+    let mut pred = vec![-1i32; n];
+    dist[start as usize] = 0.0;
+    let mut heap: BinaryHeap<Scored> = BinaryHeap::new();
+    heap.push(Scored(0.0, start));
+
+    while let Some(Scored(d, u)) = heap.pop() {
+        if d > dist[u as usize] {
+            continue;
+        }
+        if u == goal {
+            break;
+        }
+        for &edge_idx in &plg.node_adj[u as usize] {
+            let edge = &plg.node_edges[edge_idx as usize];
+            let neighbor = if edge.a == u { edge.b } else { edge.a };
+            let nd = d + edge.cost;
+            if nd < dist[neighbor as usize] {
+                dist[neighbor as usize] = nd;
+                pred[neighbor as usize] = u as i32;
+                heap.push(Scored(nd, neighbor));
+            }
+        }
+    }
+
+    if !dist[goal as usize].is_finite() {
         return None;
     }
     let mut path = vec![goal];
     let mut cur = goal as i32;
-    while r.pred[cur as usize] >= 0 {
-        cur = r.pred[cur as usize];
+    while pred[cur as usize] >= 0 {
+        cur = pred[cur as usize];
         path.push(cur as u32);
     }
     path.reverse();
     Some(path)
-}
-
-fn build_node_csr(plg: &PlannerGraph) -> CsrAdjacency {
-    let n = plg.nodes.len();
-    let mut indptr = vec![0u32; n + 1];
-    let mut indices = Vec::new();
-    let mut data = Vec::new();
-    for (u, edges) in plg.node_adj.iter().enumerate() {
-        for &edge_idx in edges {
-            let edge = &plg.node_edges[edge_idx as usize];
-            let neighbor = if edge.a as usize == u { edge.b } else { edge.a };
-            indices.push(neighbor);
-            data.push(edge.cost);
-        }
-        indptr[u + 1] = indices.len() as u32;
-    }
-    CsrAdjacency {
-        indptr,
-        indices,
-        data,
-        n: n as u32,
-    }
 }
 
 fn assemble_waypoints(
@@ -143,10 +146,29 @@ fn edge_between(plg: &PlannerGraph, a: u32, b: u32) -> Option<u32> {
     None
 }
 
+struct Scored(f32, u32);
+
+impl PartialEq for Scored {
+    fn eq(&self, other: &Self) -> bool {
+        self.0.total_cmp(&other.0) == Ordering::Equal && self.1 == other.1
+    }
+}
+impl Eq for Scored {}
+impl PartialOrd for Scored {
+    fn partial_cmp(&self, other: &Self) -> Option<Ordering> {
+        Some(self.cmp(other))
+    }
+}
+impl Ord for Scored {
+    fn cmp(&self, other: &Self) -> Ordering {
+        other.0.total_cmp(&self.0).then(self.1.cmp(&other.1))
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::adjacency::{build_surface_adjacency, build_surface_lookup, SurfaceAdjacency};
+    use crate::adjacency::{build_surface_adjacency, build_surface_lookup};
     use crate::edges::add_node_edges;
     use crate::nodes::{NodeData, SurfaceGraph};
 
@@ -155,11 +177,7 @@ mod tests {
 
     fn graph_with_nodes(surface_cells: &[VoxelKey], node_cells: &[VoxelKey]) -> PlannerGraph {
         let surface_lookup = build_surface_lookup(surface_cells);
-        let SurfaceAdjacency {
-            adj,
-            idx_to_cell,
-            cell_to_idx,
-        } = build_surface_adjacency(&surface_lookup, VOXEL, 2);
+        let adj = build_surface_adjacency(&surface_lookup, VOXEL, 2);
         let nodes: Vec<NodeData> = node_cells
             .iter()
             .map(|&c| NodeData {
@@ -169,8 +187,6 @@ mod tests {
             .collect();
         let sg = SurfaceGraph {
             adj,
-            idx_to_cell,
-            cell_to_idx,
             surface_lookup,
             nodes,
         };

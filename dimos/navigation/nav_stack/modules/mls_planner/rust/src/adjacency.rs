@@ -1,10 +1,6 @@
 // Copyright 2026 Dimensional Inc.
 // SPDX-License-Identifier: Apache-2.0
 
-//! Per-column surface lookup and 4-connected adjacency over surface cells.
-//!
-//! Wall-safe cost smoothing in nodes.rs should make paths equivalent.
-
 #![allow(dead_code)] // consumed incrementally by later stage modules
 
 use ahash::AHashMap;
@@ -15,20 +11,52 @@ pub type SurfaceLookup = AHashMap<(i32, i32), Vec<i32>>;
 
 const NEIGHBORS_4: [(i32, i32); 4] = [(-1, 0), (1, 0), (0, -1), (0, 1)];
 
-pub struct CsrAdjacency {
-    pub indptr: Vec<u32>,
-    pub indices: Vec<u32>,
-    pub data: Vec<f32>,
-    pub n: u32,
+#[derive(Clone, Copy, Debug)]
+pub struct Edge {
+    pub dst: VoxelKey,
+    pub cost: f32,
 }
 
+#[derive(Default)]
 pub struct SurfaceAdjacency {
-    pub adj: CsrAdjacency,
-    pub idx_to_cell: Vec<VoxelKey>,
-    pub cell_to_idx: AHashMap<VoxelKey, u32>,
+    cells: AHashMap<VoxelKey, Vec<Edge>>,
 }
 
-/// Group cells in to xy columns and sort their z indexes.
+impl SurfaceAdjacency {
+    pub fn new() -> Self {
+        Self::default()
+    }
+
+    pub fn add_cell(&mut self, cell: VoxelKey) {
+        self.cells.entry(cell).or_default();
+    }
+
+    pub fn add_edge(&mut self, src: VoxelKey, dst: VoxelKey, cost: f32) {
+        self.cells.entry(src).or_default().push(Edge { dst, cost });
+    }
+
+    pub fn neighbors(&self, cell: VoxelKey) -> impl Iterator<Item = Edge> + '_ {
+        self.cells.get(&cell).into_iter().flatten().copied()
+    }
+
+    pub fn cells(&self) -> impl Iterator<Item = VoxelKey> + '_ {
+        self.cells.keys().copied()
+    }
+
+    pub fn contains(&self, cell: VoxelKey) -> bool {
+        self.cells.contains_key(&cell)
+    }
+
+    pub fn len(&self) -> usize {
+        self.cells.len()
+    }
+
+    pub fn is_empty(&self) -> bool {
+        self.cells.is_empty()
+    }
+}
+
+/// Group cells by XY column with sorted unique iz per column.
 pub fn build_surface_lookup(cells: &[VoxelKey]) -> SurfaceLookup {
     let mut lookup: SurfaceLookup = AHashMap::new();
     for &(ix, iy, iz) in cells {
@@ -41,66 +69,36 @@ pub fn build_surface_lookup(cells: &[VoxelKey]) -> SurfaceLookup {
     lookup
 }
 
-/// 4-connected XY adjacency with per-step dz cap. Cell ordering is
-/// lex-sorted by column then iz so the output is deterministic across runs.
+/// 4 way connection (L1) and check for step height threshold
 pub fn build_surface_adjacency(
     surface_lookup: &SurfaceLookup,
     voxel_size: f32,
     step_threshold_cells: i32,
 ) -> SurfaceAdjacency {
-    let mut columns: Vec<(i32, i32)> = surface_lookup.keys().copied().collect();
-    columns.sort_unstable();
-
-    // assign ids to each cell
-    let mut idx_to_cell: Vec<VoxelKey> = Vec::new();
-    for &(ix, iy) in &columns {
-        for &iz in &surface_lookup[&(ix, iy)] {
-            idx_to_cell.push((ix, iy, iz));
+    let mut adj = SurfaceAdjacency::new();
+    for (&(ix, iy), zs) in surface_lookup {
+        for &iz in zs {
+            adj.add_cell((ix, iy, iz));
         }
     }
-    let n = idx_to_cell.len();
-
-    // also build the reverse so cells can look up their id
-    let cell_to_idx: AHashMap<VoxelKey, u32> = idx_to_cell
-        .iter()
-        .enumerate()
-        .map(|(i, &c)| (c, i as u32))
-        .collect();
-
-    let mut indptr: Vec<u32> = Vec::with_capacity(n + 1);
-    indptr.push(0);
-    let mut indices: Vec<u32> = Vec::new();
-    let mut data: Vec<f32> = Vec::new();
-
-    for &(ix, iy, iz) in &idx_to_cell {
-        for (dx, dy) in NEIGHBORS_4 {
-            let Some(zs) = surface_lookup.get(&(ix + dx, iy + dy)) else {
-                continue;
-            };
-            for &nz in zs {
-                let dz = nz - iz;
-                if dz.abs() > step_threshold_cells {
+    for (&(ix, iy), zs) in surface_lookup {
+        for &iz in zs {
+            for (dx, dy) in NEIGHBORS_4 {
+                let Some(nzs) = surface_lookup.get(&(ix + dx, iy + dy)) else {
                     continue;
+                };
+                for &nz in nzs {
+                    let dz = nz - iz;
+                    if dz.abs() > step_threshold_cells {
+                        continue;
+                    }
+                    let cost = ((dx * dx + dy * dy + dz * dz) as f32).sqrt() * voxel_size;
+                    adj.add_edge((ix, iy, iz), (ix + dx, iy + dy, nz), cost);
                 }
-                let dst = cell_to_idx[&(ix + dx, iy + dy, nz)];
-                let cost = ((dx * dx + dy * dy + dz * dz) as f32).sqrt() * voxel_size;
-                indices.push(dst);
-                data.push(cost);
             }
         }
-        indptr.push(indices.len() as u32);
     }
-
-    SurfaceAdjacency {
-        adj: CsrAdjacency {
-            indptr,
-            indices,
-            data,
-            n: n as u32,
-        },
-        idx_to_cell,
-        cell_to_idx,
-    }
+    adj
 }
 
 #[cfg(test)]
@@ -114,102 +112,90 @@ mod tests {
         assert!((a - b).abs() < eps, "{a} != {b} (eps {eps})");
     }
 
-    fn edges(sa: &SurfaceAdjacency) -> Vec<(VoxelKey, VoxelKey, f32)> {
-        let mut out = Vec::new();
-        for src in 0..sa.adj.n as usize {
-            let lo = sa.adj.indptr[src] as usize;
-            let hi = sa.adj.indptr[src + 1] as usize;
-            for k in lo..hi {
-                let dst = sa.adj.indices[k] as usize;
-                out.push((sa.idx_to_cell[src], sa.idx_to_cell[dst], sa.adj.data[k]));
-            }
-        }
-        out
+    fn neighbors_of(adj: &SurfaceAdjacency, cell: VoxelKey) -> Vec<Edge> {
+        adj.neighbors(cell).collect()
     }
 
     #[test]
     fn empty_input_yields_empty_adjacency() {
         let lookup = build_surface_lookup(&[]);
-        let sa = build_surface_adjacency(&lookup, VOXEL, 2);
-        assert_eq!(sa.adj.n, 0);
-        assert_eq!(sa.adj.indptr, vec![0]);
-        assert!(sa.adj.indices.is_empty());
-        assert!(sa.adj.data.is_empty());
-        assert!(sa.idx_to_cell.is_empty());
+        let adj = build_surface_adjacency(&lookup, VOXEL, 2);
+        assert_eq!(adj.len(), 0);
+        assert!(adj.is_empty());
     }
 
     #[test]
     fn single_cell_has_no_edges() {
         let lookup = build_surface_lookup(&[(0, 0, 0)]);
-        let sa = build_surface_adjacency(&lookup, VOXEL, 2);
-        assert_eq!(sa.adj.n, 1);
-        assert_eq!(sa.adj.indptr, vec![0, 0]);
-        assert!(sa.adj.indices.is_empty());
+        let adj = build_surface_adjacency(&lookup, VOXEL, 2);
+        assert_eq!(adj.len(), 1);
+        assert!(adj.contains((0, 0, 0)));
+        assert!(neighbors_of(&adj, (0, 0, 0)).is_empty());
     }
 
     #[test]
     fn same_z_neighbors_are_bidirectional() {
         let lookup = build_surface_lookup(&[(0, 0, 0), (1, 0, 0)]);
-        let sa = build_surface_adjacency(&lookup, VOXEL, 2);
-        assert_eq!(sa.adj.indices.len(), 2);
-        for e in edges(&sa) {
-            approx_eq(e.2, VOXEL);
-        }
+        let adj = build_surface_adjacency(&lookup, VOXEL, 2);
+        let a = neighbors_of(&adj, (0, 0, 0));
+        let b = neighbors_of(&adj, (1, 0, 0));
+        assert_eq!(a.len(), 1);
+        assert_eq!(b.len(), 1);
+        assert_eq!(a[0].dst, (1, 0, 0));
+        assert_eq!(b[0].dst, (0, 0, 0));
+        approx_eq(a[0].cost, VOXEL);
+        approx_eq(b[0].cost, VOXEL);
     }
 
     #[test]
     fn diagonal_not_connected_under_4_connectivity() {
         let lookup = build_surface_lookup(&[(0, 0, 0), (1, 1, 0)]);
-        let sa = build_surface_adjacency(&lookup, VOXEL, 2);
-        assert!(
-            sa.adj.indices.is_empty(),
-            "diagonal must not connect under 4-connectivity"
-        );
+        let adj = build_surface_adjacency(&lookup, VOXEL, 2);
+        assert!(neighbors_of(&adj, (0, 0, 0)).is_empty());
+        assert!(neighbors_of(&adj, (1, 1, 0)).is_empty());
     }
 
     #[test]
     fn step_threshold_blocks_large_dz() {
         let lookup = build_surface_lookup(&[(0, 0, 0), (1, 0, 5)]);
-        let sa = build_surface_adjacency(&lookup, VOXEL, 2);
-        assert!(
-            sa.adj.indices.is_empty(),
-            "dz=5 must not connect when step_threshold=2"
-        );
+        let adj = build_surface_adjacency(&lookup, VOXEL, 2);
+        assert!(neighbors_of(&adj, (0, 0, 0)).is_empty());
+        assert!(neighbors_of(&adj, (1, 0, 5)).is_empty());
     }
 
     #[test]
     fn step_within_threshold_uses_3d_distance() {
         let lookup = build_surface_lookup(&[(0, 0, 0), (1, 0, 1)]);
-        let sa = build_surface_adjacency(&lookup, VOXEL, 2);
-        assert_eq!(sa.adj.indices.len(), 2);
+        let adj = build_surface_adjacency(&lookup, VOXEL, 2);
         let expected = (2.0_f32).sqrt() * VOXEL;
-        for e in edges(&sa) {
-            approx_eq(e.2, expected);
-        }
+        let a = neighbors_of(&adj, (0, 0, 0));
+        let b = neighbors_of(&adj, (1, 0, 1));
+        assert_eq!(a.len(), 1);
+        assert_eq!(b.len(), 1);
+        approx_eq(a[0].cost, expected);
+        approx_eq(b[0].cost, expected);
     }
 
     #[test]
     fn same_column_cells_are_not_self_connected() {
         let lookup = build_surface_lookup(&[(0, 0, 0), (0, 0, 5)]);
-        let sa = build_surface_adjacency(&lookup, VOXEL, 10);
-        assert!(sa.adj.indices.is_empty());
+        let adj = build_surface_adjacency(&lookup, VOXEL, 10);
+        assert!(neighbors_of(&adj, (0, 0, 0)).is_empty());
+        assert!(neighbors_of(&adj, (0, 0, 5)).is_empty());
     }
 
     #[test]
     fn plus_pattern_center_has_four_neighbors() {
         let cells = vec![(0, 0, 0), (1, 0, 0), (-1, 0, 0), (0, 1, 0), (0, -1, 0)];
         let lookup = build_surface_lookup(&cells);
-        let sa = build_surface_adjacency(&lookup, VOXEL, 2);
-        let center_idx = sa.cell_to_idx[&(0, 0, 0)] as usize;
-        let lo = sa.adj.indptr[center_idx] as usize;
-        let hi = sa.adj.indptr[center_idx + 1] as usize;
-        assert_eq!(hi - lo, 4);
+        let adj = build_surface_adjacency(&lookup, VOXEL, 2);
+        assert_eq!(neighbors_of(&adj, (0, 0, 0)).len(), 4);
     }
 
     #[test]
     fn deduplicates_repeated_cells() {
         let lookup = build_surface_lookup(&[(0, 0, 0), (0, 0, 0), (1, 0, 0)]);
-        let sa = build_surface_adjacency(&lookup, VOXEL, 2);
-        assert_eq!(sa.adj.n, 2);
+        let adj = build_surface_adjacency(&lookup, VOXEL, 2);
+        assert_eq!(adj.len(), 2);
     }
 }

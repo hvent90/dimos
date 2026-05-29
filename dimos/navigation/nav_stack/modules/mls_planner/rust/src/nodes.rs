@@ -10,7 +10,7 @@
 use ahash::AHashMap;
 
 use crate::adjacency::{
-    build_surface_adjacency, build_surface_lookup, CsrAdjacency, SurfaceAdjacency, SurfaceLookup,
+    build_surface_adjacency, build_surface_lookup, SurfaceAdjacency, SurfaceLookup,
 };
 use crate::dijkstra::dijkstra;
 use crate::voxel::{surface_point_xyz, VoxelKey};
@@ -21,9 +21,7 @@ pub struct NodeData {
 }
 
 pub struct SurfaceGraph {
-    pub adj: CsrAdjacency,
-    pub idx_to_cell: Vec<VoxelKey>,
-    pub cell_to_idx: AHashMap<VoxelKey, u32>,
+    pub adj: SurfaceAdjacency,
     pub surface_lookup: SurfaceLookup,
     pub nodes: Vec<NodeData>,
 }
@@ -36,44 +34,38 @@ pub fn place_nodes(
     node_wall_buffer_m: f32,
 ) -> SurfaceGraph {
     let surface_lookup = build_surface_lookup(surface_cells);
-    let SurfaceAdjacency {
-        adj,
-        idx_to_cell,
-        cell_to_idx,
-    } = build_surface_adjacency(&surface_lookup, voxel_size, maximum_step_cells);
-    let n = adj.n as usize;
+    let adj = build_surface_adjacency(&surface_lookup, voxel_size, maximum_step_cells);
 
-    if n == 0 {
+    if adj.is_empty() {
         return SurfaceGraph {
             adj,
-            idx_to_cell,
-            cell_to_idx,
             surface_lookup,
             nodes: Vec::new(),
         };
     }
 
-    let wall_seeds = wall_adjacent_cells(&adj, &idx_to_cell);
+    let wall_seeds = wall_adjacent_cells(&adj);
     let dist = dijkstra(&adj, &wall_seeds).dist;
 
-    let mut candidates: Vec<u32> = (0..n as u32)
-        .filter(|&i| {
-            let d = dist[i as usize];
-            d.is_finite() && d >= node_wall_buffer_m
+    let mut candidates: Vec<VoxelKey> = dist
+        .iter()
+        .filter_map(|(&c, &d)| {
+            if d >= node_wall_buffer_m {
+                Some(c)
+            } else {
+                None
+            }
         })
         .collect();
-    candidates.sort_by(|&a, &b| dist[b as usize].total_cmp(&dist[a as usize]));
+    candidates.sort_by(|a, b| dist[b].total_cmp(&dist[a]).then(a.cmp(b)));
 
-    let survivors = nms_grid(&candidates, &idx_to_cell, voxel_size, node_spacing_m);
+    let survivors = nms_grid(&candidates, voxel_size, node_spacing_m);
 
     let nodes: Vec<NodeData> = survivors
         .iter()
-        .map(|&idx| {
-            let cell = idx_to_cell[idx as usize];
-            NodeData {
-                cell,
-                pos: surface_point_xyz(cell.0, cell.1, cell.2, voxel_size),
-            }
+        .map(|&cell| NodeData {
+            cell,
+            pos: surface_point_xyz(cell.0, cell.1, cell.2, voxel_size),
         })
         .collect();
 
@@ -81,44 +73,32 @@ pub fn place_nodes(
 
     SurfaceGraph {
         adj: scaled_adj,
-        idx_to_cell,
-        cell_to_idx,
         surface_lookup,
         nodes,
     }
 }
 
-/// Cells that are missing any of the 4 neighbors are considered
-/// on the edge of walkable terrain.
-fn wall_adjacent_cells(adj: &CsrAdjacency, idx_to_cell: &[VoxelKey]) -> Vec<u32> {
-    let n = adj.n as usize;
-    let mut same_z = vec![0u8; n];
-    for u in 0..n {
-        let iz_u = idx_to_cell[u].2;
-        let lo = adj.indptr[u] as usize;
-        let hi = adj.indptr[u + 1] as usize;
-        for k in lo..hi {
-            let v = adj.indices[k] as usize;
-            if idx_to_cell[v].2 == iz_u {
-                same_z[u] += 1;
-            }
-        }
-    }
-    let mut wall: Vec<u32> = (0..n as u32).filter(|&i| same_z[i as usize] < 4).collect();
+/// Cells missing any of their 4 same-z neighbors are treated as boundaries.
+fn wall_adjacent_cells(adj: &SurfaceAdjacency) -> Vec<VoxelKey> {
+    let mut wall: Vec<VoxelKey> = adj
+        .cells()
+        .filter(|&c| {
+            let same_z = adj.neighbors(c).filter(|e| e.dst.2 == c.2).count();
+            same_z < 4
+        })
+        .collect();
+    wall.sort();
     if wall.is_empty() {
-        wall.push(0);
+        if let Some(c) = adj.cells().min() {
+            wall.push(c);
+        }
     }
     wall
 }
 
 /// Bin placed nodes by node_spacing-sized cells. For each candidate, scan the
 /// 27 nearby bins for any node within Euclidean node_spacing.
-fn nms_grid(
-    candidates_sorted: &[u32],
-    idx_to_cell: &[VoxelKey],
-    voxel_size: f32,
-    node_spacing_m: f32,
-) -> Vec<u32> {
+fn nms_grid(candidates_sorted: &[VoxelKey], voxel_size: f32, node_spacing_m: f32) -> Vec<VoxelKey> {
     let bin_size = ((node_spacing_m / voxel_size) as i32).max(1);
     let r_sq = (node_spacing_m as f64) * (node_spacing_m as f64);
     let v = voxel_size as f64;
@@ -132,8 +112,7 @@ fn nms_grid(
 
     let mut bins: AHashMap<(i32, i32, i32), Vec<VoxelKey>> = AHashMap::new();
     let mut survivors = Vec::new();
-    for &cand in candidates_sorted {
-        let cell = idx_to_cell[cand as usize];
+    for &cell in candidates_sorted {
         let (bx, by, bz) = bin_of(cell);
         let mut killed = false;
         'outer: for dbx in -1..=1 {
@@ -154,39 +133,39 @@ fn nms_grid(
             }
         }
         if !killed {
-            survivors.push(cand);
+            survivors.push(cell);
             bins.entry((bx, by, bz)).or_default().push(cell);
         }
     }
     survivors
 }
 
-/// Linear ramp from penalty=2 at wall to penalty=1 at buffer, capped at 1.
-/// Per-edge multiplier averages the two endpoints' penalties.
-fn wall_safe_adjacency(adj: &CsrAdjacency, dist: &[f32], buffer_m: f32) -> CsrAdjacency {
-    let n = adj.n as usize;
-    let penalty: Vec<f32> = (0..n)
-        .map(|i| (1.0 + (buffer_m - dist[i]) / buffer_m).max(1.0))
-        .collect();
+/// Penalty adjustments to steer path away from walls and obstacles.
+/// Subject to tuning...
+fn wall_safe_adjacency(
+    adj: &SurfaceAdjacency,
+    dist: &AHashMap<VoxelKey, f32>,
+    buffer_m: f32,
+) -> SurfaceAdjacency {
+    let penalty = |cell: VoxelKey| -> f32 {
+        match dist.get(&cell) {
+            Some(&d) => (1.0 + (buffer_m - d) / buffer_m).max(1.0),
+            None => 1.0,
+        }
+    };
 
-    let mut data = Vec::with_capacity(adj.data.len());
-    for u in 0..n {
-        let lo = adj.indptr[u] as usize;
-        let hi = adj.indptr[u + 1] as usize;
-        let pu = penalty[u];
-        for k in lo..hi {
-            let v = adj.indices[k] as usize;
-            let pv = penalty[v];
-            data.push(adj.data[k] * (pu + pv) / 2.0);
+    let mut scaled = SurfaceAdjacency::new();
+    for cell in adj.cells() {
+        scaled.add_cell(cell);
+    }
+    for cell in adj.cells() {
+        let pu = penalty(cell);
+        for edge in adj.neighbors(cell) {
+            let pv = penalty(edge.dst);
+            scaled.add_edge(cell, edge.dst, edge.cost * (pu + pv) / 2.0);
         }
     }
-
-    CsrAdjacency {
-        indptr: adj.indptr.clone(),
-        indices: adj.indices.clone(),
-        data,
-        n: adj.n,
-    }
+    scaled
 }
 
 #[cfg(test)]
@@ -218,7 +197,7 @@ mod tests {
     #[test]
     fn empty_input() {
         let sg = place_nodes(&[], VOXEL, 2, 1.0, 0.3);
-        assert_eq!(sg.adj.n, 0);
+        assert!(sg.adj.is_empty());
         assert!(sg.nodes.is_empty());
     }
 
@@ -265,13 +244,11 @@ mod tests {
         // Strip of 10 cells. End cells have 1 same-z neighbor → wall-adjacent → dist=0 → penalty=2.
         let cells: Vec<VoxelKey> = (0..10).map(|ix| (ix, 0, 0)).collect();
         let sg = place_nodes(&cells, VOXEL, 2, 1.0, 0.3);
-        let end_idx = sg.cell_to_idx[&(0, 0, 0)] as usize;
-        let lo = sg.adj.indptr[end_idx] as usize;
-        let hi = sg.adj.indptr[end_idx + 1] as usize;
-        assert!(hi > lo);
+        let outbound: Vec<_> = sg.adj.neighbors((0, 0, 0)).collect();
+        assert!(!outbound.is_empty());
         // End cell penalty=2, neighbor penalty>=1, so outbound cost >= 1.5 * VOXEL.
-        for k in lo..hi {
-            assert!(sg.adj.data[k] >= 1.5 * VOXEL - 1e-5);
+        for edge in &outbound {
+            assert!(edge.cost >= 1.5 * VOXEL - 1e-5);
         }
     }
 
@@ -279,15 +256,13 @@ mod tests {
     fn dijkstra_distances_grow_from_seeds() {
         let cells = open_patch_5x5();
         let lookup = build_surface_lookup(&cells);
-        let SurfaceAdjacency {
-            adj, idx_to_cell, ..
-        } = build_surface_adjacency(&lookup, VOXEL, 2);
-        let seeds = wall_adjacent_cells(&adj, &idx_to_cell);
+        let adj = build_surface_adjacency(&lookup, VOXEL, 2);
+        let seeds = wall_adjacent_cells(&adj);
         let dist = dijkstra(&adj, &seeds).dist;
 
-        let center = idx_to_cell.iter().position(|&c| c == (2, 2, 0)).unwrap();
-        let corner = idx_to_cell.iter().position(|&c| c == (0, 0, 0)).unwrap();
-        assert!(dist[center] > dist[corner]);
-        assert_eq!(dist[corner], 0.0);
+        let center = dist[&(2, 2, 0)];
+        let corner = dist[&(0, 0, 0)];
+        assert!(center > corner);
+        assert_eq!(corner, 0.0);
     }
 }
