@@ -7,7 +7,7 @@
 
 #![allow(dead_code)] // consumed incrementally
 
-use ahash::AHashMap;
+use ahash::{AHashMap, AHashSet};
 
 use crate::adjacency::{
     build_surface_adjacency, build_surface_lookup, SurfaceAdjacency, SurfaceLookup,
@@ -78,13 +78,16 @@ pub fn place_nodes(
     }
 }
 
-/// Cells missing any of their 4 same-z neighbors are treated as boundaries.
+/// Cells missing any of their 4 xy-direction neighbors are treated as boundaries.
 fn wall_adjacent_cells(adj: &SurfaceAdjacency) -> Vec<VoxelKey> {
     let mut wall: Vec<VoxelKey> = adj
         .cells()
         .filter(|&c| {
-            let same_z = adj.neighbors(c).filter(|e| e.dst.2 == c.2).count();
-            same_z < 4
+            let mut dirs: AHashSet<(i32, i32)> = AHashSet::new();
+            for e in adj.neighbors(c) {
+                dirs.insert((e.dst.0 - c.0, e.dst.1 - c.1));
+            }
+            dirs.len() < 4
         })
         .collect();
     wall.sort();
@@ -217,6 +220,21 @@ mod tests {
             let (ix, iy, _) = n.cell;
             assert!((0..10).contains(&ix) && (0..10).contains(&iy));
         }
+    }
+
+    #[test]
+    fn sloped_patch_places_interior_nodes() {
+        // 10x10 plane sloped 1 cell of z per cell of x. With step_threshold=2
+        // every interior cell still has all 4 xy-direction neighbors in-graph,
+        // so it must not be flagged as wall-adjacent.
+        let mut cells = Vec::new();
+        for ix in 0..10 {
+            for iy in 0..10 {
+                cells.push((ix, iy, ix));
+            }
+        }
+        let sg = place_nodes(&cells, VOXEL, 2, 1.0, 0.3);
+        assert!(!sg.nodes.is_empty());
     }
 
     #[test]
