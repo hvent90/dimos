@@ -410,17 +410,22 @@ class HostedTeleopModule(Module):
 
     def _start_telemetry(self) -> None:
         """Push command-plane health (latency/jitter/loss/rate) to the operator HUD."""
+
         def send_telemetry() -> None:
             stats = self._cmd_stats.snapshot()
             channel = self._state_back_channel
             if stats is None or channel is None or channel.readyState != "open":
                 return
             try:
-                channel.send(json.dumps({
-                    "type": "robot_telemetry",
-                    "cmd": stats,
-                    "robot_ts": time.time(),
-                }))
+                channel.send(
+                    json.dumps(
+                        {
+                            "type": "robot_telemetry",
+                            "cmd": stats,
+                            "robot_ts": time.time(),
+                        }
+                    )
+                )
             except Exception:
                 logger.debug("telemetry send failed", exc_info=True)
 
@@ -593,10 +598,15 @@ class HostedTeleopModule(Module):
             logger.info(
                 "video: %sx%s %.1ffps %.0fkbps loss=%.2f%% jbuf=%.0fms "
                 "decode=%.1fms dropped=%s freezes=%s",
-                msg.get("width"), msg.get("height"), msg.get("fps", 0.0),
-                msg.get("kbps", 0.0), msg.get("loss_pct", 0.0),
-                msg.get("jitter_buffer_ms", 0.0), msg.get("decode_ms", 0.0),
-                msg.get("frames_dropped"), msg.get("freezes"),
+                msg.get("width"),
+                msg.get("height"),
+                msg.get("fps", 0.0),
+                msg.get("kbps", 0.0),
+                msg.get("loss_pct", 0.0),
+                msg.get("jitter_buffer_ms", 0.0),
+                msg.get("decode_ms", 0.0),
+                msg.get("frames_dropped"),
+                msg.get("freezes"),
             )
             self._append_video_stats(msg)
         else:
@@ -604,10 +614,20 @@ class HostedTeleopModule(Module):
 
     def _append_video_stats(self, msg: dict[str, Any]) -> None:
         try:
-            sample = {k: msg.get(k) for k in (
-                "width", "height", "fps", "kbps", "loss_pct",
-                "jitter_buffer_ms", "decode_ms", "frames_dropped", "freezes",
-            )}
+            sample = {
+                k: msg.get(k)
+                for k in (
+                    "width",
+                    "height",
+                    "fps",
+                    "kbps",
+                    "loss_pct",
+                    "jitter_buffer_ms",
+                    "decode_ms",
+                    "frames_dropped",
+                    "freezes",
+                )
+            }
             sample["wall"] = time.time()
             with open(_VIDEO_STATS_PATH, "a") as f:
                 f.write(json.dumps(sample) + "\n")

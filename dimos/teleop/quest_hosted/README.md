@@ -125,4 +125,3 @@ with `repeated_local_track_error`.
 
 Robot-side auto-redial (R2b in the roadmap) is not yet implemented and is
 gated behind TURN landing first.
-

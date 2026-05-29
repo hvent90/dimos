@@ -104,9 +104,7 @@ def _summarize_video_stats(samples: list[dict[str, Any]]) -> dict[str, Any] | No
         return max(vals) if vals else 0.0
 
     resolutions = [
-        f"{s.get('width')}x{s.get('height')}"
-        for s in samples
-        if s.get("width") and s.get("height")
+        f"{s.get('width')}x{s.get('height')}" for s in samples if s.get("width") and s.get("height")
     ]
     resolution = max(set(resolutions), key=resolutions.count) if resolutions else "n/a"
 
@@ -352,7 +350,12 @@ class TeleopBenchmarkModule(Module):
                 e2e_str = f" | ~e2e p50 {e2e['p50']:.1f}ms" if e2e else ""
                 logger.info(
                     "[benchmark] %s: %.1fHz | jitter p95 %.1fms | loss %s%s | n=%d",
-                    name, s["rate_hz"], jitter["p95"], loss_str, e2e_str, s["count"],
+                    name,
+                    s["rate_hz"],
+                    jitter["p95"],
+                    loss_str,
+                    e2e_str,
+                    s["count"],
                 )
             self._stop_event.wait(interval)
 
