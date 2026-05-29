@@ -215,7 +215,7 @@ class Quaternion(LCMQuaternion):  # type: ignore[misc]
 
     def is_zero(self) -> bool:
         """All components are zero — i.e. an uninitialized placeholder, not a valid rotation."""
-        return bool(np.allclose([self.x, self.y, self.z, self.w], 0.0))
+        return self.x == 0.0 and self.y == 0.0 and self.z == 0.0 and self.w == 0.0
 
     def __mul__(self, other: Quaternion) -> Quaternion:
         """Multiply two quaternions (Hamilton product).
@@ -235,7 +235,6 @@ class Quaternion(LCMQuaternion):  # type: ignore[misc]
         return Quaternion(x, y, z, w)
 
     def dot(self, other: Quaternion) -> float:
-        """4D inner product. ``|q.dot(q')| == 1`` iff same orientation (up to sign)."""
         return float(self.x * other.x + self.y * other.y + self.z * other.z + self.w * other.w)
 
     def angle_to(self, other: Quaternion) -> float:
