@@ -30,6 +30,9 @@ from scipy.sparse.csgraph import connected_components
 
 from dimos.core.coordination.blueprints import autoconnect
 from dimos.navigation.nav_stack.evaluator.evaluator import Evaluator
+from dimos.navigation.nav_stack.modules.click_start_goal_router.click_start_goal_router import (
+    ClickStartGoalRouter,
+)
 from dimos.navigation.nav_stack.modules.mls_planner.mls_planner import (
     NODE_STEP_THRESHOLD_M,
     MLSPlanner,
@@ -150,6 +153,7 @@ _planner_voxel = MLSPlannerConfig().voxel_size
 path_planner_eval = autoconnect(
     Evaluator.blueprint(),
     MLSPlanner.blueprint(),
+    ClickStartGoalRouter.blueprint(),
     RerunWebSocketServer.blueprint(),
     RerunBridgeModule.blueprint(
         visual_override={

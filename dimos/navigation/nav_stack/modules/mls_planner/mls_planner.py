@@ -37,7 +37,6 @@ from scipy.spatial import cKDTree
 
 from dimos.core.module import Module, ModuleConfig
 from dimos.core.stream import In, Out
-from dimos.msgs.geometry_msgs.PointStamped import PointStamped
 from dimos.msgs.geometry_msgs.PoseStamped import PoseStamped
 from dimos.msgs.nav_msgs.LineSegments3D import LineSegments3D
 from dimos.msgs.nav_msgs.Odometry import Odometry
@@ -577,7 +576,6 @@ class MLSPlanner(Module):
     global_map: In[PointCloud2]
     start_pose: In[Odometry]
     goal_pose: In[Odometry]
-    clicked_point: In[PointStamped]
     path: Out[Path]
     surface_map: Out[PointCloud2]
     nodes: Out[PointCloud2]
@@ -587,8 +585,6 @@ class MLSPlanner(Module):
         super().__init__(**kwargs)
         self._latest_start: tuple[float, float, float] | None = None
         self._surface_graph: SurfaceGraph | None = None
-        # Clicks alternate between setting the start and setting the goal+planning.
-        self._next_click_sets_start: bool = True
 
     async def handle_global_map(self, msg: PointCloud2) -> None:
         points, _ = msg.as_numpy()
@@ -658,6 +654,7 @@ class MLSPlanner(Module):
 
     async def handle_start_pose(self, msg: Odometry) -> None:
         self._latest_start = (msg.x, msg.y, msg.z)
+        self._publish_empty_path()
 
     def _publish_empty_path(self) -> None:
         """Clear any previously published path so the visualizer drops the stale plan."""
@@ -665,18 +662,6 @@ class MLSPlanner(Module):
 
     async def handle_goal_pose(self, msg: Odometry) -> None:
         self._plan_to((msg.x, msg.y, msg.z))
-
-    async def handle_clicked_point(self, msg: PointStamped) -> None:
-        pt = (msg.x, msg.y, msg.z)
-        if self._next_click_sets_start:
-            self._latest_start = pt
-            self._next_click_sets_start = False
-            self._publish_empty_path()
-            logger.info("Click set start; next click will set goal", start=pt)
-            return
-        self._next_click_sets_start = True
-        logger.info("Click set goal", goal=pt)
-        self._plan_to(pt)
 
     def _plan_to(self, goal: tuple[float, float, float]) -> None:
         if self._latest_start is None:
