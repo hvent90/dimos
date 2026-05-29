@@ -13,6 +13,7 @@
 # See the License for the specific language governing permissions and
 # limitations under the License.
 
+import os
 from pathlib import Path
 import time
 from typing import Any
@@ -88,6 +89,10 @@ unitree_go2_record = autoconnect(
     MovementManager.blueprint(),
     FastLio2.blueprint(
         frame_id="world",
+        map_freq=-1,
+        lidar_ip=os.getenv("LIDAR_IP", "192.168.1.155"),
+        record_pcap=True,
+        deterministic_clock=True,
     ).remappings(
         [
             (FastLio2, "lidar", "fastlio_lidar"),
