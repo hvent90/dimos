@@ -2,6 +2,7 @@
 // SPDX-License-Identifier: Apache-2.0
 
 mod adjacency;
+mod surfaces;
 mod voxel;
 
 use dimos_module::{run, Input, LcmTransport, Module, Output};
