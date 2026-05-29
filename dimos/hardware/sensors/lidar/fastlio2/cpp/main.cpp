@@ -805,11 +805,15 @@ int main(int argc, char** argv) {
 
     // Source of point/IMU packets:
     //   live mode  -> Livox SDK opens UDP sockets + dispatches via callbacks
-    //                 and the main thread drives run_main_iter at main_freq.
-    //   replay mode -> the feeder thread reads the pcap, calls the same
-    //                  callbacks, and invokes run_main_iter inline after
-    //                  each packet. SDK is not initialized; main thread
-    //                  just keeps LCM alive while the feeder owns processing.
+    //                 from its own threads. Main thread drives run_main_iter
+    //                 at main_freq, consuming whatever the SDK queued.
+    //   replay mode -> the feeder thread reads the pcap and pushes packets
+    //                  through the same on_point/on_imu callbacks (paced at
+    //                  realtime via sleep_until). The MAIN thread — same
+    //                  one that runs in live mode — owns run_main_iter and
+    //                  drains the accumulator. Two threads in both modes,
+    //                  matching architectures, so the only difference is
+    //                  the source of packets (SDK vs pcap).
     std::thread replay_thread;
     if (g_replay_mode.load()) {
         if (debug) printf("[fastlio2] REPLAY mode, pcap=%s\n", replay_pcap.c_str());
@@ -833,18 +837,14 @@ int main(int argc, char** argv) {
                 }
                 g_virtual_clock_ns.store(pcap_ts_ns);
             };
-            rep.on_iter = [&]() {
-                auto vn = virtual_now();
-                if (vn.has_value()) {
-                    run_main_iter(*vn);
-                }
-            };
+            // No rep.on_iter — the main thread drives run_main_iter in
+            // replay mode now, same as in live. This decouples packet
+            // ingestion from per-iter filter_cloud cost and lets replay
+            // run at the same wall throughput as live.
             rep.running = &g_running;
-            // Pace the replay at live wall-clock rate so the reproduction
-            // harness experiences the same CPU pressure / threading / SDK-
-            // resume timing that live did. Compressed-time replay (the old
-            // `rep.realtime = false`) runs ~4.8× realtime and can mask
-            // pressure-dependent bugs that only manifest at real rate.
+            // Pace the replay feeder at live wall-clock rate. sleep_until
+            // throttles the feeder so packets land in the accumulator at
+            // the same wall cadence as the SDK delivers in live mode.
             rep.realtime = true;
             rep.skip_until_ns = replay_skip_until_ns;
             rep.run();
@@ -867,16 +867,12 @@ int main(int argc, char** argv) {
     }
 
     while (g_running.load()) {
-        if (g_replay_mode.load()) {
-            // Feeder thread owns run_main_iter. Just keep LCM alive and idle.
-            lcm.handleTimeout(20);
-            continue;
-        }
-
         auto loop_start = std::chrono::high_resolution_clock::now();
         auto now_opt = virtual_now();
         if (!now_opt.has_value()) {
-            // No clock yet (live: shouldn't happen; replay: handled above).
+            // No clock yet — in replay this means the feeder hasn't read
+            // its first packet; in live it shouldn't happen because
+            // virtual_now falls back to steady_clock::now().
             std::this_thread::sleep_for(std::chrono::milliseconds(1));
             continue;
         }
