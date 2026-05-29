@@ -1,6 +1,7 @@
 // Copyright 2026 Dimensional Inc.
 // SPDX-License-Identifier: Apache-2.0
 
+mod adjacency;
 mod voxel;
 
 use dimos_module::{run, Input, LcmTransport, Module, Output};
