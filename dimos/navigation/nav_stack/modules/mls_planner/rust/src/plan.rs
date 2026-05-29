@@ -1,43 +1,79 @@
 // Copyright 2026 Dimensional Inc.
 // SPDX-License-Identifier: Apache-2.0
 
-//! Query-time planning: snap start/goal poses to nodes, run shortest path on
-//! the node graph, and stitch cached edge cell paths into XYZ waypoints.
 #![allow(dead_code)]
 
 use std::cmp::Ordering;
 use std::collections::BinaryHeap;
 
+use ahash::AHashMap;
+
+use crate::adjacency::SurfaceLookup;
 use crate::edges::{walk_preds_to_source, PlannerGraph};
 use crate::voxel::{surface_point_xyz, VoxelKey};
 
-/// Snap a query pose to the nearest node by 3D Euclidean distance, rejecting
-/// nodes whose z differs from the pose's z by more than `z_tolerance_m`.
-pub fn snap_pose_to_node(
-    plg: &PlannerGraph,
+/// Snap a pose to the best surface cell.
+pub fn snap_pose_to_cell(
+    surface_lookup: &SurfaceLookup,
     pose: (f32, f32, f32),
-    z_tolerance_m: f32,
-) -> Option<u32> {
-    let mut best: Option<(f32, u32)> = None;
-    for (i, n) in plg.nodes.iter().enumerate() {
-        if (pose.2 - n.pos.2).abs() > z_tolerance_m {
-            continue;
-        }
-        let dx = pose.0 - n.pos.0;
-        let dy = pose.1 - n.pos.1;
-        let dz = pose.2 - n.pos.2;
-        let d_sq = dx * dx + dy * dy + dz * dz;
-        match best {
-            Some((b, _)) if b <= d_sq => {}
-            _ => best = Some((d_sq, i as u32)),
+    voxel_size: f32,
+    tolerance_m: f32,
+) -> Option<VoxelKey> {
+    let ix = (pose.0 / voxel_size).floor() as i32;
+    let iy = (pose.1 / voxel_size).floor() as i32;
+    let target_iz = (pose.2 / voxel_size).floor() as i32 - 1;
+    let tol_cells = (tolerance_m / voxel_size).ceil() as i32;
+
+    if let Some(cell) = best_iz_in_column(surface_lookup, ix, iy, target_iz, tol_cells) {
+        return Some(cell);
+    }
+
+    const SEARCH_RADIUS: i32 = 5;
+    let mut best: Option<(i32, VoxelKey)> = None;
+    for dix in -SEARCH_RADIUS..=SEARCH_RADIUS {
+        for diy in -SEARCH_RADIUS..=SEARCH_RADIUS {
+            if dix == 0 && diy == 0 {
+                continue;
+            }
+            let Some(cell) =
+                best_iz_in_column(surface_lookup, ix + dix, iy + diy, target_iz, tol_cells)
+            else {
+                continue;
+            };
+            let d2 = dix * dix + diy * diy;
+            if best.is_none_or(|(bd, _)| d2 < bd) {
+                best = Some((d2, cell));
+            }
         }
     }
-    best.map(|(_, i)| i)
+    best.map(|(_, c)| c)
 }
 
-/// Plan an XYZ waypoint sequence from `start_pose` to `goal_pose`.
-/// Returns None if either pose can't snap, or if the snapped nodes are
-/// disconnected in the node graph.
+fn best_iz_in_column(
+    surface_lookup: &SurfaceLookup,
+    ix: i32,
+    iy: i32,
+    target_iz: i32,
+    tol_cells: i32,
+) -> Option<VoxelKey> {
+    let zs = surface_lookup.get(&(ix, iy))?;
+    let mut best: Option<(i32, i32)> = None;
+    for &iz in zs {
+        let d = (iz - target_iz).abs();
+        if best.is_none_or(|(bd, _)| d < bd) {
+            best = Some((d, iz));
+        }
+    }
+    let (bd, iz) = best?;
+    if bd > tol_cells {
+        return None;
+    }
+    Some((ix, iy, iz))
+}
+
+/// Plan path from start pose to goal pose using the node graph.
+/// Returns none if either of the poses can't be snapped to surface or if
+/// there is no valid path.
 pub fn plan(
     plg: &PlannerGraph,
     start_pose: (f32, f32, f32),
@@ -45,11 +81,30 @@ pub fn plan(
     voxel_size: f32,
     z_tolerance_m: f32,
 ) -> Option<Vec<(f32, f32, f32)>> {
-    let start_node = snap_pose_to_node(plg, start_pose, z_tolerance_m)?;
-    let goal_node = snap_pose_to_node(plg, goal_pose, z_tolerance_m)?;
+    let start_cell = snap_pose_to_cell(&plg.surface_lookup, start_pose, voxel_size, z_tolerance_m)?;
+    let goal_cell = snap_pose_to_cell(&plg.surface_lookup, goal_pose, voxel_size, z_tolerance_m)?;
+
+    let node_cell_to_idx: AHashMap<VoxelKey, u32> = plg
+        .nodes
+        .iter()
+        .enumerate()
+        .map(|(i, n)| (n.cell, i as u32))
+        .collect();
+
+    let start_segment = walk_preds_to_source(plg, start_cell);
+    let goal_segment = walk_preds_to_source(plg, goal_cell);
+    let start_node = *node_cell_to_idx.get(start_segment.last()?)?;
+    let goal_node = *node_cell_to_idx.get(goal_segment.last()?)?;
+
     let node_seq = shortest_path_nodes(plg, start_node, goal_node)?;
     Some(assemble_waypoints(
-        plg, &node_seq, start_pose, goal_pose, voxel_size,
+        plg,
+        &node_seq,
+        start_pose,
+        &start_segment,
+        goal_pose,
+        &goal_segment,
+        voxel_size,
     ))
 }
 
@@ -100,10 +155,15 @@ fn assemble_waypoints(
     plg: &PlannerGraph,
     node_seq: &[u32],
     start_pose: (f32, f32, f32),
+    start_segment: &[VoxelKey],
     goal_pose: (f32, f32, f32),
+    goal_segment: &[VoxelKey],
     voxel_size: f32,
 ) -> Vec<(f32, f32, f32)> {
     let mut cells: Vec<VoxelKey> = Vec::new();
+
+    cells.extend_from_slice(start_segment);
+
     for pair in node_seq.windows(2) {
         let (a, b) = (pair[0], pair[1]);
         let edge_idx =
@@ -123,6 +183,12 @@ fn assemble_waypoints(
             if cells.last() != Some(&c) {
                 cells.push(c);
             }
+        }
+    }
+
+    for &c in goal_segment.iter().rev() {
+        if cells.last() != Some(&c) {
+            cells.push(c);
         }
     }
 
@@ -198,26 +264,27 @@ mod tests {
     }
 
     #[test]
-    fn snap_returns_none_when_no_nodes() {
-        let plg = graph_with_nodes(&strip(20), &[]);
-        assert!(snap_pose_to_node(&plg, (0.5, 0.0, 0.05), Z_TOL).is_none());
+    fn snap_picks_in_column_cell() {
+        let lookup = build_surface_lookup(&strip(20));
+        let cell = snap_pose_to_cell(&lookup, (0.5, 0.0, 0.1), VOXEL, Z_TOL).unwrap();
+        assert_eq!(cell, (5, 0, 0));
     }
 
     #[test]
-    fn snap_returns_nearest_node() {
-        // Nodes at x=3 and x=15 (XYZ positions 0.35 and 1.55).
-        let plg = graph_with_nodes(&strip(20), &[(3, 0, 0), (15, 0, 0)]);
-        let snapped = snap_pose_to_node(&plg, (0.5, 0.0, 0.1), Z_TOL).unwrap();
-        assert_eq!(snapped, 0);
-        let snapped = snap_pose_to_node(&plg, (1.4, 0.0, 0.1), Z_TOL).unwrap();
-        assert_eq!(snapped, 1);
+    fn snap_falls_back_to_nearby_column() {
+        // Column ix=2 is removed; a pose in that column must snap to an adjacent one.
+        let mut cells = strip(20);
+        cells.retain(|c| c.0 != 2);
+        let lookup = build_surface_lookup(&cells);
+        let cell = snap_pose_to_cell(&lookup, (0.25, 0.0, 0.1), VOXEL, Z_TOL).unwrap();
+        assert!(cell == (1, 0, 0) || cell == (3, 0, 0));
     }
 
     #[test]
     fn snap_rejects_outside_z_tolerance() {
-        let plg = graph_with_nodes(&strip(20), &[(3, 0, 0)]);
-        // Node's pos.z = (0+1)*0.1 = 0.1. Pose at z=2.0, tolerance=1.5 → 1.9 > 1.5 → reject.
-        assert!(snap_pose_to_node(&plg, (0.5, 0.0, 2.0), 1.5).is_none());
+        let lookup = build_surface_lookup(&strip(20));
+        // Surface at iz=0, pose at z=2.0, tolerance=1.5 → out of tolerance in every column.
+        assert!(snap_pose_to_cell(&lookup, (0.5, 0.0, 2.0), VOXEL, 1.5).is_none());
     }
 
     #[test]
@@ -238,12 +305,23 @@ mod tests {
     }
 
     #[test]
-    fn plan_same_start_and_goal_returns_two_waypoints() {
+    fn plan_same_start_and_goal_passes_through_snap_cell() {
         let plg = graph_with_nodes(&strip(20), &[(10, 0, 0)]);
         let wp = plan(&plg, (1.0, 0.0, 0.05), (1.0, 0.0, 0.05), VOXEL, Z_TOL).unwrap();
-        assert_eq!(wp.len(), 2);
-        assert_eq!(wp[0], (1.0, 0.0, 0.05));
-        assert_eq!(wp[1], (1.0, 0.0, 0.05));
+        assert_eq!(wp.first(), Some(&(1.0, 0.0, 0.05)));
+        assert_eq!(wp.last(), Some(&(1.0, 0.0, 0.05)));
+        let snap = surface_point_xyz(10, 0, 0, VOXEL);
+        assert!(wp.contains(&snap));
+    }
+
+    #[test]
+    fn plan_traces_surface_from_pose_to_first_node() {
+        let plg = graph_with_nodes(&strip(20), &[(3, 0, 0), (15, 0, 0)]);
+        let wp = plan(&plg, (0.2, 0.0, 0.05), (1.7, 0.0, 0.05), VOXEL, Z_TOL).unwrap();
+        let start_cell_pos = surface_point_xyz(2, 0, 0, VOXEL);
+        let goal_cell_pos = surface_point_xyz(17, 0, 0, VOXEL);
+        assert_eq!(wp[1], start_cell_pos);
+        assert_eq!(wp[wp.len() - 2], goal_cell_pos);
     }
 
     #[test]
