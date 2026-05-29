@@ -14,6 +14,7 @@
 
 
 import os
+from pathlib import Path
 
 from dimos.core.coordination.blueprints import autoconnect
 from dimos.hardware.sensors.lidar.fastlio2.module import FastLio2
@@ -22,6 +23,23 @@ from dimos.mapping.voxels import VoxelGridMapper
 from dimos.visualization.vis_module import vis_module
 
 voxel_size = 0.05
+
+
+def _replay_pcap_path() -> Path | None:
+    value = os.getenv("REPLAY_PCAP")
+    return Path(value).expanduser().resolve() if value else None
+
+
+def _replay_skip_until_ns(pcap: Path | None) -> int | None:
+    if pcap is None:
+        return None
+    sidecar = pcap.with_suffix(pcap.suffix + ".first.ns")
+    if not sidecar.exists():
+        return None
+    return int(sidecar.read_text().strip())
+
+
+_replay_pcap = _replay_pcap_path()
 
 
 mid360_fastlio = autoconnect(
@@ -48,6 +66,26 @@ mid360_fastlio_record = autoconnect(
     ),
     vis_module("rerun"),
 ).global_config(n_workers=2, robot_model="mid360_fastlio2_record")
+
+# Replay a recorded Mid-360 pcap through FAST-LIO offline and visualize the
+# output in Rerun. No SDK, no network. Pass the pcap path via env var:
+#   REPLAY_PCAP=path/to/mid360.pcap dimos run mid360-fastlio-replay
+# If a `<pcap>.first.ns` sidecar (written by the record blueprint when
+# deterministic_clock=True) sits next to the pcap, we auto-pass it as
+# replay_skip_until_ns so the algorithm starts from the same first packet
+# the live SDK saw.
+mid360_fastlio_replay = autoconnect(
+    FastLio2.blueprint(
+        voxel_size=voxel_size,
+        map_voxel_size=voxel_size,
+        map_freq=-1,
+        replay_pcap=_replay_pcap,
+        replay_skip_until_ns=_replay_skip_until_ns(_replay_pcap),
+        deterministic_clock=True,
+        single_threaded=True,
+    ),
+    vis_module("rerun"),
+).global_config(n_workers=2, robot_model="mid360_fastlio2_replay")
 
 mid360_fastlio_voxels = autoconnect(
     FastLio2.blueprint(),

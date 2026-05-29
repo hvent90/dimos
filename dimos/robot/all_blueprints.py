@@ -68,6 +68,7 @@ all_blueprints = {
     "mid360-fastlio": "dimos.hardware.sensors.lidar.fastlio2.fastlio_blueprints:mid360_fastlio",
     "mid360-fastlio-ray-trace": "dimos.hardware.sensors.lidar.fastlio2.fastlio_blueprints:mid360_fastlio_ray_trace",
     "mid360-fastlio-record": "dimos.hardware.sensors.lidar.fastlio2.fastlio_blueprints:mid360_fastlio_record",
+    "mid360-fastlio-replay": "dimos.hardware.sensors.lidar.fastlio2.fastlio_blueprints:mid360_fastlio_replay",
     "mid360-fastlio-voxels": "dimos.hardware.sensors.lidar.fastlio2.fastlio_blueprints:mid360_fastlio_voxels",
     "mid360-fastlio-voxels-native": "dimos.hardware.sensors.lidar.fastlio2.fastlio_blueprints:mid360_fastlio_voxels_native",
     "openarm-mock-planner-coordinator": "dimos.robot.manipulators.openarm.blueprints:openarm_mock_planner_coordinator",
