@@ -61,6 +61,12 @@ T_HI_REC_SEC = 1390.0  # window end   (sec into recording)
 RUNS_ROOT = Path("/media/dimos/USB/fastlio_recordings/segment_replays_1330_1390")
 SLICE_PCAP = RUNS_ROOT / "segment_1330_1390.pcap"
 
+# Force OMP_NUM_THREADS=1 inside the binary. Disables the parallel-for at
+# laserMapping.hpp:103-106 around the kd-tree NN search — the suspected
+# source of nondeterminism in correspondence selection across runs.
+# Bump to False to re-enable multi-thread NN (current default for prod).
+SINGLE_THREADED = True
+
 # The worker passes the attempt dir path to the child Rec module via this
 # env var. (We honor Jeff's "no env vars affecting behavior" rule by
 # treating this as a pure plumbing detail — every behavior knob lives in
@@ -265,6 +271,7 @@ def _worker() -> int:
             replay_pcap=SLICE_PCAP,
             deterministic_clock=True,
             debug=False,
+            single_threaded=SINGLE_THREADED,
         ).remappings(
             [
                 (FastLio2, "odometry", "fastlio_odometry"),
