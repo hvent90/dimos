@@ -52,7 +52,7 @@ from dimos.msgs.nav_msgs.Odometry import Odometry
 
 # Lidar IP. Override at the source-of-truth (recommit) when the bench
 # wiring changes.
-LIDAR_IP = "192.168.1.155"
+LIDAR_IP = "192.168.1.157"
 
 RUNS_ROOT = Path("/media/dimos/USB/fastlio_recordings/live_timing_records")
 
