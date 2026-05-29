@@ -1,25 +1,42 @@
 #!/usr/bin/env bash
-# Environment prep for the LIO autoresearch experiment. Run once before the
-# experiment loop. Builds the Point-LIO substrate. Python deps (numpy,
-# matplotlib) and the dimos package (for get_data) come from the dimos venv —
-# this package no longer carries its own uv env. Run inside `nix develop` (or
-# with the dimos .venv active) so cmake/eigen/pcl/yaml-cpp/boost are present.
+# Environment prep for the LIO autoresearch experiment. Run once before the loop.
+#
+# Just run `./setup.sh` — it bootstraps the point_lio build shell itself
+# (point_lio/flake.nix: a standalone flake with cmake/eigen/pcl/yaml-cpp/boost/
+# zstd), so you do NOT need to `nix develop` first. Python (numpy, matplotlib,
+# dimos.get_data) comes from the dimos .venv, which runs without any nix env.
 set -euo pipefail
-cd "$(dirname "$0")"
 
-# --- build tools / native deps come from the nix dev shell ---
-echo ">> checking build tools..."
-command -v cmake >/dev/null || { echo "ERROR: cmake not found (run inside 'nix develop')"; exit 1; }
+# Resolve our own absolute path before any cd, so the re-exec below is robust.
+SELF="$(cd "$(dirname "$0")" && pwd)/$(basename "$0")"
+HERE="$(dirname "$SELF")"
+
+# --- bootstrap: re-exec inside the point_lio build shell if not already there.
+# The `path:` ref is load-bearing — point_lio/flake.nix lives inside the ~100 G
+# dimos repo, and a bare `nix develop` would resolve it as git+file and copy the
+# whole tree into the store. `path:` copies just point_lio/. Guard var stops
+# infinite recursion. ---
+if [ -z "${LIO_NIX_SHELL:-}" ]; then
+  command -v nix >/dev/null 2>&1 || {
+    echo "ERROR: nix not found. Install nix (flakes enabled), or provide cmake + eigen/pcl/yaml-cpp/boost/zstd yourself."; exit 1; }
+  echo ">> entering point_lio build shell (path:$HERE/point_lio)..."
+  exec env LIO_NIX_SHELL=1 nix develop "path:$HERE/point_lio" --command bash "$SELF" "$@"
+fi
+
+cd "$HERE"
+
+# --- build tools come from the nix shell ---
+command -v cmake >/dev/null || { echo "ERROR: cmake missing (build shell didn't load?)"; exit 1; }
 
 # --- dimos venv: numpy/matplotlib + dimos.get_data all live here ---
 echo ">> checking dimos venv"
 if ! python -c "import dimos, numpy, matplotlib" 2>/dev/null; then
-  root=$(git rev-parse --show-toplevel)
+  root=$(git rev-parse --show-toplevel 2>/dev/null || echo "")
   # shellcheck disable=SC1091
-  [ -f "$root/.venv/bin/activate" ] && . "$root/.venv/bin/activate"
+  [ -n "$root" ] && [ -f "$root/.venv/bin/activate" ] && . "$root/.venv/bin/activate"
 fi
 python -c "import dimos, numpy, matplotlib" || {
-  echo "ERROR: dimos venv not active. Activate the dimos .venv or run inside 'nix develop'."; exit 1; }
+  echo "ERROR: dimos venv not available. Activate the dimos .venv (numpy, matplotlib, dimos)."; exit 1; }
 
 # --- build the Point-LIO substrate (fixed; not edited by the agent) ---
 echo ">> building point_lio"
