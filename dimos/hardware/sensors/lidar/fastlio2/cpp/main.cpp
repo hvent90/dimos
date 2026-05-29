@@ -802,10 +802,12 @@ int main(int argc, char** argv) {
                 }
             };
             rep.running = &g_running;
-            // Serialized replay drives the main loop per packet, so wall
-            // pacing isn't needed for correctness — virtual_clock controls
-            // rate limits. Run as fast as the algorithm can keep up.
-            rep.realtime = false;
+            // Pace the replay at live wall-clock rate so the reproduction
+            // harness experiences the same CPU pressure / threading / SDK-
+            // resume timing that live did. Compressed-time replay (the old
+            // `rep.realtime = false`) runs ~4.8× realtime and can mask
+            // pressure-dependent bugs that only manifest at real rate.
+            rep.realtime = true;
             rep.skip_until_ns = replay_skip_until_ns;
             rep.run();
             std::this_thread::sleep_for(std::chrono::milliseconds(500));
