@@ -55,6 +55,11 @@ T_HI_REC_SEC = 1390.0
 
 # ---------------- Speed derivation ------------------------------------------
 
+# Centered rolling-mean window for the smoothed |v| trace. At ~30 Hz odom
+# publish rate, a 9-sample window is ~300 ms of context — wide enough to
+# kill per-sample noise but narrow enough to keep the post-gap ramp shape.
+SMOOTH_WINDOW = 9
+
 
 def _load_attempt(db_path: Path) -> tuple[list[float], list[float]]:
     """Return (rec_t_sec, abs_v_mps) for the attempt's fastlio_odometry rows.
@@ -94,6 +99,26 @@ def _load_attempt(db_path: Path) -> tuple[list[float], list[float]]:
     return rec_ts, speeds
 
 
+def _smooth(values: list[float], window: int) -> list[float]:
+    """Centered rolling-mean smoothing on a list of floats.
+
+    Window is the full span (odd works best — centers cleanly). Endpoints
+    use whatever samples are available within the window, so the smoothed
+    array has the same length as the input and aligns to the same x-axis.
+    """
+    if window <= 1 or len(values) <= 1:
+        return list(values)
+    half = window // 2
+    n = len(values)
+    out = [0.0] * n
+    for i in range(n):
+        lo = max(0, i - half)
+        hi = min(n, i + half + 1)
+        seg = values[lo:hi]
+        out[i] = sum(seg) / len(seg)
+    return out
+
+
 def _list_attempts() -> list[Path]:
     return sorted(
         (p for p in RUNS_ROOT.iterdir() if p.is_dir() and p.name.startswith("attempt_")),
@@ -107,7 +132,21 @@ def _list_attempts() -> list[Path]:
 def _build_figure(attempts: list[Path]) -> go.Figure:
     fig = go.Figure()
     n_traces = 0
-    for attempt_dir in attempts:
+    # One colour per attempt so the raw + smoothed traces for a single
+    # attempt share the same hue (smoothed bright, raw faded behind).
+    palette = [
+        "#1f77b4",
+        "#ff7f0e",
+        "#2ca02c",
+        "#d62728",
+        "#9467bd",
+        "#8c564b",
+        "#e377c2",
+        "#7f7f7f",
+        "#bcbd22",
+        "#17becf",
+    ]
+    for idx, attempt_dir in enumerate(attempts):
         db_path = attempt_dir / "fastlio.db"
         if not db_path.exists():
             print(f"[plot_segment] skip {attempt_dir.name}: no fastlio.db", flush=True)
@@ -116,15 +155,38 @@ def _build_figure(attempts: list[Path]) -> go.Figure:
         if not rec_ts:
             print(f"[plot_segment] skip {attempt_dir.name}: no valid odom rows", flush=True)
             continue
-        peak = max(speeds)
+        smoothed = _smooth(speeds, SMOOTH_WINDOW)
+        raw_peak = max(speeds)
+        smoothed_peak = max(smoothed)
+        colour = palette[idx % len(palette)]
+        # Raw trace: thin, faded, behind the smoothed line. legendgroup
+        # ties it to the smoothed trace so clicking the legend toggles both.
         fig.add_trace(
             go.Scatter(
                 x=rec_ts,
                 y=speeds,
                 mode="lines",
-                name=f"{attempt_dir.name} (peak {peak:.2f} m/s)",
-                line={"width": 1.0},
-                hovertemplate="rec_t=%{x:.2f}s |v|=%{y:.3f} m/s<extra></extra>",
+                name=f"{attempt_dir.name} raw",
+                legendgroup=attempt_dir.name,
+                showlegend=False,
+                line={"width": 0.7, "color": colour},
+                opacity=0.25,
+                hovertemplate="rec_t=%{x:.2f}s |v|=%{y:.3f} m/s (raw)<extra></extra>",
+            )
+        )
+        # Smoothed trace: bolder, in front, this is what the legend names.
+        fig.add_trace(
+            go.Scatter(
+                x=rec_ts,
+                y=smoothed,
+                mode="lines",
+                name=(
+                    f"{attempt_dir.name} "
+                    f"(smoothed peak {smoothed_peak:.2f} m/s, raw peak {raw_peak:.2f} m/s)"
+                ),
+                legendgroup=attempt_dir.name,
+                line={"width": 2.0, "color": colour},
+                hovertemplate="rec_t=%{x:.2f}s |v|=%{y:.3f} m/s (smoothed)<extra></extra>",
             )
         )
         n_traces += 1
@@ -132,10 +194,11 @@ def _build_figure(attempts: list[Path]) -> go.Figure:
     fig.update_layout(
         title=(
             f"FAST-LIO replay speed — segment [{T_LO_REC_SEC:.0f}, {T_HI_REC_SEC:.0f}] s "
-            f"({n_traces} attempt{'' if n_traces == 1 else 's'})"
+            f"({n_traces} attempt{'' if n_traces == 1 else 's'}, "
+            f"smoothed bold + raw faded behind, window={SMOOTH_WINDOW})"
         ),
         xaxis_title="seconds into recording",
-        yaxis_title="|v| (m/s, symlog)",
+        yaxis_title="|v| (m/s, log scale)",
         yaxis={"type": "log"},
         hovermode="closest",
         template="plotly_white",
