@@ -234,16 +234,11 @@ class FastLio2(NativeModule, perception.Lidar, perception.Odometry, mapping.Glob
         # Auto-pair the first-packet marker with the pcap so replay can
         # discover it. Skip if the caller already set it explicitly.
 
-        host_ports = [
-            cfg.host_cmd_data_port,
-            cfg.host_push_msg_port,
-            cfg.host_point_data_port,
-            cfg.host_imu_data_port,
-            cfg.host_log_data_port,
-        ]
-        bpf = (
-            f"src host {cfg.lidar_ip} and udp and dst portrange {min(host_ports)}-{max(host_ports)}"
-        )
+        # Capture every UDP packet originating from the lidar. The Mid-360
+        # multicasts point/IMU data to 224.1.1.5 (dst port = the lidar's own
+        # port, not a host port), so filtering on dst portrange would miss it.
+        # src host alone is restrictive enough — nothing else lives on that IP.
+        packet_filter_expression = f"src host {cfg.lidar_ip} and udp"
         tcpdump = shutil.which("tcpdump") or "tcpdump"
         cmd = [
             tcpdump,
@@ -255,7 +250,7 @@ class FastLio2(NativeModule, perception.Lidar, perception.Odometry, mapping.Glob
             str(cfg.record_pcap_snaplen),
             "-U",
             "-n",
-            bpf,
+            packet_filter_expression,
         ]
 
         proc = subprocess.Popen(
@@ -288,7 +283,7 @@ class FastLio2(NativeModule, perception.Lidar, perception.Odometry, mapping.Glob
             "FastLio2 pcap recording enabled",
             path=str(path),
             iface=cfg.record_pcap_iface,
-            bpf=bpf,
+            packet_filter_expression=packet_filter_expression,
         )
         self._pcap_path = path
         self._pcap_proc = proc
