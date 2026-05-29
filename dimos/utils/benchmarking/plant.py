@@ -46,6 +46,62 @@ class FopdtChannelParams:
     L: float
 
 
+@dataclass
+class AmplitudeFit:
+    """One FOPDT fit at a specific commanded amplitude. Used to record the
+    full K(amp), tau(amp), L(amp) tables alongside the canonical single
+    fit, so future lookup-based controllers can interpolate without re-
+    collecting data."""
+
+    amp: float
+    K: float
+    tau: float
+    L: float
+    r2: float
+    source: str = "sweep"  # "sweep" | "ceiling_probe"
+
+
+@dataclass
+class FloorProbeResult:
+    """Pass/fail of the D3 floor-detection AND-test at one probe amplitude.
+
+    A sample passes when |body_vel| > motion_threshold AND > frac_threshold *
+    |amp|. Floor = lowest amp where the test is sustained for N consecutive
+    samples within the step window."""
+
+    amp: float
+    motion_detected: bool
+    sustained_samples: int  # longest contiguous run of passing samples
+
+
+@dataclass
+class ChannelEnvelope:
+    """Measured speed envelope for a single channel.
+
+    ``ceiling`` is the operational ``min(max(K·amp), envelope_cap)`` value
+    that DERIVE feeds into RG's v_max / ω_max. ``saturating_at_amp`` is a
+    forensic-only diagnostic (lowest amp where K dropped 15% below the
+    linear-regime K) and is NOT used as the operational cap."""
+
+    floor: float
+    ceiling: float
+    floor_not_found: bool = False
+    ceiling_not_found: bool = False
+    saturating_at_amp: float | None = None
+
+
+@dataclass
+class VelocityEnvelope:
+    """Per-channel measured floor/ceiling — m/s for vx/vy, rad/s for wz.
+
+    Saturation is not a dynamics parameter so this is a separate section
+    in the artifact (not folded into the FOPDT plant)."""
+
+    vx: ChannelEnvelope
+    vy: ChannelEnvelope
+    wz: ChannelEnvelope
+
+
 class FOPDTChannel:
     """First-order lag + dead-time for one velocity axis.
 
@@ -191,9 +247,34 @@ class RobotPlantProfile:
     si_amplitudes: dict[str, list[float]] = field(
         default_factory=lambda: {"vx": [0.3, 0.6, 0.9], "vy": [0.2, 0.4], "wz": [0.4, 0.8, 1.2]}
     )
+    # Floor / ceiling probe ladders (methodology v2 — densification).
+    # Floor probe runs FIRST per channel: tiny amplitudes to find the
+    # smallest commanded value that produces actual robot motion (the D3
+    # AND-test in characterization.py). Ceiling probe runs LAST:
+    # supra-sweep amplitudes to detect the K-sag onset (saturation).
+    floor_probe_amplitudes: dict[str, list[float]] = field(
+        default_factory=lambda: {
+            "vx": [0.02, 0.05, 0.10, 0.15],
+            "vy": [0.1, 0.15, 0.20],
+            "wz": [0.05, 0.10, 0.20, 0.30],
+        }
+    )
+    ceiling_probe_amplitudes: dict[str, list[float]] = field(
+        default_factory=lambda: {"vx": [2.5, 3.0], "vy": [1.5, 2.0], "wz": [2.5, 3.0]}
+    )
+    # Floor D3 thresholds. AND of (absolute motion above noise floor) and
+    # (fractional response above tracking noise), sustained for N samples.
+    floor_motion_threshold: float = 0.02  # m/s (vx/vy) or rad/s (wz)
+    floor_fractional_threshold: float = 0.05  # |v_body| > 5% of |amp|
+    floor_sustained_samples: int = 5
+    # Ceiling K-sag: |K(amp)| drops below (1 - sag) * K_linear -> saturated.
+    ceiling_k_sag_threshold: float = 0.15
     step_s: float = 8.0
     pre_roll_s: float = 1.0
     max_dist_m: float = 6.0
+    # Hard manual floor — if a profile sets this >0, DERIVE will not let
+    # the measured floor go below it. Off by default (use measured).
+    min_speed_floor: float = 0.0
     # Sim ground truth: drives the sim blueprint's FOPDT plant + the
     # characterization self-test path + DERIVE ceiling fallback.
     sim_plant: TwistBasePlantParams = field(default_factory=lambda: GO2_PLANT_FITTED)
@@ -215,7 +296,21 @@ GO2_PLANT_PROFILE = RobotPlantProfile(
     odom_warmup_s=10.0,
     odom_stale_s=1.0,
     excited_channels=("vx", "vy", "wz"),
-    si_amplitudes={"vx": [0.3, 0.6, 0.9], "vy": [0.2, 0.4], "wz": [0.4, 0.8, 1.2]},
+    # Densified sweep (methodology v2): unified numeric ladder across
+    # channels (vx/vy in m/s, wz in rad/s). vy data on Go2 is expected
+    # noisier — Go2 doesn't strafe natively — but we collect it anyway
+    # so future work has something to look at.
+    si_amplitudes={
+        "vx": [0.2, 0.5, 1.0, 1.5, 2.0],
+        "vy": [0.2, 0.5, 1.0, 1.5, 2.0],
+        "wz": [0.2, 0.5, 1.0, 1.5, 2.0],
+    },
+    floor_probe_amplitudes={
+        "vx": [0.02, 0.05, 0.10, 0.15],
+        "vy": [0.02, 0.05, 0.10],
+        "wz": [0.05, 0.10, 0.20, 0.30],
+    },
+    ceiling_probe_amplitudes={"vx": [2.5, 3.0], "vy": [1.5, 2.0], "wz": [2.5, 3.0]},
     step_s=8.0,
     pre_roll_s=1.0,
     max_dist_m=6.0,
@@ -264,9 +359,13 @@ __all__ = [
     "GO2_VX_RISE",
     "GO2_WZ_RISE",
     "ROBOT_PLANT_PROFILES",
+    "AmplitudeFit",
+    "ChannelEnvelope",
     "FOPDTChannel",
+    "FloorProbeResult",
     "FopdtChannelParams",
     "RobotPlantProfile",
     "TwistBasePlantParams",
     "TwistBasePlantSim",
+    "VelocityEnvelope",
 ]

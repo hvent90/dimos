@@ -111,10 +111,25 @@ class CharacterizationRecorder(Recorder):
         available" warning fires once per message and floods the terminal.
         Pose is stored as ``None``; rerun-time analysis tools either don't
         need a pose anchor or pull it from the recorded ``odom`` stream."""
+        import sqlite3
+        from threading import Lock
+
+        last_ts = [0.0]  # mutable single-cell for the closure
+        lock = Lock()
+        _EPS = 1e-6  # 1 microsecond
 
         def on_msg(msg: Any) -> None:
-            ts = getattr(msg, "ts", None) or time.time()
-            stream.append(msg, ts=ts, pose=None)
+            raw_ts = getattr(msg, "ts", None) or time.time()
+            with lock:
+                # Strictly monotonic: bump duplicates / regressions to
+                # last + EPS so the primary key never collides.
+                ts = raw_ts if raw_ts > last_ts[0] else last_ts[0] + _EPS
+                last_ts[0] = ts
+            try:
+                stream.append(msg, ts=ts, pose=None)
+            except sqlite3.IntegrityError:
+                # Defense in depth — never let the LCM thread die.
+                pass
 
         self.register_disposable(Disposable(input_topic.subscribe(on_msg)))
 

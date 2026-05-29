@@ -70,10 +70,15 @@ class PrecisionPathFollowerTask(PathFollowerTask):
         global_config: GlobalConfig,
         artifact_path: str,
         e_max_default: float = 0.05,
+        v_max_override: float | None = None,
     ) -> None:
         super().__init__(name, config, global_config=global_config)
         self._artifact_path = artifact_path
         self._e_max: float = float(e_max_default)
+
+        self._v_max_override: float | None = (
+            float(v_max_override) if v_max_override is not None else None
+        )
         # Plant + vp_spec lazy-load on first start_path().
         self._plant: Any = None
         self._vp_spec: Any = None
@@ -149,17 +154,20 @@ class PrecisionPathFollowerTask(PathFollowerTask):
         self._plant = art.plant
         self._vp_spec = art.velocity_profile
         vp = self._vp_spec
+        v_max = self._v_max_override if self._v_max_override is not None else vp.max_linear_speed
         # PrecisionMVC reads e_max via a closure so live updates don't
         # require rebuilding the constraint list.
         self._constraints = [
-            GeometricMVC(v_max=vp.max_linear_speed),
+            GeometricMVC(v_max=v_max),
             SaturationMVC(omega_max=vp.max_angular_speed),
             LateralMVC(a_lat_max=vp.max_centripetal_accel),
             PrecisionMVC(e_max_provider=lambda: self._e_max),
         ]
+        override_tag = " (v_max OVERRIDE)" if self._v_max_override is not None else ""
         logger.info(
             f"PrecisionPathFollowerTask '{self._name}': loaded artifact "
-            f"{self._artifact_path} (plant + vp_spec ready, e_max={self._e_max:.3f})"
+            f"{self._artifact_path} (plant + vp_spec ready, "
+            f"v_max={v_max:.3f}{override_tag}, e_max={self._e_max:.3f})"
         )
 
     def _recompute_profile(self) -> None:
@@ -205,6 +213,7 @@ class PrecisionPathFollowerTaskParams(BaseConfig):
     orientation_tolerance: float = 0.1
     k_angular: float = 0.5
     e_max_default: float = 0.2
+    v_max_override: float | None = None
 
 
 def create_task(cfg: Any, hardware: Any) -> PrecisionPathFollowerTask:
@@ -223,6 +232,7 @@ def create_task(cfg: Any, hardware: Any) -> PrecisionPathFollowerTask:
         global_config=_gc,
         artifact_path=params.artifact_path,
         e_max_default=params.e_max_default,
+        v_max_override=params.v_max_override,
     )
 
 

@@ -25,20 +25,103 @@ Window must have focus. **WASD/QE** = reposition. **Enter** = advance. **K** = s
 dimos run unitree-go2-characterization
 ```
 
-Per axis (vx, wz on Go2 default gait) × a few amplitudes, the SI loop prompts you to reposition, then issues a velocity step and records the response. Settling pre-roll (~1.5 s) happens *after* you press Enter — wait for it before assuming nothing's happening.
+Per axis (vx, vy, wz on Go2), the SI loop runs **three phases** with one
+ENTER per step:
 
-**Duration**: ~5–8 minutes for the default amplitude set.
+1. **Floor probe** (~4 tiny amps, e.g. vx 0.02→0.15 m/s) — the AND-test
+   (D3) detects the smallest commanded value that actually moves the
+   robot (`|v_body| > 0.02 m/s` **AND** `> 5% of |amp|`, sustained for
+   ≥5 samples).
+2. **Dense sweep** (5 amps, unified `[0.2, 0.5, 1.0, 1.5, 2.0]` ladder
+   in m/s for vx/vy and rad/s for wz) — FOPDT fit per amplitude; the
+   canonical fit used by DERIVE is the lowest-amplitude one with
+   r² > 0.9 (the **linear regime**, methodology v2 — D1).
+3. **Ceiling probe** (~2 supra-sweep amps, e.g. vx 2.5, 3.0) — FOPDT
+   fit per amplitude. **The operational ceiling DERIVE uses is
+   `min(max(|K(amp)·amp|), profile.{vx,wz}_max)` across the FULL sweep
+   + probe table** — i.e. the max steady-state OUTPUT magnitude the
+   plant can deliver, clamped to the platform cap. This is robust to
+   noisy FOPDT fits: a misfit K with the right amp still gives a
+   sensible K·amp because the output magnitude is what matters for RG,
+   not K alone. The K-sag amplitude (where K drops 15% below the
+   linear-regime K) is still recorded as `saturating_at_amp` in the
+   artifact for forensics, but is **not** used as the operational cap
+   — with low-r² fits the K-sag detector misfires.
 
-**Output** (lands together with the same timestamp suffix):
+Settling pre-roll (~1.5 s) happens *after* you press Enter — wait for
+it. Each phase prints a banner so you know which sub-test is running.
+
+**Duration**: ~30–45 min hands-on for the full dense flow on Go2
+(~32 ENTERs: 4 floor + 5 sweep + 2 ceiling per channel × 3 channels,
+minus one floor amp on vy). Per-step gating is preserved — drift is
+bounded to one step. The cost is "do it once, properly."
+
+**Output** (same timestamp suffix):
 
 ```
 data/characterization/go2/
 ├── go2_config_hw_concrete_<date>_<sha>.json   ← the tuning artifact
-├── go2_config_hw_concrete_<date>_<sha>.png    ← fit-quality plot
+├── go2_config_hw_concrete_<date>_<sha>.png    ← fit-quality plot + K(amp) panel
 └── go2_recording_<date>_<sha>.db              ← raw streams (cmd_vel, joint_state, odom, gate)
 ```
 
-The PNG is what you READ to judge the fit. K/τ/L per channel + r² are annotated; raw (dotted) overlays the savgol-filtered fit (solid) when Hampel replaced points.
+**PNG layout** (four rows × one column per channel; single y-axis per
+subplot — easier to read than the old twin-axis version):
+
+- Step response — measured (solid) + raw (dotted, when Hampel touched
+  it) + fitted FOPDT (dashed). Skipped on re-derive (no raw traces in
+  the artifact).
+- **K(amp)** — gain per amplitude. Sweep (○-line, blue), ceiling probe
+  (■-line, orange). Floor/ceiling marked as vertical dotted lines
+  (green/red).
+- **Output K·amp(amp)** — **the steady-state output magnitude the
+  plant delivers.** This is the most diagnostic panel: it plateaus
+  visually where the plant saturates. The operational ceiling is the
+  max of this curve (clamped to the platform cap).
+- **τ(amp)** — first-order time constant per amplitude.
+
+**Artifact sections** (additive — older v1 readers ignore the new
+ones):
+
+- 1–4 + 6 (existing): plant, feedforward, velocity_profile,
+  recommended_controller, valid_for_tuning.
+- 5 **`velocity_envelope`** (new) — per-channel `{floor, ceiling,
+  floor_not_found, ceiling_not_found}`.
+- 7 **`dynamics_by_amplitude`** (new) — full K/τ/L table per channel
+  across sweep + ceiling-probe amps (forensics + future lookup-based
+  RG without re-collecting data).
+- `floor_probe_results` (new sibling) — per-amp D3 pass/fail.
+- `provenance.methodology_version` = 2 (defaults to 1 on legacy
+  artifacts); `schema_version` is unchanged at 1.
+
+**DERIVE** consumes the measured envelope:
+
+- RG `min_speed` = `max(envelope.vx.floor, profile.min_speed_floor)`
+- RG `v_max` = `envelope.vx.ceiling` (already clamped to `profile.vx_max`)
+- RG `ω_max` = `envelope.wz.ceiling · 0.85` (15% headroom for cross-track)
+- FF gain = `1/K` from the linear-regime fit (unchanged).
+- `floor_not_found` / `ceiling_not_found` only fire when there is no
+  data at all (empty probe / no converged fits). Clamping to the
+  platform cap is silent (it's an envelope decision, not a measurement
+  failure).
+
+### Re-derive a stale artifact
+
+If the methodology changed (e.g. ceiling logic was bug-fixed) and you
+don't want to re-run on the robot, re-apply the current logic to an
+existing v2 artifact:
+
+```
+python -m dimos.utils.benchmarking.characterization \
+  --mode re-derive --robot go2 \
+  --artifact data/characterization/go2/go2_config_hw_concrete_<date>_<sha>.json
+```
+
+The tool reads the artifact's stored `dynamics_by_amplitude` +
+`floor_probe_results`, recomputes envelope + velocity_profile +
+caveats, and writes `<stem>__rederived.json` + matching PNG alongside
+the source. Plant + feedforward pass through unchanged (those were
+already measured). No robot needed.
 
 Override defaults with `-o characterizer.<field>=<value>`, e.g.:
 - `-o characterizer.surface=grass`
