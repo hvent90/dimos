@@ -29,6 +29,7 @@
 #include "IMU_Processing.hpp"
 #include "parameters.h"
 #include "Estimator.h"
+#include "mcap_source.h"
 
 #define MAXN (720000)
 #define PUBFRAME_PERIOD (20)
@@ -929,17 +930,17 @@ static int pump_one_record(std::FILE* fp) {
 
 int main(int argc, char **argv)
 {
-    // --yaml <unilidar_l1.yaml>  --bin <recording.bin>
+    // --yaml <unilidar_l1.yaml>  --mcap <recording.mcap>
     std::string yaml_path;
-    std::string bin_path;
+    std::string mcap_path;
     for (int i = 1; i < argc; i++) {
         std::string a = argv[i];
         if (a == "--yaml" && i + 1 < argc) yaml_path = argv[++i];
-        else if (a == "--bin" && i + 1 < argc) bin_path = argv[++i];
+        else if (a == "--mcap" && i + 1 < argc) mcap_path = argv[++i];
     }
-    if (bin_path.empty()) {
+    if (mcap_path.empty()) {
         std::fprintf(stderr,
-            "usage: %s --bin <recording.bin> [--yaml <unilidar_l1.yaml>]\n",
+            "usage: %s --mcap <recording.mcap> [--yaml <unilidar_l1.yaml>]\n",
             argv[0]);
         return 2;
     }
@@ -1035,17 +1036,27 @@ int main(int argc, char **argv)
 
     signal(SIGINT, SigHandle);
 
-    std::FILE* fp_bin = std::fopen(bin_path.c_str(), "rb");
+    // Read the Go2 MCAP into the PLNR1 byte stream in memory and consume it via
+    // fmemopen, so the record loop below stays a plain sequential reader.
+    std::string mcap_buf;  // must outlive fp_bin
+    try {
+        mcap_buf = read_mcap_as_plnr1(mcap_path);
+    } catch (const std::exception& e) {
+        std::fprintf(stderr, "%s\n", e.what());
+        return 1;
+    }
+    std::FILE* fp_bin = fmemopen(const_cast<char*>(mcap_buf.data()), mcap_buf.size(), "rb");
     if (!fp_bin) {
-        std::fprintf(stderr, "could not open %s: %s\n", bin_path.c_str(), strerror(errno));
+        std::fprintf(stderr, "could not open in-memory stream for %s: %s\n",
+                     mcap_path.c_str(), strerror(errno));
         return 1;
     }
     char magic[16];
     if (std::fread(magic, 1, 16, fp_bin) != 16 || std::memcmp(magic, BIN_MAGIC, 16) != 0) {
-        std::fprintf(stderr, "%s: bad magic, not a PLNR1 binary stream\n", bin_path.c_str());
+        std::fprintf(stderr, "%s: internal PLNR1 stream corrupt\n", mcap_path.c_str());
         return 1;
     }
-    cout << "reading binary stream from " << bin_path << endl;
+    cout << "reading mcap " << mcap_path << endl;
     bool eof_seen = false;
 
     while (ros::ok())

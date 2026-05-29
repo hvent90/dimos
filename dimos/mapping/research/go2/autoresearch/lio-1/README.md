@@ -71,8 +71,8 @@ human-debug/      — convert script, raw .mcap, .rrd rerun — HUMAN USE ONLY, 
 ```
 
 Data lives in the dimos LFS store, not here: `data/go2dds_data1/` holds
-`go2-185959.bin` (LIO input) + `gt_robot_odom.tsv` (ground truth), fetched via
-`get_data("go2dds_data1/...")`.
+`20260529-185959.mcap` (LIO input — Point-LIO reads it directly) +
+`gt_robot_odom.tsv` (ground truth), fetched via `get_data("go2dds_data1/...")`.
 
 ## License
 

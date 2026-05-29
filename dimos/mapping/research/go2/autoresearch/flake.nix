@@ -34,6 +34,7 @@
               pkgs.pcl
               pkgs.yaml-cpp
               pkgs.boost
+              pkgs.zstd  # MCAP zstd chunk decompression (vendored mcap C++ reader)
             ];
             # nixpkgs lays PCL headers under include/pcl-<major.minor>/, which
             # point_lio's hand-rolled find_path (HINTS only /usr/include/pcl*)

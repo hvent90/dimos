@@ -42,8 +42,8 @@ HERE = os.path.dirname(os.path.abspath(__file__))
 
 # --- fixed data inputs, pulled from the dimos LFS data store. get_data resolves
 # <repo>/data/go2dds_data1/, downloading + decompressing the LFS archive on first
-# use. The bin + GT are pre-made; see human-debug/ for how. ---
-BIN_PATH = str(get_data("go2dds_data1/go2-185959.bin"))  # PLNR1 lidar+imu input
+# use. Point-LIO reads the mcap directly (rt/utlidar/cloud + rt/utlidar/imu). ---
+MCAP_PATH = str(get_data("go2dds_data1/20260529-185959.mcap"))  # lidar+imu input
 GT_PATH = str(get_data("go2dds_data1/gt_robot_odom.tsv"))  # robot_odom ground truth
 
 # --- Point-LIO substrate (fixed; built once by setup.sh) ---
@@ -60,10 +60,10 @@ TRAJ_T, TRAJ_XYZ = 0, slice(4, 7)
 
 
 def check_data():
-    """Setup-step sanity check: input bin, GT, and built binary all present."""
+    """Setup-step sanity check: input mcap, GT, and built binary all present."""
     ok = True
     for label, p in [
-        ("input bin", BIN_PATH),
+        ("input mcap", MCAP_PATH),
         ("ground truth", GT_PATH),
         ("pointlio binary", POINTLIO_BIN),
     ]:

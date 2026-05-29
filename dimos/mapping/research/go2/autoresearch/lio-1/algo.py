@@ -143,7 +143,7 @@ def main():
     t0 = time.time()
     try:
         subprocess.run(
-            [evaluate.POINTLIO_BIN, "--yaml", evaluate.ACTIVE_YAML, "--bin", evaluate.BIN_PATH],
+            [evaluate.POINTLIO_BIN, "--yaml", evaluate.ACTIVE_YAML, "--mcap", evaluate.MCAP_PATH],
             cwd=evaluate.POINTLIO_DIR,
             timeout=evaluate.RUN_TIMEOUT,
             stdout=subprocess.DEVNULL,

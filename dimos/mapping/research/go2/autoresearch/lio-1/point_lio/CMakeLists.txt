@@ -58,23 +58,31 @@ find_package(Boost REQUIRED COMPONENTS filesystem)
 
 find_package(yaml-cpp REQUIRED)
 
+# zstd: the vendored MCAP C++ reader (include/mcap/) decompresses our zstd
+# chunks. lz4 is disabled via MCAP_COMPRESSION_NO_LZ4 so we need only zstd.
+find_path(ZSTD_INCLUDE_DIR NAMES zstd.h REQUIRED)
+find_library(ZSTD_LIB NAMES zstd REQUIRED)
+
 # noros shim headers (include/ros/ros.h etc.) live in include/ and
 # shadow real ROS headers. Put include/ first so they win even if a
 # system ROS is installed.
 include_directories(BEFORE include)
-include_directories(${EIGEN3_INCLUDE_DIR} ${PCL_INCLUDE_DIR})
+include_directories(${EIGEN3_INCLUDE_DIR} ${PCL_INCLUDE_DIR} ${ZSTD_INCLUDE_DIR})
 
 add_executable(pointlio_mapping
   src/laserMapping.cpp
+  src/mcap_source.cpp
   include/ikd-Tree/ikd_Tree.cpp
   src/parameters.cpp
   src/preprocess.cpp
   src/Estimator.cpp
 )
+target_compile_definitions(pointlio_mapping PRIVATE MCAP_COMPRESSION_NO_LZ4)
 target_link_libraries(pointlio_mapping
   ${PCL_COMMON_LIB} ${PCL_IO_LIB} ${PCL_FILTERS_LIB} ${PCL_KDTREE_LIB}
   Boost::filesystem
   yaml-cpp
+  ${ZSTD_LIB}
 )
 if(OpenMP_CXX_FOUND)
   target_link_libraries(pointlio_mapping OpenMP::OpenMP_CXX)
