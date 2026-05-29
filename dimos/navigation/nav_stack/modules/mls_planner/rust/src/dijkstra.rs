@@ -3,8 +3,6 @@
 
 //! Multi-source Dijkstra over the cell-keyed surface adjacency.
 //!
-//! Tracks distance, predecessor, and nearest-source label for each reached
-//! cell. Cells absent from the result are unreachable from every source.
 
 #![allow(dead_code)]
 
@@ -16,52 +14,77 @@ use ahash::AHashMap;
 use crate::adjacency::SurfaceAdjacency;
 use crate::voxel::VoxelKey;
 
+#[derive(Clone, Copy, Debug)]
+pub struct CellState {
+    pub dist: f32,
+    /// Predecesor nodes along the shortest path to source
+    pub pred: Option<VoxelKey>,
+    /// Id of cheapest source to return to
+    pub source: u32,
+}
+
 pub struct DijkstraResult {
-    pub dist: AHashMap<VoxelKey, f32>,
-    /// Predecessor cell along the shortest path back to a source.
-    pub pred: AHashMap<VoxelKey, VoxelKey>,
-    /// Id of the cheapest source to return to
-    pub source: AHashMap<VoxelKey, u32>,
+    pub state: AHashMap<VoxelKey, CellState>,
+}
+
+impl DijkstraResult {
+    pub fn dist_map(&self) -> AHashMap<VoxelKey, f32> {
+        self.state.iter().map(|(&c, s)| (c, s.dist)).collect()
+    }
 }
 
 pub fn dijkstra(adj: &SurfaceAdjacency, sources: &[VoxelKey]) -> DijkstraResult {
-    let mut dist: AHashMap<VoxelKey, f32> = AHashMap::new();
-    let mut pred: AHashMap<VoxelKey, VoxelKey> = AHashMap::new();
-    let mut source: AHashMap<VoxelKey, u32> = AHashMap::new();
+    let mut state: AHashMap<VoxelKey, CellState> = AHashMap::new();
     let mut heap: BinaryHeap<Scored> = BinaryHeap::new();
 
     for (label, &s) in sources.iter().enumerate() {
         if !adj.contains(s) {
             continue;
         }
-        dist.insert(s, 0.0);
-        source.insert(s, label as u32);
+        state.insert(
+            s,
+            CellState {
+                dist: 0.0,
+                pred: None,
+                source: label as u32,
+            },
+        );
         heap.push(Scored(0.0, s));
     }
 
     while let Some(Scored(d, u)) = heap.pop() {
-        if let Some(&cur) = dist.get(&u) {
-            if d > cur {
-                continue;
-            }
+        let Some(&CellState {
+            dist: cur,
+            source: su,
+            ..
+        }) = state.get(&u)
+        else {
+            continue;
+        };
+        if d > cur {
+            continue;
         }
-        let su = source[&u];
         for edge in adj.neighbors(u) {
             let nd = d + edge.cost;
-            let should_update = match dist.get(&edge.dst) {
+            let should_update = match state.get(&edge.dst) {
                 None => true,
-                Some(&cur) => nd < cur,
+                Some(s) => nd < s.dist,
             };
             if should_update {
-                dist.insert(edge.dst, nd);
-                pred.insert(edge.dst, u);
-                source.insert(edge.dst, su);
+                state.insert(
+                    edge.dst,
+                    CellState {
+                        dist: nd,
+                        pred: Some(u),
+                        source: su,
+                    },
+                );
                 heap.push(Scored(nd, edge.dst));
             }
         }
     }
 
-    DijkstraResult { dist, pred, source }
+    DijkstraResult { state }
 }
 
 struct Scored(f32, VoxelKey);
@@ -104,9 +127,7 @@ mod tests {
     fn empty_sources_leaves_everything_unreachable() {
         let adj = chain(4);
         let r = dijkstra(&adj, &[]);
-        assert!(r.dist.is_empty());
-        assert!(r.pred.is_empty());
-        assert!(r.source.is_empty());
+        assert!(r.state.is_empty());
     }
 
     #[test]
@@ -114,13 +135,14 @@ mod tests {
         let adj = chain(5);
         let r = dijkstra(&adj, &[(0, 0, 0)]);
         for i in 0..5 {
-            assert_eq!(r.dist[&(i, 0, 0)], i as f32);
-            assert_eq!(r.source[&(i, 0, 0)], 0);
+            let s = r.state[&(i, 0, 0)];
+            assert_eq!(s.dist, i as f32);
+            assert_eq!(s.source, 0);
         }
-        assert!(!r.pred.contains_key(&(0, 0, 0)));
+        assert!(r.state[&(0, 0, 0)].pred.is_none());
         let mut cur = (4, 0, 0);
         let mut hops = 0;
-        while let Some(&p) = r.pred.get(&cur) {
+        while let Some(p) = r.state[&cur].pred {
             cur = p;
             hops += 1;
         }
@@ -134,18 +156,18 @@ mod tests {
         // cells 3-4 closer to source 1. Cell 2 is equidistant.
         let adj = chain(5);
         let r = dijkstra(&adj, &[(0, 0, 0), (4, 0, 0)]);
-        assert_eq!(r.source[&(0, 0, 0)], 0);
-        assert_eq!(r.source[&(1, 0, 0)], 0);
-        assert_eq!(r.source[&(3, 0, 0)], 1);
-        assert_eq!(r.source[&(4, 0, 0)], 1);
+        assert_eq!(r.state[&(0, 0, 0)].source, 0);
+        assert_eq!(r.state[&(1, 0, 0)].source, 0);
+        assert_eq!(r.state[&(3, 0, 0)].source, 1);
+        assert_eq!(r.state[&(4, 0, 0)].source, 1);
         // Tie at cell 2 must resolve to one of the two sources.
-        let s2 = r.source[&(2, 0, 0)];
+        let s2 = r.state[&(2, 0, 0)].source;
         assert!(s2 == 0 || s2 == 1);
-        assert_eq!(r.dist[&(0, 0, 0)], 0.0);
-        assert_eq!(r.dist[&(1, 0, 0)], 1.0);
-        assert_eq!(r.dist[&(2, 0, 0)], 2.0);
-        assert_eq!(r.dist[&(3, 0, 0)], 1.0);
-        assert_eq!(r.dist[&(4, 0, 0)], 0.0);
+        assert_eq!(r.state[&(0, 0, 0)].dist, 0.0);
+        assert_eq!(r.state[&(1, 0, 0)].dist, 1.0);
+        assert_eq!(r.state[&(2, 0, 0)].dist, 2.0);
+        assert_eq!(r.state[&(3, 0, 0)].dist, 1.0);
+        assert_eq!(r.state[&(4, 0, 0)].dist, 0.0);
     }
 
     #[test]
@@ -160,12 +182,10 @@ mod tests {
         adj.add_edge((2, 0, 0), (3, 0, 0), 1.0);
         adj.add_edge((3, 0, 0), (2, 0, 0), 1.0);
         let r = dijkstra(&adj, &[(0, 0, 0)]);
-        assert_eq!(r.dist[&(0, 0, 0)], 0.0);
-        assert_eq!(r.dist[&(1, 0, 0)], 1.0);
-        assert!(!r.dist.contains_key(&(2, 0, 0)));
-        assert!(!r.dist.contains_key(&(3, 0, 0)));
-        assert!(!r.source.contains_key(&(2, 0, 0)));
-        assert!(!r.pred.contains_key(&(2, 0, 0)));
+        assert_eq!(r.state[&(0, 0, 0)].dist, 0.0);
+        assert_eq!(r.state[&(1, 0, 0)].dist, 1.0);
+        assert!(!r.state.contains_key(&(2, 0, 0)));
+        assert!(!r.state.contains_key(&(3, 0, 0)));
     }
 
     #[test]
@@ -182,7 +202,7 @@ mod tests {
         adj.add_edge((2, 0, 0), (1, 0, 0), 1.0);
         adj.add_edge((1, 0, 0), (2, 0, 0), 1.0);
         let r = dijkstra(&adj, &[(0, 0, 0)]);
-        assert_eq!(r.dist[&(1, 0, 0)], 2.0);
-        assert_eq!(r.pred[&(1, 0, 0)], (2, 0, 0));
+        assert_eq!(r.state[&(1, 0, 0)].dist, 2.0);
+        assert_eq!(r.state[&(1, 0, 0)].pred, Some((2, 0, 0)));
     }
 }

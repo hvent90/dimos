@@ -34,7 +34,7 @@ pub fn place_nodes(
     node_wall_buffer_m: f32,
 ) -> SurfaceGraph {
     let surface_lookup = build_surface_lookup(surface_cells);
-    let adj = build_surface_adjacency(&surface_lookup, voxel_size, maximum_step_cells);
+    let mut adj = build_surface_adjacency(&surface_lookup, voxel_size, maximum_step_cells);
 
     if adj.is_empty() {
         return SurfaceGraph {
@@ -45,7 +45,7 @@ pub fn place_nodes(
     }
 
     let wall_seeds = wall_adjacent_cells(&adj);
-    let dist = dijkstra(&adj, &wall_seeds).dist;
+    let dist = dijkstra(&adj, &wall_seeds).dist_map();
 
     let mut candidates: Vec<VoxelKey> = dist
         .iter()
@@ -69,10 +69,10 @@ pub fn place_nodes(
         })
         .collect();
 
-    let scaled_adj = wall_safe_adjacency(&adj, &dist, node_wall_buffer_m);
+    apply_wall_safe_penalty(&mut adj, &dist, node_wall_buffer_m);
 
     SurfaceGraph {
-        adj: scaled_adj,
+        adj,
         surface_lookup,
         nodes,
     }
@@ -81,14 +81,15 @@ pub fn place_nodes(
 /// Cells missing any of their 4 xy-direction neighbors are treated as boundaries.
 fn wall_adjacent_cells(adj: &SurfaceAdjacency) -> Vec<VoxelKey> {
     let mut wall: Vec<VoxelKey> = adj
-        .cells()
-        .filter(|&c| {
+        .iter()
+        .filter(|(c, edges)| {
             let mut dirs: AHashSet<(i32, i32)> = AHashSet::new();
-            for e in adj.neighbors(c) {
+            for e in *edges {
                 dirs.insert((e.dst.0 - c.0, e.dst.1 - c.1));
             }
             dirs.len() < 4
         })
+        .map(|(c, _)| c)
         .collect();
     wall.sort();
     if wall.is_empty() {
@@ -143,32 +144,32 @@ fn nms_grid(candidates_sorted: &[VoxelKey], voxel_size: f32, node_spacing_m: f32
     survivors
 }
 
-/// Penalty adjustments to steer path away from walls and obstacles.
+/// Scales every edge cost by the average of its endpoint penalties, which
+/// pushes shortest paths away from walls.
 /// Subject to tuning...
-fn wall_safe_adjacency(
-    adj: &SurfaceAdjacency,
+fn apply_wall_safe_penalty(
+    adj: &mut SurfaceAdjacency,
     dist: &AHashMap<VoxelKey, f32>,
     buffer_m: f32,
-) -> SurfaceAdjacency {
-    let penalty = |cell: VoxelKey| -> f32 {
-        match dist.get(&cell) {
-            Some(&d) => (1.0 + (buffer_m - d) / buffer_m).max(1.0),
-            None => 1.0,
-        }
-    };
+) {
+    let penalty: AHashMap<VoxelKey, f32> = adj
+        .cells()
+        .map(|c| {
+            let p = match dist.get(&c) {
+                Some(&d) => (1.0 + (buffer_m - d) / buffer_m).max(1.0),
+                None => 1.0,
+            };
+            (c, p)
+        })
+        .collect();
 
-    let mut scaled = SurfaceAdjacency::new();
-    for cell in adj.cells() {
-        scaled.add_cell(cell);
-    }
-    for cell in adj.cells() {
-        let pu = penalty(cell);
-        for edge in adj.neighbors(cell) {
-            let pv = penalty(edge.dst);
-            scaled.add_edge(cell, edge.dst, edge.cost * (pu + pv) / 2.0);
+    for (src, edges) in adj.iter_edges_mut() {
+        let pu = penalty.get(&src).copied().unwrap_or(1.0);
+        for edge in edges {
+            let pv = penalty.get(&edge.dst).copied().unwrap_or(1.0);
+            edge.cost *= (pu + pv) / 2.0;
         }
     }
-    scaled
 }
 
 #[cfg(test)]
@@ -276,10 +277,10 @@ mod tests {
         let lookup = build_surface_lookup(&cells);
         let adj = build_surface_adjacency(&lookup, VOXEL, 2);
         let seeds = wall_adjacent_cells(&adj);
-        let dist = dijkstra(&adj, &seeds).dist;
+        let state = dijkstra(&adj, &seeds).state;
 
-        let center = dist[&(2, 2, 0)];
-        let corner = dist[&(0, 0, 0)];
+        let center = state[&(2, 2, 0)].dist;
+        let corner = state[&(0, 0, 0)].dist;
         assert!(center > corner);
         assert_eq!(corner, 0.0);
     }

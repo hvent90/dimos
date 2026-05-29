@@ -43,6 +43,17 @@ impl SurfaceAdjacency {
         self.cells.keys().copied()
     }
 
+    /// Per-cell iteration that yields the cell and a borrowed view of its
+    /// edges in a single hashmap probe.
+    pub fn iter(&self) -> impl Iterator<Item = (VoxelKey, &[Edge])> + '_ {
+        self.cells.iter().map(|(&k, v)| (k, v.as_slice()))
+    }
+
+    /// Mutable per-cell edge iterator.
+    pub fn iter_edges_mut(&mut self) -> impl Iterator<Item = (VoxelKey, &mut Vec<Edge>)> + '_ {
+        self.cells.iter_mut().map(|(&k, v)| (k, v))
+    }
+
     pub fn contains(&self, cell: VoxelKey) -> bool {
         self.cells.contains_key(&cell)
     }

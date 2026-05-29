@@ -13,7 +13,7 @@
 use ahash::AHashMap;
 
 use crate::adjacency::{SurfaceAdjacency, SurfaceLookup};
-use crate::dijkstra::{dijkstra, DijkstraResult};
+use crate::dijkstra::{dijkstra, CellState};
 use crate::nodes::{NodeData, SurfaceGraph};
 use crate::voxel::VoxelKey;
 
@@ -33,7 +33,8 @@ pub struct PlannerGraph {
     pub nodes: Vec<NodeData>,
     pub node_edges: Vec<NodeEdge>,
     pub node_adj: Vec<Vec<u32>>,
-    pub cell_predecessors: AHashMap<VoxelKey, VoxelKey>,
+
+    pub cell_state: AHashMap<VoxelKey, CellState>,
 }
 
 pub fn add_node_edges(sg: SurfaceGraph) -> PlannerGraph {
@@ -50,13 +51,13 @@ pub fn add_node_edges(sg: SurfaceGraph) -> PlannerGraph {
             nodes,
             node_edges: Vec::new(),
             node_adj: Vec::new(),
-            cell_predecessors: AHashMap::new(),
+            cell_state: AHashMap::new(),
         };
     }
 
     let source_cells: Vec<VoxelKey> = nodes.iter().map(|n| n.cell).collect();
-    let DijkstraResult { dist, pred, source } = dijkstra(&adj, &source_cells);
-    let node_edges = best_boundary_edges(&adj, &dist, &source);
+    let cell_state = dijkstra(&adj, &source_cells).state;
+    let node_edges = best_boundary_edges(&adj, &cell_state);
 
     let mut node_adj: Vec<Vec<u32>> = vec![Vec::new(); nodes.len()];
     for (edge_idx, edge) in node_edges.iter().enumerate() {
@@ -70,7 +71,7 @@ pub fn add_node_edges(sg: SurfaceGraph) -> PlannerGraph {
         nodes,
         node_edges,
         node_adj,
-        cell_predecessors: pred,
+        cell_state,
     }
 }
 
@@ -94,7 +95,7 @@ pub fn edges_to_segments(plg: &PlannerGraph, _voxel_size: f32) -> Vec<(VoxelKey,
 pub fn walk_preds_to_source(plg: &PlannerGraph, start_cell: VoxelKey) -> Vec<VoxelKey> {
     let mut cells = vec![start_cell];
     let mut cur = start_cell;
-    while let Some(&p) = plg.cell_predecessors.get(&cur) {
+    while let Some(p) = plg.cell_state.get(&cur).and_then(|s| s.pred) {
         cur = p;
         cells.push(cur);
     }
@@ -103,25 +104,26 @@ pub fn walk_preds_to_source(plg: &PlannerGraph, start_cell: VoxelKey) -> Vec<Vox
 
 fn best_boundary_edges(
     adj: &SurfaceAdjacency,
-    dist: &AHashMap<VoxelKey, f32>,
-    source: &AHashMap<VoxelKey, u32>,
+    state: &AHashMap<VoxelKey, CellState>,
 ) -> Vec<NodeEdge> {
     let mut best: AHashMap<(u32, u32), NodeEdge> = AHashMap::new();
 
-    for u in adj.cells() {
-        let Some(&sa) = source.get(&u) else {
+    for (u, edges) in adj.iter() {
+        let Some(su) = state.get(&u) else {
             continue;
         };
-        let du = dist[&u];
-        for edge in adj.neighbors(u) {
+        let sa = su.source;
+        let du = su.dist;
+        for edge in edges {
             let v = edge.dst;
-            let Some(&sb) = source.get(&v) else {
+            let Some(sv) = state.get(&v) else {
                 continue;
             };
+            let sb = sv.source;
             if sa == sb {
                 continue;
             }
-            let dv = dist[&v];
+            let dv = sv.dist;
             let cost = du + edge.cost + dv;
 
             let (key_a, key_b, bu, bv) = if sa < sb {
@@ -245,7 +247,7 @@ mod tests {
 
         let mut cur = e.boundary_u;
         let mut hops = 0;
-        while let Some(&p) = pg.cell_predecessors.get(&cur) {
+        while let Some(p) = pg.cell_state.get(&cur).and_then(|s| s.pred) {
             cur = p;
             hops += 1;
             assert!(hops < 1000, "predecessor walk did not terminate");
@@ -253,7 +255,7 @@ mod tests {
         assert_eq!(cur, cell_a, "u-side preds must reach node a");
 
         let mut cur = e.boundary_v;
-        while let Some(&p) = pg.cell_predecessors.get(&cur) {
+        while let Some(p) = pg.cell_state.get(&cur).and_then(|s| s.pred) {
             cur = p;
         }
         assert_eq!(cur, cell_b, "v-side preds must reach node b");

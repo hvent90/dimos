@@ -17,21 +17,20 @@ use crate::voxel::VoxelKey;
 const ON: Luma<u8> = Luma([255]);
 const OFF: Luma<u8> = Luma([0]);
 
+type ColumnIz = AHashMap<(i32, i32), Vec<i32>>;
+
 /// A cell is standable if it has at least the robots height of clear
 /// space above it.
-fn is_standable(
-    ix: i32,
-    iy: i32,
-    iz: i32,
-    voxel_map: &AHashSet<VoxelKey>,
-    clearance_cells: i32,
-) -> bool {
-    for dz in 1..=clearance_cells {
-        if voxel_map.contains(&(ix, iy, iz + dz)) {
-            return false;
-        }
+fn is_standable(ix: i32, iy: i32, iz: i32, by_col: &ColumnIz, clearance_cells: i32) -> bool {
+    let Some(zs) = by_col.get(&(ix, iy)) else {
+        return true;
+    };
+    // first obstacle strictly above iz, if any
+    let idx = zs.partition_point(|&z| z <= iz);
+    match zs.get(idx) {
+        Some(&next) => next - iz > clearance_cells,
+        None => true,
     }
-    true
 }
 
 /// Extract standable cells from the voxelized global map, then close small
@@ -69,7 +68,7 @@ pub fn extract_surfaces(
 
     close_surface_holes(
         standable,
-        voxel_map,
+        &by_col,
         dilation_passes,
         erosion_passes,
         clearance_cells,
@@ -80,7 +79,7 @@ pub fn extract_surfaces(
 /// to fill in small holes.
 fn close_surface_holes(
     standable: Vec<VoxelKey>,
-    obstacles: &AHashSet<VoxelKey>,
+    by_col: &ColumnIz,
     dilation_passes: u32,
     erosion_passes: u32,
     clearance_cells: i32,
@@ -100,7 +99,7 @@ fn close_surface_holes(
         out.extend(close_at_z(
             &xys,
             iz,
-            obstacles,
+            by_col,
             dilation_passes,
             erosion_passes,
             clearance_cells,
@@ -113,7 +112,7 @@ fn close_surface_holes(
 fn close_at_z(
     xys: &[(i32, i32)],
     iz: i32,
-    voxel_map: &AHashSet<VoxelKey>,
+    by_col: &ColumnIz,
     dilation_passes: u32,
     erosion_passes: u32,
     clearance_cells: i32,
@@ -159,7 +158,7 @@ fn close_at_z(
             let iy = y0 + py as i32;
 
             // filter out if the surface has expanded to any non standable areas
-            if !is_standable(ix, iy, iz, voxel_map, clearance_cells) {
+            if !is_standable(ix, iy, iz, by_col, clearance_cells) {
                 continue;
             }
             out.push((ix, iy, iz));
