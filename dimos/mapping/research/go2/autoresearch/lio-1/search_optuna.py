@@ -55,13 +55,15 @@ def suggest(trial):
     return o
 
 
-def objective(trial):
+def objective(trial, timeout=None):
     overrides = suggest(trial)
     # Per-trial paths so concurrent trials don't clobber each other.
     yaml_path = os.path.join(evaluate.POINTLIO_DIR, "config", f"_trial_{trial.number}.yaml")
     out_path = os.path.join(evaluate.POINTLIO_DIR, "Log", f"trial_{trial.number}.txt")
     try:
-        return algo.run(overrides, yaml_path=yaml_path, out_path=out_path)["val_ate_xy"]
+        return algo.run(overrides, yaml_path=yaml_path, out_path=out_path, timeout=timeout)[
+            "val_ate_xy"
+        ]
     except subprocess.TimeoutExpired:
         return PENALTY  # finite penalty (not pruned) so TPE learns the region is bad
     except Exception:
@@ -84,6 +86,13 @@ def main():
         help="concurrent trials (each binary also uses OpenMP threads — watch oversubscription)",
     )
     ap.add_argument("--seed", type=int, default=0)
+    ap.add_argument(
+        "--timeout",
+        type=float,
+        default=240,
+        help="kill (and penalize) a trial whose binary runs longer than this; "
+        "healthy runs are ~1-3 min, so the default 240s culls pathological configs early",
+    )
     args = ap.parse_args()
 
     if not os.path.exists(evaluate.POINTLIO_BIN):
@@ -123,7 +132,12 @@ def main():
             flush=True,
         )
 
-    study.optimize(objective, n_trials=args.trials, n_jobs=args.jobs, callbacks=[cb])
+    study.optimize(
+        lambda trial: objective(trial, timeout=args.timeout),
+        n_trials=args.trials,
+        n_jobs=args.jobs,
+        callbacks=[cb],
+    )
 
     print("\n=== search done ===")
     print(f"total trials in study: {len(study.trials)}")

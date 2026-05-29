@@ -34,6 +34,10 @@ import time
 
 import evaluate
 
+# A run must overlap at least this fraction of the GT *duration* to count as a
+# real result; below it the trajectory is a stub from an early death (see run()).
+MIN_COVERAGE_FRAC = 0.8
+
 # ----------------------------------------------------------------------------
 # CONFIG — the knobs you tune. These map 1:1 to the Point-LIO yaml.
 # ----------------------------------------------------------------------------
@@ -133,13 +137,16 @@ pcd_save:
         f.write(txt)
 
 
-def run(overrides=None, *, yaml_path=None, out_path=None, render=False):
+def run(overrides=None, *, yaml_path=None, out_path=None, render=False, timeout=None):
     """Run Point-LIO once with CONFIG (optionally overridden) and score it.
 
     `overrides` is a dict merged over CONFIG — this is the importable entry point
     a hyperparameter search drives (see search.py / search_optuna.py). Pass
     distinct yaml_path/out_path to run trials concurrently (parallel search);
     they default to the shared paths, which is correct for sequential use.
+    `timeout` (seconds) caps the binary; pathological configs (tiny filter sizes
+    → huge map → very slow ICP) get killed and surfaced as TimeoutExpired so the
+    caller can penalize them. Defaults to evaluate.RUN_TIMEOUT.
     Returns the evaluate() metrics dict with run_seconds added. Raises on failure
     (TimeoutExpired, or a ValueError from evaluate() on a missing/malformed
     trajectory); the caller decides how to treat it.
@@ -165,12 +172,28 @@ def run(overrides=None, *, yaml_path=None, out_path=None, render=False):
             out_path,
         ],
         cwd=evaluate.POINTLIO_DIR,
-        timeout=evaluate.RUN_TIMEOUT,
+        timeout=timeout or evaluate.RUN_TIMEOUT,
         stdout=subprocess.DEVNULL,
         stderr=subprocess.DEVNULL,
+        check=True,  # nonzero exit = the binary aborted/diverged -> CalledProcessError
     )
     m = evaluate.evaluate(out_path)  # raises if trajectory missing/malformed (= crash)
     m["run_seconds"] = time.time() - t0
+
+    # Coverage guard: a config that makes Point-LIO die early still writes a short
+    # trajectory stub, and evaluate() only scores the LIO/GT *time overlap* — so a
+    # stub near the start aligns near-perfectly and yields a deceptively tiny ATE
+    # (the spurious 0.42 outlier). Guard on TIME coverage, not path length: every
+    # config (good or bad) integrates a huge path_len from ~4500 poses/s of micro-
+    # jitter, so path_len can't distinguish a stub, but a short trajectory's
+    # overlap_s is genuinely a fraction of the GT duration.
+    gt_t, _ = evaluate.load_gt()
+    gt_dur = float(gt_t[-1] - gt_t[0])
+    if m["overlap_s"] < MIN_COVERAGE_FRAC * gt_dur:
+        raise ValueError(
+            f"trajectory overlaps GT for only {m['overlap_s']:.1f}s of {gt_dur:.1f}s "
+            f"(< {MIN_COVERAGE_FRAC:.0%}) — Point-LIO diverged/died early; not a real result"
+        )
 
     if render:
         # Render viz.png + downsampled traj_ds.tsv (non-fatal: a plotting failure

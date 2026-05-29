@@ -41,7 +41,7 @@ find_package(Eigen3 REQUIRED)
 # common/io/filters/kdtree provide the heavy bits.
 find_path(PCL_INCLUDE_DIR
   NAMES pcl/point_cloud.h
-  HINTS /usr/include/pcl-1.14 /usr/include/pcl-1.12 /usr/include/pcl
+  HINTS /usr/include/pcl-1.15 /usr/include/pcl-1.14 /usr/include/pcl-1.12 /usr/include/pcl
 )
 if(NOT PCL_INCLUDE_DIR)
   message(FATAL_ERROR "pcl headers not found; try `apt install libpcl-dev`")
