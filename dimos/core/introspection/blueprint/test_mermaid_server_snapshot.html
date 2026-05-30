@@ -130,6 +130,17 @@ mermaid.initialize({
 
 await mermaid.run();
 
+const arrowScale = 2.3;
+const arrowGap = 6;
+document.querySelectorAll('marker').forEach(marker => {
+    const width = parseFloat(marker.getAttribute('markerWidth')) || 8;
+    const height = parseFloat(marker.getAttribute('markerHeight')) || 8;
+    marker.setAttribute('markerWidth', width * arrowScale);
+    marker.setAttribute('markerHeight', height * arrowScale);
+    const refX = parseFloat(marker.getAttribute('refX')) || 0;
+    marker.setAttribute('refX', refX + arrowGap);
+});
+
 const allLabelColors = [{"color_image:ImageData": "#60a5fa", "depth_image:DepthData": "#f87171", "odometry:OdometryData": "#4ade80", "plan:PlanData": "#a78bfa", "point_cloud:PointCloudData": "#fb923c", "cmd_vel:CmdVelData": "#22d3ee"}];
 const allDisconnected = [["cmd_vel:CmdVelData"]];
 
@@ -213,7 +224,7 @@ function setupViewport(vp, labelColors, disconnectedList) {
         const svgH = svgRect.height;
         const pad = 40;
         scale = Math.min((vpRect.width - pad) / svgW, (vpRect.height - pad) / svgH);
-        scale = Math.max(scale * 2, 0.2);
+        scale = Math.max(scale * 0.8, 0.2);
         panX = (vpRect.width - svgW * scale) / 2;
         panY = (vpRect.height - svgH * scale) / 2;
         apply();
