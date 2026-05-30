@@ -40,7 +40,9 @@ logger = setup_logger()
 
 
 class Go2Mid360MemoryConfig(RecorderConfig):
-    db_path: str | Path = "recording_go2_mid360.db"
+    db_path: str | Path = Field(
+        default_factory=lambda: f"recording_go2_mid360_{datetime.now().strftime('%Y-%m-%d')}.db"
+    )
     default_frame_id: str = "base_link"
 
 
