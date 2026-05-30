@@ -18,7 +18,7 @@ dimos map replay recording_go2_mid360_2026-05-29_4-45pm-PST.db --duration 60
 
 
 ```sh
-dimos map global recording_go2_mid360_2026-05-29_4-45pm-PST_corrected --voxel 0.1 --lidar lidar
+dimos map global recording_go2_mid360_2026-05-29_4-45pm-PST_corrected --voxel 0.1 --lidar fastlio_lidar
 ```
 
 validates that livox lidar observations have correct poses associated coming from livox odometry
