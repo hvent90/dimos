@@ -8,7 +8,7 @@ Decodes the onboard DDS channels, deskews each lidar scan into the WORLD frame
 (the convention the Go2 publishes and that ``dimos map`` assumes), and writes the
 streams the mapping CLI reads. Two trajectories are emitted so you can compare
 them: the raw leg-inertial ``odom`` and our reconstructed ``odom_bestz`` (leg
-xy/yaw + pitch-recovered z, bundled in ``bestz_traj.txt``).
+xy/yaw + pitch-recovered z, from ``<mcap>_bestz.txt`` in the data dir).
 
 Streams written:
     color_image       Image     RGB, posed at camera_optical in world
@@ -41,7 +41,6 @@ from mcap.reader import make_reader
 CLOUD = "rt/utlidar/cloud"
 ODOM = "rt/utlidar/robot_odom"
 VIDEO = "rt/frontvideo"
-_BESTZ = Path(__file__).with_name("bestz_traj.txt")
 
 
 # --- quaternion helpers (xyzw) ----------------------------------------------
@@ -116,18 +115,26 @@ def main(
     seconds: float = typer.Option(None, "--seconds", help="Only first N seconds"),
     odom_hz: float = typer.Option(30.0, "--odom-hz", help="Downsample odom streams"),
     voxel: float = typer.Option(0.05, "--voxel", help="Voxel size for 1 s accumulation"),
+    bestz: Path = typer.Option(
+        None, "--bestz", help="Best-z trajectory file (default: <mcap>_bestz.txt, via data utils)"
+    ),
     rmin: float = typer.Option(0.4, "--rmin"),
     rmax: float = typer.Option(30.0, "--rmax"),
 ) -> None:
     """Build a world-frame Go2 dataset (lidar/rgb/two odoms) the dimos map CLI reads."""
     from dimos.memory2.store.sqlite import SqliteStore
+    from dimos.utils.data import resolve_named_path
 
     out = out or mcap.with_suffix(".db")
+    for p in (out, out.with_suffix(".db-wal"), out.with_suffix(".db-shm")):
+        p.unlink(missing_ok=True)  # overwrite: avoid appending to an old db
     anchor, lt, lpos, lquat = _load_odom(mcap, seconds)
     print(f"anchor={anchor}  odom poses={len(lt)}  span={lt[-1]:.1f}s")
 
-    # odom_bestz = leg xy/yaw + reconstructed z (bundled), z interpolated onto lt.
-    bz_file = np.loadtxt(_BESTZ)
+    # odom_bestz = leg xy/yaw + reconstructed z, z interpolated onto lt. The best-z
+    # trajectory lives next to the mcap in the data dir (resolved via data utils).
+    bestz = bestz or resolve_named_path(mcap.stem + "_bestz.txt")
+    bz_file = np.loadtxt(bestz)
     bz = np.interp(lt, bz_file[:, 0], bz_file[:, 6])
     bpos = np.column_stack([lpos[:, 0], lpos[:, 1], bz])
 
@@ -144,24 +151,37 @@ def main(
         s_li1 = store.stream("lidar_1s", PointCloud2)
         s_liz1 = store.stream("lidar_bestz_1s", PointCloud2)
 
+        # ts is UNIQUE per stream; keep it strictly increasing (raw publish_times
+        # can repeat) so appends never collide.
+        _last: dict = {}
+
+        def put(stream, payload, ts: float, pose) -> None:
+            last = _last.get(stream)
+            if last is not None and ts <= last:
+                ts = last + 1e-4
+            _last[stream] = ts
+            stream.append(payload, ts=ts, pose=pose)
+
         # ---- odom + odom_bestz (downsampled) ----
         step = max(1, round((len(lt) / max(lt[-1], 1e-6)) / max(odom_hz, 1e-6)))
         for i in range(0, len(lt), step):
             ts = anchor / 1e9 + lt[i]
             qx, qy, qz, qw = lquat[i]
-            s_od.append(
+            put(
+                s_od,
                 PoseStamped(
                     ts=ts, frame_id="world", position=lpos[i].tolist(), orientation=[qx, qy, qz, qw]
                 ),
-                ts=ts,
-                pose=(*lpos[i], qx, qy, qz, qw),
+                ts,
+                (*lpos[i], qx, qy, qz, qw),
             )
-            s_odz.append(
+            put(
+                s_odz,
                 PoseStamped(
                     ts=ts, frame_id="world", position=bpos[i].tolist(), orientation=[qx, qy, qz, qw]
                 ),
-                ts=ts,
-                pose=(*bpos[i], qx, qy, qz, qw),
+                ts,
+                (*bpos[i], qx, qy, qz, qw),
             )
         print(f"wrote {len(range(0, len(lt), step))} odom poses (x2)")
 
@@ -188,15 +208,17 @@ def main(
                 ts = m.publish_time / 1e9
                 wl = _deskew(xyz, tpt, lt, lpos, lquat)
                 wz = _deskew(xyz, tpt, lt, bpos, lquat)
-                s_li.append(
+                put(
+                    s_li,
                     PointCloud2.from_numpy(wl.astype(np.float32), "world", ts, inten),
-                    ts=ts,
-                    pose=_pose7(lt, lpos, lquat, tr),
+                    ts,
+                    _pose7(lt, lpos, lquat, tr),
                 )
-                s_liz.append(
+                put(
+                    s_liz,
                     PointCloud2.from_numpy(wz.astype(np.float32), "world", ts, inten),
-                    ts=ts,
-                    pose=_pose7(lt, bpos, lquat, tr),
+                    ts,
+                    _pose7(lt, bpos, lquat, tr),
                 )
                 acc_world(bins_l, tr, wl.astype(np.float32))
                 acc_world(bins_z, tr, wz.astype(np.float32))
@@ -206,13 +228,10 @@ def main(
         # ---- 1 s accumulations (voxel-downsampled), posed at bin center ----
         def flush(bins: dict, pos, stream) -> None:
             for sec, chunks in sorted(bins.items()):
-                pc = PointCloud2.from_numpy(
-                    np.concatenate(chunks), "world", anchor / 1e9 + sec + 0.5
-                )
+                ts = anchor / 1e9 + sec + 0.5
+                pc = PointCloud2.from_numpy(np.concatenate(chunks), "world", ts)
                 pc = pc.voxel_downsample(voxel)
-                stream.append(
-                    pc, ts=anchor / 1e9 + sec + 0.5, pose=_pose7(lt, pos, lquat, sec + 0.5)
-                )
+                put(stream, pc, ts, _pose7(lt, pos, lquat, sec + 0.5))
 
         flush(bins_l, lpos, s_li1)
         flush(bins_z, bpos, s_liz1)
@@ -235,10 +254,11 @@ def main(
                 bp, bq = _interp(lt, lpos, lquat, np.array([tr]))
                 cam_p = bp[0] + _qrot(bq, CAM_T[None])[0]
                 cam_q = _qmul(bq[0], CAM_Q)
-                s_img.append(
+                put(
+                    s_img,
                     Image.from_numpy(bgr, ImageFormat.BGR, "camera_optical", ts),
-                    ts=ts,
-                    pose=(*cam_p, *cam_q),
+                    ts,
+                    (*cam_p, *cam_q),
                 )
                 nimg += 1
         print(f"wrote {nimg} color_image frames")
