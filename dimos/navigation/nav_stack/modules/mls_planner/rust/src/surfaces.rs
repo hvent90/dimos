@@ -9,6 +9,7 @@ use ahash::{AHashMap, AHashSet};
 use image::{GrayImage, Luma};
 use imageproc::distance_transform::Norm;
 use imageproc::morphology::{dilate, erode};
+use rayon::prelude::*;
 
 use crate::voxel::VoxelKey;
 
@@ -48,20 +49,29 @@ pub fn extract_surfaces(
         by_col.entry((ix, iy)).or_default().push(iz);
     }
 
-    let mut standable: Vec<VoxelKey> = Vec::new();
-    for ((ix, iy), zs) in by_col.iter_mut() {
-        zs.sort_unstable();
+    let mut entries: Vec<((i32, i32), &mut Vec<i32>)> =
+        by_col.iter_mut().map(|(&k, v)| (k, v)).collect();
+    entries
+        .par_iter_mut()
+        .for_each(|(_, zs)| zs.sort_unstable());
 
-        // find gaps of at least clearance height through the column
-        for w in zs.windows(2) {
-            if w[1] - w[0] > clearance_cells {
-                standable.push((*ix, *iy, w[0]));
+    let standable: Vec<VoxelKey> = entries
+        .par_iter()
+        .flat_map_iter(|((ix, iy), zs)| {
+            let mut out: Vec<VoxelKey> = Vec::new();
+            // find gaps of at least clearance height through the column
+            for w in zs.windows(2) {
+                if w[1] - w[0] > clearance_cells {
+                    out.push((*ix, *iy, w[0]));
+                }
             }
-        }
-        if let Some(&last_iz) = zs.last() {
-            standable.push((*ix, *iy, last_iz));
-        }
-    }
+            if let Some(&last_iz) = zs.last() {
+                out.push((*ix, *iy, last_iz));
+            }
+            out
+        })
+        .collect();
+    drop(entries);
 
     close_surface_holes(
         standable,
@@ -91,18 +101,20 @@ fn close_surface_holes(
         by_z.entry(iz).or_default().push((ix, iy));
     }
 
-    let mut out = Vec::new();
-    for (iz, xys) in by_z {
-        out.extend(close_at_z(
-            &xys,
-            iz,
-            by_col,
-            dilation_passes,
-            erosion_passes,
-            clearance_cells,
-        ));
-    }
-    out
+    let slices: Vec<(i32, Vec<(i32, i32)>)> = by_z.into_iter().collect();
+    slices
+        .par_iter()
+        .flat_map_iter(|(iz, xys)| {
+            close_at_z(
+                xys,
+                *iz,
+                by_col,
+                dilation_passes,
+                erosion_passes,
+                clearance_cells,
+            )
+        })
+        .collect()
 }
 
 /// Close holes on an xy slice of the surfaces.

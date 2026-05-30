@@ -9,6 +9,7 @@
 //! edges between start nodes.
 
 use ahash::AHashMap;
+use rayon::prelude::*;
 
 use crate::adjacency::{SurfaceAdjacency, SurfaceLookup};
 use crate::dijkstra::{dijkstra, CellState};
@@ -73,18 +74,20 @@ pub fn add_node_edges(sg: SurfaceGraph) -> PlannerGraph {
 /// Walk every node-graph edge and emit one segment per consecutive cell pair
 /// along the reconstructed cell path.
 pub fn edges_to_segments(plg: &PlannerGraph, _voxel_size: f32) -> Vec<(VoxelKey, VoxelKey, f32)> {
-    let mut segments = Vec::new();
-    for edge in &plg.node_edges {
-        let mut from_a = walk_preds_to_source(plg, edge.boundary_u);
-        from_a.reverse();
-        let to_b = walk_preds_to_source(plg, edge.boundary_v);
-        let mut path: Vec<VoxelKey> = from_a;
-        path.extend(to_b);
-        for pair in path.windows(2) {
-            segments.push((pair[0], pair[1], edge.cost));
-        }
-    }
-    segments
+    plg.node_edges
+        .par_iter()
+        .flat_map_iter(|edge| {
+            let mut from_a = walk_preds_to_source(plg, edge.boundary_u);
+            from_a.reverse();
+            let to_b = walk_preds_to_source(plg, edge.boundary_v);
+            let mut path: Vec<VoxelKey> = from_a;
+            path.extend(to_b);
+            let cost = edge.cost;
+            path.windows(2)
+                .map(|pair| (pair[0], pair[1], cost))
+                .collect::<Vec<_>>()
+        })
+        .collect()
 }
 
 pub fn walk_preds_to_source(plg: &PlannerGraph, start_cell: VoxelKey) -> Vec<VoxelKey> {

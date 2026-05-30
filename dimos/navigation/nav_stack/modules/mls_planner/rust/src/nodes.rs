@@ -6,9 +6,10 @@
 //! toward corridor centers.
 
 use ahash::{AHashMap, AHashSet};
+use rayon::prelude::*;
 
 use crate::adjacency::{
-    build_surface_adjacency, build_surface_lookup, SurfaceAdjacency, SurfaceLookup,
+    build_surface_adjacency, build_surface_lookup, Edge, SurfaceAdjacency, SurfaceLookup,
 };
 use crate::dijkstra::dijkstra;
 use crate::voxel::{surface_point_xyz, VoxelKey};
@@ -78,18 +79,22 @@ pub fn place_nodes(
 
 /// Cells missing any of their 4 xy-direction neighbors are treated as boundaries.
 fn wall_adjacent_cells(adj: &SurfaceAdjacency) -> Vec<VoxelKey> {
-    let mut wall: Vec<VoxelKey> = adj
-        .iter()
-        .filter(|(c, edges)| {
+    let entries: Vec<(VoxelKey, &[Edge])> = adj.iter().collect();
+    let mut wall: Vec<VoxelKey> = entries
+        .par_iter()
+        .filter_map(|(c, edges)| {
             let mut dirs: AHashSet<(i32, i32)> = AHashSet::new();
             for e in *edges {
                 dirs.insert((e.dst.0 - c.0, e.dst.1 - c.1));
             }
-            dirs.len() < 4
+            if dirs.len() < 4 {
+                Some(*c)
+            } else {
+                None
+            }
         })
-        .map(|(c, _)| c)
         .collect();
-    wall.sort();
+    wall.par_sort_unstable();
     if wall.is_empty() {
         if let Some(c) = adj.cells().min() {
             wall.push(c);
@@ -148,9 +153,10 @@ fn apply_wall_safe_penalty(
     dist: &AHashMap<VoxelKey, f32>,
     buffer_m: f32,
 ) {
-    let penalty: AHashMap<VoxelKey, f32> = adj
-        .cells()
-        .map(|c| {
+    let cells: Vec<VoxelKey> = adj.cells().collect();
+    let penalty_pairs: Vec<(VoxelKey, f32)> = cells
+        .par_iter()
+        .map(|&c| {
             let p = match dist.get(&c) {
                 Some(&d) => (1.0 + (buffer_m - d) / buffer_m).max(1.0),
                 None => 1.0,
@@ -158,14 +164,16 @@ fn apply_wall_safe_penalty(
             (c, p)
         })
         .collect();
+    let penalty: AHashMap<VoxelKey, f32> = penalty_pairs.into_iter().collect();
 
-    for (src, edges) in adj.iter_edges_mut() {
-        let pu = penalty.get(&src).copied().unwrap_or(1.0);
-        for edge in edges {
+    let mut edge_lists: Vec<(VoxelKey, &mut Vec<Edge>)> = adj.iter_edges_mut().collect();
+    edge_lists.par_iter_mut().for_each(|(src, edges)| {
+        let pu = penalty.get(src).copied().unwrap_or(1.0);
+        for edge in edges.iter_mut() {
             let pv = penalty.get(&edge.dst).copied().unwrap_or(1.0);
             edge.cost *= (pu + pv) / 2.0;
         }
-    }
+    });
 }
 
 #[cfg(test)]

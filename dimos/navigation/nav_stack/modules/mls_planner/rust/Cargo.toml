@@ -18,6 +18,7 @@ ahash = "0.8"
 tracing = "0.1"
 image = { version = "0.25", default-features = false }
 imageproc = { version = "0.25", default-features = false }
+rayon = "1"
 
 [profile.release]
 lto = "thin"
