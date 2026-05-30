@@ -1,5 +1,19 @@
 # Copyright 2026 Dimensional Inc.
 #
+# Licensed under the Apache License, Version 2.0 (the "License");
+# you may not use this file except in compliance with the License.
+# You may obtain a copy of the License at
+#
+#     http://www.apache.org/licenses/LICENSE-2.0
+#
+# Unless required by applicable law or agreed to in writing, software
+# distributed under the License is distributed on an "AS IS" BASIS,
+# WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
+# See the License for the specific language governing permissions and
+# limitations under the License.
+
+# Copyright 2026 Dimensional Inc.
+#
 # Licensed under the Apache License, Version 2.0 (the "License").
 
 """Ingest a Go2 MCAP recording into a memory2 SQLite dataset (.db).
@@ -125,6 +139,7 @@ def main(
     from dimos.memory2.store.sqlite import SqliteStore
     from dimos.utils.data import resolve_named_path
 
+    mcap = resolve_named_path(mcap, ".mcap")  # local path, repo data dir, or LFS pull
     out = out or mcap.with_suffix(".db")
     for p in (out, out.with_suffix(".db-wal"), out.with_suffix(".db-shm")):
         p.unlink(missing_ok=True)  # overwrite: avoid appending to an old db
