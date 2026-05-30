@@ -40,10 +40,15 @@ if TYPE_CHECKING:
     from dimos.memory2.backend import Backend
     from dimos.memory2.stream import Stream
     from dimos.memory2.type.observation import Observation
+    from dimos.msgs.geometry_msgs.Transform import Transform
 
 
 def pose_fill(
-    stream: Stream[Any], pose_stream: Stream[Any], *, tolerance: float = 0.1
+    stream: Stream[Any],
+    pose_stream: Stream[Any],
+    *,
+    tolerance: float = 0.1,
+    mount: Transform | None = None,
 ) -> Stream[Any]:
     """Re-pose each observation in *stream* from the nearest entry in *pose_stream*.
 
@@ -53,13 +58,26 @@ def pose_fill(
     object exposing ``.position`` + ``.orientation``) because pose-message
     streams carry the pose in the value, not the indexed pose columns. The
     target stream's payload stays lazy.
+
+    *mount* composes a static child transform onto each source pose
+    (``world_base ∘ mount``) before attaching — e.g. ``base_link →
+    camera_optical`` so a base-frame odometry source yields an optical-frame
+    image pose.
     """
+    from dimos.memory2.type.observation import _to_tuple
+    from dimos.msgs.geometry_msgs.Quaternion import Quaternion
+    from dimos.msgs.geometry_msgs.Transform import Transform
+    from dimos.msgs.geometry_msgs.Vector3 import Vector3
 
     def _fill(pair_obs: Observation[Any]) -> Observation[Any]:
         primary, secondary = cast(
             "tuple[Observation[Any], Observation[Any]]", pair_obs.data
         )  # AlignedPair(primary, secondary)
-        return primary.with_pose(secondary.data)
+        if mount is None:
+            return primary.with_pose(secondary.data)
+        x, y, z, qx, qy, qz, qw = cast("tuple[float, ...]", _to_tuple(secondary.data))
+        world_base = Transform(translation=Vector3(x, y, z), rotation=Quaternion(qx, qy, qz, qw))
+        return primary.with_pose(world_base + mount)
 
     return stream.align(pose_stream, tolerance=tolerance).map(_fill)
 

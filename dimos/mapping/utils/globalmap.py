@@ -303,7 +303,7 @@ def main(
     pgo_tol: float = typer.Option(
         0.3,
         "--pgo-tol",
-        help="Spatial dedup tolerance (meters); applies to both raw and --pgo maps",
+        help="Spatial dedup tolerance (meters); applies to both raw and --pgo maps. 0 disables dedup (keep every posed frame)",
     ),
     block_count: int = typer.Option(
         2_000_000, "--block-count", help="VoxelBlockGrid capacity (raw and PGO rebuilds)"
@@ -331,6 +331,12 @@ def main(
         None,
         "--camera-info",
         help="YAML calibration file for --markers; defaults to Go2 builtin",
+    ),
+    image_pose: str | None = typer.Option(
+        None,
+        "--image-pose",
+        help="Re-pose color_image from this stream's pose (composed with the camera "
+        "optical mount) before marker detection, instead of the image's stored pose",
     ),
     marker_size: float = typer.Option(
         0.1, "--marker-size", help="Physical marker edge length in meters (--markers only)"
@@ -364,7 +370,7 @@ def main(
     from dimos.msgs.sensor_msgs.Image import Image
     from dimos.msgs.sensor_msgs.PointCloud2 import PointCloud2
     from dimos.perception.fiducial.marker_transformer import DetectMarkers
-    from dimos.robot.unitree.go2.connection import _camera_info_static
+    from dimos.robot.unitree.go2.connection import BASE_TO_OPTICAL, _camera_info_static
     from dimos.utils.data import resolve_named_path
     from dimos.visualization.rerun.init import rerun_init
 
@@ -383,9 +389,10 @@ def main(
 
     # Spatial dedup: bucket frames by 3D cell using the raw pose, keep the
     # latest per cell. Shared by raw and PGO rebuilds. Doesn't touch obs.data
-    # so it stays cheap (no pointcloud loading).
-    seen: dict[tuple[int, int, int], Observation[Any]] = {}
-    for obs in lidar:
+    # so it stays cheap (no pointcloud loading). With pgo_tol<=0 the bucketing
+    # is disabled and every posed frame is kept (keyed by index).
+    seen: dict[Any, Observation[Any]] = {}
+    for i, obs in enumerate(lidar):
         pose = obs.pose
         if pose is None:
             continue
@@ -393,15 +400,25 @@ def main(
         # Same condition as pgo_keyframes so dedup and PGO see the same frames.
         if pose.position.is_zero() or pose.orientation.is_zero():
             continue
-        t = pose.position
-        # math.floor so negative coords bucket consistently; int() truncates
-        # toward zero and silently folds -0.5 and 0.5 into the same cell.
-        cell = (math.floor(t.x / pgo_tol), math.floor(t.y / pgo_tol), math.floor(t.z / pgo_tol))
-        seen[cell] = obs
+        if pgo_tol > 0:
+            t = pose.position
+            # math.floor so negative coords bucket consistently; int() truncates
+            # toward zero and silently folds -0.5 and 0.5 into the same cell.
+            key: Any = (
+                math.floor(t.x / pgo_tol),
+                math.floor(t.y / pgo_tol),
+                math.floor(t.z / pgo_tol),
+            )
+        else:
+            key = i
+        seen[key] = obs
 
     n_kept = len(seen)
     pct = 100 * n_kept / total if total else 0
-    print(f"dedup: kept [{n_kept}/{total}] frames ({pct:.1f}%) at tol={pgo_tol}m")
+    if pgo_tol > 0:
+        print(f"dedup: kept [{n_kept}/{total}] frames ({pct:.1f}%) at tol={pgo_tol}m")
+    else:
+        print(f"dedup: disabled, kept all [{n_kept}/{total}] posed frames")
 
     # Dict insertion order = lidar iteration order = chronological.
     # `seen` only contains entries with non-None poses (filtered above).
@@ -456,9 +473,17 @@ def main(
     if markers:
         # Image observations in dimos recordings are stamped with
         # frame_id="camera_optical", so obs.pose is already optical-in-world
-        # (verified: matches lidar_base_pose + BASE_TO_OPTICAL to ~1mm).
-        # No mount composition needed.
+        # (verified: matches lidar_base_pose + BASE_TO_OPTICAL to ~1mm). With
+        # --image-pose, swap that stored pose for a different source (e.g.
+        # fastlio_odometry), composing the base→optical mount onto it first.
         color_image = store.stream("color_image", Image).clip(seek, duration)
+        n_images = color_image.count()
+        if image_pose is not None:
+            from dimos.mapping.utils.pose_fill import pose_fill
+
+            src_pose: Stream[Any] = store.stream(image_pose).clip(seek, duration)
+            print(f"re-posing color_image from {image_pose!r} + camera optical mount")
+            color_image = pose_fill(color_image, src_pose, tolerance=0.1, mount=BASE_TO_OPTICAL)
         cam_info = CameraInfo.from_yaml(str(camera_info)) if camera_info else _camera_info_static()
         xf = DetectMarkers(
             camera_info=cam_info,
@@ -467,9 +492,9 @@ def main(
         )
         # Keep the sharpest frame per --marker-quality-window window, then
         # drop frames where the robot was moving (linear + rotational) faster
-        # than the limits. Defaults match markers_rrd.py so positions agree.
+        # than the limits. Defaults match replay_marker.py so positions agree.
         pipeline: Stream[Image] = color_image.tap(
-            progress(color_image.count(), "detecting markers")
+            progress(n_images, "detecting markers")
         ).transform(QualityWindow(lambda img: img.sharpness, window=marker_quality_window))
         if marker_max_speed > 0:
             pipeline = pipeline.transform(
