@@ -17,6 +17,8 @@
 Available subclasses:
     - ArmTeleopModule: Per-hand press-and-hold engage (X/A hold to track), task name routing
     - TwistTeleopModule: Outputs Twist instead of PoseStamped
+    - JoystickTwistTeleopModule: Adds joystick-derived Twist on cmd_vel alongside
+      inherited pose outputs. Used by the Go2 tripod RL blueprint.
 """
 
 from typing import Any
@@ -26,7 +28,9 @@ from pydantic import Field
 from dimos.core.core import rpc
 from dimos.core.stream import Out
 from dimos.msgs.geometry_msgs.PoseStamped import PoseStamped
+from dimos.msgs.geometry_msgs.Twist import Twist
 from dimos.msgs.geometry_msgs.TwistStamped import TwistStamped
+from dimos.msgs.geometry_msgs.Vector3 import Vector3
 from dimos.teleop.quest.quest_teleop_module import Hand, QuestTeleopConfig, QuestTeleopModule
 from dimos.teleop.quest.quest_types import Buttons, QuestControllerState
 
@@ -148,3 +152,62 @@ class ArmTeleopModule(QuestTeleopModule):
             right=right.trigger if right is not None else 0.0,
         )
         self.buttons.publish(buttons)
+
+
+class JoystickTwistTeleopConfig(ArmTeleopConfig):
+    """Configuration for `JoystickTwistTeleopModule`."""
+
+    linear_speed: float = 0.5
+    angular_speed: float = 0.8
+    deadzone: float = 0.1
+
+
+class JoystickTwistTeleopModule(ArmTeleopModule):
+    """ArmTeleop + an extra Twist outlet driven by both thumbsticks.
+
+    Use case: Go2 tripod blueprint. Right A (primary) engages the FR-leg
+    pose track (inherited engage behavior). Joysticks always publish twist
+    so the operator can drive the quadruped at the same time.
+
+    Twist mapping (mirrors the snippet the user requested):
+        left thumbstick Y  -> linear.x  (forward / back)
+        left thumbstick X  -> linear.y  (strafe)
+        right thumbstick X -> angular.z (yaw)
+    All inputs deadzoned, scaled by linear_speed / angular_speed.
+
+    Outputs:
+        - cmd_vel: Twist (new)
+        - left_controller_output / right_controller_output / buttons (inherited)
+    """
+
+    config: JoystickTwistTeleopConfig
+    cmd_vel: Out[Twist]
+
+    @rpc
+    def start(self) -> None:
+        super().start()
+
+    @rpc
+    def stop(self) -> None:
+        super().stop()
+
+    def _deadzone(self, v: float) -> float:
+        return 0.0 if abs(v) < self.config.deadzone else v
+
+    def _on_joy_bytes(self, data: bytes) -> None:
+        super()._on_joy_bytes(data)
+        with self._lock:
+            left = self._controllers.get(Hand.LEFT)
+            right = self._controllers.get(Hand.RIGHT)
+        twist = Twist()
+        twist.linear = Vector3(0.0, 0.0, 0.0)
+        twist.angular = Vector3(0.0, 0.0, 0.0)
+        if left is not None:
+            # Quest thumbstick y is forward-positive on the controller; Twist
+            # linear.x convention is forward-positive in body frame. Sign flips
+            # match the user's snippet.
+            twist.linear.x = -self._deadzone(left.thumbstick.y) * self.config.linear_speed
+            twist.linear.y = -self._deadzone(left.thumbstick.x) * self.config.linear_speed
+        if right is not None:
+            twist.angular.z = -self._deadzone(right.thumbstick.x) * self.config.angular_speed
+        self.cmd_vel.publish(twist)

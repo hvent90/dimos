@@ -643,8 +643,12 @@ class ControlCoordinator(Module):
                     "Use task_invoke RPC or set transport via blueprint."
                 )
 
-        # Subscribe to cartesian commands if any cartesian_ik tasks configured
-        has_cartesian_ik = any(t.type in ("cartesian_ik", "teleop_ik") for t in self.config.tasks)
+        # Subscribe to cartesian commands if any task type consumes PoseStamped.
+        # quest_joint joins the existing IK tasks - it routes pose deltas to
+        # joint deltas without IK (see dimos/control/tasks/quest_joint_task/).
+        has_cartesian_ik = any(
+            t.type in ("cartesian_ik", "teleop_ik", "quest_joint") for t in self.config.tasks
+        )
         if has_cartesian_ik:
             try:
                 self._cartesian_command_unsub = self.cartesian_command.subscribe(

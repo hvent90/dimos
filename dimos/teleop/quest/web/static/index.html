@@ -217,14 +217,20 @@
                 // Send Joy message with all buttons and axes
                 const gamepad = inputSource.gamepad;
                 if (gamepad) {
-                    // Axes layout:
+                    // Axes layout (matches QuestControllerState.from_joy):
                     // [0] = thumbstick X (-1 to 1)
                     // [1] = thumbstick Y (-1 to 1)
                     // [2] = trigger (analog 0.0-1.0)
                     // [3] = grip (analog 0.0-1.0)
+                    //
+                    // On Quest WebXR, gamepad.axes[0]/[1] are the touchpad,
+                    // and the actual thumbstick is gamepad.axes[2]/[3].
+                    // Fall back to [0]/[1] for non-Quest browsers.
+                    const stickX = gamepad.axes[2] ?? gamepad.axes[0] ?? 0.0;
+                    const stickY = gamepad.axes[3] ?? gamepad.axes[1] ?? 0.0;
                     const axes = [
-                        gamepad.axes[0] ?? 0.0,
-                        gamepad.axes[1] ?? 0.0,
+                        stickX,
+                        stickY,
                         gamepad.buttons[0]?.value ?? 0.0,
                         gamepad.buttons[1]?.value ?? 0.0,
                     ];
