@@ -48,7 +48,8 @@ class PointCloudData:
 
 
 class CameraModule(Module):
-    color_image: Out[ImageData]
+    # intentionally doesn't match "color_image"
+    color_img: Out[ImageData]
     depth_image: Out[DepthData]
     point_cloud: Out[PointCloudData]
 
@@ -68,7 +69,18 @@ class PlannerModule(Module):
     plan: Out[PlanData]
 
 
+class PlannerModule2(Module):
+    odometry: In[OdometryData]
+    plan: Out[PlanData]
+
+
 class ControllerModule(Module):
+    plan: In[PlanData]
+    odometry: In[OdometryData]
+    cmd_vel: Out[CmdVelData]
+
+
+class ControllerModule2(Module):
     plan: In[PlanData]
     odometry: In[OdometryData]
     cmd_vel: Out[CmdVelData]
@@ -92,5 +104,16 @@ blueprint2 = autoconnect(
     CameraModule.blueprint(),
     PlannerModule.blueprint(),
     ControllerModule.blueprint(),
+    VisualizerModule.blueprint(),
+)
+
+blueprint3 = autoconnect(
+    CameraModule.blueprint(),
+    OdometryModule.blueprint(),
+    PerceptionModule.blueprint(),
+    PlannerModule.blueprint(),
+    PlannerModule2.blueprint(),  # intenional double
+    ControllerModule.blueprint(),
+    ControllerModule2.blueprint(),
     VisualizerModule.blueprint(),
 )

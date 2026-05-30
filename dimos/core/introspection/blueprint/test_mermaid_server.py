@@ -17,8 +17,6 @@ from __future__ import annotations
 from http.server import BaseHTTPRequestHandler, HTTPServer
 from pathlib import Path
 import re
-import tempfile
-import textwrap
 import threading
 
 import pytest
@@ -135,37 +133,11 @@ def _serve_and_fetch(html: str) -> str:
 
 
 def test_graph_server_snapshot() -> None:
-    blueprint_source = textwrap.dedent("""\
-        from dimos.core.coordination.blueprints import autoconnect
-        from dimos.core.introspection.blueprint.test_mermaid_server import (
-            CameraModule,
-            ControllerModule,
-            OdometryModule,
-            PerceptionModule,
-            PlannerModule,
-            VisualizerModule,
-        )
+    blueprint_file = str(Path(__file__).with_name("test_mermaid_blueprint.py"))
 
-        complex_blueprint = autoconnect(
-            CameraModule.blueprint(),
-            OdometryModule.blueprint(),
-            PerceptionModule.blueprint(),
-            PlannerModule.blueprint(),
-            ControllerModule.blueprint(),
-            VisualizerModule.blueprint(),
-        )
-    """)
+    from dimos.utils.cli.graph import _build_html
 
-    with tempfile.NamedTemporaryFile(mode="w", suffix=".py", delete=False) as tmp_file:
-        tmp_file.write(blueprint_source)
-        tmp_path = tmp_file.name
-
-    try:
-        from dimos.utils.cli.graph import _build_html
-
-        html = _build_html(tmp_path, show_disconnected=True)
-    finally:
-        Path(tmp_path).unlink()
+    html = _build_html(blueprint_file, show_disconnected=True)
 
     html_normalized = _normalize_html(html)
 

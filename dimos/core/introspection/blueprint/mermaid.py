@@ -214,10 +214,10 @@ def render_mermaid(
     ignored_modules: set[str] | None = None,
     show_disconnected: bool = False,
     theme: str = DEFAULT_THEME,
-) -> tuple[str, dict[str, str], set[str]]:
+) -> tuple[str, dict[str, str], set[str], dict[str, str]]:
     """Generate a Mermaid flowchart from a Blueprint.
 
-    Returns (mermaid_code, label_color_map, disconnected_labels).
+    Returns (mermaid_code, label_color_map, disconnected_labels, node_color_map).
     """
     if ignored_streams is None:
         ignored_streams = DEFAULT_IGNORED_CONNECTIONS
@@ -366,4 +366,5 @@ def render_mermaid(
         for i, color in enumerate(edge_colors):
             lines.append(f"    linkStyle {i} stroke:{color},stroke-width:2px")
 
-    return "\n".join(lines), label_color_map, disconnected_labels
+    node_color_map = dict(node_color._assigned)
+    return "\n".join(lines), label_color_map, disconnected_labels, node_color_map

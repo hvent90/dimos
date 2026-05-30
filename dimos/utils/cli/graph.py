@@ -100,15 +100,38 @@ def _build_html(
 
     per_bp_label_colors: list[dict[str, str]] = []
     per_bp_disconnected: list[set[str]] = []
+    per_bp_node_colors: list[dict[str, str]] = []
+    per_bp_conflicts: list[list[dict[str, object]]] = []
 
     tab_buttons = []
     tab_panels = []
     for idx, (name, bp) in enumerate(blueprints):
-        mermaid_code, label_colors, disconnected = render_mermaid(
+        mermaid_code, label_colors, disconnected, node_colors = render_mermaid(
             bp, show_disconnected=show_disconnected, theme=theme
         )
         per_bp_label_colors.append(label_colors)
         per_bp_disconnected.append(disconnected)
+        per_bp_node_colors.append(node_colors)
+
+        producers: dict[str, list[str]] = {}
+        for atom in bp.blueprints:
+            for stream in atom.streams:
+                if stream.direction == "out":
+                    topic = f"{stream.name}:{stream.type.__name__}"
+                    producers.setdefault(topic, []).append(atom.module.__name__)
+        conflicts = [
+            {
+                "topic": topic,
+                "topicColor": label_colors.get(topic, "#ccc"),
+                "modules": [
+                    {"name": module_name, "color": node_colors.get(module_name, "#ccc")}
+                    for module_name in modules
+                ],
+            }
+            for topic, modules in producers.items()
+            if len(modules) > 1
+        ]
+        per_bp_conflicts.append(conflicts)
 
         active_cls = " active" if idx == 0 else ""
         tab_buttons.append(f'<button class="tab-btn{active_cls}" data-idx="{idx}">{name}</button>')
@@ -121,6 +144,7 @@ def _build_html(
 
     all_label_colors_json = json.dumps(per_bp_label_colors)
     all_disconnected_json = json.dumps([sorted(d) for d in per_bp_disconnected])
+    all_conflicts_json = json.dumps(per_bp_conflicts)
 
     tab_bar_html = ""
     if len(blueprints) > 1:
@@ -175,10 +199,29 @@ body {{ background: {background}; color: {text_color}; font-family: sans-serif; 
 }}
 .moduleNode .nodeLabel {{ font-size: 38px !important; font-weight: 600 !important; display: block !important; transform: scale(0.7) !important; }}
 .streamNode .nodeLabel {{ font-size: 18px !important; }}
+.conflicts-box {{
+    position: fixed; bottom: 1.2em; left: 1.2em; z-index: 10;
+    background: {controls_bg}; border: 1px solid #e57373; border-radius: 6px;
+    padding: 0.7em 1em; max-width: 26em; font-size: 0.85em;
+    color: {text_color};
+}}
+.conflicts-box.hidden {{ display: none; }}
+.conflicts-title {{ color: #e57373; font-weight: 600; margin-bottom: 0.3em; }}
+.conflicts-item {{ margin: 0.25em 0; padding-top: 0.4em; border-top: 1px solid {border_color}; }}
+.conflicts-item:first-of-type {{ border-top: none; padding-top: 0; }}
+.conflict-module {{
+    display: inline-block; padding: 3px 10px; border-radius: 10px;
+    color: #eee; font-size: 0.92em; margin: 2px 2px;
+}}
+.conflict-stream {{
+    display: inline-block; padding: 3px 8px; border: 1px solid;
+    border-radius: 3px; font-size: 0.92em; margin: 2px 2px;
+}}
 </style>
 </head><body>
 {tab_bar_html}
 {"".join(tab_panels)}
+<div id="conflictsBox" class="conflicts-box hidden"></div>
 <div class="controls">
     <button id="zoomIn" title="Zoom in">+</button>
     <button id="zoomOut" title="Zoom out">&minus;</button>
@@ -212,6 +255,25 @@ document.querySelectorAll('marker').forEach(marker => {{
 
 const allLabelColors = {all_label_colors_json};
 const allDisconnected = {all_disconnected_json};
+const allConflicts = {all_conflicts_json};
+
+function renderConflicts(idx) {{
+    const box = document.getElementById('conflictsBox');
+    const conflicts = allConflicts[idx] || [];
+    if (conflicts.length === 0) {{
+        box.classList.add('hidden');
+        box.innerHTML = '';
+        return;
+    }}
+    box.classList.remove('hidden');
+    box.innerHTML = '<div class="conflicts-title">⚠ Possible Input Fighting</div>' +
+        conflicts.map(c =>
+            `<div class="conflicts-item">` +
+            `<span class="conflict-stream" style="border-color:${{c.topicColor}};color:${{c.topicColor}}">${{c.topic}}</span> ` +
+            c.modules.map(m => `<span class="conflict-module" style="background:${{m.color}}bf">${{m.name}}</span>`).join(' ') +
+            `</div>`
+        ).join('');
+}}
 
 function setupViewport(vp, labelColors, disconnectedList) {{
     const canvas = vp.querySelector('.canvas');
@@ -363,6 +425,8 @@ document.getElementById('resetView').addEventListener('click', () => {{
     if (activeViewport?._fitToView) activeViewport._fitToView();
 }});
 
+renderConflicts(0);
+
 document.querySelectorAll('.tab-panel:not(.active)').forEach(p => p.classList.add('hidden'));
 
 document.querySelectorAll('.tab-btn').forEach(btn => {{
@@ -382,6 +446,7 @@ document.querySelectorAll('.tab-btn').forEach(btn => {{
             activeViewport = vp;
             if (vp._fitToView) setTimeout(() => vp._fitToView(), 0);
         }}
+        renderConflicts(parseInt(idx));
     }});
 }});
 </script>
@@ -394,7 +459,7 @@ def print_markdown(
     blueprints = _load_blueprints(python_file)
     sections: list[str] = []
     for name, bp in blueprints:
-        mermaid_code, _, _ = render_mermaid(bp, show_disconnected=show_disconnected, theme=theme)
+        mermaid_code, _, _, _ = render_mermaid(bp, show_disconnected=show_disconnected, theme=theme)
         sections.append(f"## {name}\n\n```mermaid\n{mermaid_code}\n```")
     print("\n\n".join(sections))
 
