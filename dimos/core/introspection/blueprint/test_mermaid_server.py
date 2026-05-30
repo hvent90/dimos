@@ -98,9 +98,11 @@ def _build_blueprint() -> Blueprint:
 
 def _normalize_html(html: str) -> str:
     return re.sub(
-        r"https://cdn\.jsdelivr\.net/npm/mermaid@[^/]+/",
-        "https://cdn.jsdelivr.net/npm/mermaid@VERSION/",
+        r"<script>.{1000,}?</script>",
+        "<script>/* mermaid.min.js */</script>",
         html,
+        count=1,
+        flags=re.DOTALL,
     )
 
 

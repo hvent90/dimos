@@ -24,11 +24,14 @@ from http.server import BaseHTTPRequestHandler, HTTPServer
 import importlib.util
 import json
 import os
+from pathlib import Path
 import sys
 import webbrowser
 
 from dimos.core.coordination.blueprints import Blueprint
 from dimos.core.introspection.blueprint.mermaid import DEFAULT_THEME, THEMES, render_mermaid
+
+_MERMAID_JS = (Path(__file__).parent / "mermaid.min.js").read_text(encoding="utf-8")
 
 
 def _levenshtein(a: str, b: str) -> int:
@@ -283,10 +286,10 @@ body {{ background: {background}; color: {text_color}; font-family: sans-serif; 
     <button id="zoomOut" title="Zoom out">&minus;</button>
     <button id="resetView" title="Reset view">&#8634;</button>
 </div>
-<script type="module">
-import mermaid from 'https://cdn.jsdelivr.net/npm/mermaid@11/dist/mermaid.esm.min.mjs';
+<script>{_MERMAID_JS}</script>
+<script>(async () => {{
 mermaid.initialize({{
-    startOnLoad: true,
+    startOnLoad: false,
     theme: '{mermaid_theme}',
     flowchart: {{
         curve: 'basis',
@@ -519,7 +522,7 @@ document.querySelectorAll('.tab-btn').forEach(btn => {{
         renderWarnings(parseInt(idx));
     }});
 }});
-</script>
+}})()</script>
 </body></html>"""
 
 

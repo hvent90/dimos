@@ -273,10 +273,10 @@ graph LR
     <button id="zoomOut" title="Zoom out">&minus;</button>
     <button id="resetView" title="Reset view">&#8634;</button>
 </div>
-<script type="module">
-import mermaid from 'https://cdn.jsdelivr.net/npm/mermaid@VERSION/dist/mermaid.esm.min.mjs';
+<script>/* mermaid.min.js */</script>
+<script>(async () => {
 mermaid.initialize({
-    startOnLoad: true,
+    startOnLoad: false,
     theme: 'dark',
     flowchart: {
         curve: 'basis',
@@ -509,5 +509,5 @@ document.querySelectorAll('.tab-btn').forEach(btn => {
         renderWarnings(parseInt(idx));
     });
 });
-</script>
+})()</script>
 </body></html>
