@@ -30,33 +30,16 @@ a registered class are listed by :func:`streams` but skipped by :func:`messages`
 
 from __future__ import annotations
 
-from collections.abc import Callable, Iterator
+from collections.abc import Iterator
 from pathlib import Path
 from typing import Any
 
 from mcap.reader import make_reader
 
-from dimos.robot.unitree.go2dds import ros
-from dimos.robot.unitree.go2dds.cdr import decode
-from dimos.robot.unitree.go2dds.msgs.LowState import LowState
-from dimos.robot.unitree.go2dds.msgs.SportModeState import SportModeState
+from dimos.robot.unitree.go2dds.codec import GO2_CODECS
 
-
-def _struct(cls: type) -> Callable[[bytes], Any]:
-    """Decoder for a fixed CDR struct spec — the generic path."""
-    return lambda b: decode(b, cls)[0]
-
-
-# DDS topic -> decoder ``(cdr_bytes) -> message``. Unitree types decode to their
-# own dataclasses; standard-ROS types decode into ``dimos.msgs`` (see :mod:`ros`).
-REGISTRY: dict[str, Callable[[bytes], Any]] = {
-    "rt/lowstate": _struct(LowState),
-    "rt/sportmodestate": _struct(SportModeState),
-    "rt/utlidar/cloud": ros.decode_pointcloud2,
-    "rt/utlidar/imu": ros.decode_imu,
-    "rt/utlidar/robot_odom": ros.decode_odometry,
-    "rt/frontvideo": ros.decode_compressed_image,
-}
+# DDS topic -> codec. Defaults to the Go2 channel set (see :mod:`codec`).
+REGISTRY = GO2_CODECS
 
 
 def streams(path: str | Path) -> list[dict[str, Any]]:
@@ -94,4 +77,4 @@ def messages(path: str | Path, *topics: str) -> Iterator[tuple[str, float, Any]]
         raise KeyError(f"no decoder registered for {unknown}; known: {list(REGISTRY)}")
     with open(path, "rb") as f:
         for _schema, ch, m in make_reader(f).iter_messages(topics=want):
-            yield ch.topic, m.log_time / 1e9, REGISTRY[ch.topic](m.data)
+            yield ch.topic, m.log_time / 1e9, REGISTRY[ch.topic].decode(m.data)

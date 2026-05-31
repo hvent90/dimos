@@ -1,0 +1,91 @@
+# Copyright 2026 Dimensional Inc.
+#
+# Licensed under the Apache License, Version 2.0 (the "License");
+# you may not use this file except in compliance with the License.
+# You may obtain a copy of the License at
+#
+#     http://www.apache.org/licenses/LICENSE-2.0
+#
+# Unless required by applicable law or agreed to in writing, software
+# distributed under the License is distributed on an "AS IS" BASIS,
+# WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
+# See the License for the specific language governing permissions and
+# limitations under the License.
+
+# Copyright 2026 Dimensional Inc.
+#
+# Licensed under the Apache License, Version 2.0 (the "License").
+
+"""DDS wire codecs: CDR bytes <-> message, keyed by DDS topic.
+
+A :class:`DdsCodec` is the bytes<->payload pair for one DDS message type. The
+same codec decodes a recorded mcap message and a live DDS sample (both are CDR),
+and its ``encode`` half publishes back to the wire — so this is shared by the
+reader, :class:`~dimos.robot.unitree.go2dds.store.McapStore`, and (later) a live
+DDS bridge. It is distinct from memory2's storage codecs (pickle/lcm/jpeg);
+they only coincide when an mcap is opened as a store.
+
+``GO2_CODECS`` is the Go2 channel set — the default registry today.
+"""
+
+from __future__ import annotations
+
+from collections.abc import Callable
+from dataclasses import dataclass
+from typing import Any, Protocol, runtime_checkable
+
+from dimos.msgs.nav_msgs.Odometry import Odometry
+from dimos.msgs.sensor_msgs.Image import Image
+from dimos.msgs.sensor_msgs.Imu import Imu
+from dimos.msgs.sensor_msgs.PointCloud2 import PointCloud2
+from dimos.robot.unitree.go2dds import cdr, ros
+from dimos.robot.unitree.go2dds.msgs.LowState import LowState
+from dimos.robot.unitree.go2dds.msgs.SportModeState import SportModeState
+
+
+@runtime_checkable
+class DdsCodec(Protocol):
+    """Codec between DDS wire bytes (CDR) and a payload message."""
+
+    payload_type: type
+
+    def decode(self, data: bytes) -> Any: ...
+    def encode(self, msg: Any) -> bytes: ...
+
+
+@dataclass(frozen=True)
+class CdrStructCodec:
+    """Codec for a fixed CDR struct spec (e.g. the Unitree custom msgs)."""
+
+    payload_type: type  # the spec dataclass; also the decoded payload type
+
+    def decode(self, data: bytes) -> Any:
+        return cdr.decode(data, self.payload_type)[0]
+
+    def encode(self, msg: Any) -> bytes:
+        raise NotImplementedError("CDR struct encode not implemented yet")
+
+
+@dataclass(frozen=True)
+class FnCodec:
+    """Codec wrapping a decode function (e.g. ROS wire -> dimos msg)."""
+
+    payload_type: type
+    decoder: Callable[[bytes], Any]
+
+    def decode(self, data: bytes) -> Any:
+        return self.decoder(data)
+
+    def encode(self, msg: Any) -> bytes:
+        raise NotImplementedError(f"encode not implemented for {self.payload_type.__name__}")
+
+
+# Go2 DDS topic -> codec. The default registry (only platform we have today).
+GO2_CODECS: dict[str, DdsCodec] = {
+    "rt/utlidar/cloud": FnCodec(PointCloud2, ros.decode_pointcloud2),
+    "rt/utlidar/imu": FnCodec(Imu, ros.decode_imu),
+    "rt/utlidar/robot_odom": FnCodec(Odometry, ros.decode_odometry),
+    "rt/frontvideo": FnCodec(Image, ros.decode_compressed_image),
+    "rt/lowstate": CdrStructCodec(LowState),
+    "rt/sportmodestate": CdrStructCodec(SportModeState),
+}
