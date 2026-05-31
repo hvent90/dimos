@@ -548,6 +548,10 @@ int main(int argc, char** argv) {
     // set_icp_omega_body per scan), and skip map_incremental if the gap
     // exceeds this threshold. Zero disables. Default 10°/s.
     double rotation_gap_threshold_deg_s = mod.arg_float("rotation_gap_threshold_deg_s", 10.0f);
+    // Angular-acceleration cap: ||Δω||/scan_dt across consecutive IESKF ω.
+    // Catches the sudden rotation-rate jumps the EKF makes when pulled by
+    // a bad neighbor in the map. Zero disables. Default 100°/s².
+    double angular_accel_cap_deg_s2 = mod.arg_float("angular_accel_cap_deg_s2", 100.0f);
 
     // ICP cross-check rollback. Disabled unless the ICP topic is also set.
     // Trigger when IESKF |v| > min_ieskf_v_ms AND ICP |v| is at least
@@ -683,6 +687,7 @@ int main(int argc, char** argv) {
     // Init FAST-LIO with config
     if (debug) printf("[fastlio2] Initializing FAST-LIO...\n");
     FastLio fast_lio(config_path, msr_freq, main_freq, rotation_gap_threshold_deg_s);
+    fast_lio.set_angular_accel_cap_deg_s2(angular_accel_cap_deg_s2);
     g_fastlio = &fast_lio;
     if (debug) printf("[fastlio2] FAST-LIO initialized.\n");
 

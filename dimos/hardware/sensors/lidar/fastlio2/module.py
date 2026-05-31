@@ -137,6 +137,11 @@ class FastLio2Config(NativeModuleConfig):
     # vel/accel guardrail — see commit notes for why orientation
     # disagreement is the seed cause of the gravity-leak divergence loop.
     rotation_gap_threshold_deg_s: float = 10.0
+    # Angular-acceleration cap (deg/s²). The binary computes ||Δω_ieskf||
+    # / scan_dt across consecutive scans and skips map_incremental when it
+    # exceeds this cap. Catches the abrupt rotation-rate jumps the EKF
+    # makes when pulled by a bad neighbour in the map. Zero disables.
+    angular_accel_cap_deg_s2: float = 100.0
 
     # ICP cross-check rollback. The binary maintains a ring buffer of
     # per-scan (IESKF pose, IESKF orientation, ICP body-frame velocity)
