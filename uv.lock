@@ -2322,7 +2322,7 @@ tests = [
 ]
 tests-self-hosted = [
     { name = "coverage" },
-    { name = "dimos", extra = ["agents", "apriltag", "cpu", "drone", "manipulation", "mapping", "misc", "perception", "psql", "sim", "unitree-dds", "visualization", "web"] },
+    { name = "dimos", extra = ["agents", "apriltag", "cpu", "drone", "manipulation", "mapping", "misc", "perception", "psql", "sim", "unitree", "visualization", "web"] },
     { name = "gdown" },
     { name = "googlemaps" },
     { name = "hydra-core" },
@@ -2331,6 +2331,7 @@ tests-self-hosted = [
     { name = "langchain-core" },
     { name = "langchain-openai" },
     { name = "lap" },
+    { name = "mcap" },
     { name = "md-babel-py" },
     { name = "moondream" },
     { name = "mujoco" },
@@ -2611,7 +2612,7 @@ tests = [
 ]
 tests-self-hosted = [
     { name = "coverage", specifier = ">=7.0" },
-    { name = "dimos", extras = ["agents", "perception", "manipulation", "sim", "unitree-dds", "misc"] },
+    { name = "dimos", extras = ["agents", "perception", "manipulation", "sim", "unitree", "misc"] },
     { name = "dimos", extras = ["apriltag", "mapping", "psql", "drone", "cpu"] },
     { name = "dimos", extras = ["web", "visualization"] },
     { name = "gdown", specifier = "==6.0.0" },
@@ -2622,6 +2623,7 @@ tests-self-hosted = [
     { name = "langchain-core", specifier = "==1.3.3" },
     { name = "langchain-openai", specifier = ">=1,<2" },
     { name = "lap", specifier = ">=0.5.12" },
+    { name = "mcap", specifier = ">=1.2.0" },
     { name = "md-babel-py", specifier = ">=1.2.0" },
     { name = "moondream" },
     { name = "mujoco", specifier = ">=3.3.4" },
