@@ -97,13 +97,14 @@ def _build_blueprint() -> Blueprint:
 
 
 def _normalize_html(html: str) -> str:
-    return re.sub(
+    html = re.sub(
         r"<script>.{1000,}?</script>",
         "<script>/* mermaid.min.js */</script>",
         html,
         count=1,
         flags=re.DOTALL,
     )
+    return "\n".join(line.rstrip() for line in html.splitlines())
 
 
 def _serve_and_fetch(html: str) -> str:

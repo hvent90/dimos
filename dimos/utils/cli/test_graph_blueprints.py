@@ -91,7 +91,7 @@ class VisualizerModule(Module):
     point_cloud: In[PointCloudData]
 
 
-blueprint1 = autoconnect(
+_blueprint1 = autoconnect(
     CameraModule.blueprint(),
     OdometryModule.blueprint(),
     PerceptionModule.blueprint(),
@@ -100,14 +100,14 @@ blueprint1 = autoconnect(
     VisualizerModule.blueprint(),
 )
 
-blueprint2 = autoconnect(
+_blueprint2 = autoconnect(
     CameraModule.blueprint(),
     PlannerModule.blueprint(),
     ControllerModule.blueprint(),
     VisualizerModule.blueprint(),
 )
 
-blueprint3 = autoconnect(
+_blueprint3 = autoconnect(
     CameraModule.blueprint(),
     OdometryModule.blueprint(),
     PerceptionModule.blueprint(),

@@ -72,11 +72,11 @@ body { background: #1e1e1e; color: #ccc; font-family: sans-serif; overflow: hidd
 
 <div class="tab-bar">
 
-    <button class="tab-btn active" data-idx="0">blueprint3</button>
+    <button class="tab-btn active" data-idx="0">_blueprint3</button>
 
-    <button class="tab-btn" data-idx="1">blueprint2</button>
+    <button class="tab-btn" data-idx="1">_blueprint2</button>
 
-    <button class="tab-btn" data-idx="2">blueprint1</button>
+    <button class="tab-btn" data-idx="2">_blueprint1</button>
 
 </div>
 
@@ -337,7 +337,7 @@ function renderWarnings(idx) {
     let html = '';
     const conflicts = allConflicts[idx] || [];
     if (conflicts.length > 0) {
-        html += '<div class="warning-box"><div class="warning-title">⚠ Possible Input Fighting</div>' +
+        html += '<div class="warning-box"><div class="warning-title">⚠ Possible Stream Fighting</div>' +
             conflicts.map(c =>
                 `<div class="warning-item">` +
                 `<span class="warning-stream" style="border-color:${c.topicColor};color:${c.topicColor}">${c.topic}</span> ` +

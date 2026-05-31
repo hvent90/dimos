@@ -127,7 +127,7 @@ function renderWarnings(idx) {
     let html = '';
     const conflicts = allConflicts[idx] || [];
     if (conflicts.length > 0) {
-        html += '<div class="warning-box"><div class="warning-title">⚠ Possible Input Fighting</div>' +
+        html += '<div class="warning-box"><div class="warning-title">⚠ Possible Stream Fighting</div>' +
             conflicts.map(c =>
                 `<div class="warning-item">` +
                 `<span class="warning-stream" style="border-color:${c.topicColor};color:${c.topicColor}">${c.topic}</span> ` +

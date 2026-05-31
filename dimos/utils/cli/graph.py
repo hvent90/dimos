@@ -89,8 +89,6 @@ def _load_blueprints(python_file: str) -> list[tuple[str, Blueprint]]:
 
     blueprints: list[tuple[str, Blueprint]] = []
     for name, obj in vars(module).items():
-        if name.startswith("_"):
-            continue
         if isinstance(obj, Blueprint):
             blueprints.append((name, obj))
 
