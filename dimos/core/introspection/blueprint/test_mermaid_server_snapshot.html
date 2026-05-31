@@ -69,8 +69,21 @@ body { background: #1e1e1e; color: #ccc; font-family: sans-serif; overflow: hidd
 .typo-arrow { color: #888; margin: 0 2px; }
 </style>
 </head><body>
-<div class="tab-bar"><button class="tab-btn active" data-idx="0">blueprint3</button><button class="tab-btn" data-idx="1">blueprint2</button><button class="tab-btn" data-idx="2">blueprint1</button></div>
-<div class="tab-panel active" data-idx="0"><div class="viewport"><div class="canvas"><pre class="mermaid">
+
+<div class="tab-bar">
+
+    <button class="tab-btn active" data-idx="0">blueprint3</button>
+
+    <button class="tab-btn" data-idx="1">blueprint2</button>
+
+    <button class="tab-btn" data-idx="2">blueprint1</button>
+
+</div>
+
+
+<div class="tab-panel active" data-idx="0">
+    <div class="viewport"><div class="canvas">
+        <pre class="mermaid">
 graph LR
     CameraModule([CameraModule]):::moduleNode
     ControllerModule([ControllerModule]):::moduleNode
@@ -154,7 +167,13 @@ graph LR
     linkStyle 18 stroke:#22d3ee,stroke-width:2px
     linkStyle 19 stroke:#22d3ee,stroke-width:2px
     linkStyle 20 stroke:#3b82f6,stroke-width:2px
-</pre></div></div></div><div class="tab-panel" data-idx="1"><div class="viewport"><div class="canvas"><pre class="mermaid">
+</pre>
+    </div></div>
+</div>
+
+<div class="tab-panel" data-idx="1">
+    <div class="viewport"><div class="canvas">
+        <pre class="mermaid">
 graph LR
     CameraModule([CameraModule]):::moduleNode
     ControllerModule([ControllerModule]):::moduleNode
@@ -204,7 +223,13 @@ graph LR
     linkStyle 7 stroke:#ef4444,stroke-width:2px
     linkStyle 8 stroke:#f472b6,stroke-width:2px
     linkStyle 9 stroke:#f472b6,stroke-width:2px
-</pre></div></div></div><div class="tab-panel" data-idx="2"><div class="viewport"><div class="canvas"><pre class="mermaid">
+</pre>
+    </div></div>
+</div>
+
+<div class="tab-panel" data-idx="2">
+    <div class="viewport"><div class="canvas">
+        <pre class="mermaid">
 graph LR
     CameraModule([CameraModule]):::moduleNode
     ControllerModule([ControllerModule]):::moduleNode
@@ -266,7 +291,10 @@ graph LR
     linkStyle 11 stroke:#22d3ee,stroke-width:2px
     linkStyle 12 stroke:#22d3ee,stroke-width:2px
     linkStyle 13 stroke:#3b82f6,stroke-width:2px
-</pre></div></div></div>
+</pre>
+    </div></div>
+</div>
+
 <div class="warnings-container" id="warningsContainer"></div>
 <div class="controls">
     <button id="zoomIn" title="Zoom in">+</button>
