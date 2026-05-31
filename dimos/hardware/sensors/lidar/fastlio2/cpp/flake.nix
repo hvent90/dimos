@@ -17,7 +17,7 @@
       # to a local git checkout pinned by commit so we can iterate on
       # debug prints / fixes locally while still building reproducibly.
       # Bump the rev= when a new fastlio2 commit is needed.
-      url = "git+file:///home/dimos/repos/dimos-module-fastlio2?rev=272683494fa6c80c2acc77446597ddf0c7ca040f&ref=jeff/fix/logs";
+      url = "git+file:///home/dimos/repos/dimos-module-fastlio2?rev=df073648e19c57de0bdd32ca7394afe555933364&ref=jeff/fix/logs";
       flake = false;
     };
     lcm-extended = {

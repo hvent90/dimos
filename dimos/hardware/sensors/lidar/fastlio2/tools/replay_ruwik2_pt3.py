@@ -66,15 +66,22 @@ MAX_WALL_SEC = 480.0
 # default value can be overridden with the same-named env var for sweeps.
 ROTATION_GAP_THRESHOLD_DEG_S = float(os.environ.get("ROTATION_GAP_THRESHOLD_DEG_S", "10.0"))
 ANGULAR_ACCEL_CAP_DEG_S2 = float(os.environ.get("ANGULAR_ACCEL_CAP_DEG_S2", "100.0"))
-LINEAR_VELOCITY_GAP_THRESHOLD_MS = float(os.environ.get("LINEAR_VELOCITY_GAP_THRESHOLD_MS", "3.0"))
-LINEAR_ACCEL_CAP_MS2 = float(os.environ.get("LINEAR_ACCEL_CAP_MS2", "30.0"))
+# Linear gates disabled by default — iterating without them on the
+# 030/031-style config.
+LINEAR_VELOCITY_GAP_THRESHOLD_MS = float(os.environ.get("LINEAR_VELOCITY_GAP_THRESHOLD_MS", "0.0"))
+LINEAR_ACCEL_CAP_MS2 = float(os.environ.get("LINEAR_ACCEL_CAP_MS2", "0.0"))
 
-# Rollback disabled — running pure preventative-filtering experiment.
+# Rollback corrector. Angular trigger off by default for the 030/031 baseline.
 ICP_CORRECTION_ENABLED = True
 ONLY_CORRECT_ABOVE_SPEED_MS = 5.0
 ONLY_CORRECT_WHEN_ICP_SLOWER_BY_PCT = 80.0
-ANGULAR_TRIGGER_GAP_DEG_S = float(os.environ.get("ANGULAR_TRIGGER_GAP_DEG_S", "30.0"))
-REWIND_WINDOW_MS = float(os.environ.get("REWIND_WINDOW_MS", "500.0"))
+ANGULAR_TRIGGER_GAP_DEG_S = float(os.environ.get("ANGULAR_TRIGGER_GAP_DEG_S", "0.0"))
+REWIND_WINDOW_MS = float(os.environ.get("REWIND_WINDOW_MS", "5000.0"))
+
+# How much sensor time of replay to capture. Zero = run the whole pcap.
+# Default 60 s — the divergence window is within the first 60 s of the
+# pcap and that's all we care about for the iteration loop.
+REPLAY_MAX_SENSOR_SEC = float(os.environ.get("REPLAY_MAX_SENSOR_SEC", "60.0"))
 
 
 # ---------------- attempt-dir auto-increment --------------------------------
@@ -117,13 +124,15 @@ _EPS = 1e-9
 
 
 class Rec(Module):
-    """Mirror replay FastLio2 odometry + icp_velocity into a SqliteStore."""
+    """Mirror replay FastLio2 odometry + icp_velocity + metrics into a SqliteStore."""
 
     config: RecConfig
     fastlio_odometry: In[Odometry]
     icp_velocity: In[Odometry]
+    fastlio_metrics: In[Odometry]
     _last_o: float = 0.0
     _last_i: float = 0.0
+    _last_m: float = 0.0
 
     async def main(self) -> AsyncIterator[None]:
         from dimos.memory2.store.sqlite import SqliteStore
@@ -131,6 +140,7 @@ class Rec(Module):
         self._store = SqliteStore(path=self.config.db_path)
         self._os = self._store.stream("fastlio_odometry", Odometry)
         self._is = self._store.stream("icp_velocity", Odometry)
+        self._ms = self._store.stream("fastlio_metrics", Odometry)
         yield
         self._store.stop()
 
@@ -144,11 +154,14 @@ class Rec(Module):
     async def handle_icp_velocity(self, v: Odometry) -> None:
         ts = max(getattr(v, "ts", None) or time.time(), self._last_i + _EPS)
         self._last_i = ts
-        # twist.linear holds the per-scan-pair velocity (vx, vy, vz).
-        # pose.position holds the cumulative integrated ICP-only position.
         pose = getattr(v, "pose", None)
         pose_inner = getattr(pose, "pose", None) if pose is not None else None
         self._is.append(v, ts=ts, pose=pose_inner)
+
+    async def handle_fastlio_metrics(self, v: Odometry) -> None:
+        ts = max(getattr(v, "ts", None) or time.time(), self._last_m + _EPS)
+        self._last_m = ts
+        self._ms.append(v, ts=ts)
 
 
 # ---------------- orchestrator (parent) -------------------------------------
@@ -226,6 +239,7 @@ def _worker() -> int:
             [
                 (FastLio2, "odometry", "fastlio_odometry"),
                 (FastLio2, "icp_velocity", "icp_velocity"),
+                (FastLio2, "fastlio_metrics", "fastlio_metrics"),
             ]
         ),
         Rec.blueprint(db_path=db_path_str),
@@ -236,6 +250,7 @@ def _worker() -> int:
 
     t0 = time.time()
     last_ts_seen = 0.0
+    first_ts_seen = 0.0
     stagnant_since: float | None = None
     saw_first_row = False
     try:
@@ -245,16 +260,35 @@ def _worker() -> int:
                 continue
             try:
                 con = sqlite3.connect(f"file:{db_path_str}?mode=ro", uri=True, timeout=0.5)
-                row = con.execute("SELECT MAX(ts), COUNT(*) FROM fastlio_odometry").fetchone()
+                row = con.execute(
+                    "SELECT MIN(ts), MAX(ts), COUNT(*) FROM fastlio_odometry"
+                ).fetchone()
                 con.close()
             except Exception:
                 continue
-            last_ts = row[0] if row and row[0] else 0.0
-            cnt = row[1] if row else 0
+            first_ts = row[0] if row and row[0] else 0.0
+            last_ts = row[1] if row and row[1] else 0.0
+            cnt = row[2] if row else 0
             if cnt > 0:
                 saw_first_row = True
+                if first_ts_seen == 0.0:
+                    first_ts_seen = first_ts
             if not saw_first_row:
                 continue
+            # Sensor-time cutoff: stop after REPLAY_MAX_SENSOR_SEC of
+            # replay time. The pcap is 352 s but we usually only care
+            # about the first 60 s where divergence happens.
+            if (
+                REPLAY_MAX_SENSOR_SEC > 0
+                and first_ts_seen > 0
+                and (last_ts - first_ts_seen) >= REPLAY_MAX_SENSOR_SEC
+            ):
+                print(
+                    f"[replay_ruwik2.worker] reached REPLAY_MAX_SENSOR_SEC="
+                    f"{REPLAY_MAX_SENSOR_SEC:.1f} s — stopping",
+                    flush=True,
+                )
+                break
             if last_ts == last_ts_seen:
                 if stagnant_since is None:
                     stagnant_since = time.time()

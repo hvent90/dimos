@@ -139,14 +139,15 @@ class FastLio2Config(NativeModuleConfig):
     rotation_gap_threshold_deg_s: float = 10.0
     # Angular-acceleration cap (deg/s²). The binary computes ||Δω_ieskf||
     # / scan_dt across consecutive scans and skips map_incremental when it
-    # exceeds this cap. Catches the abrupt rotation-rate jumps the EKF
-    # makes when pulled by a bad neighbour in the map. Zero disables.
+    # exceeds this cap. Zero disables.
     angular_accel_cap_deg_s2: float = 100.0
-    # Linear analogues. Same preventative pattern: skip map_incremental
-    # when |v_ieskf| vs |v_icp| disagree, or when ||Δv_ieskf||/dt jumps.
-    # Zero disables either. Defaults sized for Go2 envelope.
-    linear_velocity_gap_threshold_ms: float = 3.0
-    linear_accel_cap_ms2: float = 30.0
+    # Linear gates — DISABLED by default. We found they don't actually
+    # help: the rotation+accel preventatives plus the rollback corrector
+    # already constrain things, and the linear-velocity-gap gate was
+    # confusing (Jeff: "we don't want a constant velocity preventative
+    # gate"). Set non-zero to re-enable for experiments.
+    linear_velocity_gap_threshold_ms: float = 0.0
+    linear_accel_cap_ms2: float = 0.0
 
     # ICP cross-check rollback. The binary maintains a ring buffer of
     # per-scan (IESKF pose, IESKF orientation, ICP body-frame velocity)
@@ -160,8 +161,11 @@ class FastLio2Config(NativeModuleConfig):
     icp_correction_enabled: bool = True
     only_correct_above_speed_ms: float = 5.0
     only_correct_when_icp_slower_by_pct: float = 80.0
-    angular_trigger_gap_deg_s: float = 30.0
-    rewind_window_ms: float = 500.0
+    # Disabled — angular trigger added too much rollback churn (each fire
+    # snaps orientation to a stale anchor → boxy |ω| plateaus). Iterating
+    # without it. Set non-zero to re-enable.
+    angular_trigger_gap_deg_s: float = 0.0
+    rewind_window_ms: float = 5000.0
 
     # FAST-LIO YAML config (relative to config/ dir, or absolute path)
     # C++ binary reads YAML directly via yaml-cpp
@@ -272,6 +276,13 @@ class FastLio2(NativeModule, perception.Lidar, perception.Odometry, mapping.Glob
     # the cumulative ICP-only integrated position. Independent of the IESKF
     # state; useful as a cross-check against the main odometry's velocity.
     icp_velocity: Out[Odometry]
+    # Per-scan EKF diagnostic metrics, packed into an Odometry message.
+    # Layout:
+    #   pose.position.x   = state-correction position magnitude (m)
+    #   pose.position.y   = state-correction rotation magnitude (deg)
+    #   pose.position.z   = res_mean_last (avg point-to-plane distance)
+    #   twist.linear.x    = effct_feat_num / feats_down_size (0..1)
+    fastlio_metrics: Out[Odometry]
 
     _pcap_proc: subprocess.Popen[bytes] | None = None
     _pcap_path: Path | None = None

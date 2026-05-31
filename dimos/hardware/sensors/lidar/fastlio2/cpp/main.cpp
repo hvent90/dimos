@@ -141,6 +141,7 @@ static std::string g_lidar_topic;
 static std::string g_odometry_topic;
 static std::string g_map_topic;
 static std::string g_icp_velocity_topic;
+static std::string g_fastlio_metrics_topic;
 static icp_velocity::Estimator g_icp_estimator;
 static icp_correction::Corrector g_icp_corrector;
 static bool g_icp_correction_enabled = false;
@@ -344,6 +345,37 @@ static void publish_odometry(const custom_messages::Odometry& odom, double times
 // position (body-frame, simple sum of per-scan translations — no
 // orientation tracking); twist.linear holds the per-scan-pair velocity.
 // Orientation is identity (we don't fuse rotation here).
+// Publish per-scan EKF diagnostic metrics on g_fastlio_metrics_topic, packed
+// into an Odometry message. Layout:
+//   pose.position.x   = state-correction position magnitude (m)
+//   pose.position.y   = state-correction rotation magnitude (deg)
+//   pose.position.z   = res_mean_last (avg point-to-plane distance)
+//   twist.linear.x    = effct_feat_num / feats_down_size (0..1)
+static void publish_fastlio_metrics(double pos_corr, double rot_corr_deg,
+                                    double res_mean, double effct_ratio,
+                                    double timestamp) {
+    if (!g_lcm || g_fastlio_metrics_topic.empty()) return;
+    nav_msgs::Odometry msg;
+    msg.header = make_header(g_frame_id, timestamp);
+    msg.child_frame_id = g_child_frame_id;
+    msg.pose.pose.position.x = pos_corr;
+    msg.pose.pose.position.y = rot_corr_deg;
+    msg.pose.pose.position.z = res_mean;
+    msg.pose.pose.orientation.x = 0;
+    msg.pose.pose.orientation.y = 0;
+    msg.pose.pose.orientation.z = 0;
+    msg.pose.pose.orientation.w = 1;
+    for (int i = 0; i < 36; ++i) msg.pose.covariance[i] = 0;
+    msg.twist.twist.linear.x = effct_ratio;
+    msg.twist.twist.linear.y = 0;
+    msg.twist.twist.linear.z = 0;
+    msg.twist.twist.angular.x = 0;
+    msg.twist.twist.angular.y = 0;
+    msg.twist.twist.angular.z = 0;
+    std::memset(msg.twist.covariance, 0, sizeof(msg.twist.covariance));
+    g_lcm->publish(g_fastlio_metrics_topic, &msg);
+}
+
 static void publish_icp_velocity(double vx, double vy, double vz,
                                  double wx, double wy, double wz,
                                  double cum_x, double cum_y, double cum_z,
@@ -526,6 +558,7 @@ int main(int argc, char** argv) {
     g_odometry_topic = mod.has("odometry") ? mod.topic("odometry") : "";
     g_map_topic = mod.has("global_map") ? mod.topic("global_map") : "";
     g_icp_velocity_topic = mod.has("icp_velocity") ? mod.topic("icp_velocity") : "";
+    g_fastlio_metrics_topic = mod.has("fastlio_metrics") ? mod.topic("fastlio_metrics") : "";
 
     if (g_lidar_topic.empty() && g_odometry_topic.empty()) {
         fprintf(stderr, "Error: at least one of --lidar or --odometry is required\n");
@@ -917,6 +950,16 @@ int main(int argc, char** argv) {
                 timing::Scope s(t_publish_odom);
                 publish_odometry(fast_lio.get_odometry(), ts);
                 last_odom_publish = now;
+            }
+
+            // Per-scan EKF diagnostic metrics (no rate limit — once per scan).
+            if (!g_fastlio_metrics_topic.empty()) {
+                publish_fastlio_metrics(
+                    fast_lio.get_metric_pos_correction_m(),
+                    fast_lio.get_metric_rot_correction_deg(),
+                    fast_lio.get_metric_res_mean(),
+                    fast_lio.get_metric_effct_ratio(),
+                    ts);
             }
 
             // ICP cross-check rollback. Captures the current scan's IESKF
