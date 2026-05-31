@@ -64,7 +64,7 @@ MAX_WALL_SEC = 480.0
 # per-update vel-correction / scan_dt > cap. Set to 0 to disable. Bump per
 # experiment and recommit so meta.json's commit hash maps to the cap.
 # ~30 m/s² is the Go2 default; physical 3 g.
-GUARDRAIL_MAX_ACCEL_NORM_MS2 = 10000.0  # rifle bullet
+GUARDRAIL_MAX_ACCEL_NORM_MS2 = 1000.0  # punch to face / football helmet
 
 
 # ---------------- attempt-dir auto-increment --------------------------------
