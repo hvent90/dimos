@@ -107,17 +107,20 @@ _EPS = 1e-9
 
 
 class Rec(Module):
-    """Mirror replay FastLio2 odometry into a SqliteStore at config.db_path."""
+    """Mirror replay FastLio2 odometry + icp_velocity into a SqliteStore."""
 
     config: RecConfig
     fastlio_odometry: In[Odometry]
+    icp_velocity: In[Odometry]
     _last_o: float = 0.0
+    _last_i: float = 0.0
 
     async def main(self) -> AsyncIterator[None]:
         from dimos.memory2.store.sqlite import SqliteStore
 
         self._store = SqliteStore(path=self.config.db_path)
         self._os = self._store.stream("fastlio_odometry", Odometry)
+        self._is = self._store.stream("icp_velocity", Odometry)
         yield
         self._store.stop()
 
@@ -127,6 +130,15 @@ class Rec(Module):
         pose = getattr(v, "pose", None)
         pose_inner = getattr(pose, "pose", None) if pose is not None else None
         self._os.append(v, ts=ts, pose=pose_inner)
+
+    async def handle_icp_velocity(self, v: Odometry) -> None:
+        ts = max(getattr(v, "ts", None) or time.time(), self._last_i + _EPS)
+        self._last_i = ts
+        # twist.linear holds the per-scan-pair velocity (vx, vy, vz).
+        # pose.position holds the cumulative integrated ICP-only position.
+        pose = getattr(v, "pose", None)
+        pose_inner = getattr(pose, "pose", None) if pose is not None else None
+        self._is.append(v, ts=ts, pose=pose_inner)
 
 
 # ---------------- orchestrator (parent) -------------------------------------
@@ -195,6 +207,7 @@ def _worker() -> int:
         ).remappings(
             [
                 (FastLio2, "odometry", "fastlio_odometry"),
+                (FastLio2, "icp_velocity", "icp_velocity"),
             ]
         ),
         Rec.blueprint(db_path=db_path_str),
