@@ -142,6 +142,11 @@ class FastLio2Config(NativeModuleConfig):
     # exceeds this cap. Catches the abrupt rotation-rate jumps the EKF
     # makes when pulled by a bad neighbour in the map. Zero disables.
     angular_accel_cap_deg_s2: float = 100.0
+    # Linear analogues. Same preventative pattern: skip map_incremental
+    # when |v_ieskf| vs |v_icp| disagree, or when ||Δv_ieskf||/dt jumps.
+    # Zero disables either. Defaults sized for Go2 envelope.
+    linear_velocity_gap_threshold_ms: float = 3.0
+    linear_accel_cap_ms2: float = 30.0
 
     # ICP cross-check rollback. The binary maintains a ring buffer of
     # per-scan (IESKF pose, IESKF orientation, ICP body-frame velocity)

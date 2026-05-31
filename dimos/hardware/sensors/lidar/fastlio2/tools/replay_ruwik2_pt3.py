@@ -65,9 +65,12 @@ MAX_WALL_SEC = 480.0
 # skips map_incremental when the gap exceeds this threshold (deg/s). The
 # default value can be overridden with the same-named env var for sweeps.
 ROTATION_GAP_THRESHOLD_DEG_S = float(os.environ.get("ROTATION_GAP_THRESHOLD_DEG_S", "10.0"))
+ANGULAR_ACCEL_CAP_DEG_S2 = float(os.environ.get("ANGULAR_ACCEL_CAP_DEG_S2", "100.0"))
+LINEAR_VELOCITY_GAP_THRESHOLD_MS = float(os.environ.get("LINEAR_VELOCITY_GAP_THRESHOLD_MS", "3.0"))
+LINEAR_ACCEL_CAP_MS2 = float(os.environ.get("LINEAR_ACCEL_CAP_MS2", "30.0"))
 
-# ICP cross-check rollback (linear-velocity check that resets pose+quat+vel).
-ICP_CORRECTION_ENABLED = True
+# Rollback disabled — running pure preventative-filtering experiment.
+ICP_CORRECTION_ENABLED = False
 ONLY_CORRECT_ABOVE_SPEED_MS = 5.0
 ONLY_CORRECT_WHEN_ICP_SLOWER_BY_PCT = 80.0
 REWIND_WINDOW_MS = float(os.environ.get("REWIND_WINDOW_MS", "5000.0"))
@@ -210,6 +213,9 @@ def _worker() -> int:
             deterministic_clock=True,
             debug=False,
             rotation_gap_threshold_deg_s=ROTATION_GAP_THRESHOLD_DEG_S,
+            angular_accel_cap_deg_s2=ANGULAR_ACCEL_CAP_DEG_S2,
+            linear_velocity_gap_threshold_ms=LINEAR_VELOCITY_GAP_THRESHOLD_MS,
+            linear_accel_cap_ms2=LINEAR_ACCEL_CAP_MS2,
             icp_correction_enabled=ICP_CORRECTION_ENABLED,
             only_correct_above_speed_ms=ONLY_CORRECT_ABOVE_SPEED_MS,
             only_correct_when_icp_slower_by_pct=ONLY_CORRECT_WHEN_ICP_SLOWER_BY_PCT,

@@ -345,6 +345,7 @@ static void publish_odometry(const custom_messages::Odometry& odom, double times
 // orientation tracking); twist.linear holds the per-scan-pair velocity.
 // Orientation is identity (we don't fuse rotation here).
 static void publish_icp_velocity(double vx, double vy, double vz,
+                                 double wx, double wy, double wz,
                                  double cum_x, double cum_y, double cum_z,
                                  double timestamp) {
     if (!g_lcm || g_icp_velocity_topic.empty()) return;
@@ -362,9 +363,9 @@ static void publish_icp_velocity(double vx, double vy, double vz,
     msg.twist.twist.linear.x = vx;
     msg.twist.twist.linear.y = vy;
     msg.twist.twist.linear.z = vz;
-    msg.twist.twist.angular.x = 0;
-    msg.twist.twist.angular.y = 0;
-    msg.twist.twist.angular.z = 0;
+    msg.twist.twist.angular.x = wx;
+    msg.twist.twist.angular.y = wy;
+    msg.twist.twist.angular.z = wz;
     std::memset(msg.twist.covariance, 0, sizeof(msg.twist.covariance));
     g_lcm->publish(g_icp_velocity_topic, &msg);
 }
@@ -552,6 +553,9 @@ int main(int argc, char** argv) {
     // Catches the sudden rotation-rate jumps the EKF makes when pulled by
     // a bad neighbor in the map. Zero disables. Default 100°/s².
     double angular_accel_cap_deg_s2 = mod.arg_float("angular_accel_cap_deg_s2", 100.0f);
+    // Linear analogues. Zero disables.
+    double linear_velocity_gap_threshold_ms = mod.arg_float("linear_velocity_gap_threshold_ms", 3.0f);
+    double linear_accel_cap_ms2 = mod.arg_float("linear_accel_cap_ms2", 30.0f);
 
     // ICP cross-check rollback. Disabled unless the ICP topic is also set.
     // Trigger when IESKF |v| > min_ieskf_v_ms AND ICP |v| is at least
@@ -688,6 +692,8 @@ int main(int argc, char** argv) {
     if (debug) printf("[fastlio2] Initializing FAST-LIO...\n");
     FastLio fast_lio(config_path, msr_freq, main_freq, rotation_gap_threshold_deg_s);
     fast_lio.set_angular_accel_cap_deg_s2(angular_accel_cap_deg_s2);
+    fast_lio.set_linear_velocity_gap_threshold_ms(linear_velocity_gap_threshold_ms);
+    fast_lio.set_linear_accel_cap_ms2(linear_accel_cap_ms2);
     g_fastlio = &fast_lio;
     if (debug) printf("[fastlio2] FAST-LIO initialized.\n");
 
@@ -823,6 +829,7 @@ int main(int argc, char** argv) {
                     cum_y += icp_result.vy * icp_result.scan_dt;
                     cum_z += icp_result.vz * icp_result.scan_dt;
                     publish_icp_velocity(icp_result.vx, icp_result.vy, icp_result.vz,
+                                         icp_result.wx, icp_result.wy, icp_result.wz,
                                          cum_x, cum_y, cum_z, get_publish_ts());
                 }
             }
@@ -842,12 +849,17 @@ int main(int argc, char** argv) {
             fast_lio.feed_lidar(lidar_msg);
         }
 
-        // Hand the ICP body-frame ω to FastLio so its rotational-gap check
-        // can gate map_incremental within this scan's IESKF iteration.
+        // Hand the ICP body-frame ω and v to FastLio so its preventative
+        // gates can use them this scan.
         if (icp_result.ok && rotation_gap_threshold_deg_s > 0) {
             fast_lio.set_icp_omega_body(icp_result.wx, icp_result.wy, icp_result.wz);
         } else {
             fast_lio.clear_icp_omega();
+        }
+        if (icp_result.ok && linear_velocity_gap_threshold_ms > 0) {
+            fast_lio.set_icp_velocity_body(icp_result.vx, icp_result.vy, icp_result.vz);
+        } else {
+            fast_lio.clear_icp_velocity();
         }
 
         // Run one FAST-LIO IESKF step. Cheap when the IMU/lidar queues
