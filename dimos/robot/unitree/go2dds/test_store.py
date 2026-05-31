@@ -23,6 +23,8 @@ One test per message type — each prints a sample and checks the decode.
 
 from __future__ import annotations
 
+import importlib.util
+
 import numpy as np
 import pytest
 
@@ -36,7 +38,10 @@ from dimos.robot.unitree.go2dds.msgs.SportModeState import SportModeState
 from dimos.robot.unitree.go2dds.msgs.Telemetry import Telemetry
 from dimos.robot.unitree.go2dds.store import Go2McapStore
 
-pytestmark = pytest.mark.self_hosted
+pytestmark = [
+    pytest.mark.self_hosted,
+    pytest.mark.skipif(importlib.util.find_spec("mcap") is None, reason="mcap not installed"),
+]
 
 
 @pytest.fixture(scope="module")

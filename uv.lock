@@ -1939,7 +1939,6 @@ all = [
     { name = "lark" },
     { name = "lcm" },
     { name = "matplotlib" },
-    { name = "mcap" },
     { name = "moondream" },
     { name = "mujoco" },
     { name = "numpy", version = "2.2.6", source = { registry = "https://pypi.org/simple" }, marker = "python_full_version < '3.11'" },
@@ -2155,7 +2154,6 @@ unitree = [
     { name = "langchain-openai" },
     { name = "langchain-text-splitters" },
     { name = "lap" },
-    { name = "mcap" },
     { name = "moondream" },
     { name = "ollama" },
     { name = "omegaconf" },
@@ -2324,7 +2322,7 @@ tests = [
 ]
 tests-self-hosted = [
     { name = "coverage" },
-    { name = "dimos", extra = ["agents", "apriltag", "cpu", "drone", "manipulation", "mapping", "misc", "perception", "psql", "sim", "unitree", "visualization", "web"] },
+    { name = "dimos", extra = ["agents", "apriltag", "cpu", "drone", "manipulation", "mapping", "misc", "perception", "psql", "sim", "unitree-dds", "visualization", "web"] },
     { name = "gdown" },
     { name = "googlemaps" },
     { name = "hydra-core" },
@@ -2418,7 +2416,7 @@ requires-dist = [
     { name = "llvmlite", specifier = ">=0.42.0" },
     { name = "lz4", specifier = ">=4.4.5" },
     { name = "matplotlib", marker = "extra == 'manipulation'", specifier = ">=3.7.1" },
-    { name = "mcap", marker = "extra == 'unitree'", specifier = ">=1.2.0" },
+    { name = "mcap", marker = "extra == 'unitree-dds'", specifier = ">=1.2.0" },
     { name = "moondream", marker = "extra == 'perception'" },
     { name = "mujoco", marker = "extra == 'sim'", specifier = ">=3.3.4" },
     { name = "numba", specifier = ">=0.60.0" },
@@ -2613,7 +2611,7 @@ tests = [
 ]
 tests-self-hosted = [
     { name = "coverage", specifier = ">=7.0" },
-    { name = "dimos", extras = ["agents", "perception", "manipulation", "sim", "unitree", "misc"] },
+    { name = "dimos", extras = ["agents", "perception", "manipulation", "sim", "unitree-dds", "misc"] },
     { name = "dimos", extras = ["apriltag", "mapping", "psql", "drone", "cpu"] },
     { name = "dimos", extras = ["web", "visualization"] },
     { name = "gdown", specifier = "==6.0.0" },

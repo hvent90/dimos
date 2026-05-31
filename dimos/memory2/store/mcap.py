@@ -30,8 +30,6 @@ from dataclasses import replace
 from functools import partial
 from typing import Any, Protocol, runtime_checkable
 
-from mcap.reader import make_reader
-
 from dimos.memory2.backend import Backend
 from dimos.memory2.codecs.base import codec_for
 from dimos.memory2.notifier.subject import SubjectNotifier
@@ -81,6 +79,8 @@ class McapObservationStore(ObservationStore[Any]):
         return self.config.name
 
     def _iter(self, reverse: bool = False) -> Iterator[Observation[Any]]:
+        from mcap.reader import make_reader  # optional dep (go2/unitree extra)
+
         decode, dtype, n = self._codec.decode, self._codec.payload_type, self._count
         with open(self._path, "rb") as f:
             msgs = make_reader(f).iter_messages(topics=[self._topic], reverse=reverse)
@@ -140,6 +140,8 @@ class McapStore(Store):
         streams: dict[str, str] | None = None,
         **kwargs: Any,
     ) -> None:
+        from mcap.reader import make_reader  # optional dep (go2/unitree extra)
+
         super().__init__(**kwargs)
         self._codecs = codecs
         name_of = {topic: name for name, topic in (streams or {}).items()}  # topic -> override
