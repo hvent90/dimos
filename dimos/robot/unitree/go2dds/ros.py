@@ -87,8 +87,11 @@ class _ImuWire:
 
 def decode_imu(buf: bytes) -> Imu:
     w: _ImuWire = cdr.decode(buf, _ImuWire)[0]
+    # Unitree fills orientation wxyz even in this sensor_msgs/Imu — reorder to xyzw
+    # (verified: rotating accel by this lands gravity on +z in leg-odom-stationary windows).
+    qw, qx, qy, qz = (float(v) for v in w.orientation)
     return Imu(
-        orientation=Quaternion(*w.orientation.tolist()),
+        orientation=Quaternion(qx, qy, qz, qw),
         angular_velocity=Vector3(w.angular_velocity.tolist()),
         linear_acceleration=Vector3(w.linear_acceleration.tolist()),
         orientation_covariance=w.orientation_covariance.tolist(),

@@ -44,10 +44,11 @@ import typer
 from dimos.memory2.transform import throttle
 from dimos.memory2.utils.progress import progress
 from dimos.msgs.geometry_msgs.PoseStamped import PoseStamped
+from dimos.msgs.geometry_msgs.Transform import Transform
 from dimos.msgs.geometry_msgs.TwistStamped import TwistStamped
 from dimos.msgs.geometry_msgs.Vector3 import Vector3
 from dimos.msgs.nav_msgs.Path import Path
-from dimos.robot.unitree.go2dds.extrinsics import EXT_R, EXT_T
+from dimos.robot.unitree.go2dds.extrinsics import LIDAR_TO_BASE
 from dimos.robot.unitree.go2dds.msgs.SportModeState import SportModeState
 from dimos.robot.unitree.go2dds.store import Go2McapStore
 
@@ -131,23 +132,115 @@ def leg_odom(store: Go2McapStore, seconds: float | None) -> None:
     )
 
 
+def imu_odom(store: Go2McapStore, seconds: float | None) -> None:
+    """Dead-reckoned IMU odometry — accel -> velocity -> position -> growing Path (drifts)."""
+    import rerun as rr
+
+    def log_path(obs: Observation[Path]) -> None:
+        rr.set_time("time", timestamp=obs.ts)
+        rr.log("world/imu_odom_path", obs.data.to_rerun(color=(220, 90, 90)))
+
+    src = store.streams.imu.to_time(seconds)
+    (
+        src.tap(progress(src.count(), "imu_odom"))
+        .scan_data((np.zeros(3), None), integrate_velocity)  # -> velocity (TwistStamped)
+        .scan_data((np.zeros(3), None), integrate_position)  # -> position (PoseStamped)
+        .transform(throttle(0.1))  # thin the path after integrating at full IMU rate
+        .transform(accumulate_path)
+        .tap(log_path)
+        .drain()
+    )
+
+
 def lidar(store: Go2McapStore, seconds: float | None) -> None:
     """Lidar point cloud, under the leg_odom transform (lidar -> base -> world)."""
     import rerun as rr
 
-    # Static lidar->base extrinsic (the L1 is mounted ~upside-down). Parent entity
-    # world/leg_odom carries base->world, so rerun composes the full chain.
-    rr.log("world/leg_odom/lidar", rr.Transform3D(translation=EXT_T, mat3x3=EXT_R), static=True)
-    src = store.streams.lidar.to_time(seconds)
-    for obs in src.tap(progress(src.count(), "lidar")):
+    def log_lidar(obs: Observation[PoseStamped]) -> None:
         rr.set_time("time", timestamp=obs.ts)
         rr.log("world/leg_odom/lidar", obs.data.to_rerun())
+
+    src = store.streams.lidar.to_time(seconds)
+    # Static lidar->base extrinsic (the L1 is mounted ~upside-down). Parent entity
+    # world/leg_odom carries base->world, so rerun composes the full chain. Frame-less
+    # Transform3D (not LIDAR_TO_BASE.to_rerun, which adds tf-graph frames) for entity-path.
+    ext = LIDAR_TO_BASE
+    rr.log(
+        "world/leg_odom/lidar",
+        rr.Transform3D(
+            translation=[ext.translation.x, ext.translation.y, ext.translation.z],
+            rotation=ext.rotation.to_rerun(),
+        ),
+        static=True,
+    )
+    (src.tap(progress(src.count(), "lidar")).tap(log_lidar).drain())
+
+
+def _interp_pose(
+    tt: np.ndarray, pos: np.ndarray, quat: np.ndarray, t: float
+) -> tuple[np.ndarray, np.ndarray]:
+    """LERP position + NLERP quaternion (xyzw) of a trajectory at scalar time t."""
+    i = int(np.clip(np.searchsorted(tt, t), 1, len(tt) - 1))
+    t0, t1 = tt[i - 1], tt[i]
+    f = 0.0 if t1 == t0 else float(np.clip((t - t0) / (t1 - t0), 0.0, 1.0))
+    p = pos[i - 1] * (1 - f) + pos[i] * f
+    q0, q1 = quat[i - 1], quat[i].copy()
+    if float(q0 @ q1) < 0:
+        q1 = -q1
+    q = q0 * (1 - f) + q1 * f
+    return p, q / np.linalg.norm(q)
+
+
+def world_lidar(store: Go2McapStore, seconds: float | None) -> None:
+    """Lidar transformed into the world frame as data (Transform + PointCloud2.transform).
+
+    Composes the static extrinsic with the leg-odom pose interpolated at each
+    cloud's timestamp, then transforms the points — so the cloud genuinely lives
+    in world (cf. ``lidar``, which leaves it in the sensor frame for rerun).
+    """
+    import rerun as rr
+
+    from dimos.mapping.voxels import VoxelMapTransformer
+
+    ext = LIDAR_TO_BASE  # lidar -> base (standard Transform from extrinsics)
+
+    # pre-load the leg-odom trajectory for per-cloud pose interpolation
+    odom = store.streams.odom.to_time(seconds).to_list()
+    tt = np.array([o.ts for o in odom])
+    poses = [o.data.pose.pose for o in odom]
+    pos = np.array([[p.position.x, p.position.y, p.position.z] for p in poses])
+    quat = np.array(
+        [[p.orientation.x, p.orientation.y, p.orientation.z, p.orientation.w] for p in poses]
+    )
+
+    def to_world(obs: Observation[Any]) -> Any:
+        p, q = _interp_pose(tt, pos, quat, obs.ts)
+        b2w = Transform.from_pose(
+            WORLD,
+            PoseStamped(ts=obs.ts, frame_id=WORLD, position=p.tolist(), orientation=q.tolist()),
+        )
+        return obs.data.transform(b2w.apply(ext))  # lidar -> base -> world
+
+    def log_voxels(obs: Observation[Any]) -> None:
+        rr.set_time("time", timestamp=obs.ts)
+        rr.log("world/world_lidar", obs.data.to_rerun())
+
+    src = store.streams.lidar.to_time(seconds)
+    (
+        src.tap(progress(src.count(), "world_lidar"))
+        .map_data(to_world)  # lidar cloud -> world-frame cloud
+        .transform(VoxelMapTransformer(emit_every=10, voxel_size=0.1))  # global voxel map
+        .tap(log_voxels)
+        .drain()
+    )
 
 
 # Add a source: write a (store, seconds) -> None function and append it.
 PIPELINES: list[Callable[[Go2McapStore, float | None], None]] = [
     leg_odom,
+    imu_odom,
     lidar,
+    world_lidar,
 ]
 
 
@@ -177,6 +270,4 @@ def main(
 
 
 if __name__ == "__main__":
-    typer.run(main)
-    typer.run(main)
     typer.run(main)

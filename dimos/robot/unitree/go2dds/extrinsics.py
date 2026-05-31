@@ -30,6 +30,10 @@ the trajectory. Validated against the official "default imu reading"
 
 import numpy as np
 
+from dimos.msgs.geometry_msgs.Quaternion import Quaternion
+from dimos.msgs.geometry_msgs.Transform import Transform
+from dimos.msgs.geometry_msgs.Vector3 import Vector3
+
 # base_link <- lidar rotation (lidar points -> base frame: p_base = EXT_R @ p_lidar + EXT_T)
 EXT_R = np.array(
     [
@@ -45,3 +49,17 @@ EXT_T = np.array([0.28216, 0.0, -0.02467], dtype=np.float64)
 # translate 0.3m forward, then rotate into the optical frame.
 CAM_T = np.array([0.30, 0.0, 0.0], dtype=np.float64)
 CAM_Q = np.array([-0.5, 0.5, -0.5, 0.5], dtype=np.float64)  # xyzw
+
+# Same mounts as standard Transform msgs (typed; carry frame ids; have to_rerun).
+LIDAR_TO_BASE = Transform(
+    translation=Vector3(EXT_T),
+    rotation=Quaternion.from_rotation_matrix(EXT_R),
+    frame_id="base_link",
+    child_frame_id="lidar",
+)
+BASE_TO_CAMERA = Transform(
+    translation=Vector3(CAM_T),
+    rotation=Quaternion(CAM_Q),
+    frame_id="base_link",
+    child_frame_id="camera_optical",
+)
