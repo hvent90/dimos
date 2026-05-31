@@ -12,10 +12,6 @@
 # See the License for the specific language governing permissions and
 # limitations under the License.
 
-# Copyright 2026 Dimensional Inc.
-#
-# Licensed under the Apache License, Version 2.0 (the "License").
-
 """Open a real Go2 DDS mcap as a memory2 store (LFS-backed).
 
 One test per message type — each prints a sample and checks the decode.

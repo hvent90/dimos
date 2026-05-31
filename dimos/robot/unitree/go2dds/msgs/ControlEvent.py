@@ -12,10 +12,6 @@
 # See the License for the specific language governing permissions and
 # limitations under the License.
 
-# Copyright 2026 Dimensional Inc.
-#
-# Licensed under the Apache License, Version 2.0 (the "License").
-
 """go2/ControlEvent — app-level JSON control-log events (topic ``control_log``).
 
 A tagged event stream keyed by ``type`` (e.g. ``velocity_input`` carries

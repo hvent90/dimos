@@ -12,10 +12,6 @@
 # See the License for the specific language governing permissions and
 # limitations under the License.
 
-# Copyright 2026 Dimensional Inc.
-#
-# Licensed under the Apache License, Version 2.0 (the "License").
-
 """Open a Go2 DDS mcap directly as a read-only memory2 store.
 
     from dimos.robot.unitree.go2dds.store import Go2McapStore

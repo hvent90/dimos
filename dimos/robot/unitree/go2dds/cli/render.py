@@ -12,10 +12,6 @@
 # See the License for the specific language governing permissions and
 # limitations under the License.
 
-# Copyright 2026 Dimensional Inc.
-#
-# Licensed under the Apache License, Version 2.0 (the "License").
-
 """Render Go2 odom sources to rerun — memory2 store pipelines (standalone).
 
 Each *pipeline* is a function ``(store, seconds) -> None`` composed from

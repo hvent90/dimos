@@ -12,10 +12,6 @@
 # See the License for the specific language governing permissions and
 # limitations under the License.
 
-# Copyright 2026 Dimensional Inc.
-#
-# Licensed under the Apache License, Version 2.0 (the "License").
-
 """Decode the standard-ROS DDS channels into ``dimos.msgs`` types.
 
 The wire layouts are declared as ``__cdr_fields__`` specs and walked by the

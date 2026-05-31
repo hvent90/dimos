@@ -12,10 +12,6 @@
 # See the License for the specific language governing permissions and
 # limitations under the License.
 
-# Copyright 2026 Dimensional Inc.
-#
-# Licensed under the Apache License, Version 2.0 (the "License").
-
 """go2/Telemetry — app-level JSON status packet (topic ``telemetry``)."""
 
 from __future__ import annotations
