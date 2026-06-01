@@ -148,6 +148,12 @@ class FastLio2Config(NativeModuleConfig):
     # gate"). Set non-zero to re-enable for experiments.
     linear_velocity_gap_threshold_ms: float = 0.0
     linear_accel_cap_ms2: float = 0.0
+    # Per-metric preventative caps. Zero disables each gate.
+    # See fastlio_metrics LCM topic above for what each metric measures.
+    pos_correction_cap_m: float = 0.0
+    rot_correction_cap_deg: float = 0.0
+    res_mean_cap_m: float = 0.0
+    effct_ratio_floor: float = 0.0
 
     # ICP cross-check rollback. The binary maintains a ring buffer of
     # per-scan (IESKF pose, IESKF orientation, ICP body-frame velocity)

@@ -589,6 +589,11 @@ int main(int argc, char** argv) {
     // Linear analogues. Zero disables.
     double linear_velocity_gap_threshold_ms = mod.arg_float("linear_velocity_gap_threshold_ms", 3.0f);
     double linear_accel_cap_ms2 = mod.arg_float("linear_accel_cap_ms2", 30.0f);
+    // Per-metric preventative map-skip thresholds. Zero/negative disables.
+    double pos_correction_cap_m = mod.arg_float("pos_correction_cap_m", 0.0f);
+    double rot_correction_cap_deg = mod.arg_float("rot_correction_cap_deg", 0.0f);
+    double res_mean_cap_m = mod.arg_float("res_mean_cap_m", 0.0f);
+    double effct_ratio_floor = mod.arg_float("effct_ratio_floor", 0.0f);
 
     // ICP cross-check rollback. Disabled unless the ICP topic is also set.
     // Trigger when IESKF |v| > min_ieskf_v_ms AND ICP |v| is at least
@@ -729,6 +734,10 @@ int main(int argc, char** argv) {
     fast_lio.set_angular_accel_cap_deg_s2(angular_accel_cap_deg_s2);
     fast_lio.set_linear_velocity_gap_threshold_ms(linear_velocity_gap_threshold_ms);
     fast_lio.set_linear_accel_cap_ms2(linear_accel_cap_ms2);
+    fast_lio.set_pos_correction_cap_m(pos_correction_cap_m);
+    fast_lio.set_rot_correction_cap_deg(rot_correction_cap_deg);
+    fast_lio.set_res_mean_cap_m(res_mean_cap_m);
+    fast_lio.set_effct_ratio_floor(effct_ratio_floor);
     g_fastlio = &fast_lio;
     if (debug) printf("[fastlio2] FAST-LIO initialized.\n");
 

@@ -78,6 +78,12 @@ ONLY_CORRECT_WHEN_ICP_SLOWER_BY_PCT = 80.0
 ANGULAR_TRIGGER_GAP_DEG_S = float(os.environ.get("ANGULAR_TRIGGER_GAP_DEG_S", "0.0"))
 REWIND_WINDOW_MS = float(os.environ.get("REWIND_WINDOW_MS", "5000.0"))
 
+# Per-metric preventative caps. Zero disables. Tune per-experiment via env.
+POS_CORRECTION_CAP_M = float(os.environ.get("POS_CORRECTION_CAP_M", "0.0"))
+ROT_CORRECTION_CAP_DEG = float(os.environ.get("ROT_CORRECTION_CAP_DEG", "0.0"))
+RES_MEAN_CAP_M = float(os.environ.get("RES_MEAN_CAP_M", "0.0"))
+EFFCT_RATIO_FLOOR = float(os.environ.get("EFFCT_RATIO_FLOOR", "0.0"))
+
 # How much sensor time of replay to capture. Zero = run the whole pcap.
 # Default 60 s — the divergence window is within the first 60 s of the
 # pcap and that's all we care about for the iteration loop.
@@ -235,6 +241,10 @@ def _worker() -> int:
             only_correct_when_icp_slower_by_pct=ONLY_CORRECT_WHEN_ICP_SLOWER_BY_PCT,
             angular_trigger_gap_deg_s=ANGULAR_TRIGGER_GAP_DEG_S,
             rewind_window_ms=REWIND_WINDOW_MS,
+            pos_correction_cap_m=POS_CORRECTION_CAP_M,
+            rot_correction_cap_deg=ROT_CORRECTION_CAP_DEG,
+            res_mean_cap_m=RES_MEAN_CAP_M,
+            effct_ratio_floor=EFFCT_RATIO_FLOOR,
         ).remappings(
             [
                 (FastLio2, "odometry", "fastlio_odometry"),
