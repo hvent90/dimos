@@ -89,14 +89,13 @@ def _g1_global_costmap_colors(occupancy_grid: OccupancyGrid) -> Any:
 
 
 def _g1_path_colors(path: Path) -> Any:
-    # Returning a single archetype (not a multi-tuple) lets the rerun bridge
-    # auto-attach this entity to tf#/<path.frame_id> — bypassing nav_stack's
-    # default _path_colors override which hardcodes parent_frame="tf#/sensor"
-    # (a frame the unitree_g1_nav_simple blueprint never publishes).
+    # Single archetype (not multi-tuple) so the bridge auto-attaches to
+    # tf#/<path.frame_id> instead of nav_stack's hardcoded tf#/sensor.
     import rerun as rr
 
+    # Empty geometry instead of None so the stale path actually clears.
     if not path.poses:
-        return None
+        return rr.LineStrips3D([])
 
     points = [[pose.x, pose.y, pose.z + _PATH_Z_LIFT] for pose in path.poses]
     return rr.LineStrips3D([points], colors=[_PATH_COLOR_RGBA], radii=_PATH_RADIUS_METERS)
