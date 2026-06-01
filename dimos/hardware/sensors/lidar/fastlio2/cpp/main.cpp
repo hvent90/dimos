@@ -142,6 +142,10 @@ static std::string g_odometry_topic;
 static std::string g_map_topic;
 static std::string g_icp_velocity_topic;
 static std::string g_fastlio_metrics_topic;
+// IMU sample-magnitude clamps. Atomic so the SDK callback can read them
+// without a lock. Zero = disabled.
+static std::atomic<double> g_imu_gyro_max_rad_s{0.0};
+static std::atomic<double> g_imu_accel_max_ms2{0.0};
 static icp_velocity::Estimator g_icp_estimator;
 static icp_correction::Corrector g_icp_corrector;
 static bool g_icp_correction_enabled = false;
@@ -504,6 +508,44 @@ static void on_imu_data(const uint32_t /*handle*/, const uint8_t /*dev_type*/,
         for (int j = 0; j < 9; ++j)
             imu_msg->linear_acceleration_covariance[j] = 0.0;
 
+        // Clamp sample-magnitude outliers BEFORE handing to the EKF. Direction
+        // preserved; magnitude scaled down to the cap. The gravity-leak
+        // divergence is seeded by a single extreme IMU sample (~6.4 rad/s +
+        // 6.15g at t=39.7s on the ruwik2_pt3 pcap); flooring those at the
+        // input prevents that seeding.
+        const double gyro_max = g_imu_gyro_max_rad_s.load();
+        if (gyro_max > 0) {
+            const double gx = imu_msg->angular_velocity.x;
+            const double gy = imu_msg->angular_velocity.y;
+            const double gz = imu_msg->angular_velocity.z;
+            const double gnorm = std::sqrt(gx*gx + gy*gy + gz*gz);
+            if (gnorm > gyro_max) {
+                const double s = gyro_max / gnorm;
+                imu_msg->angular_velocity.x = gx * s;
+                imu_msg->angular_velocity.y = gy * s;
+                imu_msg->angular_velocity.z = gz * s;
+                fprintf(stderr,
+                    "[fastlio] imu_gyro: clamped %.2f → %.2f rad/s\n",
+                    gnorm, gyro_max);
+            }
+        }
+        const double accel_max = g_imu_accel_max_ms2.load();
+        if (accel_max > 0) {
+            const double ax = imu_msg->linear_acceleration.x;
+            const double ay = imu_msg->linear_acceleration.y;
+            const double az = imu_msg->linear_acceleration.z;
+            const double anorm = std::sqrt(ax*ax + ay*ay + az*az);
+            if (anorm > accel_max) {
+                const double s = accel_max / anorm;
+                imu_msg->linear_acceleration.x = ax * s;
+                imu_msg->linear_acceleration.y = ay * s;
+                imu_msg->linear_acceleration.z = az * s;
+                fprintf(stderr,
+                    "[fastlio] imu_accel: clamped %.2f → %.2f m/s²\n",
+                    anorm, accel_max);
+            }
+        }
+
         g_fastlio->feed_imu(imu_msg);
     }
 
@@ -594,6 +636,12 @@ int main(int argc, char** argv) {
     double rot_correction_cap_deg = mod.arg_float("rot_correction_cap_deg", 0.0f);
     double res_mean_cap_m = mod.arg_float("res_mean_cap_m", 0.0f);
     double effct_ratio_floor = mod.arg_float("effct_ratio_floor", 0.0f);
+    // IMU sample-magnitude clamps applied BEFORE feed_imu. Catches sensor
+    // outliers and physically-extreme samples that knock the EKF's
+    // orientation off in a single step. Zero disables. Defaults sized for
+    // Go2 physical envelope.
+    g_imu_gyro_max_rad_s.store(mod.arg_float("imu_gyro_max_rad_s", 0.0f));
+    g_imu_accel_max_ms2.store(mod.arg_float("imu_accel_max_ms2", 0.0f));
 
     // ICP cross-check rollback. Disabled unless the ICP topic is also set.
     // Trigger when IESKF |v| > min_ieskf_v_ms AND ICP |v| is at least

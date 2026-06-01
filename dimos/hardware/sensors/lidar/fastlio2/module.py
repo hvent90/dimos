@@ -154,6 +154,10 @@ class FastLio2Config(NativeModuleConfig):
     rot_correction_cap_deg: float = 0.0
     res_mean_cap_m: float = 0.0
     effct_ratio_floor: float = 0.0
+    # IMU sample-magnitude clamps applied BEFORE feed_imu (in the SDK
+    # callback). Zero disables. Direction preserved; magnitude floored.
+    imu_gyro_max_rad_s: float = 0.0
+    imu_accel_max_ms2: float = 0.0
 
     # ICP cross-check rollback. The binary maintains a ring buffer of
     # per-scan (IESKF pose, IESKF orientation, ICP body-frame velocity)

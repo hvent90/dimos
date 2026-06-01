@@ -84,6 +84,11 @@ ROT_CORRECTION_CAP_DEG = float(os.environ.get("ROT_CORRECTION_CAP_DEG", "0.0"))
 RES_MEAN_CAP_M = float(os.environ.get("RES_MEAN_CAP_M", "0.0"))
 EFFCT_RATIO_FLOOR = float(os.environ.get("EFFCT_RATIO_FLOOR", "0.0"))
 
+# IMU sample clamps. Applied in main.cpp's on_imu_data BEFORE feed_imu.
+# Zero disables. Defaults sized for Go2 envelope when enabled.
+IMU_GYRO_MAX_RAD_S = float(os.environ.get("IMU_GYRO_MAX_RAD_S", "0.0"))
+IMU_ACCEL_MAX_MS2 = float(os.environ.get("IMU_ACCEL_MAX_MS2", "0.0"))
+
 # How much sensor time of replay to capture. Zero = run the whole pcap.
 # Default 60 s — the divergence window is within the first 60 s of the
 # pcap and that's all we care about for the iteration loop.
@@ -245,6 +250,8 @@ def _worker() -> int:
             rot_correction_cap_deg=ROT_CORRECTION_CAP_DEG,
             res_mean_cap_m=RES_MEAN_CAP_M,
             effct_ratio_floor=EFFCT_RATIO_FLOOR,
+            imu_gyro_max_rad_s=IMU_GYRO_MAX_RAD_S,
+            imu_accel_max_ms2=IMU_ACCEL_MAX_MS2,
         ).remappings(
             [
                 (FastLio2, "odometry", "fastlio_odometry"),
