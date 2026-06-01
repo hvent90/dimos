@@ -13,23 +13,31 @@
 # See the License for the specific language governing permissions and
 # limitations under the License.
 
+from datetime import datetime
 import math
 import os
 from pathlib import Path
+import shutil
+import signal
+import subprocess
 import time
 from typing import Any
 
+from pydantic import Field
 from reactivex.disposable import Disposable
 
 from dimos.core.coordination.blueprints import autoconnect
+from dimos.core.core import rpc
 from dimos.core.module import Module
 from dimos.core.stream import In
 from dimos.hardware.sensors.lidar.fastlio2.module import FastLio2
+from dimos.hardware.sensors.lidar.livox.module import Mid360
 from dimos.memory2.module import Recorder, RecorderConfig
 from dimos.memory2.stream import Stream
 from dimos.msgs.geometry_msgs.PoseStamped import PoseStamped
 from dimos.msgs.nav_msgs.Odometry import Odometry
 from dimos.msgs.sensor_msgs.Image import Image
+from dimos.msgs.sensor_msgs.Imu import Imu
 from dimos.msgs.sensor_msgs.PointCloud2 import PointCloud2
 from dimos.navigation.movement_manager.movement_manager import MovementManager
 from dimos.robot.unitree.go2.connection import GO2Connection
@@ -38,16 +46,52 @@ from dimos.utils.logging_config import setup_logger
 
 logger = setup_logger()
 
+# tcpdump fails fast (EPERM, bad iface) within a few ms; pause briefly so poll() catches that.
+_TCPDUMP_STARTUP_PROBE_SEC = 0.3
+
+
+def _stamp() -> str:
+    now = datetime.now()
+    return now.strftime("%Y-%m-%d") + "_" + now.strftime("%-I-%M%p").lower() + "-PST"
+
+
+def _default_recording_dir() -> Path:
+    return Path(f"recording_go2_mid360_{_stamp()}")
+
 
 class Go2Mid360MemoryConfig(RecorderConfig):
-    db_path: str | Path = Field(
-        default_factory=lambda: f"recording_go2_mid360_{datetime.now().strftime('%Y-%m-%d')}.db"
-    )
+    """One recording dir per session: <dir>/data.db plus <dir>/mid360.pcap."""
+
+    recording_dir: Path = Field(default_factory=_default_recording_dir)
+    # Filled in by __init__ below if left at the default.
+    db_path: str | Path = ""
+    pcap_path: str | Path = ""
+
     default_frame_id: str = "base_link"
+
+    # tcpdump configuration. Capture is filtered to UDP from the lidar IP.
+    record_pcap: bool = True
+    record_pcap_iface: str = "enp2s0"
+    record_pcap_snaplen: int = 2048
+    lidar_ip: str = "192.168.1.107"
+
+    def model_post_init(self, __context: object) -> None:
+        super().model_post_init(__context)
+        # Resolve db/pcap paths from recording_dir if the caller didn't set them.
+        if not self.db_path:
+            self.db_path = self.recording_dir / "data.db"
+        if not self.pcap_path:
+            self.pcap_path = self.recording_dir / "mid360.pcap"
 
 
 class Go2Mid360Memory(Recorder):
-    """Records Go2 camera, native Go2 lidar, Mid-360 lidar, FastLio2 odometry, and Go2 leg odometry."""
+    """Records Go2 camera, native Go2 lidar, Mid-360 (lidar + IMU), FastLio2
+    odometry, and Go2 leg odometry.
+
+    Also owns the tcpdump process that captures raw UDP packets from the
+    Mid-360. Single session = single timestamped dir holding both the
+    sqlite memory store and the pcap.
+    """
 
     config: Go2Mid360MemoryConfig
 
@@ -56,6 +100,22 @@ class Go2Mid360Memory(Recorder):
     odom: In[PoseStamped]
     fastlio_lidar: In[PointCloud2]
     fastlio_odometry: In[Odometry]
+    livox_lidar: In[PointCloud2]
+    livox_imu: In[Imu]
+
+    _pcap_proc: subprocess.Popen[bytes] | None = None
+
+    @rpc
+    def start(self) -> None:
+        Path(self.config.recording_dir).mkdir(parents=True, exist_ok=True)
+        if self.config.record_pcap:
+            self._start_pcap()
+        super().start()
+
+    @rpc
+    def stop(self) -> None:
+        super().stop()
+        self._stop_pcap()
 
     def _port_to_stream(self, name: str, input_topic: In[Any], stream: Stream[Any]) -> None:
         """Append each message from *input_topic* to *stream*, attaching world pose via tf.
@@ -85,6 +145,84 @@ class Go2Mid360Memory(Recorder):
             stream.append(msg, ts=ts, pose=pose)
 
         self.register_disposable(Disposable(input_topic.subscribe(on_msg)))
+
+    def _start_pcap(self) -> None:
+        cfg = self.config
+        path = Path(cfg.pcap_path).expanduser()
+        path.parent.mkdir(parents=True, exist_ok=True)
+
+        # Capture every UDP packet originating from the lidar. The Mid-360
+        # multicasts point/IMU data to 224.1.1.5 (dst port = the lidar's own
+        # port, not a host port), so filtering on dst portrange would miss it.
+        # src host alone is restrictive enough — nothing else lives on that IP.
+        packet_filter_expression = f"src host {cfg.lidar_ip} and udp"
+        tcpdump = shutil.which("tcpdump") or "tcpdump"
+        cmd = [
+            tcpdump,
+            "-i",
+            cfg.record_pcap_iface,
+            "-w",
+            str(path),
+            "-s",
+            str(cfg.record_pcap_snaplen),
+            "-U",
+            "-n",
+            packet_filter_expression,
+        ]
+
+        proc = subprocess.Popen(
+            cmd,
+            stdout=subprocess.DEVNULL,
+            stderr=subprocess.PIPE,
+            start_new_session=True,
+        )
+        # tcpdump exits within a few ms on EPERM; wait briefly so we can detect that.
+        time.sleep(_TCPDUMP_STARTUP_PROBE_SEC)
+        if proc.poll() is not None:
+            stderr = proc.stderr.read().decode(errors="replace") if proc.stderr else ""
+            self._pcap_proc = None
+            logger.error(
+                f"Go2Mid360Memory pcap recording failed to start — tcpdump exited"
+                f" rc={proc.returncode} stderr={stderr.strip()}"
+            )
+            print(
+                "[go2_record] pcap recording is enabled but tcpdump cannot capture.\n"
+                "          Grant capture capability once with:\n"
+                f"            sudo setcap cap_net_raw,cap_net_admin=eip {tcpdump}\n"
+                "          then restart. (tcpdump stderr above.)",
+                flush=True,
+            )
+            return
+
+        logger.info(
+            f"Go2Mid360Memory pcap recording enabled  path={path}  "
+            f"iface={cfg.record_pcap_iface}  filter={packet_filter_expression!r}"
+        )
+        self._pcap_proc = proc
+
+    def _stop_pcap(self) -> None:
+        proc = self._pcap_proc
+        if proc is None:
+            return
+        self._pcap_proc = None
+        if proc.poll() is not None:
+            return
+        # SIGINT is tcpdump's documented "stop cleanly" signal — it prints
+        # packet counts and flushes the pcap header.
+        proc.send_signal(signal.SIGINT)
+        try:
+            proc.wait(timeout=self.config.shutdown_timeout)
+        except subprocess.TimeoutExpired:
+            try:
+                os.killpg(os.getpgid(proc.pid), signal.SIGTERM)
+            except ProcessLookupError:
+                pass
+            try:
+                proc.wait(timeout=self.config.shutdown_timeout)
+            except subprocess.TimeoutExpired:
+                proc.kill()
+                proc.wait()
+        logger.info(f"Go2Mid360Memory pcap recording stopped  path={self.config.pcap_path}")
 
 
 MPH_PER_MPS = 2.23694
@@ -137,30 +275,33 @@ class SpeedWarner(Module):
                 f"!!! FASTLIO ODOMETRY DIVERGED !!! reported {speed_mph:.1f} mph "
                 f"(limit {SPEED_LIMIT_MPH:.1f} mph). Latching warnings."
             )
-        # if self._tripped:
-        #     if speed_mph > self._peak_mph:
-        #         self._peak_mph = speed_mph
-        #     logger.error(
-        #         f"!!! FASTLIO DIVERGED !!! now={speed_mph:.1f} mph peak={self._peak_mph:.1f} mph "
-        #         f"dx={dx:.3f} dy={dy:.3f} dz={dz:.3f} m  dt={dt*1000:.1f}ms"
-        #     )
+
+
+_LIDAR_IP = os.getenv("LIDAR_IP", "192.168.1.107")
 
 
 unitree_go2_record = autoconnect(
     GO2Connection.blueprint(),
     KeyboardTeleop.blueprint(),
     MovementManager.blueprint(),
+    Mid360.blueprint(
+        lidar_ip=_LIDAR_IP,
+    ).remappings(
+        [
+            (Mid360, "lidar", "livox_lidar"),
+            (Mid360, "imu", "livox_imu"),
+        ]
+    ),
     FastLio2.blueprint(
         frame_id="world",
         map_freq=-1,
-        lidar_ip=os.getenv("LIDAR_IP", "192.168.1.155"),
-        record_pcap=True,
+        lidar_ip=_LIDAR_IP,
     ).remappings(
         [
             (FastLio2, "lidar", "fastlio_lidar"),
             (FastLio2, "odometry", "fastlio_odometry"),
         ]
     ),
-    Go2Mid360Memory.blueprint(),
+    Go2Mid360Memory.blueprint(lidar_ip=_LIDAR_IP),
     SpeedWarner.blueprint(),
 ).global_config(n_workers=10, robot_model="unitree_go2")
