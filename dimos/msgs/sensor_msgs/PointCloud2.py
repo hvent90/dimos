@@ -373,7 +373,7 @@ class PointCloud2(Timestamped):
         new_pcd = o3d.geometry.PointCloud()
         new_pcd.points = o3d.utility.Vector3dVector(transformed_xyz)
 
-        # Colors are frame-independent — carry them through.
+        # Colors are frame-independent, carry them through.
         if self.pointcloud.has_colors():
             new_pcd.colors = self.pointcloud.colors
 

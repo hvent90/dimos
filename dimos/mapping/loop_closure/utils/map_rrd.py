@@ -222,12 +222,11 @@ def main(
         has_livox = "fastlio_lidar" in store.streams
         livox = store.stream("fastlio_lidar", PointCloud2) if has_livox else None
 
-        # ---- per-frame raw clouds ----
         _log_clouds("       lidar", lidar, "world/lidar", voxel, point_mode)
         if livox is not None:
             _log_clouds("fastlio_lidar", livox, "world/fastlio_lidar", voxel, point_mode)
 
-        # ---- accumulated voxel maps (--map only) ----
+        # Accumulated voxel maps (--map only).
         # Go2 L1 forward-facing → column carving on.
         # Mid360 spherical → column carving off, just aggregate.
         if map:
@@ -258,7 +257,7 @@ def main(
                     total=max(1, livox.count() // max(map_emit_every, 1)),
                 )
 
-        # ---- fastlio pose axis + path from fastlio_odometry stream ----
+        # fastlio pose axis + path from fastlio_odometry stream.
         if "fastlio_odometry" in store.streams:
             odometry = store.stream("fastlio_odometry", Odometry)
             cb = _progress(odometry.count(), "fastlio_odometry")
@@ -283,7 +282,7 @@ def main(
                 color=(255, 165, 0),  # orange
             )
 
-        # ---- Go2 native odom pose axis + path ----
+        # Go2 native odom pose axis + path.
         if "odom" in store.streams:
             odom = store.stream("odom", PoseStamped)
             cb = _progress(odom.count(), "        odom")
@@ -308,7 +307,7 @@ def main(
                 color=(0, 200, 100),  # green
             )
 
-        # ---- pass 2: camera pose + image per color_image ----
+        # Pass 2: camera pose + image per color_image.
         cam_pipeline = (
             color_image.transform(throttle(1.0 / camera_hz)) if camera_hz > 0 else color_image
         )

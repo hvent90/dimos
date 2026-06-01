@@ -19,6 +19,9 @@ import sys
 import threading
 from typing import TYPE_CHECKING, Any, Generic, TypeVar, cast
 
+from dimos.msgs.geometry_msgs.Pose import Pose
+from dimos.msgs.geometry_msgs.PoseStamped import PoseStamped
+
 if sys.version_info >= (3, 11):
     from typing import Self
 else:
@@ -28,8 +31,6 @@ if TYPE_CHECKING:
     from collections.abc import Callable
 
     from dimos.models.embedding.base import Embedding
-    from dimos.msgs.geometry_msgs.Pose import Pose
-    from dimos.msgs.geometry_msgs.PoseStamped import PoseStamped
 
 T = TypeVar("T")
 R = TypeVar("R")
@@ -49,6 +50,16 @@ class _Unloaded:
 _UNLOADED = _Unloaded()
 
 
+class _MissingType:
+    """Sentinel for "argument not supplied", distinct from None."""
+
+    def __repr__(self) -> str:
+        return "<missing>"
+
+
+_MISSING = _MissingType()
+
+
 def _to_tuple(p: Any) -> PoseTuple | None:
     """Coerce common pose shapes to the storage 7-tuple `(x, y, z, qx, qy, qz, qw)`.
 
@@ -60,7 +71,7 @@ def _to_tuple(p: Any) -> PoseTuple | None:
     """
     if p is None:
         return None
-    if isinstance(p, tuple):
+    if isinstance(p, (tuple, list)):
         if len(p) == 7:
             return cast("PoseTuple", tuple(float(v) for v in p))
         if len(p) == 3:
@@ -116,7 +127,7 @@ class Observation(Generic[T]):
         ts: float = 0.0,
         *,
         data_type: type = object,
-        pose: Any | None = None,
+        pose: Any | _MissingType = _MISSING,
         pose_tuple: PoseTuple | None = None,
         tags: dict[str, Any] | None = None,
         _data: T | _Unloaded = _UNLOADED,
@@ -126,10 +137,14 @@ class Observation(Generic[T]):
         self.id = id
         self.ts = ts
         self.data_type = data_type
-        # `pose` wins if explicitly supplied: derive()/tag() always re-pass
-        # the current `pose_tuple` from fields(), so an override needs
-        # to take precedence over it.
-        self.pose_tuple = _to_tuple(pose) if pose is not None else pose_tuple
+
+        # `pose` wins if explicitly supplied (including `pose=None`, which
+        # clears). `derive()`/`tag()` re-pass the current `pose_tuple` from
+        # fields(); only an explicit override on `pose` should beat it.
+        if pose is _MISSING:
+            self.pose_tuple = pose_tuple
+        else:
+            self.pose_tuple = _to_tuple(pose)
         self.tags = tags if tags is not None else {}
         self._data = _data
         self._loader = _loader
@@ -140,7 +155,6 @@ class Observation(Generic[T]):
         """Typed :class:`Pose` (or None). Allocates per access — read :attr:`pose_tuple` in hot loops."""
         if self.pose_tuple is None:
             return None
-        from dimos.msgs.geometry_msgs.Pose import Pose
 
         return Pose(*self.pose_tuple)
 
@@ -152,10 +166,7 @@ class Observation(Generic[T]):
         from dimos.msgs.geometry_msgs.PoseStamped import PoseStamped
 
         x, y, z, qx, qy, qz, qw = self.pose_tuple
-        return cast(
-            "PoseStamped",
-            PoseStamped(ts=self.ts, position=(x, y, z), orientation=(qx, qy, qz, qw)),
-        )
+        return PoseStamped(ts=self.ts, position=(x, y, z), orientation=(qx, qy, qz, qw))
 
     @property
     def data(self) -> T:
@@ -215,7 +226,7 @@ class EmbeddedObservation(Observation[T]):
         ts: float = 0.0,
         *,
         data_type: type = object,
-        pose: Any | None = None,
+        pose: Any | _MissingType = _MISSING,
         pose_tuple: PoseTuple | None = None,
         tags: dict[str, Any] | None = None,
         embedding: Embedding | None = None,

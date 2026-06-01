@@ -39,6 +39,7 @@ from dimos.core.daemon import daemonize, install_signal_handlers
 from dimos.core.global_config import GlobalConfig, global_config
 from dimos.core.run_registry import get_most_recent, is_pid_alive, stop_entry
 from dimos.robot.unitree.go2.cli.go2tool import app as go2tool_app
+from dimos.utils.cli.map import main as _map_main
 from dimos.utils.logging_config import setup_logger
 from dimos.visualization.rerun.constants import RerunOpenOption
 
@@ -672,84 +673,7 @@ def send(
     topic_send(topic, message_expr)
 
 
-@main.command(name="map")
-def map_cmd(
-    dataset: str = typer.Argument(..., help="Dataset .db: bare name (cwd or data/) or path"),
-    voxel: float = typer.Option(0.05, "--voxel", help="Voxel size for the rebuild"),
-    device: str = typer.Option(
-        "CUDA:0", "--device", help="Open3D compute device (e.g. CUDA:0, CPU:0)"
-    ),
-    pgo: bool = typer.Option(
-        False,
-        "--pgo",
-        help="Run pose graph optimization and rebuild from spatially-deduped frames",
-    ),
-    pgo_tol: float = typer.Option(
-        0.3, "--pgo-tol", help="Spatial dedup tolerance for --pgo (meters)"
-    ),
-    block_count: int = typer.Option(
-        2_000_000, "--block-count", help="VoxelBlockGrid capacity (--pgo only)"
-    ),
-    export: bool = typer.Option(
-        False,
-        "--export",
-        help="Export PGO map to ./<dataset>.pc2.lcm in cwd (implies --pgo)",
-    ),
-    full_pgo: bool = typer.Option(
-        False,
-        "--full-pgo",
-        help="Also build a full-replay PGO map (every frame) for comparison (implies --pgo)",
-    ),
-    no_gui: bool = typer.Option(False, "--no-gui", help="Skip rerun visualization"),
-    markers: bool = typer.Option(
-        False,
-        "--markers",
-        help="Detect AprilTag markers in color_image and overlay them in rerun",
-    ),
-    marker_size: float = typer.Option(
-        0.1, "--marker-size", help="Physical marker edge length in meters (--markers only)"
-    ),
-    marker_max_speed: float = typer.Option(
-        0.5,
-        "--marker-max-speed",
-        help="Skip frames where robot is moving faster than this (m/s); 0 disables",
-    ),
-    marker_max_rot_rate: float = typer.Option(
-        50.0,
-        "--marker-max-rot-rate",
-        help="Skip frames where robot is rotating faster than this (deg/s); 0 disables",
-    ),
-    marker_quality_window: float = typer.Option(
-        0.1,
-        "--marker-quality-window",
-        help="Sharpest-frame window for marker detection (s)",
-    ),
-    marker_smoothing: float = typer.Option(
-        7.5,
-        "--marker-smoothing",
-        help="Sliding-window track buffer for marker pose averaging (s); 0 disables (one box per raw detection)",
-    ),
-) -> None:
-    """Rebuild a voxel map from a recorded SQLite dataset and view it in rerun."""
-    from dimos.utils.cli.map import main as map_main
-
-    map_main(
-        dataset=dataset,
-        voxel=voxel,
-        device=device,
-        pgo=pgo,
-        pgo_tol=pgo_tol,
-        block_count=block_count,
-        export=export,
-        full_pgo=full_pgo,
-        no_gui=no_gui,
-        markers=markers,
-        marker_size=marker_size,
-        marker_max_speed=marker_max_speed,
-        marker_max_rot_rate=marker_max_rot_rate,
-        marker_quality_window=marker_quality_window,
-        marker_smoothing=marker_smoothing,
-    )
+main.command(name="map")(_map_main)
 
 
 @main.command()

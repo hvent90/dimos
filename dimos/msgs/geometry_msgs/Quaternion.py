@@ -213,6 +213,10 @@ class Quaternion(LCMQuaternion):  # type: ignore[misc]
             return False
         return self.x == other.x and self.y == other.y and self.z == other.z and self.w == other.w
 
+    def is_zero(self) -> bool:
+        """All components are zero — i.e. an uninitialized placeholder, not a valid rotation."""
+        return self.x == 0.0 and self.y == 0.0 and self.z == 0.0 and self.w == 0.0
+
     def __mul__(self, other: Quaternion) -> Quaternion:
         """Multiply two quaternions (Hamilton product).
 
