@@ -12,6 +12,7 @@
 # See the License for the specific language governing permissions and
 # limitations under the License.
 
+import os
 import threading
 import time
 
@@ -26,6 +27,21 @@ from dimos.stream.audio.tts.node_openai import OpenAITTSNode, Voice
 from dimos.utils.logging_config import setup_logger
 
 logger = setup_logger()
+
+
+def openai_api_key_set() -> str | None:
+    """Blueprint requirement check: SpeakSkill uses OpenAI text-to-speech, which needs
+    OPENAI_API_KEY. Returns None if set, else a clear message (mirrors ollama_installed).
+    Lets a missing key fail fast at blueprint build instead of crashing later in start()."""
+    if os.environ.get("OPENAI_API_KEY"):
+        return None
+    return (
+        "OPENAI_API_KEY is not set. The agentic blueprint uses OpenAI for text-to-speech "
+        "(SpeakSkill), and by default for the LLM agent too.\n"
+        "\n"
+        "   Set it with: export OPENAI_API_KEY=<your-key>\n"
+        "   Get a key at https://platform.openai.com/api-keys"
+    )
 
 
 class SpeakSkill(Module):
