@@ -2,10 +2,16 @@
 
 ```sh skip
 sudo apt-get update
-sudo apt-get install -y curl g++ portaudio19-dev git-lfs libturbojpeg python3-dev pre-commit
+# Required system libraries. libturbojpeg + portaudio19-dev cover image/audio; libgl1 +
+# libegl1 are the OpenGL runtime for open3d and rerun-sdk (both always-installed core deps).
+# Without libgl1/libegl1 the visualizer fails at runtime with
+# "libGL.so.1: cannot open shared object file" (e.g. on minimal/headless/Docker installs).
+sudo apt-get install -y curl g++ portaudio19-dev git-lfs libturbojpeg libgl1 libegl1 python3-dev
 
 # install uv
 curl -LsSf https://astral.sh/uv/install.sh | sh && export PATH="$HOME/.local/bin:$PATH"
+# NOTE: the `export` above only affects the current shell. Open a new terminal (or run
+# `source ~/.bashrc`) so `uv` is on PATH in later sessions — the installer also adds it there.
 ```
 
 ## Using DimOS as a library
