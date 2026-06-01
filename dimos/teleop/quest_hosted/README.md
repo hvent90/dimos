@@ -12,11 +12,9 @@ robot video goes out as a WebRTC track.
   back to the HUD. Subclassed for actuation.
 - **`hosted_extensions.py`** — concrete subclasses: arm IK, mobile-base twist.
 - **`blueprints.py`** — wires the module to a robot driver.
-- **`dev_broker.py`** — local broker stand-in for development.
-- **`static/index.html`** — dev-reference operator page; the **canonical
-  operator HTML lives in the broker repo** (`web/index.html`) and is what's
-  deployed. Keep this in sync only if you're testing module changes that the
-  broker hasn't picked up yet.
+
+The operator HTML lives in the [dimensional-teleop](https://github.com/dimensionalOS/dimensional-teleop)
+broker repo (`web/`), not here.
 
 ## How a session connects
 

@@ -21,11 +21,10 @@
 #
 #     http://www.apache.org/licenses/LICENSE-2.0
 
-"""Unit tests for the Phase 1.5 clock-sync ping/pong protocol.
+"""Unit tests for the clock-sync ping/pong protocol.
 
 Validates ``HostedTeleopModule._on_state_message`` shape without standing up
 a WebRTC stack — injects a mocked state channel and inspects what it sends.
-Complements the dev_broker E2E test by pinning the JSON protocol itself.
 """
 
 from __future__ import annotations
