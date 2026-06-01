@@ -15,12 +15,21 @@ use lcm_msgs::std_msgs::{Header, Time};
 use nalgebra::UnitQuaternion;
 use serde::Deserialize;
 
-use fastlio2::commons::{Config as PipelineConfig, IMUData, Point, PointCloud, SyncPackage, V3D};
-use fastlio2::lidar_processor::LidarProcessor;
-use fastlio2::map_builder::{BuilderStatus, MapBuilder};
+use fastlio_rs::commons::{Config as PipelineConfig, IMUData, Point, PointCloud, SyncPackage, V3D};
+use fastlio_rs::lidar_processor::LidarProcessor;
+use fastlio_rs::map_builder::{BuilderStatus, MapBuilder};
 
 const POINT_STEP: i32 = 16;
 const FLOAT32: u8 = PointField::FLOAT32 as u8;
+
+// Verbose pipeline tracing, gated on the `debug` config flag. Off by default.
+macro_rules! debug_log {
+    ($cond:expr, $($arg:tt)*) => {
+        if $cond {
+            tracing::info!(target: "fastlio2_rust_native", $($arg)*);
+        }
+    };
+}
 
 #[derive(Debug, Deserialize)]
 struct ModuleConfig {
@@ -28,8 +37,16 @@ struct ModuleConfig {
     frame_id: String,
     #[serde(default = "default_child_frame_id")]
     child_frame_id: String,
-    #[serde(flatten)]
-    pipeline: PipelineConfig,
+    #[serde(default)]
+    debug: bool,
+    // Path to a standard FAST-LIO YAML; the crate parses it into the pipeline
+    // Config. Empty -> Config::default().
+    #[serde(default)]
+    config_path: String,
+    // Reject pose updates whose post-update speed exceeds this (m/s). Overrides
+    // whatever the YAML sets. Default ~200 mph.
+    #[serde(default = "default_max_velocity")]
+    max_velocity: f64,
 }
 
 fn default_frame_id() -> String {
@@ -38,6 +55,10 @@ fn default_frame_id() -> String {
 
 fn default_child_frame_id() -> String {
     "base_link".to_string()
+}
+
+fn default_max_velocity() -> f64 {
+    89.408
 }
 
 #[derive(Module)]
@@ -53,7 +74,7 @@ struct FastLio2Rust {
     odometry: Output<Odometry>,
 
     #[output(encode = PointCloud2::encode)]
-    world_cloud: Output<PointCloud2>,
+    global_map: Output<PointCloud2>,
 
     #[config]
     config: ModuleConfig,
@@ -64,10 +85,28 @@ struct FastLio2Rust {
 
 impl FastLio2Rust {
     async fn on_start(&mut self) {
-        self.builder = Some(MapBuilder::new(self.config.pipeline.clone()));
+        let mut pipeline = if self.config.config_path.is_empty() {
+            PipelineConfig::default()
+        } else {
+            match PipelineConfig::from_yaml_path(&self.config.config_path) {
+                Ok(pipeline) => pipeline,
+                Err(error) => {
+                    tracing::error!(
+                        config_path = %self.config.config_path,
+                        error = %error,
+                        "failed to load FAST-LIO YAML; falling back to defaults"
+                    );
+                    PipelineConfig::default()
+                }
+            }
+        };
+        pipeline.max_velocity = self.config.max_velocity;
+        self.builder = Some(MapBuilder::new(pipeline));
         tracing::info!(
             frame_id = %self.config.frame_id,
             child_frame_id = %self.config.child_frame_id,
+            max_velocity = self.config.max_velocity,
+            debug = self.config.debug,
             "fastlio2_rust initialized"
         );
     }
@@ -86,11 +125,32 @@ impl FastLio2Rust {
             ),
             time: stamp_to_sec(&msg.header.stamp),
         });
+        debug_log!(
+            self.config.debug,
+            buffered = self.imu_buffer.len(),
+            acc = ?[msg.linear_acceleration.x, msg.linear_acceleration.y, msg.linear_acceleration.z],
+            gyro = ?[msg.angular_velocity.x, msg.angular_velocity.y, msg.angular_velocity.z],
+            stamp = stamp_to_sec(&msg.header.stamp),
+            "on_imu"
+        );
     }
 
     async fn on_lidar(&mut self, msg: PointCloud2) {
+        let debug = self.config.debug;
+        debug_log!(
+            debug,
+            width = msg.width,
+            height = msg.height,
+            point_step = msg.point_step,
+            data_bytes = msg.data.len(),
+            fields = ?msg.fields.iter().map(|field| field.name.as_str()).collect::<Vec<_>>(),
+            imu_buffered = self.imu_buffer.len(),
+            "on_lidar: received scan"
+        );
+
         // The pipeline needs imu samples spanning the scan before it can start.
         if self.imu_buffer.is_empty() {
+            debug_log!(debug, "on_lidar: skipped, imu buffer empty");
             return;
         }
 
@@ -98,10 +158,12 @@ impl FastLio2Rust {
             Ok(cloud) => cloud,
             Err(error) => {
                 warn_throttled!(Duration::from_secs(1), error = %error, "dropped a lidar scan");
+                debug_log!(debug, error = %error, "on_lidar: extract_cloud failed");
                 return;
             }
         };
         if cloud.is_empty() {
+            debug_log!(debug, "on_lidar: skipped, extracted cloud empty");
             return;
         }
 
@@ -114,6 +176,14 @@ impl FastLio2Rust {
             .fold(0.0f32, |acc, point| acc.max(point.curvature))
             as f64
             / 1000.0;
+        debug_log!(
+            debug,
+            extracted_points = cloud.len(),
+            imus = self.imu_buffer.len(),
+            stamp_sec,
+            max_offset_sec,
+            "on_lidar: extracted cloud"
+        );
         let mut package = SyncPackage {
             imus: std::mem::take(&mut self.imu_buffer),
             cloud,
@@ -123,20 +193,45 @@ impl FastLio2Rust {
 
         let builder = self.builder.as_mut().expect("builder set in on_start");
         builder.process(&mut package);
+        let status = builder.status();
+        debug_log!(debug, status = ?status, "on_lidar: builder processed");
 
-        if builder.status() != BuilderStatus::Mapping {
+        if status != BuilderStatus::Mapping {
+            debug_log!(debug, status = ?status, "on_lidar: not publishing, builder not in Mapping state");
             return;
         }
 
         let odometry = build_odometry(builder, &self.config, msg.header.stamp.clone());
+        let position = &odometry.pose.pose.position;
+        debug_log!(
+            debug,
+            position = ?[position.x, position.y, position.z],
+            "on_lidar: publishing odometry"
+        );
         if let Err(error) = self.odometry.publish(&odometry).await {
             error_throttled!(Duration::from_secs(1), error = %error, "odometry publish failed");
+            debug_log!(debug, error = %error, "on_lidar: odometry publish failed");
         }
 
         let world = register_cloud(builder, &package.cloud);
         let world_msg = build_pointcloud(&world, &self.config.frame_id, msg.header.stamp);
-        if let Err(error) = self.world_cloud.publish(&world_msg).await {
-            error_throttled!(Duration::from_secs(1), error = %error, "world_cloud publish failed");
+        debug_log!(
+            debug,
+            world_points = world.len(),
+            data_bytes = world_msg.data.len(),
+            point_step = world_msg.point_step,
+            "on_lidar: publishing global_map"
+        );
+        match self.global_map.publish(&world_msg).await {
+            Ok(()) => debug_log!(
+                debug,
+                world_points = world.len(),
+                "on_lidar: global_map published"
+            ),
+            Err(error) => {
+                error_throttled!(Duration::from_secs(1), error = %error, "global_map publish failed");
+                debug_log!(debug, error = %error, "on_lidar: global_map publish failed");
+            }
         }
     }
 }
@@ -337,24 +432,26 @@ mod tests {
         let config: ModuleConfig = serde_json::from_str("{}").unwrap();
         assert_eq!(config.frame_id, "odom");
         assert_eq!(config.child_frame_id, "base_link");
-        assert_eq!(config.pipeline.imu_init_num, 20);
+        assert!(config.config_path.is_empty());
+        assert!(!config.debug);
+        assert!((config.max_velocity - 89.408).abs() < 1e-6);
     }
 
     #[test]
-    fn module_config_overrides_pipeline_fields() {
+    fn module_config_reads_overrides() {
         let json = r#"{
             "frame_id": "map",
             "child_frame_id": "imu_link",
-            "scan_resolution": 0.05,
-            "lidar_max_range": 30.0,
-            "gravity_align": false
+            "config_path": "/tmp/mid360.yaml",
+            "debug": true,
+            "max_velocity": 12.5
         }"#;
         let config: ModuleConfig = serde_json::from_str(json).unwrap();
         assert_eq!(config.frame_id, "map");
         assert_eq!(config.child_frame_id, "imu_link");
-        assert_eq!(config.pipeline.scan_resolution, 0.05);
-        assert_eq!(config.pipeline.lidar_max_range, 30.0);
-        assert!(!config.pipeline.gravity_align);
+        assert_eq!(config.config_path, "/tmp/mid360.yaml");
+        assert!(config.debug);
+        assert_eq!(config.max_velocity, 12.5);
     }
 
     #[test]

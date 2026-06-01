@@ -35,7 +35,10 @@ Usage::
 
 from __future__ import annotations
 
-from typing import TYPE_CHECKING, Any
+from pathlib import Path
+from typing import TYPE_CHECKING, Annotated, Any
+
+from pydantic.experimental.pipeline import validate_as
 
 from dimos.core.native_module import NativeModule, NativeModuleConfig
 from dimos.core.stream import In, Out
@@ -45,6 +48,12 @@ from dimos.msgs.sensor_msgs.PointCloud2 import PointCloud2
 from dimos.navigation.nav_stack.frames import FRAME_BODY, FRAME_ODOM
 from dimos.spec import perception
 
+# Reuse the shared FAST-LIO YAML configs that the C++ FastLio2 module reads.
+_CONFIG_DIR = Path(__file__).resolve().parent.parent / "fastlio2" / "config"
+
+# 200 mph in m/s — the default speed gate for rejecting implausible pose jumps.
+_DEFAULT_MAX_VELOCITY_MPS = 100
+
 
 class FastLio2RustConfig(NativeModuleConfig):
     cwd: str | None = "rust"
@@ -52,39 +61,39 @@ class FastLio2RustConfig(NativeModuleConfig):
     build_command: str | None = "nix build .#fastlio2_rust_native"
     stdin_config: bool = True
 
+    # Verbose per-scan/per-imu pipeline tracing in the Rust binary.
+    debug: bool = False
+
     # Output message frames.
     frame_id: str = FRAME_ODOM
     child_frame_id: str = FRAME_BODY
 
-    # FAST-LIO2 pipeline parameters (mirror the Rust serde defaults).
-    lidar_filter_num: int = 3
-    lidar_min_range: float = 0.5
-    lidar_max_range: float = 20.0
-    scan_resolution: float = 0.15
-    map_resolution: float = 0.3
-    cube_len: float = 300.0
-    det_range: float = 60.0
-    move_thresh: float = 1.5
-    # Process/measurement noise (accel, gyro, accel-bias, gyro-bias).
-    na: float = 0.01
-    ng: float = 0.01
-    nba: float = 0.0001
-    nbg: float = 0.0001
-    imu_init_num: int = 20
-    near_search_num: int = 5
-    ieskf_max_iter: int = 5
-    gravity_align: bool = True
-    # IMU-to-LiDAR extrinsics; estimate online or hold fixed.
-    esti_il: bool = False
-    r_il: list[float] = [1.0, 0.0, 0.0, 0.0, 1.0, 0.0, 0.0, 0.0, 1.0]
-    t_il: list[float] = [0.0, 0.0, 0.0]
-    lidar_cov_inv: float = 1000.0
+    # VERY IMPORTANT
+    # this is used to prevent catestrophic divergence
+    # go2 dog should set this to 3.1 m/s
+    # it needs some buffer room (dog can't actually move that fast)
+    # but other than that buffer room, tigher=less chance of catestrophic divergence
+    max_velocity: float = 100  # ~200 mph
+
+    # Standard FAST-LIO YAML config (shared with the C++ FastLio2 module).
+    # Relative paths resolve against fastlio2/config/. The fastlio_rs crate
+    # parses this YAML itself (Config::from_yaml_path) into the pipeline params;
+    # we just hand it the resolved path as ``config_path``.
+    config: Annotated[
+        Path, validate_as(...).transform(lambda p: p if p.is_absolute() else _CONFIG_DIR / p)
+    ] = Path("mid360.yaml")
 
     def to_config_dict(self) -> dict[str, Any]:
         # frame_id lives on the base NativeModuleConfig, so the default
-        # to_config_dict() drops it; the Rust pipeline still needs it.
+        # to_config_dict() drops it; the Rust binary still needs it.
         config = super().to_config_dict()
+        # Hand the binary the YAML path (the crate reads it), not the Path obj.
+        config.pop("config", None)
         config["frame_id"] = self.frame_id
+        # The transform only resolves explicitly-passed paths; resolve the
+        # default (relative) path here too.
+        config_path = self.config if self.config.is_absolute() else _CONFIG_DIR / self.config
+        config["config_path"] = str(config_path.resolve())
         return config
 
 
@@ -95,7 +104,7 @@ class FastLio2Rust(NativeModule, perception.Odometry):
         lidar (In[PointCloud2]): Livox point cloud frames.
         imu (In[Imu]): IMU samples (m/s^2 linear accel, rad/s angular vel).
         odometry (Out[Odometry]): Estimated body pose + twist in ``frame_id``.
-        world_cloud (Out[PointCloud2]): Registered (world-frame) scan.
+        global_map (Out[PointCloud2]): Registered (world-frame) scan.
     """
 
     config: FastLio2RustConfig
@@ -103,7 +112,7 @@ class FastLio2Rust(NativeModule, perception.Odometry):
     lidar: In[PointCloud2]
     imu: In[Imu]
     odometry: Out[Odometry]
-    world_cloud: Out[PointCloud2]
+    global_map: Out[PointCloud2]
 
 
 # Verify protocol port compliance (mypy will flag missing ports)
