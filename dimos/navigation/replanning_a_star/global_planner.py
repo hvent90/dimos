@@ -242,15 +242,10 @@ class GlobalPlanner(Resource):
                 last_stuck_check = time.perf_counter()
                 continue
 
-            local_planner_state, new_id = self._local_planner.get_unique_state()
+            _, new_id = self._local_planner.get_unique_state()
 
             if new_id != last_id:
                 last_id = new_id
-                last_stuck_check = time.perf_counter()
-                continue
-
-            # dont treat rotation as stuck
-            if local_planner_state in ("initial_rotation", "final_rotation"):
                 last_stuck_check = time.perf_counter()
                 continue
 
