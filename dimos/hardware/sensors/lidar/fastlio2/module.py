@@ -154,6 +154,9 @@ class FastLio2Config(NativeModuleConfig):
     rot_correction_cap_deg: float = 0.0
     res_mean_cap_m: float = 0.0
     effct_ratio_floor: float = 0.0
+    # Hard velocity cap (OlympicGrouse-style). Reset to last accepted
+    # state with vel=0 when |v| exceeds the cap. Zero disables.
+    velocity_cap_ms: float = 0.0
     # IMU sample-magnitude clamps applied BEFORE feed_imu (in the SDK
     # callback). Zero disables. Direction preserved; magnitude floored.
     imu_gyro_max_rad_s: float = 0.0

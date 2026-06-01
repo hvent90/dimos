@@ -88,6 +88,7 @@ EFFCT_RATIO_FLOOR = float(os.environ.get("EFFCT_RATIO_FLOOR", "0.0"))
 # Zero disables. Defaults sized for Go2 envelope when enabled.
 IMU_GYRO_MAX_RAD_S = float(os.environ.get("IMU_GYRO_MAX_RAD_S", "0.0"))
 IMU_ACCEL_MAX_MS2 = float(os.environ.get("IMU_ACCEL_MAX_MS2", "0.0"))
+VELOCITY_CAP_MS = float(os.environ.get("VELOCITY_CAP_MS", "0.0"))
 
 # How much sensor time of replay to capture. Zero = run the whole pcap.
 # Default 60 s — the divergence window is within the first 60 s of the
@@ -252,6 +253,7 @@ def _worker() -> int:
             effct_ratio_floor=EFFCT_RATIO_FLOOR,
             imu_gyro_max_rad_s=IMU_GYRO_MAX_RAD_S,
             imu_accel_max_ms2=IMU_ACCEL_MAX_MS2,
+            velocity_cap_ms=VELOCITY_CAP_MS,
         ).remappings(
             [
                 (FastLio2, "odometry", "fastlio_odometry"),

@@ -636,6 +636,8 @@ int main(int argc, char** argv) {
     double rot_correction_cap_deg = mod.arg_float("rot_correction_cap_deg", 0.0f);
     double res_mean_cap_m = mod.arg_float("res_mean_cap_m", 0.0f);
     double effct_ratio_floor = mod.arg_float("effct_ratio_floor", 0.0f);
+    // Hard velocity cap (OlympicGrouse-style).
+    double velocity_cap_ms = mod.arg_float("velocity_cap_ms", 0.0f);
     // IMU sample-magnitude clamps applied BEFORE feed_imu. Catches sensor
     // outliers and physically-extreme samples that knock the EKF's
     // orientation off in a single step. Zero disables. Defaults sized for
@@ -786,6 +788,7 @@ int main(int argc, char** argv) {
     fast_lio.set_rot_correction_cap_deg(rot_correction_cap_deg);
     fast_lio.set_res_mean_cap_m(res_mean_cap_m);
     fast_lio.set_effct_ratio_floor(effct_ratio_floor);
+    fast_lio.set_velocity_cap_ms(velocity_cap_ms);
     g_fastlio = &fast_lio;
     if (debug) printf("[fastlio2] FAST-LIO initialized.\n");
 

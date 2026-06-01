@@ -620,4 +620,5 @@ ignore = [
     "dimos/manipulation/manipulation_module.py",
     "dimos/navigation/nav_stack/modules/*/main.cpp",
     "dimos/navigation/nav_stack/common/*.hpp",
+    "dimos/hardware/sensors/lidar/fastlio2/cpp/main.cpp",
 ]
