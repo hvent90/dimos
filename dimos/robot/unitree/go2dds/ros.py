@@ -21,6 +21,14 @@ that genuinely differ from a field copy (point-buffer reinterpretation, jpeg
 decode, pose nesting) live there.
 """
 
+# TODO this file needs to go away, dimos/msgs are structurally the same as
+# these messages here so we will write an automatic translator, temporary so
+# we can iterate on go2 dds research, see if it's viable at all
+#
+# TODO pointcloud has timestamps and intensities, we drop those on LCM round trip
+# and our pointcloud2 message doesn't support arbitrary fields per point, we need
+# to implement those
+
 from __future__ import annotations
 
 from dataclasses import dataclass
