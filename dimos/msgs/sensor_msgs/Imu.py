@@ -118,9 +118,8 @@ class Imu(Timestamped):
             f"orientation={self.orientation})"
         )
 
-    def to_rerun(self):  # type: ignore[no-untyped-def]
-        """Orientation as a rerun Transform3D (rotation only)."""
+    def to_rerun(self, axis_length: float = 0.2):  # type: ignore[no-untyped-def]
+        """Orientation axes for rerun."""
         import rerun as rr
 
-        o = self.orientation
-        return rr.Transform3D(rotation=rr.Quaternion(xyzw=[o.x, o.y, o.z, o.w]))
+        return rr.TransformAxes3D(axis_length=axis_length)
