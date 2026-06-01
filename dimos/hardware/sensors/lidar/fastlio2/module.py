@@ -172,7 +172,7 @@ class FastLio2(NativeModule, perception.Lidar, perception.Odometry, mapping.Glob
         self.tf.publish(
             Transform(
                 frame_id=self.frame_id,
-                child_frame_id=self.child_frame_id,
+                child_frame_id=self.config.child_frame_id,
                 translation=Vector3(
                     msg.pose.position.x,
                     msg.pose.position.y,
