@@ -46,6 +46,7 @@ exclude = [
     "**/*.css",
     "**/*.js",
     "**/*.tcss",
+    "**/*.pyi",
     "rxpy_backpressure/*.txt",
 ]
 

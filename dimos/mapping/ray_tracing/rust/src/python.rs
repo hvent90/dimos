@@ -62,7 +62,7 @@ impl VoxelRayMap {
             .extract()
             .map_err(|_| PyValueError::new_err("points must be a (N, 3) float32 numpy array"))?;
         let shape = points.shape();
-        if shape.len() != 2 || shape[1] != 3 {
+        if shape[1] != 3 {
             return Err(PyValueError::new_err(format!(
                 "points must be (N, 3) float32, got shape {:?}",
                 shape
