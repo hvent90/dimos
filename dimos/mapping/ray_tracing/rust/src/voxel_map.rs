@@ -99,12 +99,21 @@ pub fn iter_global_points(
         })
 }
 
+fn live_voxels(points: &[(f32, f32, f32)], voxel_size: f32) -> AHashSet<VoxelKey> {
+    let inv = 1.0_f32 / voxel_size;
+    let mut out: AHashSet<VoxelKey> = AHashSet::with_capacity(points.len());
+    for &(x, y, z) in points {
+        out.insert(world_to_voxel(x, y, z, inv));
+    }
+    out
+}
+
 pub fn update_map(
     map: &mut VoxelMap,
     origin: (f32, f32, f32),
     points: &[(f32, f32, f32)],
     cfg: &Config,
-) {
+) -> AHashSet<VoxelKey> {
     let inv = 1.0_f32 / cfg.voxel_size;
     let max_range_sq = if cfg.max_range > 0.0 {
         cfg.max_range * cfg.max_range
@@ -112,10 +121,7 @@ pub fn update_map(
         f32::INFINITY
     };
 
-    let mut hits: AHashSet<VoxelKey> = AHashSet::with_capacity(points.len());
-    for &(x, y, z) in points {
-        hits.insert(world_to_voxel(x, y, z, inv));
-    }
+    let hits = live_voxels(points, cfg.voxel_size);
 
     let mut misses: AHashSet<VoxelKey> = AHashSet::new();
     let origin_voxel = world_to_voxel(origin.0, origin.1, origin.2, inv);
@@ -159,6 +165,8 @@ pub fn update_map(
             }
         }
     }
+
+    hits
 }
 
 #[inline]
@@ -546,8 +554,8 @@ mod tests {
             let n_before = map.voxels.len();
 
             let origin = (0.0_f32, 0.0_f32, lidar_height);
-            let hits = vec![(range, 0.0_f32, 0.0_f32)];
-            update_map(&mut map, origin, &hits, &cfg);
+            let points = vec![(range, 0.0_f32, 0.0_f32)];
+            update_map(&mut map, origin, &points, &cfg);
 
             let n_after_ground: usize = (0..n_ground)
                 .filter(|i| {
