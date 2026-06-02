@@ -13,7 +13,7 @@
 # See the License for the specific language governing permissions and
 # limitations under the License.
 
-"""Basic G1 stack: base sensors plus real robot connection and ROS nav."""
+"""Simple G1 nav stack: onboard sensors, raytracing costmap, and A* replanning."""
 
 from dimos.core.coordination.blueprints import autoconnect
 from dimos.mapping.costmapper import CostMapper
