@@ -14,13 +14,16 @@
 
 from __future__ import annotations
 
-from functools import reduce
-from operator import add
-from typing import TYPE_CHECKING, Generic, Self, TypeVar
+import sys
+from typing import TYPE_CHECKING, Generic, TypeVar
+
+if sys.version_info >= (3, 11):
+    from typing import Self
+else:
+    from typing_extensions import Self
 
 from dimos_lcm.vision_msgs import Detection2DArray
 
-from dimos.msgs.foxglove_msgs.ImageAnnotations import ImageAnnotations
 from dimos.msgs.std_msgs.Header import Header
 from dimos.perception.detection.type.utils import TableStr
 
@@ -92,10 +95,3 @@ class ImageDetections(Generic[T], TableStr):
         from dimos.msgs.sensor_msgs.Image import Image as ImageMsg
 
         return ImageMsg.from_opencv(img, ts=self.image.ts)
-
-    def to_foxglove_annotations(self) -> ImageAnnotations:
-        if not self.detections:
-            return ImageAnnotations(
-                texts=[], texts_length=0, points=[], points_length=0, circles=[], circles_length=0
-            )
-        return reduce(add, (det.to_image_annotations() for det in self.detections))

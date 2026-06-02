@@ -115,7 +115,7 @@ class UnitreeGo2TwistAdapter:
         dof: int = 3,
         speed_level: int = 1,
         rage_mode: bool = False,
-        **_: object,
+        **_: Any,
     ) -> None:
         if dof != 3:
             raise ValueError(f"Go2 only supports 3 DOF (vx, vy, wz), got {dof}")
@@ -124,15 +124,16 @@ class UnitreeGo2TwistAdapter:
         self._session_lock = threading.Lock()
         self._speed_level = speed_level
         self._rage_mode_default = rage_mode
+        self._last_guard_warn_ts: float = 0.0
 
     def connect(self) -> bool:
         """Connect to Go2, verify sport mode, stand up, enter FreeWalk.
 
         Sequence:
           1. ChannelFactoryInitialize(0) — default domain, default NIC.
-          2. Subscribe rt/sportmodestate for telemetry.
-          3. MotionSwitcher.Init + check_mode() — accepts whatever
-             controller is currently running.
+          2. MotionSwitcher.Init + poll CheckMode() until a sport mode
+             is reported (DDS discovery) or _DISCOVERY_TIMEOUT_S elapses.
+          3. Subscribe rt/sportmodestate for telemetry.
           4. SportClient.Init.
           5. _initialize_locomotion(): StandUp + FreeWalk + SpeedLevel.
           6. If rage_mode=True, set_rage_mode(True).
@@ -146,42 +147,58 @@ class UnitreeGo2TwistAdapter:
                 logger.warning("[Go2] Already connected — disconnect first")
                 return False
 
+        # ChannelFactoryInitialize raises if the factory already exists.
         try:
             ChannelFactoryInitialize(0)
-            motion_switcher = MotionSwitcherClient()
-            motion_switcher.SetTimeout(5.0)
-            motion_switcher.Init()
-            time.sleep(1.5)  # DDS discovery settle
+        except Exception:
+            pass
 
-            client = SportClient()
-            client.SetTimeout(10.0)
+        motion_switcher = MotionSwitcherClient()
+        motion_switcher.SetTimeout(0.5)
+        motion_switcher.Init()
 
-            session = _Session(
-                client=client,
-                motion_switcher=motion_switcher,
-                lock=threading.Lock(),
-            )
+        # Poll CheckMode() through DDS discovery
+        mode = ""
+        for _ in range(50):
+            try:
+                code, data = motion_switcher.CheckMode()
+            except (OSError, RuntimeError, TimeoutError):
+                time.sleep(0.1)
+                continue
+            if code == 0 and isinstance(data, dict):
+                mode = (data.get("name") or "").strip()
+                if mode:
+                    break
+            time.sleep(0.1)
+        motion_switcher.SetTimeout(5.0)
+        if not mode:
+            logger.error("[Go2] No sport mode active")
+            return False
+        logger.info(f"[Go2] Sport mode '{mode}' active")
 
-            def state_callback(msg: SportModeState_) -> None:
-                with session.lock:
-                    session.latest_state = msg
+        client = SportClient()
+        client.SetTimeout(10.0)
 
-            state_sub = ChannelSubscriber("rt/sportmodestate", SportModeState_)
-            state_sub.Init(state_callback, 10)
-            session.state_sub = state_sub
+        session = _Session(
+            client=client,
+            motion_switcher=motion_switcher,
+            lock=threading.Lock(),
+        )
 
-            with self._session_lock:
-                self._session = session
+        def state_callback(msg: SportModeState_) -> None:
+            with session.lock:
+                session.latest_state = msg
 
-            mode = self.check_mode()
-            if not mode:
-                logger.error("[Go2] No sport mode active")
-                self.disconnect()
-                return False
-            logger.info(f"[Go2] Sport mode '{mode}' active")
+        state_sub = ChannelSubscriber("rt/sportmodestate", SportModeState_)
+        state_sub.Init(state_callback, 10)
+        session.state_sub = state_sub
 
+        with self._session_lock:
+            self._session = session
+
+        # disconnect() must run on any failure
+        try:
             client.Init()
-            time.sleep(2.0)
             logger.info("[Go2] Connected")
 
             if not self._initialize_locomotion():
@@ -189,19 +206,13 @@ class UnitreeGo2TwistAdapter:
                 self.disconnect()
                 return False
 
-            if self._rage_mode_default:
-                if not self.set_rage_mode(True):
-                    logger.warning(
-                        "[Go2] Rage Mode enable failed — continuing with regular locomotion"
-                    )
+            if self._rage_mode_default and not self.set_rage_mode(True):
+                logger.warning("[Go2] Rage Mode enable failed — continuing with regular locomotion")
+        except Exception:
+            self.disconnect()
+            raise
 
-            return True
-
-        except Exception as e:
-            logger.error(f"[Go2] Failed to connect: {e}")
-            with self._session_lock:
-                self._session = None
-            return False
+        return True
 
     def disconnect(self) -> None:
         """Stop motion, stand the robot down, and tear down DDS resources.
@@ -220,21 +231,18 @@ class UnitreeGo2TwistAdapter:
         try:
             with session.lock:
                 session.client.StopMove()
-            time.sleep(0.2)
             with session.lock:
                 session.client.StandDown()
-            time.sleep(0.3)
-        except Exception as e:
+        except (OSError, RuntimeError, TimeoutError) as e:
             logger.error(f"[Go2] Error during disconnect: {e}")
 
         if session.state_sub is not None:
             try:
                 session.state_sub.Close()
-            except Exception as e:
+            except (OSError, RuntimeError) as e:
                 logger.error(f"[Go2] Error closing state subscriber: {e}")
 
     def is_connected(self) -> bool:
-        """True iff a session exists. Read under _session_lock."""
         with self._session_lock:
             return self._session is not None
 
@@ -306,11 +314,11 @@ class UnitreeGo2TwistAdapter:
         session = self._get_session()
 
         if not session.enabled:
-            logger.warning("[Go2] Not enabled, ignoring velocity command")
+            self._warn_guard("Not enabled, ignoring velocity command")
             return False
 
         if not session.locomotion_ready:
-            logger.warning("[Go2] Locomotion not ready, ignoring velocity command")
+            self._warn_guard("Locomotion not ready, ignoring velocity command")
             return False
 
         vx, vy, wz = velocities
@@ -320,6 +328,18 @@ class UnitreeGo2TwistAdapter:
             return True
 
         return self._send_velocity(vx, vy, wz)
+
+    def _warn_guard(self, msg: str) -> None:
+        """Rate-limited guard warning (at most once per second).
+
+        write_velocities runs at 100 Hz from the tick loop; without
+        throttling, a sustained guard miss would emit 100 warnings/s.
+        """
+        now = time.monotonic()
+        if now - self._last_guard_warn_ts < 1.0:
+            return
+        self._last_guard_warn_ts = now
+        logger.warning(f"[Go2] {msg}")
 
     def write_stop(self) -> bool:
         """Stop motion via SportClient.StopMove(). Leaves robot standing."""
@@ -353,14 +373,8 @@ class UnitreeGo2TwistAdapter:
         return True
 
     def read_enabled(self) -> bool:
-        """True iff session exists AND session.enabled. Reads under
-        _session_lock so it never returns stale True after disconnect()."""
         with self._session_lock:
             return self._session is not None and self._session.enabled
-
-    # =========================================================================
-    # Mode inspection / control (beyond TwistBaseAdapter)
-    # =========================================================================
 
     def check_mode(self) -> str | None:
         """Return the current MotionSwitcher mode name, or None on RPC fail.
@@ -406,7 +420,6 @@ class UnitreeGo2TwistAdapter:
 
         mode = self.check_mode()
 
-        # Snapshot state under session lock.
         with session.lock:
             state = session.latest_state
             enabled = session.enabled
@@ -471,10 +484,6 @@ class UnitreeGo2TwistAdapter:
         logger.info(f"[Go2] SpeedLevel set to {level}")
         return True
 
-    # =========================================================================
-    # Extended mcf AI controller RPCs (undocumented — reverse-engineered)
-    # =========================================================================
-
     def set_rage_mode(self, enable: bool) -> bool:
         """Toggle Rage Mode (api_id 2059) — widens forward envelope to ~2.5 m/s.
 
@@ -491,7 +500,9 @@ class UnitreeGo2TwistAdapter:
         with session.lock:
             ret = session.client.BalanceStand()
         if ret != 0:
-            logger.warning(f"[Go2] BalanceStand before rage toggle returned {ret}")
+            # Non-zero is usually benign here (already balanced / FSM transition
+            # in progress) — only fatal if the rage toggle below also fails.
+            logger.info(f"[Go2] BalanceStand returned {ret} (likely already balanced — proceeding)")
         time.sleep(0.3)
 
         if not self._call_sport_api(self._SPORT_API_ID_RAGEMODE, {"data": enable}):
@@ -507,9 +518,11 @@ class UnitreeGo2TwistAdapter:
         else:
             self._stop_rage_joystick(session)
             with session.lock:
-                session.client.SwitchJoystick(False)
+                sj_ret = session.client.SwitchJoystick(False)
+            if sj_ret != 0:
+                logger.warning(f"[Go2] SwitchJoystick(False) after rage returned {sj_ret}")
 
-        logger.info(f"[Go2]  Rage Mode {'enabled' if enable else 'disabled'}")
+        logger.info(f"[Go2] Rage Mode {'enabled' if enable else 'disabled'}")
         return True
 
     def _start_rage_joystick(self, session: _Session) -> None:
@@ -532,7 +545,11 @@ class UnitreeGo2TwistAdapter:
         session.rage_thread.start()
 
     def _stop_rage_joystick(self, session: _Session) -> None:
-        """Stop the publisher thread and release the DDS writer."""
+        """Stop the publisher thread and release the DDS writer.
+
+        Closes ChannelPublisher explicitly to avoid leaking the DDS writer
+        across repeated set_rage_mode(True/False) cycles.
+        """
         session.rage_active = False
         if session.rage_stop is not None:
             session.rage_stop.set()
@@ -540,7 +557,12 @@ class UnitreeGo2TwistAdapter:
             session.rage_thread.join(timeout=1.0)
             session.rage_thread = None
         session.rage_stop = None
-        session.rage_pub = None
+        if session.rage_pub is not None:
+            try:
+                session.rage_pub.Close()
+            except (OSError, RuntimeError) as e:
+                logger.warning(f"[Go2] Rage publisher Close raised: {e}")
+            session.rage_pub = None
 
     def _rage_joystick_loop(self, session: _Session) -> None:
         """Publish the latest rage_cmd as a WirelessController_ message.
@@ -584,6 +606,10 @@ class UnitreeGo2TwistAdapter:
         methods in __init__. We call _RegistApi() first (idempotent dict
         set) so undocumented IDs like RAGEMODE reach the robot.
 
+        Uses leading-underscore SDK methods (_RegistApi, _Call) — these
+        are not part of the public SDK contract. Verified working against
+        unitree-sdk2py-dimos>=1.0.2; retest if the SDK is upgraded.
+
         Returns True on RPC code 0. On failure, logs code + response.
         """
         session = self._get_session()
@@ -597,12 +623,13 @@ class UnitreeGo2TwistAdapter:
             return False
         return True
 
-    # =========================================================================
-    # Internal helpers
-    # =========================================================================
-
     def _get_session(self) -> _Session:
-        """Return active session or raise RuntimeError if disconnected."""
+        """Return active session or raise RuntimeError if disconnected.
+
+        Note: callers using the returned session.lock must NEVER then
+        try to acquire self._session_lock — see the lock-ordering rule
+        in the class docstring.
+        """
         session = self._session
         if session is None:
             raise RuntimeError("Go2 not connected")
@@ -639,16 +666,15 @@ class UnitreeGo2TwistAdapter:
         with session.lock:
             sl_ret = session.client.SpeedLevel(self._speed_level)
         if sl_ret == 0:
-            logger.info(f"[Go2]  SpeedLevel({self._speed_level}) applied")
+            logger.info(f"[Go2] SpeedLevel({self._speed_level}) applied")
         else:
             logger.warning(f"[Go2] SpeedLevel({self._speed_level}) returned {sl_ret}")
 
         session.locomotion_ready = True
-        logger.info("[Go2]  Locomotion ready")
+        logger.info("[Go2] Locomotion ready")
         return True
 
     def _send_velocity(self, vx: float, vy: float, wz: float) -> bool:
-        """Send raw SportClient.Move(vx, vy, wz) under session.lock."""
         session = self._get_session()
         with session.lock:
             ret = session.client.Move(vx, vy, wz)
@@ -659,8 +685,6 @@ class UnitreeGo2TwistAdapter:
 
 
 def register(registry: TwistBaseAdapterRegistry) -> None:
-    """Register this adapter with the TwistBaseAdapterRegistry under
-    the name 'unitree_go2'."""
     registry.register("unitree_go2", UnitreeGo2TwistAdapter)
 
 
