@@ -15,9 +15,11 @@
 from datetime import datetime
 import os
 from pathlib import Path
+import shlex
 import shutil
 import signal
 import subprocess
+import textwrap
 import time
 from typing import Any
 
@@ -41,6 +43,30 @@ logger = setup_logger()
 def _stamp() -> str:
     now = datetime.now()
     return now.strftime("%Y-%m-%d") + "_" + now.strftime("%-I-%M%p").lower() + "-PST"
+
+
+def _stop_when_parent_dies(cmd: list[str]) -> list[str]:
+    parent_pid = os.getpid()
+    quoted = " ".join(shlex.quote(arg) for arg in cmd)
+    # script to work on macos and linux (theres a cleaner just-linux solution)
+    script = textwrap.dedent(f"""
+        {quoted} &
+        child=$!
+        trap 'kill -INT "$child" 2>/dev/null' INT TERM
+        (
+            while kill -0 {parent_pid} 2>/dev/null; do
+                sleep 0.5
+            done
+            kill -INT "$child" 2>/dev/null
+        ) &
+        watcher=$!
+        wait "$child"
+        code=$?
+        kill "$watcher" 2>/dev/null
+        wait "$watcher" 2>/dev/null
+        exit $code
+    """).strip()
+    return ["bash", "-c", script]
 
 
 def _default_recording_dir() -> Path:
@@ -162,7 +188,7 @@ class FastLio2Recorder(Recorder):
         ]
 
         proc = subprocess.Popen(
-            cmd,
+            _stop_when_parent_dies(cmd),
             stdout=subprocess.DEVNULL,
             stderr=subprocess.PIPE,
             start_new_session=True,
@@ -211,6 +237,9 @@ class FastLio2Recorder(Recorder):
             try:
                 proc.wait(timeout=self.config.shutdown_timeout)
             except subprocess.TimeoutExpired:
-                proc.kill()
+                try:
+                    os.killpg(os.getpgid(proc.pid), signal.SIGKILL)
+                except ProcessLookupError:
+                    pass
                 proc.wait()
         logger.info(f"FastLio2Recorder pcap recording stopped  path={self.config.pcap_path}")
