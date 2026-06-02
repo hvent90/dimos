@@ -29,10 +29,17 @@ from dimos.control.blueprints.teleop import (
 )
 from dimos.core.coordination.blueprints import autoconnect
 from dimos.core.stream import In
-from dimos.core.transport import LCMTransport
+from dimos.core.transport import LCMTransport, pSHMTransport
 from dimos.memory2.module import Recorder, RecorderConfig
 from dimos.msgs.geometry_msgs.PoseStamped import PoseStamped
-from dimos.teleop.quest.quest_extensions import ArmTeleopModule
+from dimos.msgs.geometry_msgs.Twist import Twist
+from dimos.msgs.sensor_msgs.Image import Image
+from dimos.robot.unitree.go2.connection import GO2Connection
+from dimos.teleop.quest.quest_extensions import (
+    ArmTeleopModule,
+    Go2TeleopModule,
+    VideoArmTeleopModule,
+)
 from dimos.teleop.quest.quest_types import Buttons
 from dimos.visualization.vis_module import vis_module
 
@@ -63,22 +70,22 @@ teleop_quest_xarm7 = autoconnect(
 )
 
 
-class TeleopRecorderConfig(RecorderConfig):
-    db_path: str | Path = "recording_teleop.db"
+# XArm7 teleop + camera streaming into the Quest scene as a panel.
+teleop_quest_xarm7_video = autoconnect(
+    VideoArmTeleopModule.blueprint(task_names={"right": "teleop_xarm"}),
+    coordinator_teleop_xarm7,
+).transports(
+    {
+        ("right_controller_output", PoseStamped): LCMTransport(
+            "/coordinator/cartesian_command", PoseStamped
+        ),
+        ("buttons", Buttons): LCMTransport("/teleop/buttons", Buttons),
+        ("color_image", Image): LCMTransport("/teleop/color_image", Image),
+    }
+)
 
 
-class TeleopRecorder(Recorder):
-    """Records right-controller pose and button state from any quest teleop blueprint.
-
-    Compose at the CLI: ``dimos run teleop-quest-xarm7 teleop-recorder``.
-    """
-
-    right_controller_output: In[PoseStamped]
-    buttons: In[Buttons]
-    config: TeleopRecorderConfig
-
-
-# Single Piper teleop: left controller -> piper arm
+# Piper teleop (sim with --simulation, real otherwise): left controller -> piper arm
 teleop_quest_piper = autoconnect(
     ArmTeleopModule.blueprint(task_names={"left": "teleop_piper"}),
     coordinator_teleop_piper,
@@ -123,12 +130,32 @@ teleop_quest_dual = autoconnect(
 )
 
 
+# Go2 quadruped: thumbstick velocity teleop + camera streamed to the headset.
+teleop_quest_go2 = (
+    autoconnect(
+        Go2TeleopModule.blueprint(),
+        GO2Connection.blueprint(),
+    )
+    .transports(
+        {
+            ("cmd_vel", Twist): LCMTransport("/cmd_vel", Twist),
+            ("color_image", Image): pSHMTransport(
+                "color_image", default_capacity=DEFAULT_CAPACITY_COLOR_IMAGE
+            ),
+        }
+    )
+    .global_config(robot_model="unitree_go2")
+)
+
+
 __all__ = [
     "TeleopRecorder",
     "TeleopRecorderConfig",
     "teleop_quest_dual",
+    "teleop_quest_go2",
     "teleop_quest_piper",
     "teleop_quest_rerun",
     "teleop_quest_xarm6",
     "teleop_quest_xarm7",
+    "teleop_quest_xarm7_video",
 ]
