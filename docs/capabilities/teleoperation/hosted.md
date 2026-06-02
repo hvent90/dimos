@@ -42,16 +42,17 @@ manage many keys for different robots.
 | `teleop-hosted-go2` | Mobile base (Unitree Go2, wheeled robots) | `HostedTwistTeleopModule` |
 | `teleop-hosted-xarm7` | Arm IK (UFactory xArm7) | `HostedArmTeleopModule` |
 
-Pair with the recorder to log a session for later replay:
+Pair with the recorder to log a session and emit a transport-stats report:
 
 ```bash
-dimos run teleop-hosted-go2 hosted-teleop-recorder
+dimos run teleop-hosted-go2 teleop-recorder
 ```
 
-Or with the benchmark module to capture transport stats + a `report.md`:
+This writes `recording_teleop_<ts>.db` plus a `report.md` + jitter PNG next to
+it on disconnect. Reports can also be regenerated from an existing .db:
 
 ```bash
-dimos run teleop-hosted-go2 teleop-benchmark
+python -m dimos.teleop.utils.report path/to/recording.db
 ```
 
 ## Operator inputs
@@ -132,7 +133,7 @@ session and renegotiates so the operator's `ontrack` fires.
 
 For the WebRTC / aiortc / Cloudflare implementation details (MAX_BUNDLE
 constraints, candidate propagation, the throwaway SCTP id 0 channel, thread
-model), see [`dimos/teleop/quest_hosted/README.md`](https://github.com/dimensionalOS/dimos/blob/main/dimos/teleop/quest_hosted/README.md).
+model), see [`dimos/teleop/quest_hosted/README.md`](/dimos/teleop/quest_hosted/README.md).
 
 ## Known Limitations
 

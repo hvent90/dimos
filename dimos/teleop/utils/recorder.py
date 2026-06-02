@@ -35,7 +35,12 @@ from dimos.core.stream import In
 from dimos.memory2.module import Recorder, RecorderConfig
 from dimos.msgs.geometry_msgs.PoseStamped import PoseStamped
 from dimos.msgs.geometry_msgs.TwistStamped import TwistStamped
+from dimos.msgs.sensor_msgs.VideoStats import VideoStats
 from dimos.teleop.quest.quest_types import Buttons
+from dimos.teleop.utils.report import generate_report
+from dimos.utils.logging_config import setup_logger
+
+logger = setup_logger()
 
 
 class TeleopRecorderConfig(RecorderConfig):
@@ -44,19 +49,27 @@ class TeleopRecorderConfig(RecorderConfig):
     # path with ``.db`` to opt out of timestamping.
     db_path: str | Path = "recording_teleop.db"
 
+    # If True (default), generate a transport-stats report next to the .db on
+    # stop. Set False for a pure recording-only run (skips matplotlib import +
+    # report formatting).
+    generate_report: bool = True
+
 
 class TeleopRecorder(Recorder):
-    """Records whatever teleop streams the composed blueprint produces.
+    """Records teleop streams to a .db + (optionally) a transport-stats report.
 
-    Superset of ports across arm (pose + buttons) and mobile-base
-    (``cmd_vel_stamped``) teleop. Unconnected ports stay empty in the DB. Each
-    run lands in its own ``<stem>_<YYYYmmdd_HHMMSS>.db`` so runs don't clobber.
+    Superset of ports across arm (pose + buttons), mobile-base
+    (``cmd_vel_stamped``), and hosted-teleop video stats. Unconnected ports stay
+    empty in the DB. Each run lands in its own ``<stem>_<YYYYmmdd_HHMMSS>.db``
+    so runs don't clobber. On stop, if ``generate_report=True``, also writes
+    ``report.md`` + ``latency.png`` + ``jitter.png`` next to the .db.
     """
 
     left_controller_output: In[PoseStamped]
     right_controller_output: In[PoseStamped]
     buttons: In[Buttons]
     cmd_vel_stamped: In[TwistStamped]
+    video_stats: In[VideoStats]
     config: TeleopRecorderConfig
 
     @rpc
@@ -68,6 +81,18 @@ class TeleopRecorder(Recorder):
         # SqliteStore (sqlite3.connect) won't create the parent dir — ensure it.
         self.config.db_path.parent.mkdir(parents=True, exist_ok=True)
         super().start()
+
+    @rpc
+    def stop(self) -> None:
+        # Snapshot the db_path before super().stop() closes the store — once
+        # closed, we still want to point the report writer at the same file.
+        db_path = Path(self.config.db_path) if self.config.generate_report else None
+        super().stop()
+        if db_path is not None:
+            try:
+                generate_report(db_path)
+            except Exception:
+                logger.exception("generate_report failed for %s", db_path)
 
 
 __all__ = ["TeleopRecorder", "TeleopRecorderConfig"]

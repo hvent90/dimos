@@ -18,12 +18,10 @@
 Two flavors live here:
 
 * **Pure functions** (`pcts`, `loss_pct`, `reorder_count`, `classify_e2e`) —
-  shared by `TeleopBenchmarkModule` (post-hoc report.md) and any live stats
-  consumer.
+  shared by the post-hoc report writer (``teleop/utils/report.py``) and any
+  live stats consumer.
 * **`LiveStreamStats`** — a rolling-window class for always-on consumers that
   only need a recent snapshot (e.g. the operator HUD's command-plane telemetry).
-  The benchmark module keeps its own `StreamStats` with the report-specific
-  shape (unbounded, perf-clock for stalls, raw series for sparklines).
 """
 
 from __future__ import annotations

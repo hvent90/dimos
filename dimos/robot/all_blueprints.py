@@ -215,7 +215,6 @@ all_modules = {
     "speak-skill": "dimos.agents.skills.speak_skill.SpeakSkill",
     "tare-planner": "dimos.navigation.nav_stack.modules.tare_planner.tare_planner.TarePlanner",
     "temporal-memory": "dimos.perception.experimental.temporal_memory.temporal_memory.TemporalMemory",
-    "teleop-benchmark": "dimos.teleop.utils.benchmark.TeleopBenchmarkModule",
     "teleop-recorder": "dimos.teleop.quest.blueprints.TeleopRecorder",
     "terrain-analysis": "dimos.navigation.nav_stack.modules.terrain_analysis.terrain_analysis.TerrainAnalysis",
     "terrain-map-ext": "dimos.navigation.nav_stack.modules.terrain_map_ext.terrain_map_ext.TerrainMapExt",

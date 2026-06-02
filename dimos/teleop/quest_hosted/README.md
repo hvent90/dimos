@@ -87,17 +87,11 @@ the call sites but the *why* lives here:
   Quest — `await gl.makeXRCompatible()` is required before building the
   `XRWebGLLayer`.
 
-## Sidecar files (cross-process bridges)
-
-- **`/tmp/dimos_video_stats.jsonl`** — operator's `video_stats` are appended
-  here (one JSON line per sample, stamped with wall arrival). The
-  `TeleopBenchmarkModule` runs in a separate worker (`n_workers=8`) and can't
-  share memory with us, so it truncates this file on `start()` and reads it
-  back at report-time. We never read it.
+## Sidecar files
 
 - **`/tmp/dimos_netem_profile`** — written by `data/notes/benchmarks/netem/apply.sh`
-  before a run; the benchmark module reads it for the report header. We don't
-  touch it.
+  before a run; `TeleopRecorder`'s report writer reads it for the report
+  header so the netem profile is part of the artifact. We don't touch it.
 
 ## Threads (the runtime)
 

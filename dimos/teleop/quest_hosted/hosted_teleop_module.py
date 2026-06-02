@@ -47,6 +47,7 @@ from dimos.msgs.geometry_msgs.PoseStamped import PoseStamped
 from dimos.msgs.geometry_msgs.TwistStamped import TwistStamped
 from dimos.msgs.sensor_msgs.Image import Image, ImageFormat
 from dimos.msgs.sensor_msgs.Joy import Joy
+from dimos.msgs.sensor_msgs.VideoStats import VideoStats
 from dimos.teleop.quest.quest_types import Buttons, QuestControllerState
 from dimos.teleop.utils.stream_stats import LiveStreamStats
 from dimos.teleop.utils.teleop_transforms import webxr_to_robot
@@ -54,7 +55,6 @@ from dimos.utils.logging_config import setup_logger
 
 logger = setup_logger()
 
-_VIDEO_STATS_PATH = "/tmp/dimos_video_stats.jsonl"
 
 
 class Hand(IntEnum):
@@ -182,6 +182,9 @@ class HostedTeleopModule(Module):
     buttons: Out[Buttons]
     # cmd_vel actuation port is on the mobile-base subclass; this stays generic.
     cmd_vel_stamped: Out[TwistStamped]
+    # Operator-side video health, sampled in the browser via getStats() and
+    # relayed over state_reliable. Recorders pick this up like any typed stream.
+    video_stats: Out[VideoStats]
     color_image: In[Image]
 
     def __init__(self, **kwargs: Any) -> None:
@@ -595,44 +598,11 @@ class HostedTeleopModule(Module):
                 float(off) if off is not None else float("nan"),
             )
         elif kind == "video_stats":
-            logger.info(
-                "video: %sx%s %.1ffps %.0fkbps loss=%.2f%% jbuf=%.0fms "
-                "decode=%.1fms dropped=%s freezes=%s",
-                msg.get("width"),
-                msg.get("height"),
-                msg.get("fps", 0.0),
-                msg.get("kbps", 0.0),
-                msg.get("loss_pct", 0.0),
-                msg.get("jitter_buffer_ms", 0.0),
-                msg.get("decode_ms", 0.0),
-                msg.get("frames_dropped"),
-                msg.get("freezes"),
-            )
-            self._append_video_stats(msg)
+            stats = VideoStats.from_dict(msg)
+            logger.info("video: %s", stats)
+            self.video_stats.publish(stats)
         else:
             logger.debug(f"state_reliable: unknown message type {kind!r}")
-
-    def _append_video_stats(self, msg: dict[str, Any]) -> None:
-        try:
-            sample = {
-                k: msg.get(k)
-                for k in (
-                    "width",
-                    "height",
-                    "fps",
-                    "kbps",
-                    "loss_pct",
-                    "jitter_buffer_ms",
-                    "decode_ms",
-                    "frames_dropped",
-                    "freezes",
-                )
-            }
-            sample["wall"] = time.time()
-            with open(_VIDEO_STATS_PATH, "a") as f:
-                f.write(json.dumps(sample) + "\n")
-        except Exception:
-            logger.debug("video_stats sidecar append failed", exc_info=True)
 
     def _dispatch_bytes(self, data: bytes) -> None:
         decoder = self._decoders.get(data[:8])
