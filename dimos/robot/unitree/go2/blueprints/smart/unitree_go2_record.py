@@ -15,7 +15,6 @@
 
 import math
 import os
-from pathlib import Path
 import time
 from typing import Any
 
@@ -25,7 +24,6 @@ from dimos.core.coordination.blueprints import autoconnect
 from dimos.core.coordination.module_coordinator import ModuleCoordinator
 from dimos.core.global_config import global_config
 from dimos.core.stream import In
-from dimos.hardware.sensors.lidar.fastlio2 import module as _fastlio2_module
 from dimos.hardware.sensors.lidar.fastlio2.module import FastLio2
 from dimos.hardware.sensors.lidar.fastlio2.recorder import FastLio2Recorder, _default_recording_dir
 from dimos.hardware.sensors.lidar.fastlio2.speed_warner import SpeedWarner
@@ -114,8 +112,11 @@ class Go2TfHackRecorder(FastLio2Recorder):
         def on_msg(msg: Any) -> None:
             ts = time.time()
             pose = None
-            if name == "fastlio_odometry":
+            if name == "fastlio_odometry" or name == "fastlio_odometry_no_cap":
                 self._latest_fastlio_odom = msg
+                world_to_base = self._world_to_base_from_fastlio()
+                if world_to_base is not None:
+                    pose = world_to_base.to_pose()
             elif name == "fastlio_lidar" or name == "fastlio_lidar_no_cap":
                 world_to_base = self._world_to_base_from_fastlio()
                 if world_to_base is not None:
@@ -154,10 +155,6 @@ class FastLio2NoCap(FastLio2):
     pass
 
 
-# Absolute path to FastLio2's cpp build dir; passed to FastLio2NoCap so the
-# trivial subclass doesn't try to resolve `cpp` next to this file.
-_FASTLIO2_CPP = str(Path(_fastlio2_module.__file__).resolve().parent / "cpp")
-
 unitree_go2_record = autoconnect(
     KeyboardTeleop.blueprint(),
     MovementManager.blueprint(),
@@ -186,18 +183,20 @@ unitree_go2_record = autoconnect(
             (FastLio2, "odometry", "fastlio_odometry"),
         ]
     ),
-    FastLio2NoCap.blueprint(
-        frame_id="world",
-        map_freq=-1,
-        lidar_ip=_LIDAR_IP,
-        max_velocity_norm_ms=100,
-        cwd=_FASTLIO2_CPP,
-    ).remappings(
-        [
-            (FastLio2, "lidar", "fastlio_lidar_no_cap"),
-            (FastLio2, "odometry", "fastlio_odometry_no_cap"),
-        ]
-    ),
+    # FastLio2NoCap.blueprint(
+    #     frame_id="world",
+    #     map_freq=-1,
+    #     lidar_ip=_LIDAR_IP,
+    #     max_velocity_norm_ms=100,
+    #     # Absolute path to FastLio2's cpp build dir; passed to FastLio2NoCap so the
+    #     # trivial subclass doesn't try to resolve `cpp` next to this file.
+    #     cwd=str(Path(_fastlio2_module.__file__).resolve().parent / "cpp"),
+    # ).remappings(
+    #     [
+    #         (FastLio2, "lidar", "fastlio_lidar_no_cap"),
+    #         (FastLio2, "odometry", "fastlio_odometry_no_cap"),
+    #     ]
+    # ),
     Go2TfHackRecorder.blueprint(lidar_ip=_LIDAR_IP, record_pcap=True),
     SpeedWarner.blueprint().remappings(
         [
