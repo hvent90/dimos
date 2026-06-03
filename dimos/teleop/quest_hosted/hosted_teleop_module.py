@@ -21,7 +21,6 @@ import asyncio
 from enum import IntEnum
 import json
 import os
-import re
 import threading
 import time
 from typing import Any
@@ -33,8 +32,6 @@ from aiortc import (
     RTCPeerConnection,
     RTCSessionDescription,
 )
-from aiortc.mediastreams import VIDEO_CLOCK_RATE, VIDEO_TIME_BASE, VideoStreamTrack
-import av
 from dimos_lcm.geometry_msgs import PoseStamped as LCMPoseStamped, TwistStamped as LCMTwistStamped
 from dimos_lcm.sensor_msgs import Joy as LCMJoy
 import httpx
@@ -45,10 +42,12 @@ from dimos.core.module import Module, ModuleConfig
 from dimos.core.stream import In, Out
 from dimos.msgs.geometry_msgs.PoseStamped import PoseStamped
 from dimos.msgs.geometry_msgs.TwistStamped import TwistStamped
-from dimos.msgs.sensor_msgs.Image import Image, ImageFormat
+from dimos.msgs.sensor_msgs.Image import Image
 from dimos.msgs.sensor_msgs.Joy import Joy
 from dimos.msgs.sensor_msgs.VideoStats import VideoStats
 from dimos.teleop.quest.quest_types import Buttons, QuestControllerState
+from dimos.teleop.quest_hosted.sdp import propagate_bundle_candidates
+from dimos.teleop.quest_hosted.video_track import CameraVideoTrack
 from dimos.teleop.utils.stream_stats import LiveStreamStats
 from dimos.teleop.utils.teleop_transforms import webxr_to_robot
 from dimos.utils.logging_config import setup_logger
@@ -59,95 +58,6 @@ logger = setup_logger()
 class Hand(IntEnum):
     LEFT = 0
     RIGHT = 1
-
-
-def _propagate_bundle_candidates(sdp: str) -> str:
-    """Workaround for aiortc MAX_BUNDLE candidate-dict overwrite (see README)."""
-    sections = re.split(r"(?m)^(?=m=)", sdp)
-    cand_lines: list[str] = []
-    for s in sections:
-        if s.startswith("m="):
-            found = re.findall(r"(?m)^(a=(?:candidate:|end-of-candidates).*)$", s)
-            if found:
-                cand_lines = found
-                break
-    if not cand_lines:
-        return sdp
-
-    block = "\r\n".join(cand_lines) + "\r\n"
-    out = []
-    for s in sections:
-        if s.startswith("m=") and not re.search(r"(?m)^a=candidate:", s):
-            out.append(s.rstrip("\r\n") + "\r\n" + block)
-        else:
-            out.append(s)
-    return "".join(out)
-
-
-_AV_FORMAT_MAP = {
-    ImageFormat.BGR: "bgr24",
-    ImageFormat.RGB: "rgb24",
-    ImageFormat.BGRA: "bgra",
-    ImageFormat.RGBA: "rgba",
-    ImageFormat.GRAY: "gray",
-}
-
-
-class CameraVideoTrack(VideoStreamTrack):
-    """aiortc video track sourced from the latest Image on the In port.
-
-    Drain-mode (recv only returns on a NEW frame) + wall-clock PTSs — so the
-    browser paces playback at the source's real cadence, not aiortc's 30fps
-    schedule, and we don't feed duplicates at startup (would warm up the
-    encoder and the browser would play the burst in fast-forward).
-    """
-
-    def __init__(self) -> None:
-        super().__init__()
-        self._lock = threading.Lock()
-        self._latest: Image | None = None
-        self._frame_seq = 0
-        self._consumed_seq = 0
-        self._armed = False
-        self._first_wall: float | None = None
-
-    def arm(self) -> None:
-        """Discard buffered frames; start delivering from now.
-
-        Called once the PC is ``connected`` so the operator's video starts at
-        "this instant", not "whenever the robot booted".
-        """
-        with self._lock:
-            self._consumed_seq = self._frame_seq
-            self._armed = True
-
-    def set_latest(self, img: Image) -> None:
-        with self._lock:
-            self._latest = img
-            self._frame_seq += 1
-
-    async def recv(self) -> av.VideoFrame:
-        while True:
-            with self._lock:
-                if (
-                    self._armed
-                    and self._latest is not None
-                    and self._frame_seq > self._consumed_seq
-                ):
-                    img = self._latest
-                    self._consumed_seq = self._frame_seq
-                    break
-            await asyncio.sleep(0.005)
-
-        now = time.time()
-        if self._first_wall is None:
-            self._first_wall = now
-        pts = int((now - self._first_wall) * VIDEO_CLOCK_RATE)
-
-        frame = av.VideoFrame.from_ndarray(img.data, format=_AV_FORMAT_MAP.get(img.format, "bgr24"))
-        frame.pts = pts
-        frame.time_base = VIDEO_TIME_BASE
-        return frame
 
 
 class HostedTeleopConfig(ModuleConfig):
@@ -352,7 +262,7 @@ class HostedTeleopModule(Module):
         data = resp.json()
         self._session_id = data["session_id"]
 
-        answer_sdp = _propagate_bundle_candidates(data["sdp_answer"])
+        answer_sdp = propagate_bundle_candidates(data["sdp_answer"])
         await self._pc.setRemoteDescription(RTCSessionDescription(sdp=answer_sdp, type="answer"))
 
         _ = sctp_init  # intentionally left open
