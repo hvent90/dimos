@@ -349,9 +349,7 @@ class Go2WholeBodyConnection(Module):
 
     def _on_motor_command(self, msg: MotorCommandArray) -> None:
         if msg.num_joints != _NUM_MOTORS:
-            logger.warning(
-                f"Expected {_NUM_MOTORS} motor commands, got {msg.num_joints}; ignoring"
-            )
+            logger.warning(f"Expected {_NUM_MOTORS} motor commands, got {msg.num_joints}; ignoring")
             return
 
         with self._lock:
