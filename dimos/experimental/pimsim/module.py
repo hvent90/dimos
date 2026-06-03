@@ -24,6 +24,7 @@ import threading
 import time
 from typing import Any
 
+import lcm as lcmlib
 import numpy as np
 from reactivex.disposable import Disposable
 from starlette.applications import Starlette
@@ -62,33 +63,25 @@ from dimos.experimental.pimsim.robot_meshes import (
     apply_state,
     load_robot_meshes,
 )
-from dimos.msgs.geometry_msgs.PointStamped import PointStamped
 from dimos.msgs.geometry_msgs.Pose import Pose
 from dimos.msgs.geometry_msgs.PoseStamped import PoseStamped
-from dimos.msgs.geometry_msgs.Twist import Twist
-from dimos.msgs.geometry_msgs.Vector3 import Vector3
-from dimos.msgs.nav_msgs.Path import Path as PathMsg
 from dimos.msgs.sensor_msgs.Image import Image, ImageFormat
 from dimos.msgs.sensor_msgs.JointState import JointState
-from dimos.msgs.sensor_msgs.PointCloud2 import PointCloud2, _get_colormap_lut
 from dimos.utils.logging_config import setup_logger
 
 logger = setup_logger()
 
 _DEFAULT_BROADCAST_HZ = 30.0
-_DEFAULT_METADATA_HZ = 10.0
 _DEFAULT_PORT = 8091
-_DEFAULT_POINTCLOUD_HZ = 2.0
-_DEFAULT_POINTCLOUD_MAX_POINTS = 70000
 _DEFAULT_CAMERA_HZ = 15.0
 _DEFAULT_CAMERA_JPEG_QUALITY = 75
 _POSE_POSITION_EPSILON = 1e-5
 _POSE_QUATERNION_EPSILON = 1e-5
-# Binary websocket message tags.
+# Binary websocket message tags. Pointcloud (0x02) was removed when
+# /global_map migrated to the LCM<->WS bridge; camera and robot_pose
+# remain on /ws pending their own migration (CompressedImage, browser FK).
 _WS_MSG_CAMERA = 0x01
-_WS_MSG_POINTCLOUD = 0x02
 _WS_MSG_ROBOT_POSE = 0x03
-_WS_POINTCLOUD_HEADER_BYTES = 8
 _WS_ROBOT_POSE_HEADER_BYTES = 16
 # Per-message WS send timeout. The browser tab momentarily failing to drain
 # TCP (Chrome backgrounding, GC pause, App Nap) shouldn't permanently wedge
@@ -125,24 +118,16 @@ def _matches_asset_name(asset_name: str, prefix: str, path: Path) -> bool:
 
 
 class BabylonSceneViewerModule(Module):
+    # /joint_state and /odom are still consumed by the server because forward
+    # kinematics (-> _make_robot_pose_payload) runs server-side. The browser
+    # subscribes to these directly via /lcm-ws too, so once FK moves to the
+    # browser these In[] decls go away.
     joint_state: In[JointState]
     odom: In[PoseStamped]
-    path: In[PathMsg]
-    pointcloud_overlay: In[PointCloud2]
     camera_image: In[Image]
     # Optional second camera (e.g. a workspace-facing realsense). If a
     # transport is wired, a second camera panel shows up in the HUD.
     workspace_image: In[Image]
-    clicked_point: Out[PointStamped]
-    point_goal: Out[PointStamped]
-    cmd_vel: Out[Twist]
-    # Optional command input used by browser-physics mode. This gives the
-    # planner/teleop stack a normal cmd_vel topic while the browser owns
-    # collision and pose integration.
-    nav_cmd_vel: In[Twist]
-    # Authoritative robot pose when ``enable_sim=True``. Published from
-    # the browser-side character controller after collision resolution.
-    sim_odom: Out[PoseStamped]
     # Entity world (browser is authoritative; these republish for dimos consumers).
     entity_descriptors: Out[EntityDescriptor]
     # Aggregated per-tick snapshot — single source for cross-process
@@ -165,9 +150,6 @@ class BabylonSceneViewerModule(Module):
         scene_rotation_zyx_deg: tuple[float, float, float] = (0.0, 0.0, 0.0),
         scene_y_up: bool = True,
         broadcast_hz: float = _DEFAULT_BROADCAST_HZ,
-        metadata_hz: float = _DEFAULT_METADATA_HZ,
-        pointcloud_hz: float = _DEFAULT_POINTCLOUD_HZ,
-        pointcloud_max_points: int = _DEFAULT_POINTCLOUD_MAX_POINTS,
         camera_hz: float = _DEFAULT_CAMERA_HZ,
         camera_jpeg_quality: int = _DEFAULT_CAMERA_JPEG_QUALITY,
         camera_name: str = "camera",
@@ -203,9 +185,6 @@ class BabylonSceneViewerModule(Module):
         self._scene_rotation_zyx_deg = scene_rotation_zyx_deg
         self._scene_y_up = scene_y_up
         self._broadcast_dt = 1.0 / float(broadcast_hz)
-        self._metadata_dt = 1.0 / float(metadata_hz)
-        self._pointcloud_min_dt = 1.0 / float(pointcloud_hz)
-        self._pointcloud_max_points = pointcloud_max_points
         self._camera_min_dt = 1.0 / float(camera_hz)
         self._camera_jpeg_quality = int(camera_jpeg_quality)
         self._camera_name = camera_name
@@ -216,17 +195,8 @@ class BabylonSceneViewerModule(Module):
         self._latest_joints: dict[str, float] = {}
         self._latest_base_pos: np.ndarray | None = None
         self._latest_base_wxyz: np.ndarray | None = None
-        self._latest_path: list[list[float]] = []
-        self._latest_path_version = 0
-        self._last_metadata_broadcast = 0.0
-        self._last_metadata_path_version = -1
         self._robot_pose_lock = threading.Lock()
         self._last_robot_pose_values: np.ndarray | None = None
-        self._pointcloud_lock = threading.Lock()
-        self._latest_pointcloud_payload: bytes | None = None
-        self._pointcloud_pending_lock = threading.Lock()
-        self._pointcloud_send_pending = False
-        self._last_pointcloud_sent = 0.0
 
         # Camera state. _turbo_jpeg is lazy-initialised so the viewer still
         # imports cleanly on machines without PyTurboJPEG (it's an optional
@@ -242,6 +212,23 @@ class BabylonSceneViewerModule(Module):
         self._stop_event = threading.Event()
         self._server_loop: asyncio.AbstractEventLoop | None = None
         self._clients: set[WebSocket] = set()
+        # Per-client send lock. Starlette's WebSocket is not safe for
+        # concurrent sends; without serialization the broadcast loop and
+        # the initial replay in _websocket can race on the same socket
+        # and break Starlette's ASGI state machine. Locks are created /
+        # cleaned in _websocket; helpers below assume an entry exists.
+        self._ws_send_locks: dict[WebSocket, asyncio.Lock] = {}
+
+        # @dimos/msgs-compatible LCM <-> WebSocket bridge. Lives on /lcm-ws of
+        # this same Starlette app so the browser doesn't need a second port.
+        # Forwards raw LCM packets in both directions; subscribers/publishers
+        # on the bus see no difference between browser-published messages and
+        # any other peer.
+        self._lcm_bus: lcmlib.LCM | None = None
+        self._lcm_subscription: Any = None
+        self._lcm_handle_thread: threading.Thread | None = None
+        self._lcm_clients: set[WebSocket] = set()
+        self._lcm_seq: int = 0
 
         self._browser_physics_enabled = enable_sim
         self._browser_sim_rate = float(sim_rate)
@@ -288,16 +275,12 @@ class BabylonSceneViewerModule(Module):
         )
         self._server_thread.start()
 
+        # joint_state + odom drive server-side FK (-> _make_robot_pose_payload).
+        # The browser also subscribes to these on /lcm-ws for its HUD sliders
+        # and (eventually) for browser-side FK. /global_map, /nav_path, and
+        # /nav_cmd_vel are consumed entirely on the browser via the bridge.
         self.register_disposable(Disposable(self.joint_state.subscribe(self._on_joint_state)))
         self.register_disposable(Disposable(self.odom.subscribe(self._on_odom)))
-        try:
-            self.register_disposable(Disposable(self.nav_cmd_vel.subscribe(self._on_nav_cmd_vel)))
-        except Exception:
-            logger.debug("BabylonViewer: nav_cmd_vel not wired; browser drive only")
-        self.register_disposable(Disposable(self.path.subscribe(self._on_path)))
-        self.register_disposable(
-            Disposable(self.pointcloud_overlay.subscribe(self._on_pointcloud_overlay))
-        )
         self.register_disposable(Disposable(self.camera_image.subscribe(self._on_camera_image)))
         try:
             self.register_disposable(
@@ -315,6 +298,19 @@ class BabylonSceneViewerModule(Module):
         )
         self._broadcast_thread.start()
 
+        # LCM <-> WS bridge for browser. Subscribes to the bus once, forwards
+        # raw packets to every /lcm-ws client. Receives raw LCM packets the
+        # browser publishes (encoded with @dimos/msgs) and republishes them.
+        self._lcm_bus = lcmlib.LCM()
+        self._lcm_subscription = self._lcm_bus.subscribe(".*", self._on_lcm_bus_msg)
+        self._lcm_subscription.set_queue_capacity(10000)
+        self._lcm_handle_thread = threading.Thread(
+            target=self._lcm_handle_loop,
+            name="babylon-viewer-lcm-bridge",
+            daemon=True,
+        )
+        self._lcm_handle_thread.start()
+
         logger.info("Babylon scene viewer: http://localhost:%s/", self._port)
 
     @rpc
@@ -324,6 +320,8 @@ class BabylonSceneViewerModule(Module):
             self._uvicorn_server.should_exit = True
         if self._broadcast_thread and self._broadcast_thread.is_alive():
             self._broadcast_thread.join(timeout=2.0)
+        if self._lcm_handle_thread and self._lcm_handle_thread.is_alive():
+            self._lcm_handle_thread.join(timeout=2.0)
         if self._server_thread and self._server_thread.is_alive():
             self._server_thread.join(timeout=2.0)
         super().stop()
@@ -343,6 +341,7 @@ class BabylonSceneViewerModule(Module):
                 Route("/assets/{asset_name:path}", self._asset),
                 Mount("/static", app=StaticFiles(directory=STATIC_DIR), name="static"),
                 WebSocketRoute("/ws", self._websocket),
+                WebSocketRoute("/lcm-ws", self._lcm_websocket),
             ],
             lifespan=_lifespan,
         )
@@ -361,7 +360,7 @@ class BabylonSceneViewerModule(Module):
 
     async def _index(self, request: Request) -> HTMLResponse:
         html = index_html()
-        for asset_name in ("style.css", "ui.js", "app.js"):
+        for asset_name in ("style.css", "ui.js", "app.js", "lcm_client.js"):
             asset_path = STATIC_DIR / asset_name
             if not asset_path.exists():
                 continue
@@ -492,22 +491,24 @@ class BabylonSceneViewerModule(Module):
         return Response("asset not found", status_code=404)
 
     async def _websocket(self, websocket: WebSocket) -> None:
+        # Control-plane / camera channel. Display topics (pointcloud, path,
+        # joint state, nav cmd_vel) and browser-authored state (sim_odom,
+        # cmd_vel, clicked_point, point_goal, entity world) flow through
+        # /lcm-ws via @dimos/msgs; only the JSON RPC for things that touch
+        # in-process Python state (respawn, arm control, coordinator
+        # activate/dry-run, multi-tab entity replay) lives here now.
         await websocket.accept()
+        self._ws_send_locks[websocket] = asyncio.Lock()
         self._clients.add(websocket)
         logger.info("BabylonViewer: websocket connected", clients=len(self._clients))
         try:
             robot_pose_payload = self._make_robot_pose_payload(force=True)
             if robot_pose_payload is not None:
-                await websocket.send_bytes(robot_pose_payload)
-            await websocket.send_json(self._make_state_payload())
-            with self._pointcloud_lock:
-                pointcloud_payload = self._latest_pointcloud_payload
-            if pointcloud_payload is not None:
-                await websocket.send_bytes(pointcloud_payload)
+                await self._send_bytes_locked(websocket, robot_pose_payload)
             # Replay entity descriptors so a fresh tab rebuilds the world
             # the browser-side physics is otherwise oblivious to.
             for spawn in self._entity_spawn_messages():
-                await websocket.send_json(spawn)
+                await self._send_json_locked(websocket, spawn)
             while True:
                 message = await websocket.receive_json()
                 self._handle_client_message(message)
@@ -515,9 +516,92 @@ class BabylonSceneViewerModule(Module):
             pass
         finally:
             self._clients.discard(websocket)
+            self._ws_send_locks.pop(websocket, None)
             logger.info("BabylonViewer: websocket disconnected", clients=len(self._clients))
 
+    # ---- LCM <-> WebSocket bridge ---------------------------------------
+    #
+    # @dimos/msgs in the browser speaks the standard LCM small-message wire
+    # format: [magic u32 BE][seq u32 BE][channel utf-8][\0][payload]. The
+    # bridge synthesises that on the way out (since the Python LCM library
+    # hands us channel + payload separately) and parses it on the way in.
+    # Fragmented LCM messages (>~64KB) are not yet supported here.
+
+    _LCM_MAGIC_SHORT = 0x4C433032  # "LC02"
+
+    def _lcm_handle_loop(self) -> None:
+        if self._lcm_bus is None:
+            return
+        while not self._stop_event.is_set():
+            try:
+                self._lcm_bus.handle_timeout(100)
+            except Exception:
+                logger.exception("BabylonViewer: lcm handle failed")
+
+    def _on_lcm_bus_msg(self, channel: str, data: bytes) -> None:
+        if not self._lcm_clients:
+            return
+        chan_bytes = channel.encode("utf-8")
+        packet = (
+            struct.pack(">II", self._LCM_MAGIC_SHORT, self._lcm_seq) + chan_bytes + b"\x00" + data
+        )
+        self._lcm_seq = (self._lcm_seq + 1) & 0xFFFFFFFF
+        loop = self._server_loop
+        if loop is None:
+            return
+        asyncio.run_coroutine_threadsafe(self._broadcast_lcm_packet(packet), loop)
+
+    async def _broadcast_lcm_packet(self, packet: bytes) -> None:
+        dead: list[WebSocket] = []
+        for websocket in tuple(self._lcm_clients):
+            try:
+                await websocket.send_bytes(packet)
+            except Exception:
+                dead.append(websocket)
+        for websocket in dead:
+            self._lcm_clients.discard(websocket)
+
+    async def _lcm_websocket(self, websocket: WebSocket) -> None:
+        await websocket.accept()
+        self._lcm_clients.add(websocket)
+        logger.info("BabylonViewer: lcm-ws connected", clients=len(self._lcm_clients))
+        try:
+            while True:
+                packet = await websocket.receive_bytes()
+                self._publish_lcm_packet(packet)
+        except WebSocketDisconnect:
+            pass
+        except Exception:
+            logger.exception("BabylonViewer: lcm-ws receive failed")
+        finally:
+            self._lcm_clients.discard(websocket)
+            logger.info("BabylonViewer: lcm-ws disconnected", clients=len(self._lcm_clients))
+
+    def _publish_lcm_packet(self, packet: bytes) -> None:
+        if self._lcm_bus is None:
+            return
+        if len(packet) < 8:
+            return
+        magic, _seq = struct.unpack(">II", packet[:8])
+        if magic != self._LCM_MAGIC_SHORT:
+            logger.warning("BabylonViewer: dropping non-small LCM packet from browser")
+            return
+        try:
+            null_idx = packet.index(b"\x00", 8)
+        except ValueError:
+            return
+        channel = packet[8:null_idx].decode("utf-8", errors="replace")
+        payload = packet[null_idx + 1 :]
+        self._lcm_bus.publish(channel, payload)
+
+    # ---- existing JSON control plane ------------------------------------
+
     def _handle_client_message(self, message: dict[str, Any]) -> None:
+        # All bus-level publishes (cmd_vel, sim_odom -> /odom, clicked_point,
+        # point_goal, entity_state_batch) now flow browser -> /lcm-ws -> bus
+        # directly. What stays here is JSON RPC for things that touch
+        # in-process Python state: sim respawn, arm-joint mutators, the
+        # coordinator engage/dry-run toggles, and the multi-tab entity replay.
         message_type = message.get("type")
         if message_type == "respawn":
             logger.info(
@@ -526,10 +610,7 @@ class BabylonSceneViewerModule(Module):
             )
             if self._mujoco_sim is not None:
                 self._respawn_with_policy_reset(self._mujoco_sim.respawn)
-            zero = Twist.zero()
-            self.cmd_vel.publish(zero)
             if self._browser_physics_enabled:
-                self._broadcast_cmd_vel(zero)
                 self._broadcast_json_from_thread(
                     {"type": "sim_respawn", "pose": self._browser_initial_pose}
                 )
@@ -553,23 +634,10 @@ class BabylonSceneViewerModule(Module):
             )
             if self._mujoco_sim is not None:
                 self._respawn_with_policy_reset(lambda: self._mujoco_sim.respawn_at(x, y))
-            zero = Twist.zero()
-            self.cmd_vel.publish(zero)
             if self._browser_physics_enabled:
-                self._broadcast_cmd_vel(zero)
                 pose = dict(self._browser_initial_pose)
                 pose.update({"x": x, "y": y, "z": z + self._browser_vehicle_height})
                 self._broadcast_json_from_thread({"type": "sim_respawn", "pose": pose})
-            return
-        if message_type == "cmd_vel":
-            twist = self._parse_twist(message)
-            if twist is not None:
-                self.cmd_vel.publish(twist)
-                if self._browser_physics_enabled:
-                    self._broadcast_cmd_vel(twist)
-            return
-        if message_type == "sim_odom":
-            self._handle_browser_sim_odom(message)
             return
         if message_type == "arm_joint":
             name = message.get("name")
@@ -614,20 +682,6 @@ class BabylonSceneViewerModule(Module):
         if message_type == "entity_clear":
             self._handle_entity_clear()
             return
-        if message_type not in {"clicked_point", "point_goal"}:
-            return
-        point = message.get("point")
-        if not isinstance(point, list) or len(point) != 3:
-            return
-        try:
-            x, y, z = (float(value) for value in point)
-        except (TypeError, ValueError):
-            return
-        stamped = PointStamped(x=x, y=y, z=z, frame_id="map")
-        if message_type == "clicked_point":
-            self.clicked_point.publish(stamped)
-        else:
-            self.point_goal.publish(stamped)
 
     def _respawn_with_policy_reset(self, respawn: Callable[[], bool]) -> bool:
         if self._coordinator_ctrl is not None:
@@ -638,142 +692,31 @@ class BabylonSceneViewerModule(Module):
             if self._coordinator_ctrl is not None:
                 self._coordinator_ctrl.set_activated(engaged=True)
 
-    @staticmethod
-    def _parse_twist(message: dict[str, Any]) -> Twist | None:
-        linear = message.get("linear", [0.0, 0.0, 0.0])
-        angular = message.get("angular", [0.0, 0.0, 0.0])
-        if not isinstance(linear, list) or not isinstance(angular, list):
-            return None
-        if len(linear) != 3 or len(angular) != 3:
-            return None
-        try:
-            return Twist(
-                linear=Vector3(*(float(value) for value in linear)),
-                angular=Vector3(*(float(value) for value in angular)),
-            )
-        except (TypeError, ValueError):
-            return None
-
-    def _on_nav_cmd_vel(self, twist: Twist) -> None:
-        if self._browser_physics_enabled:
-            self._broadcast_cmd_vel(twist)
-
-    def _broadcast_cmd_vel(self, twist: Twist) -> None:
-        self._broadcast_json_from_thread(
-            {
-                "type": "cmd_vel",
-                "linear": [twist.linear.x, twist.linear.y, twist.linear.z],
-                "angular": [twist.angular.x, twist.angular.y, twist.angular.z],
-            }
-        )
-
-    def _handle_browser_sim_odom(self, message: dict[str, Any]) -> None:
-        pose = message.get("pose")
-        if not isinstance(pose, dict):
-            return
-        try:
-            x = float(pose.get("x", 0.0))
-            y = float(pose.get("y", 0.0))
-            z = float(pose.get("z", 0.0))
-            qx = float(pose.get("qx", 0.0))
-            qy = float(pose.get("qy", 0.0))
-            qz = float(pose.get("qz", 0.0))
-            qw = float(pose.get("qw", 1.0))
-        except (TypeError, ValueError):
-            return
-
-        with self._state_lock:
-            self._latest_base_pos = np.array([x, y, z], dtype=np.float64)
-            self._latest_base_wxyz = np.array([qw, qx, qy, qz], dtype=np.float64)
-
-        try:
-            self.sim_odom.publish(
-                PoseStamped(
-                    ts=time.time(),
-                    frame_id="map",
-                    position=[x, y, z],
-                    orientation=[qx, qy, qz, qw],
-                )
-            )
-        except Exception:
-            logger.exception("BabylonViewer: browser sim_odom publish failed")
-
     def _broadcast_loop(self) -> None:
+        # Still here only because forward kinematics runs server-side and the
+        # browser consumes the resulting per-body pose array as a binary
+        # frame on /ws. Once the browser does its own FK from /joint_state
+        # + /odom (both already available via /lcm-ws), this loop and the
+        # robot_pose binary frame both go.
         while not self._stop_event.is_set():
             loop = self._server_loop
             if loop is not None and self._clients:
                 robot_pose_payload = self._make_robot_pose_payload()
-                state_payload = self._make_metadata_payload_if_due()
-                if robot_pose_payload is not None or state_payload is not None:
+                if robot_pose_payload is not None:
                     asyncio.run_coroutine_threadsafe(
-                        self._broadcast_state(state_payload, robot_pose_payload),
+                        self._broadcast_robot_pose(robot_pose_payload),
                         loop,
                     )
             time.sleep(self._broadcast_dt)
 
-    async def _broadcast_state(
-        self,
-        state_payload: dict[str, Any] | None,
-        robot_pose_payload: bytes | None,
-    ) -> None:
+    async def _broadcast_robot_pose(self, robot_pose_payload: bytes) -> None:
         dead: list[WebSocket] = []
         for websocket in tuple(self._clients):
             try:
-                if robot_pose_payload is not None:
-                    await asyncio.wait_for(
-                        websocket.send_bytes(robot_pose_payload),
-                        timeout=_WS_SEND_TIMEOUT_S,
-                    )
-                if state_payload is not None:
-                    await asyncio.wait_for(
-                        websocket.send_json(state_payload),
-                        timeout=_WS_SEND_TIMEOUT_S,
-                    )
+                await self._send_bytes_locked(websocket, robot_pose_payload)
             except Exception:
                 dead.append(websocket)
         await self._drop_clients(dead)
-
-    def _make_metadata_payload_if_due(self) -> dict[str, Any] | None:
-        now = time.monotonic()
-        with self._state_lock:
-            path_version = self._latest_path_version
-
-        if (
-            now - self._last_metadata_broadcast < self._metadata_dt
-            and path_version == self._last_metadata_path_version
-        ):
-            return None
-
-        self._last_metadata_broadcast = now
-        self._last_metadata_path_version = path_version
-        return self._make_state_payload()
-
-    def _make_state_payload(self) -> dict[str, Any]:
-        with self._state_lock:
-            joints = dict(self._latest_joints)
-            path_points = [point[:] for point in self._latest_path]
-            path_version = self._latest_path_version
-
-        # Normalise joint names to the short form the slider HUD uses:
-        #   * strip a leading "<hwid>/" prefix (e.g. "g1/left_shoulder_pitch"
-        #     → "left_shoulder_pitch") for coordinator-style names.
-        #   * strip a trailing "_joint" suffix (e.g. "left_shoulder_pitch_joint"
-        #     → "left_shoulder_pitch") for URDF-style names.
-        def _canon(k: str) -> str:
-            if "/" in k:
-                k = k.split("/", 1)[1]
-            if k.endswith("_joint"):
-                k = k[: -len("_joint")]
-            return k
-
-        joint_positions = {_canon(k): float(v) for k, v in joints.items()}
-        return {
-            "type": "state",
-            "time": time.time(),
-            "path": path_points,
-            "path_version": path_version,
-            "joints": joint_positions,
-        }
 
     def _make_robot_pose_payload(self, *, force: bool = False) -> bytes | None:
         robot = self._robot
@@ -838,25 +781,6 @@ class BabylonSceneViewerModule(Module):
                 ],
                 dtype=np.float64,
             )
-
-    def _on_path(self, msg: PathMsg) -> None:
-        with self._state_lock:
-            self._latest_path = [[pose.x, pose.y, pose.z] for pose in msg.poses]
-            self._latest_path_version += 1
-
-    def _on_pointcloud_overlay(self, msg: PointCloud2) -> None:
-        now = time.monotonic()
-        if now - self._last_pointcloud_sent < self._pointcloud_min_dt:
-            return
-
-        payload = self._make_pointcloud_payload(msg)
-        if payload is None:
-            return
-
-        with self._pointcloud_lock:
-            self._latest_pointcloud_payload = payload
-            self._last_pointcloud_sent = now
-        self._broadcast_pointcloud_from_thread(payload)
 
     def _on_camera_image(self, msg: Image) -> None:
         self._broadcast_camera(msg, self._camera_name, is_workspace=False)
@@ -929,64 +853,14 @@ class BabylonSceneViewerModule(Module):
             return
         asyncio.run_coroutine_threadsafe(self._broadcast_bytes(payload), loop)
 
-    def _broadcast_pointcloud_from_thread(self, payload: bytes) -> None:
-        loop = self._server_loop
-        if loop is None or not self._clients:
-            return
-        with self._pointcloud_pending_lock:
-            if self._pointcloud_send_pending:
-                return
-            self._pointcloud_send_pending = True
-        future = asyncio.run_coroutine_threadsafe(self._broadcast_bytes(payload), loop)
-        future.add_done_callback(lambda _: self._clear_pointcloud_send_pending())
-
-    def _clear_pointcloud_send_pending(self) -> None:
-        with self._pointcloud_pending_lock:
-            self._pointcloud_send_pending = False
-
     async def _broadcast_bytes(self, payload: bytes) -> None:
         dead: list[WebSocket] = []
         for websocket in tuple(self._clients):
             try:
-                await asyncio.wait_for(
-                    websocket.send_bytes(payload),
-                    timeout=_WS_SEND_TIMEOUT_S,
-                )
+                await self._send_bytes_locked(websocket, payload)
             except Exception:
                 dead.append(websocket)
         await self._drop_clients(dead)
-
-    def _make_pointcloud_payload(self, msg: PointCloud2) -> bytes | None:
-        points = msg.points_f32()
-        if points.size == 0:
-            return None
-
-        points = points[np.isfinite(points).all(axis=1)]
-        if len(points) == 0:
-            return None
-
-        if len(points) > self._pointcloud_max_points:
-            indices = np.linspace(0, len(points) - 1, self._pointcloud_max_points).astype(np.int64)
-            points = points[indices]
-
-        z_values = points[:, 2]
-        if len(z_values) >= 20:
-            z_min, z_max = np.quantile(z_values, [0.02, 0.98])
-        else:
-            z_min, z_max = float(z_values.min()), float(z_values.max())
-        normalized = np.clip((z_values - z_min) / (z_max - z_min + 1e-6), 0.0, 1.0)
-        colors = _get_colormap_lut("turbo")[(normalized * 255).astype(np.uint8)]
-
-        ambient = np.array([34, 42, 50], dtype=np.float32)
-        colors = np.clip(colors.astype(np.float32) * 0.82 + ambient * 0.18, 0, 255).astype(np.uint8)
-
-        count = len(points)
-        header = bytearray(_WS_POINTCLOUD_HEADER_BYTES)
-        header[0] = _WS_MSG_POINTCLOUD
-        header[4:8] = count.to_bytes(4, "big")
-        positions = np.ascontiguousarray(points.astype(np.float32, copy=False))
-        colors = np.ascontiguousarray(colors)
-        return bytes(header) + positions.reshape(-1).tobytes() + colors.reshape(-1).tobytes()
 
     # ─── Entity world ────────────────────────────────────────────────────
     #
@@ -1196,13 +1070,34 @@ class BabylonSceneViewerModule(Module):
         dead: list[WebSocket] = []
         for websocket in tuple(self._clients):
             try:
-                await asyncio.wait_for(
-                    websocket.send_json(payload),
-                    timeout=_WS_SEND_TIMEOUT_S,
-                )
+                await self._send_json_locked(websocket, payload)
             except Exception:
                 dead.append(websocket)
         await self._drop_clients(dead)
+
+    async def _send_bytes_locked(self, websocket: WebSocket, payload: bytes) -> None:
+        """Send bytes under the per-client lock with a wall-clock timeout.
+
+        Starlette's WebSocket has a single ASGI send pipe; concurrent
+        ``send_*`` calls on the same WS corrupt its state machine. The
+        per-client lock serialises sends so only one is in flight at a
+        time. The timeout bounds how long any single send can hold the
+        lock — without it, a stalled browser would back up every other
+        sender behind it forever.
+        """
+        lock = self._ws_send_locks.get(websocket)
+        if lock is None:
+            raise RuntimeError("WebSocket no longer registered")
+        async with lock:
+            await asyncio.wait_for(websocket.send_bytes(payload), timeout=_WS_SEND_TIMEOUT_S)
+
+    async def _send_json_locked(self, websocket: WebSocket, payload: dict[str, Any]) -> None:
+        """JSON counterpart to :meth:`_send_bytes_locked`."""
+        lock = self._ws_send_locks.get(websocket)
+        if lock is None:
+            raise RuntimeError("WebSocket no longer registered")
+        async with lock:
+            await asyncio.wait_for(websocket.send_json(payload), timeout=_WS_SEND_TIMEOUT_S)
 
     async def _drop_clients(self, dead: list[WebSocket]) -> None:
         """Discard dead clients and best-effort close them so JS reconnects.
@@ -1214,5 +1109,6 @@ class BabylonSceneViewerModule(Module):
         """
         for websocket in dead:
             self._clients.discard(websocket)
+            self._ws_send_locks.pop(websocket, None)
             with suppress(Exception):
                 await asyncio.wait_for(websocket.close(), timeout=_WS_CLOSE_TIMEOUT_S)

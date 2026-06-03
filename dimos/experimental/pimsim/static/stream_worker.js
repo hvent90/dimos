@@ -12,10 +12,10 @@
 // See the License for the specific language governing permissions and
 // limitations under the License.
 
+// 0x02 (pointcloud) used to live here too; /global_map now flows through
+// /lcm-ws as a sensor_msgs.PointCloud2 message and is decoded by app.js.
 const wsMsgCamera = 0x01;
-const wsMsgPointcloud = 0x02;
 const wsMsgRobotPose = 0x03;
-const pointcloudHeaderBytes = 8;
 const robotPoseHeaderBytes = 16;
 
 let socket = null;
@@ -77,16 +77,6 @@ function handleBinaryMessage(buffer) {
       },
       [buffer],
     );
-    return;
-  }
-
-  if (msgType === wsMsgPointcloud) {
-    if (buffer.byteLength < pointcloudHeaderBytes) return;
-    const count = view.getUint32(4, false);
-    const positionLength = count * 3;
-    const colorOffset = pointcloudHeaderBytes + positionLength * 4;
-    if (buffer.byteLength < colorOffset + positionLength) return;
-    self.postMessage({ type: "pointcloud", count, buffer }, [buffer]);
     return;
   }
 

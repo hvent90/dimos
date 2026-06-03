@@ -156,7 +156,6 @@ const browserPhysicsOdomPeriodMs = 1000 / 50;
 const browserCharacterRadius = ROBOT_COLLIDER_RADIUS;
 const browserCollisionProbeHeights = [0.25, 0.75, 1.2];
 const supportFloorThickness = 0.08;
-const pointcloudHeaderBytes = 8;
 const robotPoseHeaderBytes = 16;
 const stateQueueMaxLength = 8;
 const stateImmediateDeltaMs = 100;
@@ -494,11 +493,27 @@ function sendDriveCommand(force = false) {
     twist.angular.every((value) => Math.abs(value) < 1e-6);
   if (!force && isZero && signature === lastDriveSignature) return;
 
-  if (sendSocketPayload({ type: "cmd_vel", ...twist })) {
-    if (browserPhysicsEnabled) setBrowserPhysicsCommand(twist);
-    lastDriveSendTime = now;
-    lastDriveSignature = signature;
+  const M = window.dimosMsgs;
+  const lcm = window.dimosLcm;
+  if (M && lcm) {
+    try {
+      const t = new M.geometry_msgs.Twist({
+        linear: new M.geometry_msgs.Vector3({
+          x: twist.linear[0], y: twist.linear[1], z: twist.linear[2],
+        }),
+        angular: new M.geometry_msgs.Vector3({
+          x: twist.angular[0], y: twist.angular[1], z: twist.angular[2],
+        }),
+      });
+      lcm.publish("/cmd_vel", t);
+    } catch (err) {
+      console.warn("[lcm] cmd_vel publish failed", err);
+      return;
+    }
   }
+  if (browserPhysicsEnabled) setBrowserPhysicsCommand(twist);
+  lastDriveSendTime = now;
+  lastDriveSignature = signature;
 }
 
 function setDriveEnabled(enabled) {
@@ -544,18 +559,33 @@ function publishBrowserSimOdom(force = false) {
   if (!force && now - browserPhysicsLastOdomMs < browserPhysicsOdomPeriodMs) return;
   browserPhysicsLastOdomMs = now;
   const q = yawQuaternion(browserPhysicsPose.yaw);
-  sendSocketPayload({
-    type: "sim_odom",
-    pose: {
-      x: browserPhysicsPose.x,
-      y: browserPhysicsPose.y,
-      z: browserPhysicsPose.z,
-      qx: q.x,
-      qy: q.y,
-      qz: q.z,
-      qw: q.w,
-    },
-  });
+  const M = window.dimosMsgs;
+  const lcm = window.dimosLcm;
+  if (!M || !lcm) return;
+  try {
+    const ts = Date.now() / 1000;
+    const sec = Math.floor(ts);
+    const nanosec = Math.floor((ts - sec) * 1e9);
+    const pose = new M.geometry_msgs.PoseStamped({
+      header: new M.std_msgs.Header({
+        stamp: new M.builtin_interfaces.Time({ sec, nanosec }),
+        frame_id: "map",
+      }),
+      pose: new M.geometry_msgs.Pose({
+        position: new M.geometry_msgs.Point({
+          x: browserPhysicsPose.x,
+          y: browserPhysicsPose.y,
+          z: browserPhysicsPose.z,
+        }),
+        orientation: new M.geometry_msgs.Quaternion({
+          x: q.x, y: q.y, z: q.z, w: q.w,
+        }),
+      }),
+    });
+    lcm.publish("/odom", pose);
+  } catch (err) {
+    console.warn("[lcm] sim_odom publish failed", err);
+  }
 }
 
 function horizontalCollisionDistance(origin, direction, maxDistance) {
@@ -1316,11 +1346,6 @@ function applyLatestRobotPose() {
   applyRobotPose(latestRobotPosePayload);
 }
 
-function applyStateMetadata(payload) {
-  updatePath(payload.path, payload.path_version);
-  _updateSlidersFromState(payload.joints);
-}
-
 function queueRobotPose(payload) {
   const nowMs = performance.now();
   const sourceMs = Number.isFinite(payload.time) ? payload.time * 1000 : nowMs;
@@ -1843,6 +1868,152 @@ function markPimsimSceneReady() {
   evaluatePimsimReady();
 }
 
+// ─── LCM <-> WS bridge subscriptions ────────────────────────────────────
+//
+// pimsim's BabylonSceneViewerModule subscribes to every LCM channel and
+// forwards raw packets to /lcm-ws. @dimos/msgs decodes them in the
+// lcm_client.js module worker. Here we just dispatch decoded messages
+// into the existing Babylon renderers — same hooks the old binary frames
+// fed into, no rendering changes.
+
+function whenLcmReady(callback) {
+  if (window.dimosLcm && window.dimosMsgs) {
+    callback();
+    return;
+  }
+  setTimeout(() => whenLcmReady(callback), 50);
+}
+
+// Mike Bostock's polynomial approximation of Google's "turbo" colormap.
+function turboColor(t) {
+  const x = Math.max(0, Math.min(1, t));
+  const r = 34.61 + x * (1172.33 - x * (10793.56 - x * (33300.12 - x * (38394.49 - x * 14825.05))));
+  const g = 23.31 + x * (557.33 + x * (1225.33 - x * (3574.96 - x * (1073.77 + x * 707.56))));
+  const b = 27.2 + x * (3211.1 - x * (15327.97 - x * (27814 - x * (22569.18 - x * 6838.66))));
+  return [
+    Math.max(0, Math.min(255, r)),
+    Math.max(0, Math.min(255, g)),
+    Math.max(0, Math.min(255, b)),
+  ];
+}
+
+function findPointCloudField(fields, name) {
+  for (const f of fields) if (f.name === name) return f;
+  return null;
+}
+
+// Decode a sensor_msgs.PointCloud2 (xyz + optional packed-float32 rgb) into
+// the {count, positions, colors} shape `updatePointCloud` already expects.
+function pointCloud2ToRenderPayload(msg) {
+  const fx = findPointCloudField(msg.fields, "x");
+  const fy = findPointCloudField(msg.fields, "y");
+  const fz = findPointCloudField(msg.fields, "z");
+  if (!fx || !fy || !fz) return null;
+
+  const step = msg.point_step;
+  if (!step || !msg.data || !msg.data.byteLength) return null;
+  const count = Math.floor(msg.data.byteLength / step);
+  if (count === 0) return null;
+
+  const view = new DataView(
+    msg.data.buffer,
+    msg.data.byteOffset,
+    msg.data.byteLength,
+  );
+  const littleEndian = !msg.is_bigendian;
+  const positions = new Float32Array(count * 3);
+  const frgb = findPointCloudField(msg.fields, "rgb");
+  const colorBuf = new Uint8Array(count * 3);
+
+  // First pass: positions + z range for fallback colormap.
+  let zMin = Infinity;
+  let zMax = -Infinity;
+  for (let i = 0; i < count; i += 1) {
+    const o = i * step;
+    const x = view.getFloat32(o + fx.offset, littleEndian);
+    const y = view.getFloat32(o + fy.offset, littleEndian);
+    const z = view.getFloat32(o + fz.offset, littleEndian);
+    if (!Number.isFinite(x) || !Number.isFinite(y) || !Number.isFinite(z)) {
+      positions[i * 3] = 0;
+      positions[i * 3 + 1] = 0;
+      positions[i * 3 + 2] = 0;
+      continue;
+    }
+    positions[i * 3] = x;
+    positions[i * 3 + 1] = y;
+    positions[i * 3 + 2] = z;
+    if (z < zMin) zMin = z;
+    if (z > zMax) zMax = z;
+  }
+
+  if (frgb) {
+    // ROS convention: 4 packed bytes (B,G,R,A) reinterpreted as float32.
+    for (let i = 0; i < count; i += 1) {
+      const o = i * step + frgb.offset;
+      colorBuf[i * 3 + 0] = view.getUint8(o + 2); // R
+      colorBuf[i * 3 + 1] = view.getUint8(o + 1); // G
+      colorBuf[i * 3 + 2] = view.getUint8(o + 0); // B
+    }
+  } else {
+    const denom = (zMax - zMin) || 1.0;
+    for (let i = 0; i < count; i += 1) {
+      const t = (positions[i * 3 + 2] - zMin) / denom;
+      const [r, g, b] = turboColor(t);
+      colorBuf[i * 3 + 0] = r;
+      colorBuf[i * 3 + 1] = g;
+      colorBuf[i * 3 + 2] = b;
+    }
+  }
+
+  return { count, positions, colors: colorBuf };
+}
+
+function subscribeLcmTopics() {
+  const M = window.dimosMsgs;
+  const lcm = window.dimosLcm;
+  if (!M || !lcm) return;
+
+  let pathVersion = 0;
+
+  lcm.subscribe("/global_map", M.sensor_msgs.PointCloud2, (msg) => {
+    const payload = pointCloud2ToRenderPayload(msg);
+    if (payload) updatePointCloud(payload);
+  });
+
+  lcm.subscribe("/nav_path", M.nav_msgs.Path, (msg) => {
+    pathVersion += 1;
+    const pts = (msg.poses || []).map((ps) => [
+      ps.pose.position.x,
+      ps.pose.position.y,
+      ps.pose.position.z,
+    ]);
+    updatePath(pts, pathVersion);
+  });
+
+  lcm.subscribe("/coordinator/joint_state", M.sensor_msgs.JointState, (msg) => {
+    if (!msg.name || !msg.position) return;
+    const joints = {};
+    for (let i = 0; i < msg.name.length && i < msg.position.length; i += 1) {
+      // Match the canonicalisation pimsim's old _make_state_payload did so
+      // the slider HUD keys still line up.
+      let k = msg.name[i];
+      const slash = k.indexOf("/");
+      if (slash >= 0) k = k.slice(slash + 1);
+      if (k.endsWith("_joint")) k = k.slice(0, -"_joint".length);
+      joints[k] = Number(msg.position[i]);
+    }
+    _updateSlidersFromState(joints);
+  });
+
+  lcm.subscribe("/nav_cmd_vel", M.geometry_msgs.Twist, (msg) => {
+    if (!browserPhysicsEnabled) return;
+    setBrowserPhysicsCommand({
+      linear: [msg.linear.x, msg.linear.y, msg.linear.z],
+      angular: [msg.angular.x, msg.angular.y, msg.angular.z],
+    });
+  });
+}
+
 function connectStreamWorker() {
   const worker = new Worker("/static/stream_worker.js");
   streamRef.worker = worker;
@@ -1857,12 +2028,9 @@ function connectStreamWorker() {
         if (streamRef.ready) evaluatePimsimReady();
         break;
       case "state":
-        if (message.payload.type === "state") {
-          applyStateMetadata(message.payload);
-        }
-        if (message.payload.type === "pointcloud") {
-          updatePointCloud(message.payload);
-        }
+        // Only JSON-only multi-tab entity replay + sim respawn ride here now.
+        // Joint state, nav path, pointcloud, and planner cmd_vel all arrive
+        // via /lcm-ws and are dispatched in subscribeLcmTopics() below.
         if (message.payload.type === "entity_spawn") {
           handleEntitySpawn(message.payload);
         }
@@ -1874,9 +2042,6 @@ function connectStreamWorker() {
         }
         if (message.payload.type === "entity_apply_velocity") {
           handleEntityApplyVelocity(message.payload);
-        }
-        if (message.payload.type === "cmd_vel") {
-          setBrowserPhysicsCommand(message.payload);
         }
         if (message.payload.type === "sim_respawn") {
           setBrowserPhysicsPose(message.payload.pose || {}, true);
@@ -1893,20 +2058,6 @@ function connectStreamWorker() {
           ),
         });
         break;
-      case "pointcloud": {
-        const positionLength = message.count * 3;
-        const colorOffset = pointcloudHeaderBytes + positionLength * 4;
-        updatePointCloud({
-          count: message.count,
-          positions: new Float32Array(
-            message.buffer,
-            pointcloudHeaderBytes,
-            positionLength,
-          ),
-          colors: new Uint8Array(message.buffer, colorOffset, positionLength),
-        });
-        break;
-      }
       case "camera":
         updateCameraFrame(message.cameraName, message.buffer, message.jpegOffset);
         break;
@@ -1973,10 +2124,7 @@ function installClickPublisher() {
         navMarkerMaterial,
         0.22,
       );
-      sendSocketPayload({
-        type: "clicked_point",
-        point: [point.x, point.y, point.z],
-      });
+      publishLcmPointStamped("/clicked_point", point);
       setClickMode(null);
       setStatus("nav target sent");
       return;
@@ -2005,13 +2153,31 @@ function installClickPublisher() {
       pointMarkerMaterial,
       0.16,
     );
-    sendSocketPayload({
-      type: "point_goal",
-      point: [point.x, point.y, point.z],
-    });
+    publishLcmPointStamped("/point_goal", point);
     setClickMode(null);
     setStatus("point target sent");
   });
+}
+
+function publishLcmPointStamped(topic, point) {
+  const M = window.dimosMsgs;
+  const lcm = window.dimosLcm;
+  if (!M || !lcm) return;
+  try {
+    const ts = Date.now() / 1000;
+    const sec = Math.floor(ts);
+    const nanosec = Math.floor((ts - sec) * 1e9);
+    const stamped = new M.geometry_msgs.PointStamped({
+      header: new M.std_msgs.Header({
+        stamp: new M.builtin_interfaces.Time({ sec, nanosec }),
+        frame_id: "map",
+      }),
+      point: new M.geometry_msgs.Point({ x: point.x, y: point.y, z: point.z }),
+    });
+    lcm.publish(topic, stamped);
+  } catch (err) {
+    console.warn(`[lcm] ${topic} publish failed`, err);
+  }
 }
 
 document.getElementById("toggleScene").onclick = () => {
@@ -2229,6 +2395,7 @@ function _updateSlidersFromState(joints) {
     setupRobotCollider();   // fire-and-forget; awaits physicsReady internally
     await ensureSupportFloor(config);
     connectStreamWorker();
+    whenLcmReady(subscribeLcmTopics);
     installClickPublisher();
     setStatus("live");
     if (sceneMode !== "0" && sceneMode !== "manual") {

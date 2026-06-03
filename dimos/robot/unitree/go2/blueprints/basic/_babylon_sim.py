@@ -35,10 +35,7 @@ from dimos.core.coordination.blueprints import Blueprint
 from dimos.core.global_config import global_config
 from dimos.core.transport import LCMTransport
 from dimos.experimental.pimsim.entity import EntityStateBatch
-from dimos.msgs.geometry_msgs.PointStamped import PointStamped
 from dimos.msgs.geometry_msgs.PoseStamped import PoseStamped
-from dimos.msgs.geometry_msgs.Twist import Twist
-from dimos.msgs.nav_msgs.Path import Path as PathMsg
 from dimos.msgs.sensor_msgs.Image import Image
 from dimos.msgs.sensor_msgs.JointState import JointState
 from dimos.msgs.sensor_msgs.PointCloud2 import PointCloud2
@@ -155,8 +152,6 @@ def go2_babylon_blueprint() -> Blueprint | None:
         support_floor_z=_env_float("DIMOS_SCENE_SUPPORT_FLOOR_Z", 0.0),
         support_floor_size=_env_float("DIMOS_SCENE_SUPPORT_FLOOR_SIZE", 0.0),
         lock_z=True,
-        pointcloud_hz=_env_float("DIMOS_BABYLON_POINTCLOUD_HZ", 2.0),
-        pointcloud_max_points=_env_int("DIMOS_BABYLON_POINTCLOUD_MAX_POINTS", 70000),
     )
 
     scene_package = _scene_package()
@@ -178,18 +173,15 @@ def go2_babylon_blueprint() -> Blueprint | None:
 
     return BabylonSceneViewerModule.blueprint(**kwargs).transports(
         {
+            # /joint_state and /odom are still consumed server-side because FK
+            # runs in Python (and emits the binary robot_pose frame). Browser
+            # also subscribes via /lcm-ws for HUD sliders. When FK moves to
+            # the browser, these two go too.
             ("joint_state", JointState): LCMTransport("/coordinator/joint_state", JointState),
             ("odom", PoseStamped): LCMTransport("/odom", PoseStamped),
-            # sim_odom IS the canonical /odom — the connection's TF
-            # republisher and every downstream consumer (mapping, planner)
-            # read from this same LCM topic.
-            ("sim_odom", PoseStamped): LCMTransport("/odom", PoseStamped),
-            ("path", PathMsg): LCMTransport("/nav_path", PathMsg),
-            ("pointcloud_overlay", PointCloud2): LCMTransport("/global_map", PointCloud2),
-            ("cmd_vel", Twist): LCMTransport("/cmd_vel", Twist),
-            ("clicked_point", PointStamped): LCMTransport("/clicked_point", PointStamped),
-            ("point_goal", PointStamped): LCMTransport("/point_goal", PointStamped),
             ("workspace_image", Image): LCMTransport("/workspace_image", Image),
+            # entity_state_batch is still server-published from JSON entity_states
+            # multi-tab replay until the entity world migrates to the bridge.
             ("entity_state_batch", EntityStateBatch): LCMTransport(
                 "/entity_state_batch", EntityStateBatch
             ),
