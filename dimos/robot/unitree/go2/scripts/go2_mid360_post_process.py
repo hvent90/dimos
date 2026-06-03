@@ -31,8 +31,6 @@ Run in a python env with dimos + cv2 + gtsam + scipy (from the dimos repo):
     uv run --no-sync python \
         dimos/robot/unitree/go2/scripts/go2_post_process.py [--recordings-dir DIR] [--force]
 
-Default recordings dir: ~/datasets/go2_recordings (each recording in its own
-subdir with mem2.db). Already-processed dbs are skipped unless --force.
 """
 
 from __future__ import annotations
@@ -142,7 +140,7 @@ def main():
     )
     parser.add_argument(
         "--recordings-dir",
-        default=str(Path.home() / "datasets" / "go2_recordings"),
+        default="./go2_recordings",
         help="dir containing recording subdirs with mem2.db",
     )
     parser.add_argument("--db", default="", help="process a single mem2.db instead of scanning")
