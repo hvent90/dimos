@@ -1,0 +1,1 @@
+/Users/jeffhykin/repos/dimos6/.ignore.enhance/items/dimos/hardware/sensors/lidar/fastlio2/setup_network.py
