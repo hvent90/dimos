@@ -12,16 +12,16 @@
 # See the License for the specific language governing permissions and
 # limitations under the License.
 
-import os
 import threading
 import time
 
+from pydantic import Field
 from reactivex import Subject
 
 from dimos.agents.annotation import skill
 from dimos.constants import DEFAULT_THREAD_JOIN_TIMEOUT
 from dimos.core.core import rpc
-from dimos.core.module import Module
+from dimos.core.module import Module, ModuleConfig
 from dimos.stream.audio.node_output import SounddeviceAudioOutput
 from dimos.stream.audio.tts.node_openai import OpenAITTSNode, Voice
 from dimos.utils.logging_config import setup_logger
@@ -29,22 +29,13 @@ from dimos.utils.logging_config import setup_logger
 logger = setup_logger()
 
 
-def openai_api_key_set() -> str | None:
-    """Blueprint requirement check: SpeakSkill uses OpenAI text-to-speech, which needs
-    OPENAI_API_KEY. Returns None if set, else a clear message (mirrors ollama_installed).
-    Lets a missing key fail fast at blueprint build instead of crashing later in start()."""
-    if os.environ.get("OPENAI_API_KEY"):
-        return None
-    return (
-        "OPENAI_API_KEY is not set. The agentic blueprint uses OpenAI for text-to-speech "
-        "(SpeakSkill), and by default for the LLM agent too.\n"
-        "\n"
-        "   Set it with: export OPENAI_API_KEY=<your-key>\n"
-        "   Get a key at https://platform.openai.com/api-keys"
-    )
+class SpeakSkillConfig(ModuleConfig):
+    model_config = {"validate_default": True, "arbitrary_types_allowed": True, "extra": "forbid"}
+    openai_api_key: str = Field(default_factory=lambda m: m["g"].openai_api_key)
 
 
 class SpeakSkill(Module):
+    config: SpeakSkillConfig
     _tts_node: OpenAITTSNode | None = None
     _audio_output: SounddeviceAudioOutput | None = None
     _audio_lock: threading.Lock = threading.Lock()

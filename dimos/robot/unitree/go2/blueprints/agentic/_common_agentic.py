@@ -15,7 +15,7 @@
 
 from dimos.agents.skills.navigation import NavigationSkillContainer
 from dimos.agents.skills.person_follow import PersonFollowSkillContainer
-from dimos.agents.skills.speak_skill import SpeakSkill, openai_api_key_set
+from dimos.agents.skills.speak_skill import SpeakSkill
 from dimos.agents.web_human_input import WebInput
 from dimos.core.coordination.blueprints import autoconnect
 from dimos.robot.unitree.go2.connection import GO2Connection
@@ -27,11 +27,6 @@ _common_agentic = autoconnect(
     UnitreeSkillContainer.blueprint(),
     WebInput.blueprint(),
     SpeakSkill.blueprint(),
-).requirements(
-    # SpeakSkill (OpenAI TTS) needs OPENAI_API_KEY — fail fast at blueprint build with a
-    # clear message instead of an ExceptionGroup deep in start_all_modules. Mirrors the
-    # ollama_installed gate used by the -ollama variant.
-    openai_api_key_set,
 )
 
 __all__ = ["_common_agentic"]
