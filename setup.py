@@ -19,7 +19,6 @@ import sys
 
 from pybind11.setup_helpers import Pybind11Extension, build_ext
 from setuptools import find_packages, setup
-from setuptools_rust import Binding, RustExtension
 
 
 def python_is_macos_universal_binary(executable: str | None = None) -> bool:
@@ -78,39 +77,9 @@ ext_modules = [
     ),
 ]
 
-try:
-    import tomllib
-except ImportError:
-    import tomli as tomllib  # python 3.10
-
-
-def _discover_rust_extensions() -> list[RustExtension]:
-    """Register every dimos/**/rust/Cargo.toml with a cdylib lib as an extension."""
-    extensions: list[RustExtension] = []
-    for cargo_path in sorted(Path("dimos").rglob("rust/Cargo.toml")):
-        with cargo_path.open("rb") as f:
-            manifest = tomllib.load(f)
-        lib = manifest.get("lib", {})
-        if "cdylib" not in lib.get("crate-type", []):
-            continue
-        lib_name = lib.get("name")
-        if not lib_name:
-            continue
-        extensions.append(
-            RustExtension(
-                lib_name,
-                path=str(cargo_path),
-                binding=Binding.PyO3,
-                debug=False,
-            )
-        )
-    return extensions
-
-
 setup(
     packages=find_packages(),
     package_dir={"": "."},
     ext_modules=ext_modules,
-    rust_extensions=_discover_rust_extensions(),
     cmdclass={"build_ext": build_ext},
 )

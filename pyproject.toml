@@ -3,7 +3,6 @@ requires = [
     "setuptools>=70",
     "wheel",
     "pybind11>=2.12",
-    "setuptools-rust>=1.10",
     "tomli>=2.0; python_version < '3.11'",
 ]
 build-backend = "setuptools.build_meta"
@@ -382,8 +381,7 @@ tests = [
     "watchdog>=3.0.0",
     "md-babel-py>=1.2.0",
     "py-spy",
-    # Fast Rust extension rebuilds for the dev loop. Production wheels go
-    # through setuptools-rust.
+    # Builds the pyo3 Rust extension modules into the venv.
     "maturin>=1.7",
 
     # LSP
