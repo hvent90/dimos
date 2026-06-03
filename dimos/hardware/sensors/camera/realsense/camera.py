@@ -14,7 +14,6 @@
 
 from __future__ import annotations
 
-import atexit
 import threading
 import time
 from typing import TYPE_CHECKING
@@ -26,11 +25,11 @@ import reactivex as rx
 from scipy.spatial.transform import Rotation
 
 from dimos.constants import DEFAULT_THREAD_JOIN_TIMEOUT
+from dimos.core.coordination.blueprints import autoconnect
 from dimos.core.coordination.module_coordinator import ModuleCoordinator
 from dimos.core.core import rpc
 from dimos.core.module import Module, ModuleConfig
 from dimos.core.stream import Out
-from dimos.core.transport import LCMTransport
 from dimos.hardware.sensors.camera.spec import (
     OPTICAL_ROTATION,
     DepthCameraConfig,
@@ -41,9 +40,11 @@ from dimos.msgs.geometry_msgs.Transform import Transform
 from dimos.msgs.geometry_msgs.Vector3 import Vector3
 from dimos.msgs.sensor_msgs.CameraInfo import CameraInfo
 from dimos.msgs.sensor_msgs.Image import Image, ImageFormat
+from dimos.msgs.sensor_msgs.Imu import Imu
 from dimos.msgs.sensor_msgs.PointCloud2 import PointCloud2
 from dimos.spec import perception
 from dimos.utils.reactive import backpressure
+from dimos.visualization.vis_module import vis_module
 
 if TYPE_CHECKING:
     import pyrealsense2 as rs  # type: ignore[import-not-found,import-untyped]
@@ -67,6 +68,7 @@ class RealSenseCameraConfig(ModuleConfig, DepthCameraConfig):
     align_depth_to_color: bool = True
     enable_depth: bool = True
     enable_pointcloud: bool = False
+    enable_imu: bool = True
     pointcloud_fps: float = 5.0
     camera_info_fps: float = 1.0
     serial_number: str | None = None
@@ -79,6 +81,7 @@ class RealSenseCamera(DepthCameraHardware, Module, perception.DepthCamera):
     pointcloud: Out[PointCloud2]
     camera_info: Out[CameraInfo]
     depth_camera_info: Out[CameraInfo]
+    imu: Out[Imu]
 
     @property
     def _camera_link(self) -> str:
@@ -100,6 +103,10 @@ class RealSenseCamera(DepthCameraHardware, Module, perception.DepthCamera):
     def _depth_optical_frame(self) -> str:
         return f"{self.config.camera_name}_depth_optical_frame"
 
+    @property
+    def _imu_frame(self) -> str:
+        return f"{self.config.camera_name}_imu_optical_frame"
+
     def __init__(self, *args, **kwargs) -> None:  # type: ignore[no-untyped-def]
         super().__init__(*args, **kwargs)
         self._pipeline: rs.pipeline | None = None
@@ -115,6 +122,10 @@ class RealSenseCamera(DepthCameraHardware, Module, perception.DepthCamera):
         self._latest_color_img: Image | None = None
         self._latest_depth_img: Image | None = None
         self._pointcloud_lock = threading.Lock()
+        # IMU state
+        self._imu_pipeline: rs.pipeline | None = None
+        self._depth_to_imu_extrinsics: rs.extrinsics | None = None
+        self._latest_accel: Vector3 | None = None
 
     @rpc
     def start(self) -> None:
@@ -175,6 +186,61 @@ class RealSenseCamera(DepthCameraHardware, Module, perception.DepthCamera):
                 on_error=lambda e: print(f"CameraInfo error: {e}"),
             )
         )
+
+        if self.config.enable_imu:
+            self._start_imu()
+
+    def _start_imu(self) -> None:
+        import pyrealsense2 as rs
+
+        imu_pipeline = rs.pipeline()
+        imu_config = rs.config()
+        if self.config.serial_number:
+            imu_config.enable_device(self.config.serial_number)
+
+        try:
+            imu_config.enable_stream(rs.stream.accel, rs.format.motion_xyz32f)
+            imu_config.enable_stream(rs.stream.gyro, rs.format.motion_xyz32f)
+            imu_profile = imu_pipeline.start(imu_config, self._on_imu_frame)
+        except RuntimeError as error:
+            print(f"RealSense IMU unavailable, disabling IMU stream: {error}")
+            return
+
+        self._imu_pipeline = imu_pipeline
+
+        if self._profile is not None and self.config.enable_depth:
+            depth_stream = self._profile.get_stream(rs.stream.depth)
+            accel_stream = imu_profile.get_stream(rs.stream.accel)
+            self._depth_to_imu_extrinsics = depth_stream.get_extrinsics_to(accel_stream)
+
+    def _on_imu_frame(self, frame: rs.frame) -> None:
+        if frame.is_frameset():
+            for sub_frame in frame.as_frameset():
+                self._handle_motion_frame(sub_frame)
+        else:
+            self._handle_motion_frame(frame)
+
+    def _handle_motion_frame(self, frame: rs.frame) -> None:
+        import pyrealsense2 as rs
+
+        motion = frame.as_motion_frame()
+        if not motion:
+            return
+
+        motion_data = motion.get_motion_data()
+        stream_type = motion.get_profile().stream_type()
+
+        if stream_type == rs.stream.accel:
+            self._latest_accel = Vector3(motion_data.x, motion_data.y, motion_data.z)
+        elif stream_type == rs.stream.gyro and self._latest_accel is not None:
+            # Gyro drives publishing, paired with the most recent accel sample.
+            self.imu.publish(
+                Imu(
+                    angular_velocity=Vector3(motion_data.x, motion_data.y, motion_data.z),
+                    linear_acceleration=self._latest_accel,
+                    frame_id=self._imu_frame,
+                )
+            )
 
     def _publish_camera_info(self) -> None:
         ts = time.time()
@@ -381,6 +447,16 @@ class RealSenseCamera(DepthCameraHardware, Module, perception.DepthCamera):
         )
         transforms.append(color_to_color_optical)
 
+        # camera_link -> imu (physical motion-sensor extrinsics)
+        if self._depth_to_imu_extrinsics is not None:
+            imu_tf = self._extrinsics_to_transform(
+                self._depth_to_imu_extrinsics,
+                self._camera_link,
+                self._imu_frame,
+                ts,
+            )
+            transforms.append(imu_tf)
+
         self.tf.publish(*transforms)
 
     def _generate_pointcloud(self) -> None:
@@ -408,6 +484,13 @@ class RealSenseCamera(DepthCameraHardware, Module, perception.DepthCamera):
     def stop(self) -> None:
         self._running = False
 
+        if self._imu_pipeline:
+            try:
+                self._imu_pipeline.stop()
+            except Exception:
+                pass  # Pipeline might already be stopped
+            self._imu_pipeline = None
+
         # Stop pipeline first to unblock wait_for_frames()
         if self._pipeline:
             try:
@@ -426,6 +509,8 @@ class RealSenseCamera(DepthCameraHardware, Module, perception.DepthCamera):
         self._profile = None
         self._align = None
         self._color_to_depth_extrinsics = None
+        self._depth_to_imu_extrinsics = None
+        self._latest_accel = None
         self._latest_color_img = None
         self._latest_depth_img = None
         super().stop()
@@ -443,34 +528,25 @@ class RealSenseCamera(DepthCameraHardware, Module, perception.DepthCamera):
         return self._depth_scale
 
 
+def _color_camera_info_to_rerun(camera_info: CameraInfo) -> object:
+    # Re-parent the pinhole onto the color image entity + its optical frame so
+    # the color image renders inside the camera frustum in the 3D view.
+    return camera_info.to_rerun(
+        image_topic="world/color_image",
+        optical_frame="camera_color_optical_frame",
+    )
+
+
 def main() -> None:
-    dimos = ModuleCoordinator()
-    dimos.start()
+    blueprint = autoconnect(
+        RealSenseCamera.blueprint(enable_pointcloud=True, pointcloud_fps=5.0),
+        vis_module(
+            "rerun",
+            rerun_config={"visual_override": {"world/camera_info": _color_camera_info_to_rerun}},
+        ),
+    )
 
-    camera = dimos.deploy(RealSenseCamera, enable_pointcloud=True, pointcloud_fps=5.0)
-    camera.color_image.transport = LCMTransport("/camera/color", Image)
-    camera.depth_image.transport = LCMTransport("/camera/depth", Image)
-    camera.pointcloud.transport = LCMTransport("/camera/pointcloud", PointCloud2)
-    camera.camera_info.transport = LCMTransport("/camera/color_info", CameraInfo)
-    camera.depth_camera_info.transport = LCMTransport("/camera/depth_info", CameraInfo)
-
-    def cleanup() -> None:
-        try:
-            dimos.stop()
-        except Exception:
-            pass
-
-    atexit.register(cleanup)
-    dimos.start_all_modules()
-
-    try:
-        while True:
-            time.sleep(0.1)
-    except (KeyboardInterrupt, SystemExit):
-        pass
-    finally:
-        atexit.unregister(cleanup)
-        cleanup()
+    ModuleCoordinator.build(blueprint).loop()
 
 
 if __name__ == "__main__":
