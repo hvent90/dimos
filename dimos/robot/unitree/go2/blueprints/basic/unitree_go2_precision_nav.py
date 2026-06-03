@@ -86,9 +86,11 @@ from dimos.msgs.geometry_msgs.Twist import Twist
 from dimos.msgs.nav_msgs.Path import Path
 from dimos.msgs.sensor_msgs.JointState import JointState
 from dimos.msgs.std_msgs.Float32 import Float32
-from dimos.msgs.std_msgs.Int8 import Int8
 from dimos.navigation.costmap_precision_governor.module import CostmapPrecisionGovernor
 from dimos.navigation.replanning_a_star.module import ReplanningAStarPlanner
+from dimos.robot.unitree.go2.blueprints.basic.unitree_go2_basic import (
+    rerun_config as _basic_rerun_config,
+)
 from dimos.robot.unitree.go2.blueprints.basic.unitree_go2_coordinator import (
     unitree_go2_coordinator,
     unitree_go2_coordinator_rage,
@@ -96,18 +98,30 @@ from dimos.robot.unitree.go2.blueprints.basic.unitree_go2_coordinator import (
 from dimos.robot.unitree.keyboard_teleop import KeyboardTeleop
 from dimos.visualization.vis_module import vis_module
 
+_rerun_config = {**_basic_rerun_config, "memory_limit": "4GB"}
+
 
 def _make(coord):
     return (
         autoconnect(
             coord,
-            vis_module(viewer_backend=global_config.viewer),
+            vis_module(viewer_backend=global_config.viewer, rerun_config=_rerun_config),
             KeyboardTeleop.blueprint(
                 publish_only_when_active=True,
-                disable_movement=True,  # 0-9 e_max slider only; no WASD Twist
+                # WASD/QE acts as a safety override: while held it drives
+                # the coord's vel_go2 task (priority 20) which preempts
+                # the path/precision follower (priority 10). Release the
+                # keys → vel_go2 times out (200 ms) and goes inactive →
+                # path follower resumes. 0-9 still drives e_max.
+                disable_movement=False,
             ),
             VoxelGridMapper.blueprint(emit_every=5),
-            CostMapper.blueprint(),
+            # Inflate by ~half the Go2's long axis (~0.70 m / 2). The
+            # planner downstream also inflates by half global_config.robot_width
+            # (default 0.30 m → 0.165 m), which is shaped for a circular
+            # robot, not a long one. Stacking these gives ~0.50 m total
+            # envelope so the planner stops carving paths through corners.
+            CostMapper.blueprint(inflation_radius_m=0.35),
             ReplanningAStarPlanner.blueprint(),
             CostmapPrecisionGovernor.blueprint(),
         )

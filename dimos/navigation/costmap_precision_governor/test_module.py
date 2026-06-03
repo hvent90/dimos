@@ -22,15 +22,24 @@ import math
 import numpy as np
 import pytest
 
+from dimos.mapping.occupancy.gradient import gradient
 from dimos.msgs.geometry_msgs.PoseStamped import PoseStamped
 from dimos.msgs.geometry_msgs.Quaternion import Quaternion
 from dimos.msgs.geometry_msgs.Vector3 import Vector3
 from dimos.msgs.nav_msgs.OccupancyGrid import OccupancyGrid
+from dimos.msgs.nav_msgs.Path import Path
 from dimos.navigation.costmap_precision_governor.module import (
     clearance_to_e_max,
     compute_e_max_from_costmap,
+    min_clearance_along,
+    sample_path_window,
     sample_point,
 )
+
+
+def _path(points: list[tuple[float, float]]) -> Path:
+    return Path(poses=[_pose(x, y) for x, y in points])
+
 
 # Common config used across tests so the hand-picked numbers line up.
 D_NEAR = 0.30
@@ -199,3 +208,115 @@ def test_hysteresis_suppresses_small_changes() -> None:
 def test_hysteresis_skips_initial_when_publish_initial_false() -> None:
     h = _HysteresisStub(delta=0.02, publish_initial=False)
     assert h.should_publish(0.50) is False
+
+
+# ---------------------------------------------------------------------------
+# sample_path_window — nearest-waypoint anchor + walk-forward
+# ---------------------------------------------------------------------------
+
+
+def test_sample_path_window_empty_path_returns_empty() -> None:
+    assert sample_path_window(_path([]), (0.0, 0.0), lookahead_m=3.0, step_m=0.1) == []
+
+
+def test_sample_path_window_straight_line_emits_evenly_spaced() -> None:
+    # Path along +x from (0,0) → (5,0). Robot at origin, 1.0 m window,
+    # 0.25 m step. Expect samples at 0.0, 0.25, 0.50, 0.75, 1.0.
+    path = _path([(x, 0.0) for x in np.linspace(0.0, 5.0, 51)])
+    samples = sample_path_window(path, (0.0, 0.0), lookahead_m=1.0, step_m=0.25)
+    xs = [s[0] for s in samples]
+    ys = [s[1] for s in samples]
+    assert xs == pytest.approx([0.0, 0.25, 0.50, 0.75, 1.00], abs=1e-6)
+    assert all(y == pytest.approx(0.0, abs=1e-9) for y in ys)
+
+
+def test_sample_path_window_starts_at_nearest_waypoint() -> None:
+    # Path along +x. Robot at (2.0, 0). Nearest waypoint is x=2.0 → samples
+    # start there, not at the path origin.
+    path = _path([(x, 0.0) for x in np.linspace(0.0, 5.0, 51)])
+    samples = sample_path_window(path, (2.0, 0.0), lookahead_m=0.5, step_m=0.25)
+    assert samples[0][0] == pytest.approx(2.0, abs=1e-6)
+    # Subsequent samples walk forward, not backward.
+    assert samples[-1][0] > samples[0][0]
+
+
+def test_sample_path_window_diagonal_path_interpolates_correctly() -> None:
+    # Two-waypoint path on the 45° diagonal: (0,0) → (10,10). 1 m window
+    # at 0.5 m step from (0,0) → samples on the diagonal at distances
+    # 0, 0.5, 1.0 (so XY = (0,0), (0.354,0.354), (0.707,0.707)).
+    path = _path([(0.0, 0.0), (10.0, 10.0)])
+    samples = sample_path_window(path, (0.0, 0.0), lookahead_m=1.0, step_m=0.5)
+    expected = [
+        (0.0, 0.0),
+        (0.5 / math.sqrt(2), 0.5 / math.sqrt(2)),
+        (1.0 / math.sqrt(2), 1.0 / math.sqrt(2)),
+    ]
+    assert len(samples) == 3
+    for got, exp in zip(samples, expected, strict=False):
+        assert got[0] == pytest.approx(exp[0], abs=1e-6)
+        assert got[1] == pytest.approx(exp[1], abs=1e-6)
+
+
+# ---------------------------------------------------------------------------
+# min_clearance_along — pick the tightest pinch over a sample set
+# ---------------------------------------------------------------------------
+
+
+def test_min_clearance_along_picks_tightest_sample() -> None:
+    # Obstacle at (1.0, 0.0). Sample one point next to it, one in open
+    # space. min should reflect the close one.
+    grid = _grid_with_obstacle_at((1.0, 0.0))
+    g = gradient(grid, obstacle_threshold=50, max_distance=D_FAR)
+    far_sample = (0.0, -2.0)  # well away from obstacle
+    near_sample = (0.9, 0.0)  # 0.1 m from obstacle
+    c_far = min_clearance_along(g, [far_sample], D_FAR)
+    c_min = min_clearance_along(g, [far_sample, near_sample], D_FAR)
+    assert c_far is not None and c_min is not None
+    assert c_min < c_far
+    assert c_min == pytest.approx(0.1, abs=0.05)  # ~one-cell precision
+
+
+def test_min_clearance_along_all_outside_grid_returns_none() -> None:
+    grid = _free_grid(side_m=5.0)
+    g = gradient(grid, obstacle_threshold=50, max_distance=D_FAR)
+    assert min_clearance_along(g, [(10.0, 10.0), (-10.0, -10.0)], D_FAR) is None
+
+
+# ---------------------------------------------------------------------------
+# compute_e_max_from_costmap with path-window — anticipates corners
+# ---------------------------------------------------------------------------
+
+
+def test_path_window_sees_obstacle_robot_doesnt() -> None:
+    # Robot at origin, in open space relative to its own pose. Obstacle
+    # 2 m ahead at (2.0, 0). Heading-based fallback (lookahead=0) thinks
+    # we're in open space → high e_max. Path-window mode walks the path
+    # forward, hits the obstacle within its 3 m lookahead, → low e_max.
+    grid = _grid_with_obstacle_at((2.0, 0.0))
+    path = _path([(x, 0.0) for x in np.linspace(0.0, 4.0, 41)])
+
+    e_no_path = compute_e_max_from_costmap(grid, _pose(0.0, 0.0), **_kwargs(0.0))
+    e_with_path = compute_e_max_from_costmap(
+        grid,
+        _pose(0.0, 0.0),
+        **_kwargs(0.0),
+        path=path,
+        path_lookahead_m=3.0,
+        path_sample_step_m=0.1,
+    )
+    assert e_no_path == pytest.approx(E_HIGH, abs=1e-3)
+    assert e_with_path < e_no_path
+    assert e_with_path == pytest.approx(E_LOW, abs=0.05)
+
+
+def test_empty_path_falls_back_to_heading_lookahead() -> None:
+    # Empty path → identical result to no-path call (heading-based).
+    grid = _grid_with_obstacle_at((1.0, 0.0))
+    e_no_path = compute_e_max_from_costmap(grid, _pose(0.0, 0.0, yaw=0.0), **_kwargs(0.5))
+    e_empty_path = compute_e_max_from_costmap(
+        grid,
+        _pose(0.0, 0.0, yaw=0.0),
+        **_kwargs(0.5),
+        path=_path([]),
+    )
+    assert e_no_path == pytest.approx(e_empty_path, abs=1e-9)
