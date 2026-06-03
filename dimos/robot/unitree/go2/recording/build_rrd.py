@@ -350,12 +350,9 @@ _LOG_STD_KEYS = {"event", "level", "logger", "timestamp", "func_name", "lineno"}
 
 
 def _find_jsonl(db_path: str) -> Path | None:
-    """A dimos `main.jsonl` for this recording — next to the db, else one dir up."""
-    recording_dir = Path(db_path).parent
-    for candidate in (recording_dir / "main.jsonl", recording_dir.parent / "main.jsonl"):
-        if candidate.exists():
-            return candidate
-    return None
+    """A dimos `main.jsonl` for this recording — next to the db."""
+    candidate = Path(db_path).parent / "main.jsonl"
+    return candidate if candidate.exists() else None
 
 
 def _iso_to_epoch(value: str) -> float:
