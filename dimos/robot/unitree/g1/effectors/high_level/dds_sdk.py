@@ -81,7 +81,7 @@ class G1HighLevelDdsSdkConfig(ModuleConfig):
     cmd_vel_timeout: float = 0.2
     # deadzone compensation
     min_effective_linear_velocity: float = 0.05  # m/s
-    min_effective_angular_velocity: float = 0.2  # radians/s
+    min_effective_angular_velocity: float = 0.6  # radians/s
 
 
 def _boost_above_deadzone(value: float, min_effective_magnitude: float) -> float:
