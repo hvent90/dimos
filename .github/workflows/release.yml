@@ -77,7 +77,10 @@ jobs:
       # Override skipif_in_ci so the release-tests job actually runs the
       # heavier tests the normal CI matrix opts out of.
       DIMOS_FULL_TEST_RUN: "1"
-    timeout-minutes: 90
+      # 30 minutes per test — the formerly-skipped tests download large HF
+      # models on first run; the global 600s in pyproject.toml is not enough.
+      PYTEST_TIMEOUT: "1800"
+    timeout-minutes: 300
     runs-on: [self-hosted, Linux, large]
     permissions:
       contents: read  # For checkout
@@ -118,6 +121,18 @@ jobs:
             echo "ROS_VERSION=$ROS_VERSION"
             echo "ROS_PYTHON_VERSION=$ROS_PYTHON_VERSION"
           } >> "$GITHUB_ENV"
+      - name: Pre-warm HuggingFace cache
+        # Tests previously skipped via skipif_in_ci pull large model weights
+        # from HF at fixture setup time. Pre-fetch here so the cost is paid
+        # once and pytest doesn't trip its per-test timeout on the download.
+        run: |
+          for m in \
+            openai/clip-vit-base-patch32 \
+            microsoft/Florence-2-base \
+            vikhyatk/moondream2 \
+          ; do
+            uv run huggingface-cli download "$m"
+          done
       - name: Run full test suite
         # --error-for-skips ensures a misconfigured runner (missing env var /
         # dep) fails the release rather than silently passing on a smaller
