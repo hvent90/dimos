@@ -29,8 +29,11 @@ drift. Also writes `gtsam_odom.tum` next to each db (relocalization groundtruth)
 Run in a python env with dimos + cv2 + gtsam + scipy (from the dimos repo):
 
     uv run --no-sync python \
-        dimos/robot/unitree/go2/scripts/go2_post_process.py [--recordings-dir DIR] [--force]
+        dimos/robot/unitree/go2/scripts/go2_mid360_post_process.py [TARGET] [--force]
 
+TARGET may be a `mem2.db`, a recording dir containing one, or a dir to scan for
+recordings. With no TARGET it processes the most recently created recording
+under --recordings-dir.
 """
 
 from __future__ import annotations
@@ -49,6 +52,43 @@ from dimos.robot.unitree.go2.recording.lidar_reanchor import reanchor_stream
 # is the same frame family gtsam was built from (so the re-anchor composes). The
 # legacy Go2 onboard `lidar`/`odom` is a different estimator frame -> left as-is.
 REANCHOR_PAIRS = [("go2_lidar", "go2_odom"), ("fastlio_lidar", "fastlio_odometry")]
+DB_NAME = "mem2.db"
+
+
+def _created_time(path: Path) -> float:
+    """File creation time (st_birthtime on macOS/BSD; falls back to mtime)."""
+    stat = path.stat()
+    return getattr(stat, "st_birthtime", stat.st_mtime)
+
+
+def _scan(root: Path) -> list[Path]:
+    return sorted(path for path in root.rglob(DB_NAME) if "-wal" not in path.name)
+
+
+def resolve_databases(target: str | None, recordings_dir: str) -> list[Path]:
+    """Pick which mem2.db(s) to process.
+
+    TARGET wins when given: a `mem2.db` file, a dir holding one (process just
+    that recording), or any other dir (scan it recursively). With no TARGET,
+    process only the most recently created recording under recordings_dir.
+    """
+    if target:
+        path = Path(target)
+        if path.name == DB_NAME:
+            return [path]
+        if (path / DB_NAME).exists():
+            return [path / DB_NAME]
+        databases = _scan(path)
+        if not databases:
+            raise SystemExit(f"no {DB_NAME} found under {path}")
+        return databases
+
+    databases = _scan(Path(recordings_dir))
+    if not databases:
+        raise SystemExit(f"no {DB_NAME} found under {recordings_dir}")
+    most_recent = max(databases, key=_created_time)
+    print(f"no target given — using most recent recording: {most_recent.parent}")
+    return [most_recent]
 
 
 def correct_db(db: Path, *, image_stream, apriltag_stream, gtsam_stream, marker_length, dictionary):
@@ -139,11 +179,17 @@ def main():
         description=__doc__, formatter_class=argparse.RawDescriptionHelpFormatter
     )
     parser.add_argument(
+        "target",
+        nargs="?",
+        default=None,
+        help="a mem2.db, a recording dir containing one, or a dir to scan. "
+        "Omit to use the most recently created recording under --recordings-dir.",
+    )
+    parser.add_argument(
         "--recordings-dir",
         default="./go2_recordings",
-        help="dir containing recording subdirs with mem2.db",
+        help="root searched when no target is given",
     )
-    parser.add_argument("--db", default="", help="process a single mem2.db instead of scanning")
     parser.add_argument("--image-stream", default="color_image")
     parser.add_argument("--apriltag-stream", default="april_tags")
     parser.add_argument("--gtsam-stream", default="gtsam_odom")
@@ -182,13 +228,7 @@ def main():
     )
     args = parser.parse_args()
 
-    if args.db:
-        databases = [Path(args.db)]
-    else:
-        root = Path(args.recordings_dir)
-        databases = sorted(path for path in root.rglob("mem2.db") if "-wal" not in path.name)
-        if not databases:
-            raise SystemExit(f"no mem2.db found under {root}")
+    databases = resolve_databases(args.target, args.recordings_dir)
     print(f"found {len(databases)} recording(s)")
     for db in databases:
         try:
