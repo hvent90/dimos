@@ -16,80 +16,128 @@
 import math
 import os
 import time
+from typing import Any
+
+from reactivex.disposable import Disposable
 
 from dimos.core.coordination.blueprints import autoconnect
-from dimos.core.module import Module
+from dimos.core.coordination.module_coordinator import ModuleCoordinator
+from dimos.core.global_config import global_config
 from dimos.core.stream import In
 from dimos.hardware.sensors.lidar.fastlio2.module import FastLio2
-from dimos.hardware.sensors.lidar.fastlio2.recorder import FastLio2Recorder
+from dimos.hardware.sensors.lidar.fastlio2.recorder import FastLio2Recorder, _default_recording_dir
+from dimos.hardware.sensors.lidar.fastlio2.speed_warner import SpeedWarner
 from dimos.hardware.sensors.lidar.livox.module import Mid360
+from dimos.memory2.stream import Stream
+from dimos.msgs.geometry_msgs.Quaternion import Quaternion
+from dimos.msgs.geometry_msgs.Transform import Transform
+from dimos.msgs.geometry_msgs.Vector3 import Vector3
 from dimos.msgs.nav_msgs.Odometry import Odometry
 from dimos.navigation.movement_manager.movement_manager import MovementManager
 from dimos.robot.unitree.go2.connection import GO2Connection
 from dimos.robot.unitree.keyboard_teleop import KeyboardTeleop
-from dimos.utils.logging_config import setup_logger
+from dimos.utils.logging_config import set_run_log_dir, setup_logger
 
 logger = setup_logger()
 
+# mid360_link is physically measured relative to camera (easier than measuring to base_link):
+# relative to camera the lidar is 3.2cm back, 12cm up, pitched 44deg down.
+# base_link -> front_camera -> mid360_link
+BASE_TO_FRONT_CAMERA = Transform(
+    translation=Vector3(0.32715, -0.00003, 0.04297),
+    rotation=Quaternion(0.0, 0.0, 0.0, 1.0),
+    frame_id="base_link",
+    child_frame_id="front_camera",
+)
 
-MPH_PER_MPS = 2.23694
-SPEED_LIMIT_MPH = 30.0
-_SPEED_STATUS_PRINT_INTERVAL_SEC = 1.0
+_MID360_PITCH_HALF = math.radians(44.0) / 2.0
+BASE_TO_MID360 = BASE_TO_FRONT_CAMERA + Transform(
+    translation=Vector3(-0.032, 0.0, 0.12),
+    rotation=Quaternion(0.0, math.sin(_MID360_PITCH_HALF), 0.0, math.cos(_MID360_PITCH_HALF)),
+    frame_id="front_camera",
+    child_frame_id="mid360_link",
+)
+MID360_TO_BASE = BASE_TO_MID360.inverse()
 
-
-class SpeedWarner(Module):
-    """Watches fastlio_odometry; once speed ever exceeds the limit (impossible for the Go2,
-    so it indicates the FastLio2 estimate has diverged / sensor is about to crash),
-    latches and spams an error on every subsequent odom message until restart.
-
-    FastLio2's C++ publisher hardcodes twist to zero (cpp/main.cpp), so msg.vx/vy/vz
-    are always 0. Speed is derived from pose deltas instead.
-    """
-
-    fastlio_odometry: In[Odometry]
-
-    _tripped: bool = False
-    _max_mph: float = 0.0
-    _last_pos: tuple[float, float, float] | None = None
-    _last_ts: float | None = None
-    _last_print_ts: float = 0.0
-
-    async def handle_fastlio_odometry(self, msg: Odometry) -> None:
-        ts = msg.ts or time.time()
-        pos = (msg.pose.x, msg.pose.y, msg.pose.z)
-        last_pos, last_ts = self._last_pos, self._last_ts
-        self._last_pos, self._last_ts = pos, ts
-        if last_pos is None or last_ts is None:
-            return
-        dt = ts - last_ts
-        if dt <= 0:
-            return
-        dx, dy, dz = pos[0] - last_pos[0], pos[1] - last_pos[1], pos[2] - last_pos[2]
-        speed_mph = math.sqrt(dx * dx + dy * dy + dz * dz) / dt * MPH_PER_MPS
-        if speed_mph > self._max_mph:
-            self._max_mph = speed_mph
-        if ts - self._last_print_ts >= _SPEED_STATUS_PRINT_INTERVAL_SEC:
-            self._last_print_ts = ts
-            print(
-                f"\rspeed: {speed_mph:6.2f} mph  max: {self._max_mph:6.2f} mph ",
-                end="",
-                flush=True,
-            )
-        if not self._tripped and speed_mph > SPEED_LIMIT_MPH:
-            self._tripped = True
-            logger.error(
-                f"!!! FASTLIO ODOMETRY DIVERGED !!! reported {speed_mph:.1f} mph "
-                f"(limit {SPEED_LIMIT_MPH:.1f} mph). Latching warnings."
-            )
+# base_link -> camera_optical using the URDF front_camera mount plus the
+# standard ROS optical-frame rotation (x-right, y-down, z-forward).
+BASE_TO_CAMERA_OPTICAL = BASE_TO_FRONT_CAMERA + Transform(
+    translation=Vector3(0.0, 0.0, 0.0),
+    rotation=Quaternion(-0.5, 0.5, -0.5, 0.5),
+    frame_id="front_camera",
+    child_frame_id="camera_optical",
+)
 
 
 _LIDAR_IP = os.getenv("LIDAR_IP", "192.168.1.107")
 
 
+class Go2TfHackRecorder(FastLio2Recorder):
+    """Records with statically-applied transforms instead of querying tf.
+
+    FastLio2 tracks the Mid-360 (``mid360_link``) and reports its pose in the
+    ``world`` frame as ``fastlio_odometry``; its registered cloud is likewise
+    already in that world frame. We anchor recorded observations to the robot
+    body, building every pose from the latest fastlio odom and fixed mounts:
+
+    - ``fastlio_lidar`` -> ``base_link`` pose in world (odom, then mid360_link -> base_link)
+    - ``color_image``   -> ``camera_optical`` pose in world (odom, mid360_link -> base_link,
+      then base_link -> camera_optical)
+    - everything else (odom streams included) -> no pose
+    """
+
+    _latest_fastlio_odom: Odometry | None = None
+    _warning_names: set[str] = set()
+
+    def _port_to_stream(self, name: str, input_topic: In[Any], stream: Stream[Any]) -> None:
+        def on_msg(msg: Any) -> None:
+            ts = time.time()
+            pose = None
+            if name == "fastlio_odometry":
+                self._latest_fastlio_odom = msg
+            elif name == "fastlio_lidar":
+                world_to_base = self._world_to_base_from_fastlio()
+                if world_to_base is not None:
+                    pose = world_to_base.to_pose()
+            elif name == "color_image":
+                # anchor images to world frame as defined by fastlio odom
+                world_to_base = self._world_to_base_from_fastlio()
+                if world_to_base is not None:
+                    pose = (world_to_base + BASE_TO_CAMERA_OPTICAL).to_pose()
+            elif "odom" in name:
+                pass
+            else:
+                if name not in self._warning_names:
+                    self._warning_names.add(name)
+                    logger.warning(f"cannot compute pose for {name}; recording without pose")
+
+            stream.append(msg, ts=ts, pose=pose)
+
+        self.register_disposable(Disposable(input_topic.subscribe(on_msg)))
+
+    def _world_to_base_from_fastlio(self) -> Transform | None:
+        odom = self._latest_fastlio_odom
+        if odom is None:
+            return None
+        world_to_mid360 = Transform(
+            translation=odom.position,
+            rotation=odom.orientation,
+            frame_id="world",
+            child_frame_id="mid360_link",
+            ts=odom.ts,
+        )
+        return world_to_mid360 + MID360_TO_BASE
+
+
 unitree_go2_record = autoconnect(
-    GO2Connection.blueprint(),
     KeyboardTeleop.blueprint(),
     MovementManager.blueprint(),
+    GO2Connection.blueprint().remappings(
+        [
+            (GO2Connection, "lidar", "go2_lidar"),
+            (GO2Connection, "odom", "go2_odom"),
+        ]
+    ),
     Mid360.blueprint(
         lidar_ip=_LIDAR_IP,
     ).remappings(
@@ -109,6 +157,22 @@ unitree_go2_record = autoconnect(
             (FastLio2, "odometry", "fastlio_odometry"),
         ]
     ),
-    FastLio2Recorder.blueprint(lidar_ip=_LIDAR_IP, record_pcap=True),
+    Go2TfHackRecorder.blueprint(lidar_ip=_LIDAR_IP, record_pcap=True).remappings(
+        [
+            (Go2TfHackRecorder, "lidar", "go2_lidar"),
+            (Go2TfHackRecorder, "odom", "go2_odom"),
+        ]
+    ),
     SpeedWarner.blueprint(),
 ).global_config(n_workers=10, robot_model="unitree_go2")
+
+
+if __name__ == "__main__":
+    recording_dir = _default_recording_dir()
+    set_run_log_dir(recording_dir)
+    global_config.obstacle_avoidance = False
+    coordinator = ModuleCoordinator.build(
+        unitree_go2_record,
+        {FastLio2Recorder.name: {"recording_dir": recording_dir}},
+    )
+    coordinator.loop()
