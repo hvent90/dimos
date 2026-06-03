@@ -16,6 +16,6 @@
 
 from __future__ import annotations
 
-from dimos_voxel_ray_tracing import VoxelRayMap
+from dimos_voxel_ray_tracing import VoxelRayMapper
 
-__all__ = ["VoxelRayMap"]
+__all__ = ["VoxelRayMapper"]

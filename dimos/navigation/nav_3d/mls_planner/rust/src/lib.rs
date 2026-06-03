@@ -1,13 +1,13 @@
 // Copyright 2026 Dimensional Inc.
 // SPDX-License-Identifier: Apache-2.0
 
-pub mod adjacency;
-pub mod dijkstra;
+mod adjacency;
+mod dijkstra;
 pub mod edges;
-pub mod nodes;
+mod nodes;
 pub mod pipeline;
-pub mod planner;
-pub mod surfaces;
+mod planner;
+mod surfaces;
 pub mod voxel;
 
 mod python;

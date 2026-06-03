@@ -15,7 +15,7 @@
 import numpy as np
 from numpy.typing import NDArray
 
-class VoxelRayMap:
+class VoxelRayMapper:
     """Voxel map with raycast clearing of dynamic objects."""
 
     def __init__(
@@ -62,4 +62,4 @@ class VoxelRayMap:
     def __len__(self) -> int: ...
     def __repr__(self) -> str: ...
 
-__all__ = ["VoxelRayMap"]
+__all__ = ["VoxelRayMapper"]

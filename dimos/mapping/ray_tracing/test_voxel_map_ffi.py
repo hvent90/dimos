@@ -12,18 +12,18 @@
 # See the License for the specific language governing permissions and
 # limitations under the License.
 
-"""Smoke tests for the pyo3-bound VoxelRayMap."""
+"""Smoke tests for the pyo3-bound VoxelRayMapper."""
 
 from __future__ import annotations
 
 import numpy as np
 import pytest
 
-from dimos.mapping.ray_tracing.voxel_map import VoxelRayMap
+from dimos.mapping.ray_tracing.voxel_map import VoxelRayMapper
 
 
-def _mapper() -> VoxelRayMap:
-    return VoxelRayMap(
+def _mapper() -> VoxelRayMapper:
+    return VoxelRayMapper(
         voxel_size=1.0,
         max_range=100.0,
         ray_subsample=1,

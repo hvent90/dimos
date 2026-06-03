@@ -10,13 +10,13 @@ use validator::Validate;
 use crate::voxel_map::{iter_global_points, update_map, Config, LocalBounds, VoxelMap};
 
 #[pyclass]
-pub struct VoxelRayMap {
+pub struct VoxelRayMapper {
     config: Config,
     map: VoxelMap,
 }
 
 #[pymethods]
-impl VoxelRayMap {
+impl VoxelRayMapper {
     #[new]
     #[pyo3(signature = (
         *,
@@ -157,7 +157,7 @@ impl VoxelRayMap {
 
     fn __repr__(&self) -> String {
         format!(
-            "VoxelRayMap(voxel_size={}, voxels={})",
+            "VoxelRayMapper(voxel_size={}, voxels={})",
             self.config.voxel_size,
             self.voxel_count(),
         )
@@ -166,6 +166,6 @@ impl VoxelRayMap {
 
 #[pymodule]
 fn dimos_voxel_ray_tracing(m: &Bound<'_, PyModule>) -> PyResult<()> {
-    m.add_class::<VoxelRayMap>()?;
+    m.add_class::<VoxelRayMapper>()?;
     Ok(())
 }

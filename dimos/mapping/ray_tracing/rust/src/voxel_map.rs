@@ -152,7 +152,7 @@ pub fn update_map(
 }
 
 #[inline]
-pub fn world_to_voxel(x: f32, y: f32, z: f32, inv: f32) -> VoxelKey {
+fn world_to_voxel(x: f32, y: f32, z: f32, inv: f32) -> VoxelKey {
     (
         (x * inv).floor() as i32,
         (y * inv).floor() as i32,
@@ -163,7 +163,7 @@ pub fn world_to_voxel(x: f32, y: f32, z: f32, inv: f32) -> VoxelKey {
 /// Amanatides & Woo 3d DDA. Records voxels on ray in between the end of the shadow region
 /// and origin if it is in the map. Voxels within grace region of the endpoint are spared from being marked as misses.
 #[allow(clippy::too_many_arguments)]
-pub fn find_misses_along_ray(
+fn find_misses_along_ray(
     misses: &mut AHashSet<VoxelKey>,
     map_voxels: &AHashMap<VoxelKey, VoxelHealth>,
     origin: (f32, f32, f32),
@@ -391,8 +391,8 @@ mod tests {
             endpoint,
         );
 
-        // z-slab protection skips voxels in the endpoint's z-slab (z=1) when the
-        // ray crosses z-slabs.
+        // z-slab protection skips voxels in the endpoint's z-slab when the
+        // ray crosses z-slabs. Endpoint is at z=1 here.
         let expected: AHashSet<VoxelKey> = walked
             .iter()
             .filter(|v| v.2 != endpoint.2)
