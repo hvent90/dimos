@@ -12,10 +12,10 @@
 # See the License for the specific language governing permissions and
 # limitations under the License.
 
-"""Python interface to the Rust voxel ray-tracing mapper."""
+"""Python interface to the Rust multi-level surface path planner."""
 
 from __future__ import annotations
 
-from dimos_voxel_ray_tracing import VoxelRayMap
+from dimos_mls_planner import MLSPlanner
 
-__all__ = ["VoxelRayMap"]
+__all__ = ["MLSPlanner"]

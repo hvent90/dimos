@@ -165,7 +165,7 @@ impl VoxelRayMap {
 }
 
 #[pymodule]
-fn _dimos_voxel_ray_tracing(m: &Bound<'_, PyModule>) -> PyResult<()> {
+fn dimos_voxel_ray_tracing(m: &Bound<'_, PyModule>) -> PyResult<()> {
     m.add_class::<VoxelRayMap>()?;
     Ok(())
 }

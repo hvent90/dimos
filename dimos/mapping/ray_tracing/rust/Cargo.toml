@@ -7,7 +7,7 @@ license = "Apache-2.0"
 
 [lib]
 # Must match the #[pymodule] fn name in python.rs.
-name = "_dimos_voxel_ray_tracing"
+name = "dimos_voxel_ray_tracing"
 path = "src/lib.rs"
 crate-type = ["cdylib", "rlib"]
 

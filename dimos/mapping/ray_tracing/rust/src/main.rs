@@ -3,11 +3,11 @@
 
 use std::time::Duration;
 
-use _dimos_voxel_ray_tracing::voxel_map::{
-    iter_global_points, update_map, Config, LocalBounds, VoxelKey, VoxelMap,
-};
 use ahash::AHashSet;
 use dimos_module::{error_throttled, run, warn_throttled, Input, LcmTransport, Module, Output};
+use dimos_voxel_ray_tracing::voxel_map::{
+    iter_global_points, update_map, Config, LocalBounds, VoxelKey, VoxelMap,
+};
 use lcm_msgs::nav_msgs::Odometry;
 use lcm_msgs::sensor_msgs::{PointCloud2, PointField};
 use lcm_msgs::std_msgs::{Header, Time};
