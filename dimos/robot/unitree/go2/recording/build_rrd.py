@@ -26,7 +26,10 @@ recognition moment.
 
 from __future__ import annotations
 
+from datetime import datetime
+import json
 import math
+from pathlib import Path
 import sqlite3
 
 import numpy as np
@@ -334,6 +337,59 @@ def _log_cam_frustums(store, camera_targets):
     print(f"   rrd: {logged} recognition camera frustums (robot's-eye images, 3D only)")
 
 
+# dimos jsonl level -> rerun TextLog level
+_LOG_LEVELS = {
+    "debug": "DEBUG",
+    "info": "INFO",
+    "warning": "WARN",
+    "error": "ERROR",
+    "critical": "CRITICAL",
+}
+# keys rendered structurally; everything else is appended as key=value context
+_LOG_STD_KEYS = {"event", "level", "logger", "timestamp", "func_name", "lineno"}
+
+
+def _find_jsonl(db_path: str) -> Path | None:
+    """A dimos `main.jsonl` for this recording — next to the db, else one dir up."""
+    recording_dir = Path(db_path).parent
+    for candidate in (recording_dir / "main.jsonl", recording_dir.parent / "main.jsonl"):
+        if candidate.exists():
+            return candidate
+    return None
+
+
+def _iso_to_epoch(value: str) -> float:
+    return datetime.fromisoformat(value.replace("Z", "+00:00")).timestamp()
+
+
+def _log_jsonl(jsonl_path: Path) -> None:
+    """Replay a dimos `main.jsonl` as rerun TextLog entries on the `ts` timeline."""
+    n = 0
+    for line in jsonl_path.read_text().splitlines():
+        line = line.strip()
+        if not line:
+            continue
+        try:
+            entry = json.loads(line)
+        except json.JSONDecodeError:
+            continue
+        timestamp = entry.get("timestamp")
+        if not timestamp:
+            continue
+        body = str(entry.get("event", ""))
+        extra = "  ".join(f"{k}={entry[k]}" for k in entry if k not in _LOG_STD_KEYS)
+        if extra:
+            body = f"{body}  ({extra})"
+        if entry.get("logger"):
+            body = f"[{entry['logger']}] {body}"
+        rr.set_time(TIMELINE, timestamp=_iso_to_epoch(timestamp))
+        rr.log(
+            "logs", rr.TextLog(body, level=_LOG_LEVELS.get(str(entry.get("level")).lower(), "INFO"))
+        )
+        n += 1
+    print(f"   rrd: logs <- {jsonl_path.name} ({n} entries)")
+
+
 def build_rrd(
     db_path: str,
     out_path: str,
@@ -346,6 +402,7 @@ def build_rrd(
     rr.init("go2_post_process", recording_id=str(out_path))
     rr.save(str(out_path))
     cam_xform = MID360_TO_OPTICAL if mid360_pitch else BASE_TO_OPTICAL
+    jsonl_path = _find_jsonl(db_path)
 
     with SqliteStore(path=db_path) as store:
         streams = store.list_streams()
@@ -370,20 +427,25 @@ def build_rrd(
                 "onboard_map",
             )
         }
+        views = rrb.Horizontal(
+            rrb.Spatial3DView(
+                origin="/world",
+                name="3D",
+                overrides=hide,
+                eye_controls=rrb.EyeControls3D(kind=rrb.Eye3DKind.Orbital, tracking_entity=track),
+            ),
+            rrb.Spatial2DView(origin="/world/camera", name="camera"),
+            column_shares=[3, 1],
+        )
+        # When a dimos main.jsonl is present, dock its log replay below the views.
+        layout = (
+            rrb.Vertical(views, rrb.TextLogView(origin="/logs", name="logs"), row_shares=[4, 1])
+            if jsonl_path is not None
+            else views
+        )
         rr.send_blueprint(
             rrb.Blueprint(
-                rrb.Horizontal(
-                    rrb.Spatial3DView(
-                        origin="/world",
-                        name="3D",
-                        overrides=hide,
-                        eye_controls=rrb.EyeControls3D(
-                            kind=rrb.Eye3DKind.Orbital, tracking_entity=track
-                        ),
-                    ),
-                    rrb.Spatial2DView(origin="/world/camera", name="camera"),
-                    column_shares=[3, 1],
-                ),
+                layout,
                 rrb.BlueprintPanel(state=rrb.PanelState.Expanded),
                 rrb.TimePanel(state=rrb.PanelState.Expanded),
                 rrb.SelectionPanel(state=rrb.PanelState.Collapsed),
@@ -426,4 +488,7 @@ def build_rrd(
                 except Exception:
                     break
             print(f"   rrd: world/camera/image <- color_image ({n} frames, stride {camera_stride})")
+
+    if jsonl_path is not None:
+        _log_jsonl(jsonl_path)
     print(f"   wrote {out_path}")
