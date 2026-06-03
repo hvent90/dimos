@@ -61,6 +61,10 @@ class Mid360Config(NativeModuleConfig):
     enable_imu: bool = True
     frame_id: str = "lidar_link"
     imu_frame_id: str = "imu_link"
+    # Emit a per-point "time" field (offset in seconds from the frame timestamp)
+    # for LiDAR-inertial motion undistortion. Set False to drop it (saves 4
+    # bytes/point) for consumers that don't need timing.
+    timestamp_lidar_points: bool = True
 
     # SDK port configuration (see livox/ports.py for defaults)
     cmd_data_port: int = SDK_CMD_DATA_PORT

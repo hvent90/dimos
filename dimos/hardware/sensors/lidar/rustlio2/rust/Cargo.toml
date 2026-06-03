@@ -1,0 +1,27 @@
+[package]
+name = "dimos-rustlio2"
+version = "0.1.0"
+edition = "2021"
+description = "Native Rust FAST-LIO2 LiDAR-inertial odometry module for dimos"
+license = "Apache-2.0"
+
+[[bin]]
+name = "rustlio2_native"
+path = "src/main.rs"
+
+[dependencies]
+rustlio2 = "0.2"
+dimos-module = { path = "../../../../../../native/rust/dimos-module" }
+lcm-msgs = { git = "https://github.com/dimensionalOS/dimos-lcm.git", branch = "rust-codegen" }
+nalgebra = "0.33"
+serde = { version = "1", features = ["derive"] }
+tokio = { version = "1", features = ["rt-multi-thread", "macros", "signal"] }
+tracing = "0.1"
+
+[dev-dependencies]
+serde_json = "1"
+approx = "0.5"
+
+[profile.release]
+lto = "thin"
+codegen-units = 1

@@ -45,11 +45,13 @@ static std::string g_imu_topic;
 static std::string g_frame_id = "lidar_link";
 static std::string g_imu_frame_id = "imu_link";
 static float g_frequency = 10.0f;
+static bool g_timestamp_lidar_points = true;  // emit per-point "time" field for undistortion
 
 // Frame accumulator
 static std::mutex g_pc_mutex;
 static std::vector<float> g_accumulated_xyz;       // interleaved x,y,z
 static std::vector<float> g_accumulated_intensity;  // per-point intensity
+static std::vector<double> g_accumulated_time;      // per-point absolute time (s)
 static double g_frame_timestamp = 0.0;
 static bool g_frame_has_timestamp = false;
 
@@ -72,6 +74,7 @@ using dimos::make_header;
 
 static void publish_pointcloud(const std::vector<float>& xyz,
                                const std::vector<float>& intensity,
+                               const std::vector<double>& point_time,
                                double timestamp) {
     if (!g_lcm || xyz.empty()) return;
 
@@ -84,10 +87,6 @@ static void publish_pointcloud(const std::vector<float>& xyz,
     pc.is_bigendian = 0;
     pc.is_dense = 1;
 
-    // Fields: x, y, z (float32), intensity (float32)
-    pc.fields_length = 4;
-    pc.fields.resize(4);
-
     auto make_field = [](const std::string& name, int32_t offset) {
         sensor_msgs::PointField f;
         f.name = name;
@@ -97,12 +96,22 @@ static void publish_pointcloud(const std::vector<float>& xyz,
         return f;
     };
 
+    // When g_timestamp_lidar_points is set, append a per-point "time" field (offset in
+    // seconds from the frame timestamp) that LiDAR-inertial consumers use for
+    // intra-scan motion undistortion. Otherwise emit the compact xyz+intensity
+    // layout for consumers that don't need it.
+    const int num_fields = g_timestamp_lidar_points ? 5 : 4;
+    pc.fields_length = num_fields;
+    pc.fields.resize(num_fields);
     pc.fields[0] = make_field("x", 0);
     pc.fields[1] = make_field("y", 4);
     pc.fields[2] = make_field("z", 8);
     pc.fields[3] = make_field("intensity", 12);
+    if (g_timestamp_lidar_points) {
+        pc.fields[4] = make_field("time", 16);
+    }
 
-    pc.point_step = 16;  // 4 floats * 4 bytes
+    pc.point_step = num_fields * 4;  // float32 per field
     pc.row_step = pc.point_step * num_points;
 
     // Pack point data
@@ -110,11 +119,14 @@ static void publish_pointcloud(const std::vector<float>& xyz,
     pc.data.resize(pc.data_length);
 
     for (int i = 0; i < num_points; ++i) {
-        float* dst = reinterpret_cast<float*>(pc.data.data() + i * 16);
+        float* dst = reinterpret_cast<float*>(pc.data.data() + i * pc.point_step);
         dst[0] = xyz[i * 3 + 0];
         dst[1] = xyz[i * 3 + 1];
         dst[2] = xyz[i * 3 + 2];
         dst[3] = intensity[i];
+        if (g_timestamp_lidar_points) {
+            dst[4] = static_cast<float>(point_time[i] - timestamp);
+        }
     }
 
     g_lcm->publish(g_lidar_topic, &pc);
@@ -147,6 +159,7 @@ static void on_point_cloud(const uint32_t /*handle*/, const uint8_t /*dev_type*/
             g_accumulated_xyz.push_back(static_cast<float>(pts[i].y) / 1000.0f);
             g_accumulated_xyz.push_back(static_cast<float>(pts[i].z) / 1000.0f);
             g_accumulated_intensity.push_back(static_cast<float>(pts[i].reflectivity) / 255.0f);
+            g_accumulated_time.push_back(ts);
         }
     } else if (data->data_type == DATA_TYPE_CARTESIAN_LOW) {
         auto* pts = reinterpret_cast<const LivoxLidarCartesianLowRawPoint*>(data->data);
@@ -156,6 +169,7 @@ static void on_point_cloud(const uint32_t /*handle*/, const uint8_t /*dev_type*/
             g_accumulated_xyz.push_back(static_cast<float>(pts[i].y) / 100.0f);
             g_accumulated_xyz.push_back(static_cast<float>(pts[i].z) / 100.0f);
             g_accumulated_intensity.push_back(static_cast<float>(pts[i].reflectivity) / 255.0f);
+            g_accumulated_time.push_back(ts);
         }
     }
 }
@@ -243,6 +257,7 @@ int main(int argc, char** argv) {
     g_frequency = mod.arg_float("frequency", 10.0f);
     g_frame_id = mod.arg("frame_id", "lidar_link");
     g_imu_frame_id = mod.arg("imu_frame_id", "imu_link");
+    g_timestamp_lidar_points = mod.arg_bool("timestamp_lidar_points", true);
 
     // SDK network ports (defaults from SdkPorts struct in livox_sdk_config.hpp)
     livox_common::SdkPorts ports;
@@ -261,8 +276,8 @@ int main(int argc, char** argv) {
     printf("[mid360] Starting native Livox Mid-360 module\n");
     printf("[mid360] lidar topic: %s\n", g_lidar_topic.c_str());
     printf("[mid360] imu topic: %s\n", g_imu_topic.empty() ? "(disabled)" : g_imu_topic.c_str());
-    printf("[mid360] host_ip: %s  lidar_ip: %s  frequency: %.1f Hz\n",
-           host_ip.c_str(), lidar_ip.c_str(), g_frequency);
+    printf("[mid360] host_ip: %s  lidar_ip: %s  frequency: %.1f Hz  timestamp_lidar_points: %s\n",
+           host_ip.c_str(), lidar_ip.c_str(), g_frequency, g_timestamp_lidar_points ? "true" : "false");
 
     // Signal handlers
     signal(SIGTERM, signal_handler);
@@ -311,6 +326,7 @@ int main(int argc, char** argv) {
             // Swap out the accumulated data
             std::vector<float> xyz;
             std::vector<float> intensity;
+            std::vector<double> times;
             double ts = 0.0;
 
             {
@@ -318,13 +334,14 @@ int main(int argc, char** argv) {
                 if (!g_accumulated_xyz.empty()) {
                     xyz.swap(g_accumulated_xyz);
                     intensity.swap(g_accumulated_intensity);
+                    times.swap(g_accumulated_time);
                     ts = g_frame_timestamp;
                     g_frame_has_timestamp = false;
                 }
             }
 
             if (!xyz.empty()) {
-                publish_pointcloud(xyz, intensity, ts);
+                publish_pointcloud(xyz, intensity, times, ts);
             }
 
             last_emit = now;

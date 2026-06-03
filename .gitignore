@@ -72,6 +72,8 @@ yolo11n.pt
 /results
 results/
 **/cpp/result
+**/rust/result
+**/rust/target
 
 CLAUDE.MD
 /assets/teleop_certs/

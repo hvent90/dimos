@@ -178,6 +178,7 @@ class PointCloud2(Timestamped):
         frame_id: str = "world",
         timestamp: float | None = None,
         intensities: np.ndarray | None = None,
+        times: np.ndarray | None = None,
     ) -> PointCloud2:
         """Create PointCloud2 from numpy array of shape (N, 3).
 
@@ -186,6 +187,8 @@ class PointCloud2(Timestamped):
             frame_id: Frame ID for the point cloud
             timestamp: Timestamp for the point cloud (defaults to current time)
             intensities: Optional Nx1 or (N,) float array of per-point intensity values
+            times: Optional Nx1 or (N,) float array of per-point time offsets in seconds
+                from the scan start (used for motion undistortion)
 
         Returns:
             PointCloud2 instance
@@ -197,6 +200,11 @@ class PointCloud2(Timestamped):
             if arr.ndim == 1:
                 arr = arr.reshape(-1, 1)
             pcd_t.point["intensities"] = o3c.Tensor(arr, dtype=o3c.float32)
+        if times is not None:
+            time_arr = times.astype(np.float32)
+            if time_arr.ndim == 1:
+                time_arr = time_arr.reshape(-1, 1)
+            pcd_t.point["time"] = o3c.Tensor(time_arr, dtype=o3c.float32)
         return cls(pointcloud=pcd_t, ts=timestamp, frame_id=frame_id)
 
     @classmethod
@@ -422,6 +430,14 @@ class PointCloud2(Timestamped):
             return arr.astype(np.float32) if arr.dtype != np.float32 else arr  # type: ignore[no-any-return]
         return None
 
+    def times_f32(self) -> np.ndarray | None:
+        """Get per-point time offsets (seconds from scan start) as flat float32, or None."""
+        self._ensure_tensor_initialized()
+        if "time" in self._pcd_tensor.point:
+            arr = self._pcd_tensor.point["time"].numpy().flatten()
+            return arr.astype(np.float32) if arr.dtype != np.float32 else arr  # type: ignore[no-any-return]
+        return None
+
     @functools.cached_property
     def axis_aligned_bounding_box(self) -> o3d.geometry.AxisAlignedBoundingBox:
         """Get axis-aligned bounding box of the point cloud."""
@@ -518,10 +534,6 @@ class PointCloud2(Timestamped):
 
             point_data = np.column_stack([points, rgb_packed]).astype(np.float32)
         else:
-            msg.fields = self._create_xyz_fields()
-            msg.fields_length = 4
-            msg.point_step = 16  # x, y, z, intensity
-
             if "intensities" in self._pcd_tensor.point:
                 intensities = (
                     self._pcd_tensor.point["intensities"].numpy().flatten().astype(np.float32)
@@ -529,7 +541,17 @@ class PointCloud2(Timestamped):
             else:
                 intensities = np.zeros(len(points), dtype=np.float32)
 
-            point_data = np.column_stack([points, intensities]).astype(np.float32)
+            if "time" in self._pcd_tensor.point:
+                times = self._pcd_tensor.point["time"].numpy().flatten().astype(np.float32)
+                msg.fields = self._create_xyz_intensity_time_fields()
+                msg.fields_length = 5
+                msg.point_step = 20  # x, y, z, intensity, time
+                point_data = np.column_stack([points, intensities, times]).astype(np.float32)
+            else:
+                msg.fields = self._create_xyz_fields()
+                msg.fields_length = 4
+                msg.point_step = 16  # x, y, z, intensity
+                point_data = np.column_stack([points, intensities]).astype(np.float32)
 
         msg.row_step = msg.point_step * msg.width
         data_bytes = point_data.tobytes()
@@ -556,7 +578,7 @@ class PointCloud2(Timestamped):
             )
 
         # Parse field offsets
-        x_offset = y_offset = z_offset = rgb_offset = intensity_offset = None
+        x_offset = y_offset = z_offset = rgb_offset = intensity_offset = time_offset = None
         for msgfield in msg.fields:
             if msgfield.name == "x":
                 x_offset = msgfield.offset
@@ -568,6 +590,8 @@ class PointCloud2(Timestamped):
                 rgb_offset = msgfield.offset
             elif msgfield.name == "intensity":
                 intensity_offset = msgfield.offset
+            elif msgfield.name == "time":
+                time_offset = msgfield.offset
 
         if any(offset is None for offset in [x_offset, y_offset, z_offset]):
             raise ValueError("PointCloud2 message missing X, Y, or Z msgfields")
@@ -620,6 +644,19 @@ class PointCloud2(Timestamped):
                     intensities.reshape(-1, 1), dtype=o3c.float32
                 )
 
+        # Extract per-point time offset if present (seconds from scan start)
+        if time_offset is not None:
+            dt_t = np.dtype(
+                [
+                    ("_pre", f"V{time_offset}"),
+                    ("time", "<f4"),
+                    ("_post", f"V{point_step - time_offset - 4}"),
+                ]
+            )
+            structured_t = np.frombuffer(raw_data, dtype=dt_t, count=num_points)
+            times = structured_t["time"].astype(np.float32)
+            pcd_t.point["time"] = o3c.Tensor(times.reshape(-1, 1), dtype=o3c.float32)
+
         # Extract RGB colors if present
         if rgb_offset is not None:
             dt = np.dtype(
@@ -649,6 +686,18 @@ class PointCloud2(Timestamped):
         """Create X, Y, Z, intensity field definitions."""
         fields = []
         for i, name in enumerate(["x", "y", "z", "intensity"]):
+            field = PointField()
+            field.name = name
+            field.offset = i * 4
+            field.datatype = 7  # FLOAT32
+            field.count = 1
+            fields.append(field)
+        return fields
+
+    def _create_xyz_intensity_time_fields(self) -> list:  # type: ignore[type-arg]
+        """Create X, Y, Z, intensity, time field definitions (per-point time in seconds)."""
+        fields = []
+        for i, name in enumerate(["x", "y", "z", "intensity", "time"]):
             field = PointField()
             field.name = name
             field.offset = i * 4
