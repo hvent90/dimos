@@ -156,11 +156,6 @@ jobs:
       # Override skipif_in_ci so the release-tests job actually runs the
       # heavier tests the normal CI matrix opts out of.
       DIMOS_FULL_TEST_RUN: "1"
-      # 1 hour per test — formerly-skipped VLM tests run CPU inference on
-      # multi-GB models; each detection query takes ~80s on this runner, and
-      # tests issue multiple queries. The global 600s in pyproject.toml is far
-      # too tight.
-      PYTEST_TIMEOUT: "3600"
     timeout-minutes: 300
     runs-on: [self-hosted, Linux, large]
     permissions:
@@ -222,7 +217,11 @@ jobs:
         # --error-for-skips ensures a misconfigured runner (missing env var /
         # dep) fails the release rather than silently passing on a smaller
         # subset. The marker excludes only `tool` (dev tooling).
-        run: uv run pytest -m 'not tool' --error-for-skips
+        # --timeout=3600 overrides the 600s baseline in pyproject.toml's
+        # addopts: formerly-skipped VLM tests run CPU inference on multi-GB
+        # models and need an hour each. (PYTEST_TIMEOUT env var is the
+        # lowest-priority knob and is shadowed by the addopts setting.)
+        run: uv run pytest -m 'not tool' --error-for-skips --timeout=3600
       - name: Check disk space
         if: failure()
         run: df -h
