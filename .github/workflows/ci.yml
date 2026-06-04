@@ -200,17 +200,16 @@ jobs:
             https://download.stereolabs.com/zedsdk/5.0/cu12/ubuntu22
           chmod +x /tmp/zed.run
           # `skip_python` stops the SDK installer from auto-installing pyzed
-          # for the system Python 3.10 (wasted, can't be reached from the
-          # uv venv); we install for the venv's Python explicitly below.
+          # for the system Python 3.10 (wasted — can't be reached from the
+          # uv venv). We install pyzed for the venv's Python below.
           sudo /tmp/zed.run -- silent runtime_only skip_cuda skip_drivers skip_python
           rm /tmp/zed.run
-          # get_python_api.py calls `python -m pip install`; uv venvs don't
-          # ship pip by default, so add it before invoking the SDK installer.
-          # `--python .venv/bin/python` targets the project venv explicitly
-          # rather than the system Python (the container sets
-          # UV_SYSTEM_PYTHON=1, which would otherwise win).
-          uv pip install --python .venv/bin/python pip
-          uv run python /usr/local/zed/get_python_api.py
+          # Install pyzed directly into the venv via uv. Avoids
+          # `get_python_api.py` which uses `pip install --ignore-installed`
+          # and bulldozes the venv's numpy past the version numba can tolerate.
+          PY_TAG=$(uv run python -c 'v=__import__("sys").version_info; print(f"cp{v.major}{v.minor}")')
+          uv pip install --python .venv/bin/python \
+            "https://download.stereolabs.com/zedsdk/5.0/whl/linux_x86_64/pyzed-5.0-${PY_TAG}-${PY_TAG}-linux_x86_64.whl"
           echo "LD_LIBRARY_PATH=/usr/local/zed/lib:${LD_LIBRARY_PATH}" >> "$GITHUB_ENV"
       - name: Build C++ extensions in-place
         run: uv run python setup.py build_ext --inplace
