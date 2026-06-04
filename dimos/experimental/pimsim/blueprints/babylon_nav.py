@@ -30,6 +30,7 @@ then drive a goal/walls (PimSimClient) with a HeadlessBrowser connected.
 
 from __future__ import annotations
 
+import os
 from pathlib import Path
 
 from dimos.core.coordination.blueprints import Blueprint, autoconnect
@@ -49,6 +50,37 @@ from dimos.visualization.vis_module import vis_module
 
 FLOOR_SCENE_DIR = Path.home() / ".cache" / "dimos" / "scene_packages" / "pimsim_flat_floor"
 WAYPOINT_THRESHOLD_M = 0.6
+
+# Initial rerun 3D camera framing the cross-wall scene (wall at y=2, route in
+# x[-1,3]). Overridable via env for quick tuning. Z-up world frame.
+_RERUN_EYE = os.getenv("DIMOS_RERUN_EYE", "2.0,-2.5,5.0")
+_RERUN_TARGET = os.getenv("DIMOS_RERUN_TARGET", "1.0,2.0,0.2")
+
+
+def _vec3(text: str) -> list[float]:
+    return [float(part) for part in text.split(",")]
+
+
+def _nav_rerun_blueprint():
+    """Rerun blueprint: framed 3D pointcloud view, right (selection) panel hidden."""
+    import rerun as rr
+    import rerun.blueprint as rrb
+
+    return rrb.Blueprint(
+        rrb.Spatial3DView(
+            origin="world",
+            background=rrb.Background(kind="SolidColor", color=[12, 14, 20]),
+            line_grid=rrb.LineGrid3D(plane=rr.components.Plane3D.XY.with_distance(0.0)),
+            eye_controls=rrb.EyeControls3D(
+                position=_vec3(_RERUN_EYE),
+                look_target=_vec3(_RERUN_TARGET),
+                eye_up=[0.0, 0.0, 1.0],
+            ),
+        ),
+        # collapse_panels is the field _with_graph_tab preserves; it hides the
+        # left/right/bottom panels for a clean full-window 3D pointcloud.
+        collapse_panels=True,
+    )
 
 
 def ensure_flat_floor_scene() -> str:
@@ -94,7 +126,9 @@ def build_babylon_nav(scene: str | None = None, *, with_vis: bool = False) -> Bl
     movement_manager = MovementManager.blueprint()
     parts = [sim, odom_adapter, tf_broadcaster, nav_stack, movement_manager]
     if with_vis:
-        parts.append(vis_module(global_config.viewer))
+        parts.append(
+            vis_module(global_config.viewer, rerun_config={"blueprint": _nav_rerun_blueprint})
+        )
     return (
         autoconnect(*parts)
         .remappings([(MovementManager, "way_point", "_mgr_way_point_unused")])
