@@ -178,12 +178,15 @@ def _entity_body_xml(
     geom_name = quoteattr(entity_body_name(entity_id) + ":geom")
     geom_mass = f' mass="{mass}"' if dynamic else ""
     friction = _entity_friction(entity)
+    raw_rgba = descriptor.get("rgba")
+    if isinstance(raw_rgba, list | tuple) and len(raw_rgba) == 4:
+        rgba = " ".join(str(float(v)) for v in raw_rgba)
+    else:
+        rgba = _DEFAULT_RGBA
     # priority=1: contact friction comes from the entity geom alone.
     # Without it MuJoCo takes the element-wise max across the pair and the
     # μ=1.0 floor would override every entity's friction.
-    common = (
-        f'rgba="{_DEFAULT_RGBA}" friction="{friction}" priority="1" group="{_ENTITY_GEOM_GROUP}"'
-    )
+    common = f'rgba="{rgba}" friction="{friction}" priority="1" group="{_ENTITY_GEOM_GROUP}"'
 
     asset_xml: str | None = None
     shape = descriptor.get("shape_hint", "mesh")
@@ -256,7 +259,7 @@ def _cache_key(wrapper: Path, entities: list[dict[str, Any]]) -> str:
             "entities": entities,
             # Bump when the generated XML changes shape (collision repr,
             # audit policy, …) so stale cached mjbs don't survive.
-            "schema": 4,
+            "schema": 5,
         },
         sort_keys=True,
     ).encode()

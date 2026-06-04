@@ -59,6 +59,8 @@ class EntityDescriptor:
         extents: Primitive parameters. Box: ``(w, h, d)``; sphere: ``(r,)``;
             cylinder: ``(r, h)``. Ignored for ``shape_hint == "mesh"``.
         mass: kg. Zero forces kinematic behavior regardless of ``kind``.
+        rgba: Optional display color for primitive shapes (renderers fall
+            back to their default material when unset).
     """
 
     entity_id: str
@@ -67,9 +69,10 @@ class EntityDescriptor:
     shape_hint: ShapeHint = "mesh"
     extents: tuple[float, ...] = ()
     mass: float = 0.0
+    rgba: tuple[float, float, float, float] | None = None
 
     def to_wire(self) -> dict[str, Any]:
-        return {
+        wire: dict[str, Any] = {
             "entity_id": self.entity_id,
             "kind": self.kind,
             "mesh_ref": self.mesh_ref,
@@ -77,9 +80,16 @@ class EntityDescriptor:
             "extents": list(self.extents),
             "mass": float(self.mass),
         }
+        if self.rgba is not None:
+            wire["rgba"] = list(self.rgba)
+        return wire
 
     @classmethod
     def from_wire(cls, data: dict[str, Any]) -> EntityDescriptor:
+        raw_rgba = data.get("rgba")
+        rgba: tuple[float, float, float, float] | None = None
+        if isinstance(raw_rgba, list | tuple) and len(raw_rgba) == 4:
+            rgba = tuple(float(v) for v in raw_rgba)  # type: ignore[assignment]
         return cls(
             entity_id=str(data["entity_id"]),
             kind=data.get("kind", "kinematic"),
@@ -87,6 +97,7 @@ class EntityDescriptor:
             shape_hint=data.get("shape_hint", "mesh"),
             extents=tuple(float(x) for x in data.get("extents", [])),
             mass=float(data.get("mass", 0.0)),
+            rgba=rgba,
         )
 
 
@@ -206,21 +217,21 @@ class EntityStateBatch(Timestamped):
         self.entries: list[tuple[EntityDescriptor, Pose]] = entries or []
 
     def _payload(self) -> dict[str, Any]:
-        return {
-            "ts": self.ts,
-            "entities": [
-                {
-                    "id": d.entity_id,
-                    "kind": d.kind,
-                    "mesh_ref": d.mesh_ref,
-                    "shape": d.shape_hint,
-                    "extents": list(d.extents),
-                    "mass": float(d.mass),
-                    "pose": pose_to_wire(p),
-                }
-                for d, p in self.entries
-            ],
-        }
+        entities = []
+        for d, p in self.entries:
+            entry: dict[str, Any] = {
+                "id": d.entity_id,
+                "kind": d.kind,
+                "mesh_ref": d.mesh_ref,
+                "shape": d.shape_hint,
+                "extents": list(d.extents),
+                "mass": float(d.mass),
+                "pose": pose_to_wire(p),
+            }
+            if d.rgba is not None:
+                entry["rgba"] = list(d.rgba)
+            entities.append(entry)
+        return {"ts": self.ts, "entities": entities}
 
     def encode(self) -> bytes:
         body = json.dumps(self._payload()).encode()
@@ -236,6 +247,10 @@ class EntityStateBatch(Timestamped):
         payload = json.loads(buf.read(length).decode())
         entries: list[tuple[EntityDescriptor, Pose]] = []
         for entry in payload.get("entities", []):
+            raw_rgba = entry.get("rgba")
+            rgba: tuple[float, float, float, float] | None = None
+            if isinstance(raw_rgba, list | tuple) and len(raw_rgba) == 4:
+                rgba = tuple(float(v) for v in raw_rgba)  # type: ignore[assignment]
             desc = EntityDescriptor(
                 entity_id=str(entry["id"]),
                 kind=entry.get("kind", "kinematic"),
@@ -243,6 +258,7 @@ class EntityStateBatch(Timestamped):
                 shape_hint=entry.get("shape", "mesh"),
                 extents=tuple(float(x) for x in entry.get("extents", [])),
                 mass=float(entry.get("mass", 0.0)),
+                rgba=rgba,
             )
             entries.append((desc, pose_from_wire(entry["pose"])))
         return cls(entries=entries, ts=float(payload.get("ts", 0.0)))

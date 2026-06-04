@@ -681,16 +681,8 @@ def _compose_scene_splat_alignment_yaml(
     return runtime_alignment_yaml
 
 
-def _splat_camera_blueprint() -> Blueprint | None:
-    """Render a Gaussian splat from the robot's camera pose into /camera_image.
-
-    Off by default; opt-in with ``DIMOS_ENABLE_SPLAT_CAMERA=1``. Only fires
-    when the active scene package has ``splat/scene.ply`` next to its
-    metadata (e.g. ``--scene office-splat``). The macOS MLX backend lives
-    in ``dimos/visualization/viser/splat_camera.py``.
-    """
-    if not _env_bool("DIMOS_ENABLE_SPLAT_CAMERA", False):
-        return None
+def _splat_assets() -> tuple[Path, Path] | None:
+    """(splat_ply, runtime alignment yaml) for the active scene package."""
     scene_package = _scene_package_config()
     if scene_package is None or scene_package.package_dir is None:
         return None
@@ -702,7 +694,23 @@ def _splat_camera_blueprint() -> Blueprint | None:
         )
         return None
     alignment_yaml = Path(scene_package.package_dir) / "splat" / "alignment.yaml"
-    runtime_alignment_yaml = _compose_scene_splat_alignment_yaml(scene_package, alignment_yaml)
+    return splat_ply, _compose_scene_splat_alignment_yaml(scene_package, alignment_yaml)
+
+
+def _splat_camera_blueprint() -> Blueprint | None:
+    """Render a Gaussian splat from the robot's camera pose into /camera_image.
+
+    Off by default; opt-in with ``DIMOS_ENABLE_SPLAT_CAMERA=1``. Only fires
+    when the active scene package has ``splat/scene.ply`` next to its
+    metadata (e.g. ``--scene office-splat``). The macOS MLX backend lives
+    in ``dimos/visualization/viser/splat_camera.py``.
+    """
+    if not _env_bool("DIMOS_ENABLE_SPLAT_CAMERA", False):
+        return None
+    assets = _splat_assets()
+    if assets is None:
+        return None
+    splat_ply, runtime_alignment_yaml = assets
 
     from dimos.visualization.viser.camera import g1_d435_default, g1_d435_forward
     from dimos.visualization.viser.splat_camera import SplatCameraModule
@@ -730,7 +738,63 @@ def _splat_camera_blueprint() -> Blueprint | None:
             ("color_image", Image): JpegLcmTransport("/camera_image", Image),
             ("joint_state", JointState): LCMTransport("/coordinator/joint_state", JointState),
             ("odom", PoseStamped): LCMTransport("/odom", PoseStamped),
+            # Live entity poses for the camera's overlay compositor (the
+            # cube/table aren't in the splat scan).
+            ("entity_states", EntityStateBatch): LCMTransport(
+                "/entity_state_batch", EntityStateBatch
+            ),
         }
+    )
+
+
+def _splat_workspace_camera_blueprint() -> Blueprint | None:
+    """Second, down-pitched splat camera into /workspace_image.
+
+    Uses ``g1_d435_default()`` — the 47.6° down pitch matching the real
+    G1's D435 mount in g1.urdf — so the operator gets the manipulation
+    workspace view in the frontend and the Quest lower quad. On whenever
+    the splat camera is on; opt out with
+    ``DIMOS_ENABLE_SPLAT_WORKSPACE_CAMERA=0``.
+    """
+    if not _env_bool("DIMOS_ENABLE_SPLAT_CAMERA", False):
+        return None
+    if not _env_bool("DIMOS_ENABLE_SPLAT_WORKSPACE_CAMERA", True):
+        return None
+    assets = _splat_assets()
+    if assets is None:
+        return None
+    splat_ply, runtime_alignment_yaml = assets
+
+    from dimos.visualization.viser.camera import g1_d435_default
+    from dimos.visualization.viser.splat_camera import WorkspaceSplatCameraModule
+
+    os.environ.setdefault("DIMOS_MLX_RASTERIZER", "cpp")
+
+    return (
+        WorkspaceSplatCameraModule.blueprint(
+            splat_path=str(splat_ply),
+            mjcf_path=str(_MJCF_PATH),
+            alignment_yaml=str(runtime_alignment_yaml),
+            camera_spec=g1_d435_default(),
+            render_hz=_env_float("DIMOS_SPLAT_WORKSPACE_RENDER_HZ", 10.0),
+            frame_id="splat_workspace_optical_frame",
+        )
+        .remappings(
+            [
+                (WorkspaceSplatCameraModule, "color_image", "color_image_workspace"),
+                (WorkspaceSplatCameraModule, "camera_info", "camera_info_workspace"),
+            ]
+        )
+        .transports(
+            {
+                ("color_image_workspace", Image): JpegLcmTransport("/workspace_image", Image),
+                ("joint_state", JointState): LCMTransport("/coordinator/joint_state", JointState),
+                ("odom", PoseStamped): LCMTransport("/odom", PoseStamped),
+                ("entity_states", EntityStateBatch): LCMTransport(
+                    "/entity_state_batch", EntityStateBatch
+                ),
+            }
+        )
     )
 
 
@@ -844,7 +908,10 @@ if global_config.simulation in ("babylon", "pimsim"):
             "is disabled (DIMOS_ENABLE_BABYLON=0?)"
         )
     _splat_camera = _splat_camera_blueprint()
-    _optional_pimsim = tuple(bp for bp in (_splat_camera,) if bp is not None)
+    _splat_workspace_camera = _splat_workspace_camera_blueprint()
+    _optional_pimsim = tuple(
+        bp for bp in (_splat_camera, _splat_workspace_camera) if bp is not None
+    )
     _groot_blueprints: tuple[Blueprint, ...] = (
         _babylon,
         _websocket_blueprint(_cmd_vel_topic),
@@ -860,6 +927,7 @@ else:
     _camera_bridge = _camera_bridge_blueprint()
     _workspace_camera = _workspace_camera_bridge_blueprint()
     _splat_camera = _splat_camera_blueprint()
+    _splat_workspace_camera = _splat_workspace_camera_blueprint()
     _recorder = _episode_recorder_blueprint()
     _optional = tuple(
         bp
@@ -870,6 +938,7 @@ else:
             _camera_bridge,
             _workspace_camera,
             _splat_camera,
+            _splat_workspace_camera,
             _recorder,
         )
         if bp is not None

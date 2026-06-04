@@ -1839,6 +1839,16 @@ function physicsShapeForEntity(descriptor, mass) {
   return physicsShapeFromHint(descriptor.shape_hint);
 }
 
+function applyEntityColor(mesh, descriptor) {
+  const rgba = descriptor.rgba;
+  if (!Array.isArray(rgba) || rgba.length !== 4) return mesh;
+  const mat = new BABYLON.StandardMaterial(`entity:${descriptor.entity_id}:mat`, scene);
+  mat.diffuseColor = new BABYLON.Color3(rgba[0], rgba[1], rgba[2]);
+  mat.alpha = rgba[3];
+  mesh.material = mat;
+  return mesh;
+}
+
 function buildPrimitiveMesh(descriptor) {
   const ext = descriptor.extents || [];
   switch (descriptor.shape_hint) {
@@ -1950,6 +1960,7 @@ async function buildEntityMesh(descriptor) {
   }
   const mesh = buildPrimitiveMesh(descriptor);
   if (!mesh) return null;
+  applyEntityColor(mesh, descriptor);
   return { mesh, visualNodes: [] };
 }
 

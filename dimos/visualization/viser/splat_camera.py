@@ -49,6 +49,7 @@ from reactivex.disposable import Disposable
 from dimos.core.core import rpc
 from dimos.core.module import Module
 from dimos.core.stream import In, Out
+from dimos.experimental.pimsim.entity import EntityStateBatch
 from dimos.msgs.geometry_msgs.PoseStamped import PoseStamped
 from dimos.msgs.geometry_msgs.Quaternion import Quaternion
 from dimos.msgs.geometry_msgs.Transform import Transform
@@ -59,6 +60,7 @@ from dimos.msgs.sensor_msgs.JointState import JointState
 from dimos.utils.logging_config import setup_logger
 from dimos.visualization.viser.camera import CameraSpec, g1_d435_default, world_pose
 from dimos.visualization.viser.robot_meshes import (
+    GeomInstance,
     RobotMeshes,
     apply_state,
     dimos_joint_to_mjcf,
@@ -666,6 +668,106 @@ def _load_robot_assets(data_dir: FilePath, person_dir: FilePath) -> dict[str, by
 # =============================================================================
 
 
+_ARM_BODY_KEYWORDS = ("shoulder", "elbow", "wrist", "hand")
+_HULL_MAX_POINTS = 64
+# Unit-box corner/face tables for primitive entity overlays.
+_BOX_CORNERS = np.array(
+    [
+        [-1, -1, -1],
+        [1, -1, -1],
+        [1, 1, -1],
+        [-1, 1, -1],
+        [-1, -1, 1],
+        [1, -1, 1],
+        [1, 1, 1],
+        [-1, 1, 1],
+    ],
+    dtype=np.float64,
+)
+_BOX_FACES = np.array(
+    [
+        [0, 1, 2],
+        [0, 2, 3],
+        [4, 6, 5],
+        [4, 7, 6],
+        [0, 4, 5],
+        [0, 5, 1],
+        [1, 5, 6],
+        [1, 6, 2],
+        [2, 6, 7],
+        [2, 7, 3],
+        [3, 7, 4],
+        [3, 4, 0],
+    ],
+    dtype=np.int32,
+)
+
+
+def _arm_hull_geoms(robot: RobotMeshes | None) -> list[GeomInstance]:
+    """Convex-hulled copies of the robot's arm/hand geoms for compositing.
+
+    The visual STLs total ~750k triangles across both arms — far too heavy
+    for per-frame cv2 fills. Hulls are a few hundred faces per link, which
+    is plenty for "where are my arms" feedback.
+    """
+    if robot is None:
+        return []
+    try:
+        from scipy.spatial import ConvexHull  # type: ignore[import-untyped]
+    except Exception:
+        return []
+
+    hulls: list[GeomInstance] = []
+    for geom in robot.geoms:
+        if not any(k in geom.body_name for k in _ARM_BODY_KEYWORDS):
+            continue
+        if len(geom.vertices) < 4:
+            continue
+        # Hull of the full vertex set tracks every surface curve — thousands
+        # of faces per link, which murders the per-frame fill loop. Hull a
+        # deterministic subsample instead: ≤64 points → ≤~124 faces, visually
+        # identical at camera resolution.
+        vertices = geom.vertices
+        if len(vertices) > _HULL_MAX_POINTS:
+            idx = np.unique(np.linspace(0, len(vertices) - 1, _HULL_MAX_POINTS).astype(np.int64))
+            vertices = vertices[idx]
+        try:
+            hull = ConvexHull(vertices)
+        except Exception:
+            continue
+        remap = np.full(len(vertices), -1, dtype=np.int32)
+        remap[hull.vertices] = np.arange(len(hull.vertices), dtype=np.int32)
+        hulls.append(
+            GeomInstance(
+                body_name=geom.body_name,
+                vertices=vertices[hull.vertices],
+                faces=remap[hull.simplices],
+                local_pos=geom.local_pos,
+                local_wxyz=geom.local_wxyz,
+                rgba=geom.rgba,
+            )
+        )
+    return hulls
+
+
+def _primitive_mesh(shape: str, extents: tuple[float, ...]) -> tuple[np.ndarray, np.ndarray] | None:
+    """(vertices, faces) for a primitive entity shape, origin-centered.
+
+    Spheres/cylinders render as their bounding boxes — close enough for an
+    overlay whose job is "the object is here".
+    """
+    if shape == "box" and len(extents) == 3:
+        half = np.asarray(extents, dtype=np.float64) / 2.0
+    elif shape == "sphere" and len(extents) == 1:
+        half = np.full(3, float(extents[0]))
+    elif shape == "cylinder" and len(extents) == 2:
+        r, h = float(extents[0]), float(extents[1])
+        half = np.array([r, r, h / 2.0])
+    else:
+        return None
+    return _BOX_CORNERS * half, _BOX_FACES
+
+
 class SplatCameraModule(Module):
     """Publishes splat-rendered camera images at the robot's camera pose.
 
@@ -691,6 +793,10 @@ class SplatCameraModule(Module):
     camera_info: Out[CameraInfo]
     joint_state: In[JointState]
     odom: In[PoseStamped]
+    # Live entity poses (e.g. from MuJoCo in sim mode). Primitive-shaped
+    # entities are composited onto the render; mesh entities are skipped —
+    # scanned furniture is already in the splat itself.
+    entity_states: In[EntityStateBatch]
 
     def __init__(
         self,
@@ -702,6 +808,7 @@ class SplatCameraModule(Module):
         render_hz: float = 10.0,
         info_hz: float = 1.0,
         frame_id: str = "splat_camera_optical_frame",
+        composite_robot: bool = True,
         **kwargs: Any,
     ) -> None:
         super().__init__(**kwargs)
@@ -712,11 +819,18 @@ class SplatCameraModule(Module):
         self._render_dt = 1.0 / float(render_hz)
         self._info_dt = 1.0 / float(info_hz)
         self._frame_id = frame_id
+        # The splat doesn't contain the robot, so in sim the operator can't
+        # see their own arms in the camera. Composite convex hulls of the
+        # arm/hand meshes at FK poses (full STLs are ~750k tris; hulls a
+        # few thousand).
+        self._composite_robot = composite_robot
+        self._robot_overlay_geoms: list[GeomInstance] = []
 
         self._state_lock = threading.Lock()
         self._latest_joints: dict[str, float] = {}
         self._latest_base_pos: np.ndarray | None = None
         self._latest_base_wxyz: np.ndarray | None = None
+        self._latest_entity_batch: EntityStateBatch | None = None
 
         self._robot: RobotMeshes | None = None
         self._backend: SplatCameraBackend | None = None
@@ -814,6 +928,19 @@ class SplatCameraModule(Module):
         except Exception as e:
             logger.warning(f"SplatCamera: odom subscribe failed: {e}")
 
+        try:
+            unsub = self.entity_states.subscribe(self._on_entity_states)
+            self.register_disposable(Disposable(unsub))
+        except Exception as e:
+            logger.debug(f"SplatCamera: entity_states not wired ({e}); no entity overlay")
+
+        if self._composite_robot:
+            self._robot_overlay_geoms = _arm_hull_geoms(self._robot)
+            logger.info(
+                "SplatCamera: compositing %d robot overlay hulls",
+                len(self._robot_overlay_geoms),
+            )
+
         self._render_thread = threading.Thread(
             target=self._render_loop, name="splat-camera-render", daemon=True
         )
@@ -831,13 +958,20 @@ class SplatCameraModule(Module):
                 t.join(timeout=2.0)
         super().stop()
 
-    # Naive top-priority compositing of MJCF scene meshes onto the
-    # splat-rendered image.  No depth check — meshes always win.
-    # Acceptable here because manip_table / manip_cube / scene editor
-    # exports are physically in front of the camera with no splat
-    # geometry between them and the lens.  If you ever place an
-    # overlay object behind splat geometry (e.g. inside a closet),
-    # add depth-aware compositing using gsplat's depth output.
+    # Painter-sorted compositing of overlay geometry onto the splat render:
+    #  - MJCF scene rigging (manip_*, scene_editor_* bodies), legacy path
+    #  - robot arm/hand convex hulls at FK poses (the splat doesn't
+    #    contain the robot, so without this the operator can't see their
+    #    own arms in sim)
+    #  - primitive-shaped entities at live poses from entity_states
+    #    (mesh entities are skipped — scanned furniture is visually part
+    #    of the splat already)
+    # Triangles are depth-sorted far-to-near across all sources, which
+    # gives correct overlay self-occlusion. There is still no depth test
+    # against the *splat* — overlays always win. Acceptable while overlay
+    # objects sit in front of the camera with no splat geometry between
+    # them and the lens; for anything else, composite with gsplat's depth
+    # output instead.
     def _composite_scene_meshes(
         self,
         rgb: np.ndarray,
@@ -846,17 +980,6 @@ class SplatCameraModule(Module):
     ) -> np.ndarray:
         if self._robot is None:
             return rgb
-        # Filter to non-robot bodies — anything authored as scene rigging
-        # (manip_*, scene_editor_*) overlays; robot meshes are rendered
-        # by the splat / hardware textures.
-        scene_geoms = [
-            g
-            for g in self._robot.geoms
-            if g.body_name.startswith("manip_") or g.body_name.startswith("scene_editor_")
-        ]
-        if not scene_geoms:
-            return rgb
-
         try:
             import cv2  # type: ignore[import-untyped]
         except Exception:
@@ -870,58 +993,111 @@ class SplatCameraModule(Module):
         t_cw = -R_cw @ cam_pos
 
         spec = self._camera_spec
-        fx = spec.focal_pixels()
-        fy = spec.focal_pixels()
+        fx = fy = spec.focal_pixels()
         cx_p, cy_p = spec.cx(), spec.cy()
-        _H, _W = rgb.shape[0], rgb.shape[1]
 
         body_name_to_id = {n: i for i, n in enumerate(self._robot.body_names)}
 
-        out = rgb.copy()
-        for geom in scene_geoms:
-            body_id = body_name_to_id.get(geom.body_name)
-            if body_id is None:
-                continue
-            # Body world pose
-            body_world_pos = self._robot.data.xpos[body_id]
-            body_world_quat = self._robot.data.xquat[body_id]  # wxyz
-            R_wb = _wxyz_to_rotmat_args(*body_world_quat)
-            # Geom local→body pose (constant from MJCF)
-            R_bg = _wxyz_to_rotmat_args(*geom.local_wxyz)
-            t_bg = geom.local_pos
+        # Gather (depth, uv triangle, color) across all overlay sources.
+        tri_depths: list[np.ndarray] = []
+        tri_uvs: list[np.ndarray] = []
+        tri_colors: list[tuple[int, int, int]] = []
+        tri_counts: list[int] = []
 
-            # vertices: geom-local → world → camera → image
-            v_g = geom.vertices.astype(np.float64)  # (V, 3)
-            v_b = (R_bg @ v_g.T).T + t_bg
-            v_w = (R_wb @ v_b.T).T + body_world_pos
-            v_c = (R_cw @ v_w.T).T + t_cw  # (V, 3) in camera frame
+        def project_geom(
+            vertices: np.ndarray,
+            faces: np.ndarray,
+            world_pos: np.ndarray,
+            world_wxyz: np.ndarray,
+            local_pos: np.ndarray,
+            local_wxyz: np.ndarray,
+            rgba: tuple[float, ...],
+        ) -> None:
+            R_wb = _wxyz_to_rotmat_args(*world_wxyz)
+            R_bg = _wxyz_to_rotmat_args(*local_wxyz)
+            v_b = (R_bg @ vertices.astype(np.float64).T).T + local_pos
+            v_w = (R_wb @ v_b.T).T + world_pos
+            v_c = (R_cw @ v_w.T).T + t_cw  # (V, 3) camera frame
 
-            # Image-space projection (image y axis is down; camera Z is forward).
-            # Skip vertices behind the camera.
-            mask_in_front = v_c[:, 2] > 1e-3
-            if not mask_in_front.any():
-                continue
-            # Project all vertices; for a face we only draw if all 3 are in front.
-            zs = np.where(mask_in_front, v_c[:, 2], 1.0)
+            in_front = v_c[:, 2] > 1e-3
+            if not in_front.any():
+                return
+            zs = np.where(in_front, v_c[:, 2], 1.0)
             u = fx * (v_c[:, 0] / zs) + cx_p
             v = fy * (v_c[:, 1] / zs) + cy_p
             uv = np.stack([u, v], axis=1)
 
-            color_bgr = (
-                int(geom.rgba[2] * 255),
-                int(geom.rgba[1] * 255),
-                int(geom.rgba[0] * 255),
+            face_ok = in_front[faces].all(axis=1)  # (F,)
+            if not face_ok.any():
+                return
+            ok_faces = faces[face_ok]
+            tri_depths.append(v_c[ok_faces][:, :, 2].mean(axis=1))
+            tri_uvs.append(uv[ok_faces].astype(np.int32))
+            tri_colors.append((int(rgba[0] * 255), int(rgba[1] * 255), int(rgba[2] * 255)))
+            tri_counts.append(len(ok_faces))
+
+        # 1. Legacy MJCF scene rigging + 2. robot arm hulls — FK-driven.
+        scene_geoms = [
+            g
+            for g in self._robot.geoms
+            if g.body_name.startswith("manip_") or g.body_name.startswith("scene_editor_")
+        ]
+        for geom in (*scene_geoms, *self._robot_overlay_geoms):
+            body_id = body_name_to_id.get(geom.body_name)
+            if body_id is None:
+                continue
+            project_geom(
+                geom.vertices,
+                geom.faces,
+                self._robot.data.xpos[body_id],
+                self._robot.data.xquat[body_id],
+                geom.local_pos,
+                geom.local_wxyz,
+                geom.rgba,
             )
 
-            for tri in geom.faces:
-                if not (mask_in_front[tri[0]] and mask_in_front[tri[1]] and mask_in_front[tri[2]]):
+        # 3. Primitive entities at live poses.
+        with self._state_lock:
+            batch = self._latest_entity_batch
+        if batch is not None:
+            identity_pos = np.zeros(3)
+            identity_wxyz = np.array([1.0, 0.0, 0.0, 0.0])
+            for descriptor, pose in batch.entries:
+                prim = _primitive_mesh(descriptor.shape_hint, descriptor.extents)
+                if prim is None:
                     continue
-                pts = uv[tri].astype(np.int32)
-                # OpenCV expects BGR ordering for color but rgb buffer is RGB;
-                # convert when drawing then convert back is wasteful — easier
-                # to swap channels of rgb before drawing.
-                cv2.fillConvexPoly(out, pts, (color_bgr[2], color_bgr[1], color_bgr[0]))
+                vertices, faces = prim
+                world_pos = np.array([pose.position.x, pose.position.y, pose.position.z])
+                world_wxyz = np.array(
+                    [
+                        pose.orientation.w,
+                        pose.orientation.x,
+                        pose.orientation.y,
+                        pose.orientation.z,
+                    ]
+                )
+                rgba = descriptor.rgba if descriptor.rgba is not None else (0.62, 0.62, 0.68, 1.0)
+                project_geom(
+                    vertices, faces, world_pos, world_wxyz, identity_pos, identity_wxyz, rgba
+                )
+
+        if not tri_depths:
+            return rgb
+
+        depths = np.concatenate(tri_depths)
+        order = np.argsort(-depths)  # far to near
+        colors = np.repeat(np.arange(len(tri_colors)), np.asarray(tri_counts))  # geom index per tri
+        uvs = np.concatenate(tri_uvs)
+
+        out = rgb.copy()
+        for idx in order:
+            r, g, b = tri_colors[colors[idx]]
+            cv2.fillConvexPoly(out, uvs[idx], (r, g, b))
         return out
+
+    def _on_entity_states(self, batch: EntityStateBatch) -> None:
+        with self._state_lock:
+            self._latest_entity_batch = batch
 
     def _on_joint_state(self, msg: JointState) -> None:
         names = list(msg.name)
@@ -1023,6 +1199,13 @@ class SplatCameraModule(Module):
                 next_tick = time.monotonic()
 
 
+class WorkspaceSplatCameraModule(SplatCameraModule):
+    """Same behaviour as ``SplatCameraModule``; a distinct class lets the
+    module coordinator keep two splat cameras in the same blueprint (it
+    keys deployed modules by class, so two of the same class get silently
+    collapsed into one). Used for the down-pitched workspace view."""
+
+
 splat_camera = SplatCameraModule.blueprint
 
 __all__ = [
@@ -1031,6 +1214,7 @@ __all__ = [
     "MlxBackend",
     "SplatCameraBackend",
     "SplatCameraModule",
+    "WorkspaceSplatCameraModule",
     "make_backend",
     "splat_camera",
 ]

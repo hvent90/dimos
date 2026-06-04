@@ -245,6 +245,7 @@ all_modules = {
     "wavefront-frontier-explorer": "dimos.navigation.frontier_exploration.wavefront_frontier_goal_selector.WavefrontFrontierExplorer",
     "web-input": "dimos.agents.web_human_input.WebInput",
     "websocket-vis-module": "dimos.web.websocket_vis.websocket_vis_module.WebsocketVisModule",
+    "workspace-splat-camera-module": "dimos.visualization.viser.splat_camera.WorkspaceSplatCameraModule",
     "workspace-tcp-jpeg-camera-module": "dimos.hardware.sensors.camera.tcp_jpeg.WorkspaceTcpJpegCameraModule",
     "x2-connection": "dimos.robot.agibot.x2_ultra.connection.X2Connection",
     "x2-connection-base": "dimos.robot.agibot.x2_ultra.connection.X2ConnectionBase",
