@@ -33,24 +33,7 @@ logger = setup_logger()
 
 
 class RayTraceMap(Transformer[PointCloud2, PointCloud2]):
-    """Accumulate world-frame lidar into a voxel map with raycast clearing.
-
-    Wraps the Rust :class:`VoxelRayMapper`. Each upstream observation must
-    carry world-frame points in ``obs.data`` and the sensor origin in
-    ``obs.pose_tuple`` (xyz of the first three elements). Observations
-    without a pose are skipped.
-
-    Args:
-        voxel_size: edge length of each voxel (m).
-        max_range: maximum ray casting range (m); 0 means no limit.
-        ray_subsample: keep every Nth ray for clearing.
-        shadow_depth: ray extension past endpoint to clear shadows (m).
-        grace_depth: spare voxels within this distance of endpoints from clearing (m).
-        min_health: voxel removal threshold.
-        max_health: voxel saturation cap.
-        emit_every: yield the accumulated map every N frames. 0 means yield
-            only when upstream exhausts.
-    """
+    """Accumulate world-frame lidar into a voxel map with raycast clearing."""
 
     def __init__(
         self,
@@ -83,8 +66,6 @@ class RayTraceMap(Transformer[PointCloud2, PointCloud2]):
         pcd = o3d.t.geometry.PointCloud()
         pcd.point["positions"] = o3c.Tensor.from_numpy(positions)
         cloud = PointCloud2(pointcloud=pcd, frame_id="world", ts=last_obs.ts)
-        # Preserve last_obs.pose_tuple so downstream transforms see the
-        # current sensor pose alongside the accumulated map.
         return last_obs.derive(
             data=cloud,
             tags={**last_obs.tags, "frame_count": count},

@@ -12,16 +12,7 @@
 # See the License for the specific language governing permissions and
 # limitations under the License.
 
-"""Replay a recorded lidar+odometry .db through the ray-trace mapper and MLS planner.
-
-Aligns lidar and odometry by timestamp, accumulates a voxel map via the Rust
-VoxelRayMapper, replans an MLS path on each emitted map, and logs everything
-to rerun.
-
-Usage:
-    uv run python -m dimos.navigation.nav_3d.mls_planner.utils.plan_rrd mid360_sample
-    uv run python -m dimos.navigation.nav_3d.mls_planner.utils.plan_rrd sf_office --out plan.rrd
-"""
+"""Replay a lidar+odometry .db through RayTraceMap and MLSPlan into rerun."""
 
 from __future__ import annotations
 
@@ -34,7 +25,9 @@ import typer
 from dimos.mapping.ray_tracing.transformer import RayTraceMap
 from dimos.memory2.store.sqlite import SqliteStore
 from dimos.memory2.transform import FnTransformer
+from dimos.memory2.type.observation import Observation
 from dimos.msgs.nav_msgs.Odometry import Odometry
+from dimos.msgs.nav_msgs.Path import Path
 from dimos.msgs.sensor_msgs.PointCloud2 import PointCloud2, register_colormap_annotation
 from dimos.navigation.nav_3d.mls_planner.transformer import MLSPlan
 from dimos.utils.data import resolve_named_path
@@ -42,7 +35,7 @@ from dimos.utils.data import resolve_named_path
 TIMELINE = "ts"
 
 
-def _attach_pose_from_odom(pair_obs):  # type: ignore[no-untyped-def]
+def _attach_pose_from_odom(pair_obs: Observation) -> Observation[PointCloud2]:
     lidar_obs = pair_obs.data[0]
     odom_obs = pair_obs.data[1]
     odom = odom_obs.data
@@ -69,7 +62,7 @@ def _log_edges(edges: np.ndarray, entity: str) -> None:
     rr.log(entity, rr.LineStrips3D(segments))
 
 
-def _log_path(path, entity: str) -> None:  # type: ignore[no-untyped-def]
+def _log_path(path: Path, entity: str) -> None:
     if not path.poses:
         rr.log(entity, rr.LineStrips3D([]))
         return

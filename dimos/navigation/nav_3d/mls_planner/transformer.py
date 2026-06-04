@@ -26,34 +26,16 @@ from dimos.utils.logging_config import setup_logger
 if TYPE_CHECKING:
     from collections.abc import Iterator
 
+    import numpy as np
+    from numpy.typing import NDArray
+
     from dimos.memory2.type.observation import Observation
 
 logger = setup_logger()
 
 
 class MLSPlan(Transformer[PointCloud2, Path]):
-    """Plan paths over an incrementally accumulated voxel map.
-
-    Consumes a stream of cumulative voxel-map point clouds (e.g. from
-    :class:`RayTraceMap`). Each upstream observation must carry the current
-    robot pose in ``obs.pose_tuple``; its xyz drives the planner ``start``
-    (with z dropped by ``robot_height`` to put it at foot level). The fixed
-    ``goal`` is supplied at construction. Yields a :class:`Path` per frame,
-    empty when no route exists.
-
-    Surface map, graph nodes, graph edges, and the current start are attached
-    to ``obs.tags`` for visualization.
-
-    Args:
-        goal: world-frame goal position.
-        voxel_size: planner voxelization edge length (m).
-        robot_height: vertical clearance required above standable cells (m).
-        surface_dilation_passes: morphological dilation passes on surface mask.
-        surface_erosion_passes: morphological erosion passes on surface mask.
-        node_spacing_m: target spacing between graph nodes (m).
-        node_wall_buffer_m: minimum distance from a node to a wall voxel (m).
-        node_step_threshold_m: max vertical step between connected nodes (m).
-    """
+    """Plan paths from current pose to a fixed goal over an accumulating voxel map."""
 
     def __init__(
         self,
@@ -76,7 +58,7 @@ class MLSPlan(Transformer[PointCloud2, Path]):
         self.node_wall_buffer_m = node_wall_buffer_m
         self.node_step_threshold_m = node_step_threshold_m
 
-    def _path_from_waypoints(self, waypoints, ts: float) -> Path:  # type: ignore[no-untyped-def]
+    def _path_from_waypoints(self, waypoints: NDArray[np.float32] | None, ts: float) -> Path:
         poses: list[PoseStamped] = []
         if waypoints is not None:
             for x, y, z in waypoints:
