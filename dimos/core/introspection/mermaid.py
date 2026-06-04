@@ -17,13 +17,19 @@
 from __future__ import annotations
 
 from collections import defaultdict
-from typing import Any
+from typing import TypedDict
 
 from dimos.core.coordination.blueprints import Blueprint
 from dimos.core.introspection.utils import sanitize_id
 from dimos.core.module import ModuleBase
 
-Theme = dict[str, Any]
+
+class Theme(TypedDict):
+    background: str
+    mermaid_theme: str
+    nodes: list[str]
+    edges: list[str]
+
 
 THEMES: dict[str, Theme] = {
     "tailwind": {

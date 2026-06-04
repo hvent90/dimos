@@ -108,8 +108,8 @@ def _build_html(
 ) -> str:
     blueprints = _load_blueprints(python_file)
     palette = THEMES.get(theme, THEMES[DEFAULT_THEME])
-    background = palette.get("background", "#1e1e1e")
-    mermaid_theme = palette.get("mermaid_theme", "dark")
+    background = palette["background"]
+    mermaid_theme = palette["mermaid_theme"]
     is_light = mermaid_theme != "dark"
     text_color = "#334155" if is_light else "#ccc"
     text_muted = "#64748b" if is_light else "#888"
