@@ -18,6 +18,7 @@ import asyncio
 from collections.abc import Callable
 from contextlib import asynccontextmanager, suppress
 import math
+import os
 from pathlib import Path
 import struct
 import threading
@@ -65,7 +66,6 @@ from dimos.experimental.pimsim.robot_meshes import (
 )
 from dimos.msgs.geometry_msgs.Pose import Pose
 from dimos.msgs.geometry_msgs.PoseStamped import PoseStamped
-from dimos.msgs.sensor_msgs.Image import Image, ImageFormat
 from dimos.msgs.sensor_msgs.JointState import JointState
 from dimos.utils.logging_config import setup_logger
 
@@ -73,14 +73,13 @@ logger = setup_logger()
 
 _DEFAULT_BROADCAST_HZ = 30.0
 _DEFAULT_PORT = 8091
-_DEFAULT_CAMERA_HZ = 15.0
-_DEFAULT_CAMERA_JPEG_QUALITY = 75
 _POSE_POSITION_EPSILON = 1e-5
 _POSE_QUATERNION_EPSILON = 1e-5
-# Binary websocket message tags. Pointcloud (0x02) was removed when
-# /global_map migrated to the LCM<->WS bridge; camera and robot_pose
-# remain on /ws pending their own migration (CompressedImage, browser FK).
-_WS_MSG_CAMERA = 0x01
+# Binary websocket message tags. Pointcloud (0x02) and camera (0x01) were
+# removed when /global_map and /camera_image migrated to the LCM<->WS
+# bridge; the bridge forwards camera frames as JPEG-encoded Image LCM
+# packets (publisher uses JpegLcmTransport) and the browser displays them
+# via createObjectURL. Only robot_pose remains on /ws pending browser FK.
 _WS_MSG_ROBOT_POSE = 0x03
 _WS_ROBOT_POSE_HEADER_BYTES = 16
 # Per-message WS send timeout. The browser tab momentarily failing to drain
@@ -124,10 +123,6 @@ class BabylonSceneViewerModule(Module):
     # browser these In[] decls go away.
     joint_state: In[JointState]
     odom: In[PoseStamped]
-    camera_image: In[Image]
-    # Optional second camera (e.g. a workspace-facing realsense). If a
-    # transport is wired, a second camera panel shows up in the HUD.
-    workspace_image: In[Image]
     # Entity world (browser is authoritative; these republish for dimos consumers).
     entity_descriptors: Out[EntityDescriptor]
     # Aggregated per-tick snapshot — single source for cross-process
@@ -152,10 +147,6 @@ class BabylonSceneViewerModule(Module):
         scene_rotation_zyx_deg: tuple[float, float, float] = (0.0, 0.0, 0.0),
         scene_y_up: bool = True,
         broadcast_hz: float = _DEFAULT_BROADCAST_HZ,
-        camera_hz: float = _DEFAULT_CAMERA_HZ,
-        camera_jpeg_quality: int = _DEFAULT_CAMERA_JPEG_QUALITY,
-        camera_name: str = "camera",
-        workspace_name: str = "workspace",
         # Browser-physics-only base. Set enable_sim=True to have the browser
         # own collision/pose integration and publish sim_odom back through
         # this module.
@@ -189,11 +180,6 @@ class BabylonSceneViewerModule(Module):
         self._scene_rotation_zyx_deg = scene_rotation_zyx_deg
         self._scene_y_up = scene_y_up
         self._broadcast_dt = 1.0 / float(broadcast_hz)
-        self._camera_min_dt = 1.0 / float(camera_hz)
-        self._camera_jpeg_quality = int(camera_jpeg_quality)
-        self._camera_name = camera_name
-        self._workspace_name = workspace_name
-        self._last_workspace_sent = 0.0
 
         self._state_lock = threading.Lock()
         self._latest_joints: dict[str, float] = {}
@@ -201,13 +187,6 @@ class BabylonSceneViewerModule(Module):
         self._latest_base_wxyz: np.ndarray | None = None
         self._robot_pose_lock = threading.Lock()
         self._last_robot_pose_values: np.ndarray | None = None
-
-        # Camera state. _turbo_jpeg is lazy-initialised so the viewer still
-        # imports cleanly on machines without PyTurboJPEG (it's an optional
-        # dep). Only the encode path requires it.
-        self._camera_lock = threading.Lock()
-        self._last_camera_sent = 0.0
-        self._turbo_jpeg: Any = None
 
         self._robot: RobotMeshes | None = None
         self._uvicorn_server: uvicorn.Server | None = None
@@ -233,6 +212,30 @@ class BabylonSceneViewerModule(Module):
         self._lcm_handle_thread: threading.Thread | None = None
         self._lcm_clients: set[WebSocket] = set()
         self._lcm_seq: int = 0
+        # Per-client latest-packet-per-channel buffer + wake event + drain
+        # task. Replaces the previous "schedule one coroutine per LCM
+        # packet" pattern: under load that backed up asyncio with hundreds
+        # of pending tasks, putting the browser 10-15s behind real time,
+        # and the legacy `websockets` library asserted on concurrent
+        # drains when uvicorn's keepalive ping collided with our sends.
+        # Now there is exactly one in-flight send per client at a time,
+        # and the LCM thread just overwrites the per-channel slot
+        # (latest-wins, old packets drop on the floor) so the bridge runs
+        # at the WebSocket's drain rate instead of the bus's emit rate.
+        self._lcm_pending: dict[WebSocket, dict[str, bytes]] = {}
+        self._lcm_wake: dict[WebSocket, asyncio.Event] = {}
+        self._lcm_drain_tasks: dict[WebSocket, asyncio.Task[None]] = {}
+        # Per-channel forward rate caps (min seconds between packets sent
+        # to any one browser client for that channel). The bus keeps
+        # emitting at its native rate; we just throttle the WS leg so a
+        # heavy producer (e.g. the rust voxel mapper at 10 Hz) doesn't
+        # eat the browser's budget. None of this affects in-process
+        # consumers like the nav stack or rerun.
+        _gm_hz = float(os.environ.get("DIMOS_PIMSIM_GLOBAL_MAP_HZ", "1.0"))
+        self._lcm_channel_min_interval_s: dict[str, float] = {
+            "/global_map#sensor_msgs.PointCloud2": 1.0 / _gm_hz if _gm_hz > 0 else 0.0,
+        }
+        self._lcm_last_forward_ts: dict[WebSocket, dict[str, float]] = {}
 
         self._browser_physics_enabled = enable_sim
         self._browser_sim_rate = float(sim_rate)
@@ -285,13 +288,6 @@ class BabylonSceneViewerModule(Module):
         # /nav_cmd_vel are consumed entirely on the browser via the bridge.
         self.register_disposable(Disposable(self.joint_state.subscribe(self._on_joint_state)))
         self.register_disposable(Disposable(self.odom.subscribe(self._on_odom)))
-        self.register_disposable(Disposable(self.camera_image.subscribe(self._on_camera_image)))
-        try:
-            self.register_disposable(
-                Disposable(self.workspace_image.subscribe(self._on_workspace_image))
-            )
-        except Exception:
-            logger.debug("BabylonViewer: workspace_image not wired; skipping second camera")
 
         self._install_initial_entities()
 
@@ -342,6 +338,7 @@ class BabylonSceneViewerModule(Module):
                 Route("/config.json", self._config),
                 Route("/robot.json", self._robot_json),
                 Route("/arms.json", self._arms_json),
+                Route("/viewer_debug", self._viewer_debug, methods=["POST"]),
                 Route("/assets/{asset_name:path}", self._asset),
                 Mount("/static", app=StaticFiles(directory=STATIC_DIR), name="static"),
                 WebSocketRoute("/ws", self._websocket),
@@ -418,6 +415,18 @@ class BabylonSceneViewerModule(Module):
             },
             headers=_NO_CACHE_HEADERS,
         )
+
+    async def _viewer_debug(self, request: Request) -> JSONResponse:
+        try:
+            message = await request.json()
+        except Exception:
+            return JSONResponse({"ok": False}, status_code=400, headers=_NO_CACHE_HEADERS)
+
+        label = message.get("label", "viewer")
+        payload = message.get("payload")
+        if isinstance(payload, dict):
+            logger.info("BabylonViewer debug", label=label, **payload)
+        return JSONResponse({"ok": True}, headers=_NO_CACHE_HEADERS)
 
     async def _robot_json(self, request: Request) -> JSONResponse:
         robot = self._robot
@@ -566,31 +575,87 @@ class BabylonSceneViewerModule(Module):
                 logger.exception("BabylonViewer: lcm handle failed")
 
     def _on_lcm_bus_msg(self, channel: str, data: bytes) -> None:
+        # Runs on the LCM library's reader thread. We don't synthesise the
+        # full small-message packet here (the seq counter has to advance
+        # in some order, and the per-client drain serialises naturally on
+        # the asyncio loop) — just hand channel + payload over via
+        # call_soon_threadsafe and let the loop thread do the rest.
         if not self._lcm_clients:
             return
+        loop = self._server_loop
+        if loop is None:
+            return
+        loop.call_soon_threadsafe(self._lcm_enqueue, channel, data)
+
+    def _lcm_enqueue(self, channel: str, data: bytes) -> None:
+        # Runs on the asyncio loop thread. Synthesise the LC02 wire bytes
+        # once, then for each client overwrite its latest-packet slot for
+        # this channel and wake its drain task. When the bus emits faster
+        # than the browser drains, the slot just keeps getting overwritten
+        # — old packets drop on the floor (latest-wins, no queue growth).
+        if not self._lcm_clients:
+            return
+        min_interval = self._lcm_channel_min_interval_s.get(channel, 0.0)
+        now = time.monotonic() if min_interval > 0.0 else 0.0
         chan_bytes = channel.encode("utf-8")
         packet = (
             struct.pack(">II", self._LCM_MAGIC_SHORT, self._lcm_seq) + chan_bytes + b"\x00" + data
         )
         self._lcm_seq = (self._lcm_seq + 1) & 0xFFFFFFFF
-        loop = self._server_loop
-        if loop is None:
-            return
-        asyncio.run_coroutine_threadsafe(self._broadcast_lcm_packet(packet), loop)
-
-    async def _broadcast_lcm_packet(self, packet: bytes) -> None:
-        dead: list[WebSocket] = []
         for websocket in tuple(self._lcm_clients):
-            try:
-                await websocket.send_bytes(packet)
-            except Exception:
-                dead.append(websocket)
-        for websocket in dead:
-            self._lcm_clients.discard(websocket)
+            pending = self._lcm_pending.get(websocket)
+            wake = self._lcm_wake.get(websocket)
+            if pending is None or wake is None:
+                continue
+            if min_interval > 0.0:
+                last = self._lcm_last_forward_ts.get(websocket, {})
+                if now - last.get(channel, 0.0) < min_interval:
+                    continue  # rate-cap: drop this packet for this client
+                last[channel] = now
+            pending[channel] = packet
+            wake.set()
+
+    async def _lcm_drain_loop(self, websocket: WebSocket) -> None:
+        # One of these runs per connected /lcm-ws client. It waits for the
+        # wake event, snapshots the per-channel pending dict, clears it,
+        # then sends every captured packet through the per-client send
+        # lock (so we never compete with our own sends or uvicorn's
+        # keepalive ping). If any send fails (timeout or socket error)
+        # we close the client and exit; the receive coroutine wakes on
+        # the disconnect and runs the normal cleanup.
+        pending = self._lcm_pending.get(websocket)
+        wake = self._lcm_wake.get(websocket)
+        if pending is None or wake is None:
+            return
+        try:
+            while True:
+                await wake.wait()
+                wake.clear()
+                if not pending:
+                    continue
+                snapshot = list(pending.values())
+                pending.clear()
+                for packet in snapshot:
+                    await self._send_bytes_locked(websocket, packet)
+        except asyncio.CancelledError:
+            pass
+        except Exception:
+            logger.warning(
+                "BabylonViewer: lcm-ws drain failed, closing client",
+                exc_info=True,
+            )
+            with suppress(Exception):
+                await asyncio.wait_for(websocket.close(), timeout=_WS_CLOSE_TIMEOUT_S)
 
     async def _lcm_websocket(self, websocket: WebSocket) -> None:
         await websocket.accept()
+        self._ws_send_locks[websocket] = asyncio.Lock()
+        self._lcm_pending[websocket] = {}
+        self._lcm_wake[websocket] = asyncio.Event()
+        self._lcm_last_forward_ts[websocket] = {}
         self._lcm_clients.add(websocket)
+        drain_task = asyncio.create_task(self._lcm_drain_loop(websocket))
+        self._lcm_drain_tasks[websocket] = drain_task
         logger.info("BabylonViewer: lcm-ws connected", clients=len(self._lcm_clients))
         try:
             while True:
@@ -602,6 +667,15 @@ class BabylonSceneViewerModule(Module):
             logger.exception("BabylonViewer: lcm-ws receive failed")
         finally:
             self._lcm_clients.discard(websocket)
+            self._ws_send_locks.pop(websocket, None)
+            self._lcm_pending.pop(websocket, None)
+            self._lcm_wake.pop(websocket, None)
+            self._lcm_last_forward_ts.pop(websocket, None)
+            task = self._lcm_drain_tasks.pop(websocket, None)
+            if task is not None:
+                task.cancel()
+                with suppress(asyncio.CancelledError, Exception):
+                    await task
             logger.info("BabylonViewer: lcm-ws disconnected", clients=len(self._lcm_clients))
 
     def _publish_lcm_packet(self, packet: bytes) -> None:
@@ -709,6 +783,16 @@ class BabylonSceneViewerModule(Module):
         if message_type == "entity_clear":
             self._handle_entity_clear()
             return
+        if message_type == "viewer_debug":
+            label = message.get("label", "viewer")
+            payload = message.get("payload")
+            if isinstance(payload, dict):
+                logger.info(
+                    "BabylonViewer debug",
+                    label=label,
+                    **payload,
+                )
+            return
 
     def _respawn_with_policy_reset(self, respawn: Callable[[], bool]) -> bool:
         if self._coordinator_ctrl is not None:
@@ -808,71 +892,6 @@ class BabylonSceneViewerModule(Module):
                 ],
                 dtype=np.float64,
             )
-
-    def _on_camera_image(self, msg: Image) -> None:
-        self._broadcast_camera(msg, self._camera_name, is_workspace=False)
-
-    def _on_workspace_image(self, msg: Image) -> None:
-        self._broadcast_camera(msg, self._workspace_name, is_workspace=True)
-
-    def _broadcast_camera(self, msg: Image, name: str, *, is_workspace: bool) -> None:
-        # Rate-limit per-camera to avoid saturating the websocket with multi-MB
-        # frames when the publisher pushes at 30+ Hz.
-        now = time.monotonic()
-        with self._camera_lock:
-            last_attr = "_last_workspace_sent" if is_workspace else "_last_camera_sent"
-            if now - getattr(self, last_attr) < self._camera_min_dt:
-                return
-            setattr(self, last_attr, now)
-
-        try:
-            jpeg = self._encode_jpeg(msg)
-        except Exception as exc:
-            logger.warning("BabylonViewer: camera JPEG encode failed: %s", exc)
-            return
-        if jpeg is None:
-            return
-
-        # Binary frame layout:
-        #   byte 0:      _WS_MSG_CAMERA (0x01)
-        #   bytes 1-2:   name length (big-endian uint16)
-        #   bytes 3..:   utf-8 camera name, then JPEG payload
-        name_bytes = name.encode("utf-8")[:65535]
-        header = bytes([_WS_MSG_CAMERA]) + len(name_bytes).to_bytes(2, "big") + name_bytes
-        self._broadcast_bytes_from_thread(header + jpeg)
-
-    def _encode_jpeg(self, msg: Image) -> bytes | None:
-        if self._turbo_jpeg is None:
-            from turbojpeg import TurboJPEG
-
-            self._turbo_jpeg = TurboJPEG()
-
-        from turbojpeg import TJPF_BGR, TJPF_GRAY, TJPF_RGB
-
-        data = msg.data
-        if data is None:
-            return None
-        match msg.format:
-            case ImageFormat.RGB:
-                pixel_format = TJPF_RGB
-            case ImageFormat.BGR:
-                pixel_format = TJPF_BGR
-            case ImageFormat.GRAY:
-                pixel_format = TJPF_GRAY
-            case _:
-                # RGBA/BGRA: drop alpha to keep encode cheap.
-                if data.ndim == 3 and data.shape[2] == 4:
-                    data = data[:, :, :3]
-                    pixel_format = TJPF_BGR if msg.format == ImageFormat.BGRA else TJPF_RGB
-                else:
-                    return None
-
-        encoded: bytes = self._turbo_jpeg.encode(
-            np.ascontiguousarray(data),
-            quality=self._camera_jpeg_quality,
-            pixel_format=pixel_format,
-        )
-        return encoded
 
     def _broadcast_bytes_from_thread(self, payload: bytes) -> None:
         loop = self._server_loop

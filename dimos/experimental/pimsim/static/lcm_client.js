@@ -19,9 +19,10 @@
 // schema/wire changes.
 
 import * as msgs from "https://esm.sh/jsr/@dimos/msgs@0.1.4";
-const { decodePacket, encodePacket } = msgs;
+const { decode, decodeChannel, encodePacket } = msgs;
 
 const subscribers = new Map(); // channel string -> Set<callback>
+const payloadSubscribers = new Map(); // channel string -> Set<callback>
 let socket = null;
 let reconnectTimer = null;
 let bridgeUrl = null;
@@ -58,17 +59,32 @@ function connect() {
   };
   socket.onmessage = (event) => {
     if (!(event.data instanceof ArrayBuffer)) return;
-    let channel, data;
+    let channel, payload;
     try {
-      ({ channel, data } = decodePacket(new Uint8Array(event.data)));
+      ({ channel, payload } = decodeChannel(new Uint8Array(event.data)));
     } catch (err) {
       console.error("[lcm] decode failed", err);
       return;
     }
+
     const subs = subscribers.get(channel);
-    if (!subs) return;
-    for (const cb of subs) {
-      try { cb(data, channel); } catch (e) { console.error(`[lcm] handler for ${channel}`, e); }
+    if (subs && subs.size > 0) {
+      let data;
+      try {
+        data = decode(payload);
+      } catch (err) {
+        console.error(`[lcm] payload decode failed for ${channel}`, err);
+        return;
+      }
+      for (const cb of subs) {
+        try { cb(data, channel); } catch (e) { console.error(`[lcm] handler for ${channel}`, e); }
+      }
+    }
+
+    const rawSubs = payloadSubscribers.get(channel);
+    if (!rawSubs || rawSubs.size === 0) return;
+    for (const cb of rawSubs) {
+      try { cb(payload, channel); } catch (e) { console.error(`[lcm] raw handler for ${channel}`, e); }
     }
   };
 }
@@ -91,6 +107,23 @@ function subscribe(topic, msgClass, callback) {
     if (s) {
       s.delete(callback);
       if (s.size === 0) subscribers.delete(channel);
+    }
+  };
+}
+
+function subscribePayload(topic, msgClass, callback) {
+  const channel = channelOf(topic, msgClass);
+  let subs = payloadSubscribers.get(channel);
+  if (!subs) {
+    subs = new Set();
+    payloadSubscribers.set(channel, subs);
+  }
+  subs.add(callback);
+  return () => {
+    const s = payloadSubscribers.get(channel);
+    if (s) {
+      s.delete(callback);
+      if (s.size === 0) payloadSubscribers.delete(channel);
     }
   };
 }
@@ -129,7 +162,7 @@ function start(url) {
 }
 
 window.dimosMsgs = msgs;
-window.dimosLcm = { subscribe, publish, onStatus, start };
+window.dimosLcm = { subscribe, subscribePayload, publish, onStatus, start };
 
 // Auto-start so app.js doesn't need to know about us.
 start();

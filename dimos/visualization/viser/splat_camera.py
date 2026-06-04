@@ -40,7 +40,7 @@ import platform
 import sys
 import threading
 import time
-from typing import Any, Protocol
+from typing import Any, ClassVar, Protocol
 
 import mujoco
 import numpy as np
@@ -682,6 +682,10 @@ class SplatCameraModule(Module):
         color_image: rendered RGB at ``camera_spec`` resolution.
         camera_info: pinhole intrinsics matching the spec.
     """
+
+    # Splat rendering is expensive enough that it should never share a Python
+    # worker with lidar / mapping modules that need to stay responsive.
+    solo_worker: ClassVar[bool] = True
 
     color_image: Out[Image]
     camera_info: Out[CameraInfo]

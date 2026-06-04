@@ -15,6 +15,13 @@
 const canvas = document.getElementById("renderCanvas");
 const statusEl = document.getElementById("status");
 const ui = window.PimSimUI || {};
+const staticVersionToken = (() => {
+  try {
+    return new URL(document.currentScript?.src || window.location.href).searchParams.get("v") || "";
+  } catch {
+    return "";
+  }
+})();
 const engine = new BABYLON.Engine(canvas, true, {
   preserveDrawingBuffer: false,
   stencil: false,
@@ -107,6 +114,7 @@ const params = new URLSearchParams(window.location.search);
 const useRobotMesh = params.get("robot") !== "proxy";
 const sceneMode = params.get("scene") || "auto";
 const showPerfHud = params.get("perf") === "1";
+const enablePointcloudDebug = params.get("debugpc") === "1";
 let sceneConfig = null;
 let sceneLoadStarted = false;
 let sceneVisible = true;
@@ -117,6 +125,7 @@ let splatLoadStarted = false;
 let splatVisible = false;
 let lidarMaterial = null;
 let lidarPointCount = 0;
+let lidarBufferCapacity = 0;
 let lidarVisible = true;
 const lidarPointSizePx = 5.0;
 let clickMode = null;
@@ -188,7 +197,18 @@ const stateTiming = {
   jsMinusSourceMs: Number.POSITIVE_INFINITY,
 };
 const streamRef = { worker: null, ready: false };
+const pointcloudWorkerRef = {
+  worker: null,
+  inflight: false,
+  queued: null,
+  lastDropped: 0,
+  inflightSinceMs: 0,
+};
+const POINTCLOUD_INFLIGHT_TIMEOUT_MS = 3000;
 let lastPathVersion = null;
+let pendingPointcloudFrame = null;
+let lastPointcloudDebugMs = 0;
+const debugLabelLastMs = new Map();
 const perfCounters = {
   lastReportMs: performance.now(),
   frames: 0,
@@ -198,6 +218,9 @@ const perfCounters = {
   pointcloudFrames: 0,
   pointcloudBufferUpdates: 0,
   pointcloudRecreates: 0,
+  pointcloudDecodeMs: 0,
+  pointcloudBuildMs: 0,
+  pointcloudUploadMs: 0,
 };
 
 const vec3 = (values) => new BABYLON.Vector3(values[0], values[1], values[2]);
@@ -246,6 +269,8 @@ function updatePerfCounters() {
     `bodies=${perfCounters.poseBodiesUpdated}/${perfCounters.poseBodiesSkipped}`,
     `pc=${perfCounters.pointcloudFrames}/s`,
     `pcbuf=${perfCounters.pointcloudBufferUpdates}/${perfCounters.pointcloudRecreates}`,
+    `pcms=${perfCounters.pointcloudDecodeMs.toFixed(1)}/${perfCounters.pointcloudBuildMs.toFixed(1)}/${perfCounters.pointcloudUploadMs.toFixed(1)}`,
+    `pcdrop=${pointcloudWorkerRef.lastDropped}`,
     `q=${queuedStateFrames.length}`,
   ].join(" ");
   statusEl.title = summary;
@@ -259,6 +284,47 @@ function updatePerfCounters() {
   perfCounters.pointcloudFrames = 0;
   perfCounters.pointcloudBufferUpdates = 0;
   perfCounters.pointcloudRecreates = 0;
+  perfCounters.pointcloudDecodeMs = 0;
+  perfCounters.pointcloudBuildMs = 0;
+  perfCounters.pointcloudUploadMs = 0;
+}
+
+function maybeSendPointcloudDebug(now = performance.now()) {
+  if (!enablePointcloudDebug) return;
+  if (now - lastPointcloudDebugMs < 1000) return;
+  lastPointcloudDebugMs = now;
+  postViewerDebug("pointcloud", {
+    status: statusEl.textContent,
+    title: statusEl.title,
+    ready: Boolean(window.__pimsimReady),
+    lidarVisible,
+    hasLidarMesh: Boolean(lidarMesh),
+    lidarPointCount,
+    pcFrames: perfCounters.pointcloudFrames,
+    pcBufferUpdates: perfCounters.pointcloudBufferUpdates,
+    pcRecreates: perfCounters.pointcloudRecreates,
+    pcDecodeMs: perfCounters.pointcloudDecodeMs,
+    pcBuildMs: perfCounters.pointcloudBuildMs,
+    pcUploadMs: perfCounters.pointcloudUploadMs,
+    pcDropped: pointcloudWorkerRef.lastDropped,
+    pcInflight: pointcloudWorkerRef.inflight,
+    pcQueued: Boolean(pointcloudWorkerRef.queued),
+    pcPendingFrame: Boolean(pendingPointcloudFrame),
+  });
+}
+
+function postViewerDebug(label, payload, throttleMs = 1000) {
+  if (!enablePointcloudDebug) return;
+  const now = performance.now();
+  const last = debugLabelLastMs.get(label) || 0;
+  if (throttleMs > 0 && now - last < throttleMs) return;
+  debugLabelLastMs.set(label, now);
+  fetch("/viewer_debug", {
+    method: "POST",
+    headers: { "Content-Type": "application/json" },
+    body: JSON.stringify({ label, payload }),
+    keepalive: true,
+  }).catch(() => {});
 }
 
 function setButtonActive(id, active) {
@@ -1516,20 +1582,42 @@ function updatePointCloud(payload) {
   const count = payload.count || 0;
   if (count === 0 || !payload.positions || !payload.colors) return;
   perfCounters.pointcloudFrames += 1;
+  const uploadStart = performance.now();
 
-  const positions = payload.positions instanceof Float32Array
-    ? payload.positions
-    : Float32Array.from(payload.positions);
-  const packedColors = payload.colors;
-  const colors = new Float32Array(count * 4);
-  for (let i = 0; i < count; i += 1) {
-    colors[i * 4 + 0] = packedColors[i * 3 + 0] / 255;
-    colors[i * 4 + 1] = packedColors[i * 3 + 1] / 255;
-    colors[i * 4 + 2] = packedColors[i * 3 + 2] / 255;
-    colors[i * 4 + 3] = 0.94;
+  // Grow-only watermark: the voxel mapper's point count drifts upward
+  // almost every emit as the robot explores. Without padding to a stable
+  // capacity, every emit would dispose+recreate the Babylon mesh, which
+  // is a black frame between dispose and create — the visible flicker.
+  // Pad to next power of two above count, unused slots get NaN positions
+  // so the rasterizer culls them and we don't render junk at point 0.
+  if (count > lidarBufferCapacity) {
+    let cap = Math.max(8192, lidarBufferCapacity || 1);
+    while (cap < count) cap *= 2;
+    lidarBufferCapacity = cap;
+    if (lidarMesh) {
+      lidarMesh.dispose();
+      lidarMesh = null;
+      lidarPointCount = 0;
+    }
   }
 
-  if (lidarMesh && lidarPointCount === count) {
+  const cap = lidarBufferCapacity;
+  const srcPositions = payload.positions instanceof Float32Array
+    ? payload.positions
+    : Float32Array.from(payload.positions);
+  const positions = new Float32Array(cap * 3);
+  positions.set(srcPositions.subarray(0, count * 3));
+  for (let i = count * 3; i < cap * 3; i += 1) positions[i] = NaN;
+
+  const srcColors = payload.colors instanceof Float32Array
+    ? payload.colors
+    : Float32Array.from(payload.colors);
+  const colors = new Float32Array(cap * 4);
+  colors.set(srcColors.subarray(0, count * 4));
+  // padded color slots stay zero (transparent); doesn't matter since the
+  // NaN-positioned vertices get culled before rasterization anyway.
+
+  if (lidarMesh && lidarPointCount === cap) {
     lidarMesh.updateVerticesData(
       BABYLON.VertexBuffer.PositionKind,
       positions,
@@ -1544,13 +1632,9 @@ function updatePointCloud(payload) {
     );
     lidarMesh.setEnabled(lidarVisible);
     perfCounters.pointcloudBufferUpdates += 1;
+    perfCounters.pointcloudUploadMs += performance.now() - uploadStart;
+    postViewerDebug("pointcloud-update", { count, cap, mode: "buffer-update" }, 500);
     return;
-  }
-
-  if (lidarMesh) {
-    lidarMesh.dispose();
-    lidarMesh = null;
-    lidarPointCount = 0;
   }
 
   const nextMesh = new BABYLON.Mesh("lidarCloud", scene);
@@ -1566,8 +1650,146 @@ function updatePointCloud(payload) {
   nextMesh.setEnabled(lidarVisible);
 
   lidarMesh = nextMesh;
-  lidarPointCount = count;
+  lidarPointCount = cap;
   perfCounters.pointcloudRecreates += 1;
+  perfCounters.pointcloudUploadMs += performance.now() - uploadStart;
+  postViewerDebug("pointcloud-update", { count, cap, mode: "recreate" }, 500);
+}
+
+function queuePointcloudFrame(payload) {
+  pendingPointcloudFrame = payload;
+}
+
+function applyQueuedPointcloud() {
+  if (!pendingPointcloudFrame) return;
+  const payload = pendingPointcloudFrame;
+  pendingPointcloudFrame = null;
+  updatePointCloud(payload);
+}
+
+function flushQueuedPointcloudPayload() {
+  const worker = pointcloudWorkerRef.worker;
+  const queued = pointcloudWorkerRef.queued;
+  if (!worker || pointcloudWorkerRef.inflight || !queued) return;
+  pointcloudWorkerRef.queued = null;
+  pointcloudWorkerRef.inflight = true;
+  worker.postMessage(
+    {
+      type: "payload",
+      buffer: queued.buffer,
+      byteOffset: queued.byteOffset,
+      byteLength: queued.byteLength,
+    },
+    [queued.buffer],
+  );
+}
+
+function enqueuePointcloudPayload(payload) {
+  const worker = pointcloudWorkerRef.worker;
+  if (!worker) return;
+
+  // Watchdog: if a previous send has been "inflight" past the timeout the
+  // worker crashed, its ESM import failed, or it dropped a message. We
+  // can't see worker module-load failures (Chrome fires no onerror for
+  // those), so force-clear here instead of wedging every subsequent emit
+  // into the dropped counter forever.
+  if (
+    pointcloudWorkerRef.inflight
+    && pointcloudWorkerRef.inflightSinceMs > 0
+    && performance.now() - pointcloudWorkerRef.inflightSinceMs > POINTCLOUD_INFLIGHT_TIMEOUT_MS
+  ) {
+    console.warn("[pointcloud worker] inflight timeout, force-clearing");
+    postViewerDebug("pointcloud-worker-timeout", {
+      stuckForMs: performance.now() - pointcloudWorkerRef.inflightSinceMs,
+    }, 0);
+    pointcloudWorkerRef.inflight = false;
+    pointcloudWorkerRef.inflightSinceMs = 0;
+  }
+
+  const queued = {
+    buffer: payload.buffer,
+    byteOffset: payload.byteOffset,
+    byteLength: payload.byteLength,
+  };
+
+  if (pointcloudWorkerRef.inflight) {
+    pointcloudWorkerRef.queued = queued;
+    worker.postMessage({ type: "dropped", count: 1 });
+    return;
+  }
+
+  pointcloudWorkerRef.inflight = true;
+  pointcloudWorkerRef.inflightSinceMs = performance.now();
+  worker.postMessage(
+    {
+      type: "payload",
+      buffer: queued.buffer,
+      byteOffset: queued.byteOffset,
+      byteLength: queued.byteLength,
+    },
+    [queued.buffer],
+  );
+}
+
+function connectPointcloudWorker() {
+  if (pointcloudWorkerRef.worker) return;
+  const suffix = staticVersionToken ? `?v=${encodeURIComponent(staticVersionToken)}` : "";
+  const worker = new Worker(`/static/pointcloud_worker.js${suffix}`, { type: "module" });
+  pointcloudWorkerRef.worker = worker;
+  worker.onmessage = (event) => {
+    const message = event.data || {};
+    if (message.type === "error") {
+      console.error("[pointcloud worker]", message.message);
+      postViewerDebug("pointcloud-worker-error", { message: String(message.message || "unknown") }, 0);
+      pointcloudWorkerRef.inflight = false;
+      flushQueuedPointcloudPayload();
+      return;
+    }
+    if (message.type === "empty") {
+      postViewerDebug("pointcloud-worker-empty", {}, 500);
+      pointcloudWorkerRef.inflight = false;
+      pointcloudWorkerRef.inflightSinceMs = 0;
+      flushQueuedPointcloudPayload();
+      return;
+    }
+    if (message.type !== "pointcloud") return;
+
+    pointcloudWorkerRef.inflight = false;
+    pointcloudWorkerRef.inflightSinceMs = 0;
+    pointcloudWorkerRef.lastDropped = Number(message.stats?.dropped || 0);
+    perfCounters.pointcloudDecodeMs += Number(message.stats?.decodeMs || 0);
+    perfCounters.pointcloudBuildMs += Number(message.stats?.buildMs || 0);
+    postViewerDebug("pointcloud-worker", {
+      count: Number(message.count || 0),
+      dropped: Number(message.stats?.dropped || 0),
+      decodeMs: Number(message.stats?.decodeMs || 0),
+      buildMs: Number(message.stats?.buildMs || 0),
+    }, 500);
+    queuePointcloudFrame({
+      count: message.count,
+      positions: new Float32Array(message.positions),
+      colors: new Float32Array(message.colors),
+    });
+    flushQueuedPointcloudPayload();
+  };
+  worker.onerror = (event) => {
+    console.error("[pointcloud worker] crash", event);
+    postViewerDebug("pointcloud-worker-crash", {
+      message: String(event.message || "worker crash"),
+      filename: String(event.filename || ""),
+      lineno: Number(event.lineno || 0),
+      colno: Number(event.colno || 0),
+    }, 0);
+    pointcloudWorkerRef.inflight = false;
+    pointcloudWorkerRef.inflightSinceMs = 0;
+    flushQueuedPointcloudPayload();
+  };
+  worker.onmessageerror = (event) => {
+    console.error("[pointcloud worker] messageerror", event);
+    pointcloudWorkerRef.inflight = false;
+    pointcloudWorkerRef.inflightSinceMs = 0;
+    flushQueuedPointcloudPayload();
+  };
 }
 
 // ─── Entity world ───────────────────────────────────────────────────────
@@ -1955,90 +2177,6 @@ function whenLcmReady(callback) {
   setTimeout(() => whenLcmReady(callback), 50);
 }
 
-// Mike Bostock's polynomial approximation of Google's "turbo" colormap.
-function turboColor(t) {
-  const x = Math.max(0, Math.min(1, t));
-  const r = 34.61 + x * (1172.33 - x * (10793.56 - x * (33300.12 - x * (38394.49 - x * 14825.05))));
-  const g = 23.31 + x * (557.33 + x * (1225.33 - x * (3574.96 - x * (1073.77 + x * 707.56))));
-  const b = 27.2 + x * (3211.1 - x * (15327.97 - x * (27814 - x * (22569.18 - x * 6838.66))));
-  return [
-    Math.max(0, Math.min(255, r)),
-    Math.max(0, Math.min(255, g)),
-    Math.max(0, Math.min(255, b)),
-  ];
-}
-
-function findPointCloudField(fields, name) {
-  for (const f of fields) if (f.name === name) return f;
-  return null;
-}
-
-// Decode a sensor_msgs.PointCloud2 (xyz + optional packed-float32 rgb) into
-// the {count, positions, colors} shape `updatePointCloud` already expects.
-function pointCloud2ToRenderPayload(msg) {
-  const fx = findPointCloudField(msg.fields, "x");
-  const fy = findPointCloudField(msg.fields, "y");
-  const fz = findPointCloudField(msg.fields, "z");
-  if (!fx || !fy || !fz) return null;
-
-  const step = msg.point_step;
-  if (!step || !msg.data || !msg.data.byteLength) return null;
-  const count = Math.floor(msg.data.byteLength / step);
-  if (count === 0) return null;
-
-  const view = new DataView(
-    msg.data.buffer,
-    msg.data.byteOffset,
-    msg.data.byteLength,
-  );
-  const littleEndian = !msg.is_bigendian;
-  const positions = new Float32Array(count * 3);
-  const frgb = findPointCloudField(msg.fields, "rgb");
-  const colorBuf = new Uint8Array(count * 3);
-
-  // First pass: positions + z range for fallback colormap.
-  let zMin = Infinity;
-  let zMax = -Infinity;
-  for (let i = 0; i < count; i += 1) {
-    const o = i * step;
-    const x = view.getFloat32(o + fx.offset, littleEndian);
-    const y = view.getFloat32(o + fy.offset, littleEndian);
-    const z = view.getFloat32(o + fz.offset, littleEndian);
-    if (!Number.isFinite(x) || !Number.isFinite(y) || !Number.isFinite(z)) {
-      positions[i * 3] = 0;
-      positions[i * 3 + 1] = 0;
-      positions[i * 3 + 2] = 0;
-      continue;
-    }
-    positions[i * 3] = x;
-    positions[i * 3 + 1] = y;
-    positions[i * 3 + 2] = z;
-    if (z < zMin) zMin = z;
-    if (z > zMax) zMax = z;
-  }
-
-  if (frgb) {
-    // ROS convention: 4 packed bytes (B,G,R,A) reinterpreted as float32.
-    for (let i = 0; i < count; i += 1) {
-      const o = i * step + frgb.offset;
-      colorBuf[i * 3 + 0] = view.getUint8(o + 2); // R
-      colorBuf[i * 3 + 1] = view.getUint8(o + 1); // G
-      colorBuf[i * 3 + 2] = view.getUint8(o + 0); // B
-    }
-  } else {
-    const denom = (zMax - zMin) || 1.0;
-    for (let i = 0; i < count; i += 1) {
-      const t = (positions[i * 3 + 2] - zMin) / denom;
-      const [r, g, b] = turboColor(t);
-      colorBuf[i * 3 + 0] = r;
-      colorBuf[i * 3 + 1] = g;
-      colorBuf[i * 3 + 2] = b;
-    }
-  }
-
-  return { count, positions, colors: colorBuf };
-}
-
 function subscribeLcmTopics() {
   const M = window.dimosMsgs;
   const lcm = window.dimosLcm;
@@ -2046,9 +2184,8 @@ function subscribeLcmTopics() {
 
   let pathVersion = 0;
 
-  lcm.subscribe("/global_map", M.sensor_msgs.PointCloud2, (msg) => {
-    const payload = pointCloud2ToRenderPayload(msg);
-    if (payload) updatePointCloud(payload);
+  lcm.subscribePayload("/global_map", M.sensor_msgs.PointCloud2, (payload) => {
+    enqueuePointcloudPayload(payload);
   });
 
   lcm.subscribe("/nav_path", M.nav_msgs.Path, (msg) => {
@@ -2082,6 +2219,13 @@ function subscribeLcmTopics() {
       linear: [msg.linear.x, msg.linear.y, msg.linear.z],
       angular: [msg.angular.x, msg.angular.y, msg.angular.z],
     });
+  });
+
+  lcm.subscribe("/camera_image", M.sensor_msgs.Image, (msg) => {
+    dispatchLcmCameraFrame("camera", msg);
+  });
+  lcm.subscribe("/workspace_image", M.sensor_msgs.Image, (msg) => {
+    dispatchLcmCameraFrame("workspace", msg);
   });
 }
 
@@ -2129,9 +2273,6 @@ function connectStreamWorker() {
           ),
         });
         break;
-      case "camera":
-        updateCameraFrame(message.cameraName, message.buffer, message.jpegOffset);
-        break;
       case "error":
         console.warn(message.message);
         break;
@@ -2154,6 +2295,19 @@ function updateCameraFrame(cameraName, buffer, jpegOffset) {
     return;
   }
   console.warn("camera frame dropped: PimSimUI.updateCameraFrame unavailable", cameraName);
+}
+
+// /camera_image and /workspace_image flow through the bridge as JPEG-
+// encoded sensor_msgs.Image (publisher uses JpegLcmTransport). msg.data
+// is the JPEG bytes when encoding === "jpeg"; createObjectURL on a
+// Blob is the cheapest browser path to display.
+function dispatchLcmCameraFrame(name, msg) {
+  if (!msg || !msg.data || !msg.data.byteLength) return;
+  if (msg.encoding && msg.encoding !== "jpeg") {
+    console.warn(`[camera] ${name}: expected jpeg encoding, got ${msg.encoding}`);
+    return;
+  }
+  updateCameraFrame(name, msg.data.buffer, msg.data.byteOffset);
 }
 
 function installClickPublisher() {
@@ -2464,6 +2618,7 @@ function _updateSlidersFromState(joints) {
     const config = await loadConfig();
     sceneConfig = config;
     configureBrowserPhysics(config);
+    connectPointcloudWorker();
     await loadRobot();
     setupRobotCollider();   // fire-and-forget; awaits physicsReady internally
     await ensureSupportFloor(config);
@@ -2526,8 +2681,10 @@ function renderFrame() {
   stepBrowserPhysics();
   applyQueuedState();
   applyLatestRobotPose();
+  applyQueuedPointcloud();
   updateKeyboardCamera();
   sendDriveCommand(false);
+  maybeSendPointcloudDebug();
   scene.render();
   updatePerfCounters();
 }

@@ -47,7 +47,7 @@ from dimos.control.tasks.g1_groot_wbc_task import (
 )
 from dimos.core.coordination.blueprints import Blueprint, autoconnect
 from dimos.core.global_config import global_config
-from dimos.core.transport import LCMTransport
+from dimos.core.transport import JpegLcmTransport, LCMTransport
 from dimos.experimental.pimsim.entity import EntityStateBatch
 from dimos.hardware.whole_body.spec import WholeBodyConfig
 from dimos.msgs.geometry_msgs.PointStamped import PointStamped
@@ -534,10 +534,6 @@ def _babylon_blueprint(viewer_mjcf_path: str | Path, cmd_vel_topic: str) -> Blue
                     splat_path=str(splat_ply),
                     splat_alignment=splat_alignment,
                 )
-    kwargs.update(
-        pointcloud_hz=_env_float("DIMOS_BABYLON_POINTCLOUD_HZ", 2.0),
-        pointcloud_max_points=_env_int("DIMOS_BABYLON_POINTCLOUD_MAX_POINTS", 70000),
-    )
     # Babylon-as-physics mode: integrate cmd_vel locally, publish sim_odom,
     # let the rust scene_lidar consume it.  No MuJoCo at runtime.
     # "pimsim" is the preferred alias going forward; "babylon" stays accepted.
@@ -708,7 +704,11 @@ def _splat_camera_blueprint() -> Blueprint | None:
         render_hz=_env_float("DIMOS_SPLAT_RENDER_HZ", 10.0),
     ).transports(
         {
-            ("color_image", Image): LCMTransport("/camera_image", Image),
+            # JpegLcmTransport encodes the published Image as JPEG on the
+            # wire. Subscribers using plain LCMTransport auto-detect the
+            # ``encoding == "jpeg"`` field on decode, so this is a pure
+            # publisher-side change.
+            ("color_image", Image): JpegLcmTransport("/camera_image", Image),
             ("joint_state", JointState): LCMTransport("/coordinator/joint_state", JointState),
             ("odom", PoseStamped): LCMTransport("/odom", PoseStamped),
         }
@@ -727,7 +727,7 @@ def _camera_bridge_blueprint() -> Blueprint | None:
         port=_env_int("DIMOS_ROBOT_CAMERA_PORT", 5000),
     ).transports(
         {
-            ("video", Image): LCMTransport("/camera_image", Image),
+            ("video", Image): JpegLcmTransport("/camera_image", Image),
         }
     )
 
@@ -763,7 +763,7 @@ def _workspace_camera_bridge_blueprint() -> Blueprint | None:
         .remappings([(WorkspaceTcpJpegCameraModule, "video", "video_workspace")])
         .transports(
             {
-                ("video_workspace", Image): LCMTransport("/workspace_image", Image),
+                ("video_workspace", Image): JpegLcmTransport("/workspace_image", Image),
             }
         )
     )

@@ -36,7 +36,6 @@ from dimos.core.global_config import global_config
 from dimos.core.transport import LCMTransport
 from dimos.experimental.pimsim.entity import EntityStateBatch
 from dimos.msgs.geometry_msgs.PoseStamped import PoseStamped
-from dimos.msgs.sensor_msgs.Image import Image
 from dimos.msgs.sensor_msgs.JointState import JointState
 from dimos.msgs.sensor_msgs.PointCloud2 import PointCloud2
 from dimos.utils.logging_config import setup_logger
@@ -179,7 +178,6 @@ def go2_babylon_blueprint() -> Blueprint | None:
             # the browser, these two go too.
             ("joint_state", JointState): LCMTransport("/coordinator/joint_state", JointState),
             ("odom", PoseStamped): LCMTransport("/odom", PoseStamped),
-            ("workspace_image", Image): LCMTransport("/workspace_image", Image),
             # entity_state_batch is still server-published from JSON entity_states
             # multi-tab replay until the entity world migrates to the bridge.
             ("entity_state_batch", EntityStateBatch): LCMTransport(

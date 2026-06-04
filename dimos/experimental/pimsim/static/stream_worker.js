@@ -12,9 +12,10 @@
 // See the License for the specific language governing permissions and
 // limitations under the License.
 
-// 0x02 (pointcloud) used to live here too; /global_map now flows through
-// /lcm-ws as a sensor_msgs.PointCloud2 message and is decoded by app.js.
-const wsMsgCamera = 0x01;
+// 0x02 (pointcloud) and 0x01 (camera) used to live here too; both moved
+// to /lcm-ws — /global_map as sensor_msgs.PointCloud2, /camera_image as
+// JpegLcm-encoded sensor_msgs.Image. Only the robot_pose binary frame
+// remains on /ws pending the browser-FK migration.
 const wsMsgRobotPose = 0x03;
 const robotPoseHeaderBytes = 16;
 
@@ -80,13 +81,8 @@ function handleBinaryMessage(buffer) {
     return;
   }
 
-  if (msgType !== wsMsgCamera) return;
-  const nameLength = view.getUint16(1, false);
-  const jpegOffset = 3 + nameLength;
-  if (buffer.byteLength < jpegOffset) return;
-  const nameBytes = new Uint8Array(buffer, 3, nameLength);
-  const cameraName = new TextDecoder().decode(nameBytes);
-  self.postMessage({ type: "camera", cameraName, jpegOffset, buffer }, [buffer]);
+  // Any other tag is silently dropped — there are no remaining /ws binary
+  // frames besides robot_pose.
 }
 
 self.onmessage = (event) => {
