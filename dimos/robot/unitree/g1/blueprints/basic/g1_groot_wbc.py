@@ -794,6 +794,24 @@ def _quest_teleop_blueprint(cmd_vel_topic: str) -> Blueprint | None:
     )
 
 
+def _episode_recorder_blueprint() -> Blueprint | None:
+    if not _env_bool("DIMOS_ENABLE_EPISODE_RECORDER", False):
+        return None
+    from dimos.robot.unitree.g1.episode_recorder import G1EpisodeRecorder
+
+    return G1EpisodeRecorder.blueprint(
+        db_path=os.environ.get("DIMOS_RECORD_DB", "recording_g1_teleop.db"),
+    ).transports(
+        {
+            ("joint_state", JointState): LCMTransport("/coordinator/joint_state", JointState),
+            ("joint_command", JointState): LCMTransport("/g1/joint_command", JointState),
+            ("color_image", Image): JpegLcmTransport("/camera_image", Image),
+            ("odom", PoseStamped): LCMTransport("/odom", PoseStamped),
+            ("buttons", Buttons): LCMTransport("/teleop/buttons", Buttons),
+        }
+    )
+
+
 if global_config.simulation in ("babylon", "pimsim"):
     # Browser-physics nav stack. Babylon owns the robot's kinematic base
     # (cmd_vel → sim_odom) and the Havok entity world; the rust scene
@@ -808,25 +826,11 @@ if global_config.simulation in ("babylon", "pimsim"):
         )
     _splat_camera = _splat_camera_blueprint()
     _optional_pimsim = tuple(bp for bp in (_splat_camera,) if bp is not None)
-    g1_groot_wbc = autoconnect(
+    _groot_blueprints: tuple[Blueprint, ...] = (
         _babylon,
         _websocket_blueprint(_cmd_vel_topic),
         *_sim_support_blueprints(),
         *_optional_pimsim,
-    ).transports(
-        {
-            ("odom", PoseStamped): LCMTransport("/odom", PoseStamped),
-            ("cmd_vel", Twist): LCMTransport(_cmd_vel_topic, Twist),
-            ("nav_cmd_vel", Twist): LCMTransport(_cmd_vel_topic, Twist),
-            ("pointcloud", PointCloud2): LCMTransport("/lidar", PointCloud2),
-            ("global_map", PointCloud2): LCMTransport("/global_map", PointCloud2),
-            ("global_costmap", OccupancyGrid): LCMTransport("/global_costmap", OccupancyGrid),
-            ("path", PathMsg): LCMTransport("/nav_path", PathMsg),
-            ("clicked_point", PointStamped): LCMTransport("/clicked_point", PointStamped),
-            ("point_goal", PointStamped): LCMTransport("/point_goal", PointStamped),
-            ("goal_request", PoseStamped): LCMTransport("/goal_request", PoseStamped),
-            ("stop_movement", Bool): LCMTransport("/stop_movement", Bool),
-        }
     )
 else:
     _backend_selection = _select_backend()
@@ -837,32 +841,45 @@ else:
     _camera_bridge = _camera_bridge_blueprint()
     _workspace_camera = _workspace_camera_bridge_blueprint()
     _splat_camera = _splat_camera_blueprint()
+    _recorder = _episode_recorder_blueprint()
     _optional = tuple(
         bp
-        for bp in (_babylon, _teleop, _quest, _camera_bridge, _workspace_camera, _splat_camera)
+        for bp in (
+            _babylon,
+            _teleop,
+            _quest,
+            _camera_bridge,
+            _workspace_camera,
+            _splat_camera,
+            _recorder,
+        )
         if bp is not None
     )
 
-    g1_groot_wbc = autoconnect(
+    _groot_blueprints = (
         _backend_selection.blueprint,
         _coordinator,
         _websocket_blueprint(_cmd_vel_topic),
         *_sim_support_blueprints(),
         *_optional,
-    ).transports(
-        {
-            ("odom", PoseStamped): LCMTransport("/odom", PoseStamped),
-            ("cmd_vel", Twist): LCMTransport(_cmd_vel_topic, Twist),
-            ("nav_cmd_vel", Twist): LCMTransport(_cmd_vel_topic, Twist),
-            ("pointcloud", PointCloud2): LCMTransport("/lidar", PointCloud2),
-            ("global_map", PointCloud2): LCMTransport("/global_map", PointCloud2),
-            ("global_costmap", OccupancyGrid): LCMTransport("/global_costmap", OccupancyGrid),
-            ("path", PathMsg): LCMTransport("/nav_path", PathMsg),
-            ("clicked_point", PointStamped): LCMTransport("/clicked_point", PointStamped),
-            ("point_goal", PointStamped): LCMTransport("/point_goal", PointStamped),
-            ("goal_request", PoseStamped): LCMTransport("/goal_request", PoseStamped),
-            ("stop_movement", Bool): LCMTransport("/stop_movement", Bool),
-        }
     )
+
+# Top-level assignment so the all_blueprints AST scanner picks it up —
+# blueprints assigned inside if/else blocks are invisible to the registry.
+g1_groot_wbc = autoconnect(*_groot_blueprints).transports(
+    {
+        ("odom", PoseStamped): LCMTransport("/odom", PoseStamped),
+        ("cmd_vel", Twist): LCMTransport(_cmd_vel_topic, Twist),
+        ("nav_cmd_vel", Twist): LCMTransport(_cmd_vel_topic, Twist),
+        ("pointcloud", PointCloud2): LCMTransport("/lidar", PointCloud2),
+        ("global_map", PointCloud2): LCMTransport("/global_map", PointCloud2),
+        ("global_costmap", OccupancyGrid): LCMTransport("/global_costmap", OccupancyGrid),
+        ("path", PathMsg): LCMTransport("/nav_path", PathMsg),
+        ("clicked_point", PointStamped): LCMTransport("/clicked_point", PointStamped),
+        ("point_goal", PointStamped): LCMTransport("/point_goal", PointStamped),
+        ("goal_request", PoseStamped): LCMTransport("/goal_request", PoseStamped),
+        ("stop_movement", Bool): LCMTransport("/stop_movement", Bool),
+    }
+)
 
 __all__ = ["g1_groot_wbc"]
