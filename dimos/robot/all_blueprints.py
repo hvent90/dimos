@@ -37,6 +37,7 @@ all_blueprints = {
     "coordinator-piper-xarm": "dimos.control.blueprints.dual:coordinator_piper_xarm",
     "coordinator-servo-xarm6": "dimos.control.blueprints.teleop:coordinator_servo_xarm6",
     "coordinator-sim-fopdt": "dimos.control.blueprints.mobile:coordinator_sim_fopdt",
+    "coordinator-sim-fopdt-flowbase": "dimos.control.blueprints.mobile:coordinator_sim_fopdt_flowbase",
     "coordinator-teleop-dual": "dimos.control.blueprints.teleop:coordinator_teleop_dual",
     "coordinator-teleop-piper": "dimos.control.blueprints.teleop:coordinator_teleop_piper",
     "coordinator-teleop-xarm6": "dimos.control.blueprints.teleop:coordinator_teleop_xarm6",

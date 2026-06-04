@@ -340,6 +340,56 @@ coordinator_sim_fopdt = (
 )
 
 
+# FlowBase-shaped FOPDT sim: identical to coordinator_sim_fopdt but publishes
+# joint_state under the `base/*` prefix (instead of `sim/*`) so that
+# `characterization --robot flowbase` can validate the full LCM/gate/topic
+# plumbing against a simulated plant with NO real robot connected.
+coordinator_sim_fopdt_flowbase = (
+    autoconnect(
+        FopdtPlantConnection.blueprint(),
+        ControlCoordinator.blueprint(
+            hardware=[
+                HardwareComponent(
+                    hardware_id="sim",
+                    hardware_type=HardwareType.BASE,
+                    joints=_base_joints,
+                    adapter_type="transport_lcm",
+                ),
+            ],
+            tasks=[
+                TaskConfig(
+                    name="vel_sim",
+                    type="velocity",
+                    joint_names=_base_joints,
+                    priority=10,
+                    params={"zero_on_timeout": False},
+                ),
+                TaskConfig(
+                    name="path_follower",
+                    type="path_follower",
+                    joint_names=_base_joints,
+                    priority=20,
+                ),
+            ],
+        ),
+    )
+    .remappings(
+        [
+            (FopdtPlantConnection, "cmd_vel", "sim_cmd_vel"),
+            (FopdtPlantConnection, "odom", "sim_odom"),
+        ]
+    )
+    .transports(
+        {
+            ("twist_command", Twist): LCMTransport("/cmd_vel", Twist),
+            ("sim_cmd_vel", Twist): LCMTransport("/sim/cmd_vel", Twist),
+            ("sim_odom", PoseStamped): LCMTransport("/sim/odom", PoseStamped),
+            ("joint_state", JointState): LCMTransport("/coordinator/joint_state", JointState),
+        }
+    )
+)
+
+
 __all__ = [
     "coordinator_flowbase",
     "coordinator_flowbase_keyboard_teleop",
@@ -347,4 +397,5 @@ __all__ = [
     "coordinator_mobile_manip_mock",
     "coordinator_mock_twist_base",
     "coordinator_sim_fopdt",
+    "coordinator_sim_fopdt_flowbase",
 ]
