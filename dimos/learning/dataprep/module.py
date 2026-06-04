@@ -29,7 +29,7 @@ from typing import Any
 
 from dimos.core.core import rpc
 from dimos.core.module import Module, ModuleConfig
-from dimos.learning.dataprep import (
+from dimos.learning.dataprep.core import (
     EpisodeExtractor,
     OutputConfig,
     Sample,

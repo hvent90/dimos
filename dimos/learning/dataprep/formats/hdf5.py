@@ -38,8 +38,8 @@ from pathlib import Path
 
 import numpy as np
 
-from dimos.learning.dataprep import OutputConfig, Sample
-from dimos.learning.formats._stats import StreamingStats
+from dimos.learning.dataprep.core import OutputConfig, Sample
+from dimos.learning.dataprep.formats._stats import StreamingStats
 
 
 def write(samples: Iterator[Sample], output: OutputConfig) -> Path:

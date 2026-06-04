@@ -330,7 +330,7 @@ def compute_stats(
     Thin wrapper over :class:`StreamingStats` so format writers and
     ad-hoc callers share the exact same accumulator.
     """
-    from dimos.learning.formats._stats import StreamingStats
+    from dimos.learning.dataprep.formats._stats import StreamingStats
 
     s = StreamingStats(image_subsample=image_subsample,
                        quantile_reservoir=quantile_reservoir, seed=seed)
@@ -345,9 +345,9 @@ def compute_stats(
 def get_writer(format_name: str) -> Writer:
     """Lazy-import the format writer's `write` function."""
     if format_name == "lerobot":
-        from dimos.learning.formats.lerobot import write
+        from dimos.learning.dataprep.formats.lerobot import write
     elif format_name == "hdf5":
-        from dimos.learning.formats.hdf5 import write
+        from dimos.learning.dataprep.formats.hdf5 import write
     else:
         raise ValueError(f"Unknown format: {format_name!r}")
     return write

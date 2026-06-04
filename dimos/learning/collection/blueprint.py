@@ -25,52 +25,41 @@ from dimos.learning.collection.episode_monitor import (
 )
 from dimos.msgs.sensor_msgs.Image import Image
 from dimos.teleop.quest.blueprints import (
-    teleop_quest_dual,
     teleop_quest_piper,
-    teleop_quest_xarm6,
     teleop_quest_xarm7,
 )
 from dimos.teleop.quest.quest_types import Buttons
 
 _DEFAULT_BUTTON_MAP = {"start": "A", "save": "B", "discard": "X"}
-_TRANSPORTS = {
-    ("buttons", Buttons): LCMTransport("/teleop/buttons", Buttons),
-    ("color_image", Image): LCMTransport("/camera/color_image", Image),
-    ("status", EpisodeStatus): LCMTransport("/learning/episode_status", EpisodeStatus),
-}
 
 
+# Transports are written inline per blueprint (not factored into a shared
+# variable) so each recording config is self-contained and readable on its
+# own: buttons drive the episode state machine, color_image is the camera
+# stream, and status carries the canonical EpisodeStatus that DataPrep reads.
 learning_collect_quest_xarm7 = autoconnect(
     teleop_quest_xarm7,
     RealSenseCamera.blueprint(enable_pointcloud=False),
     EpisodeMonitorModule.blueprint(button_map=_DEFAULT_BUTTON_MAP),
-).transports(_TRANSPORTS)
+).transports({
+    ("buttons", Buttons): LCMTransport("/teleop/buttons", Buttons),
+    ("color_image", Image): LCMTransport("/camera/color_image", Image),
+    ("status", EpisodeStatus): LCMTransport("/learning/episode_status", EpisodeStatus),
+})
 
 
 learning_collect_quest_piper = autoconnect(
     teleop_quest_piper,
     RealSenseCamera.blueprint(enable_pointcloud=False),
     EpisodeMonitorModule.blueprint(button_map=_DEFAULT_BUTTON_MAP),
-).transports(_TRANSPORTS)
-
-
-learning_collect_quest_xarm6 = autoconnect(
-    teleop_quest_xarm6,
-    RealSenseCamera.blueprint(enable_pointcloud=False),
-    EpisodeMonitorModule.blueprint(button_map=_DEFAULT_BUTTON_MAP),
-).transports(_TRANSPORTS)
-
-
-learning_collect_quest_dual = autoconnect(
-    teleop_quest_dual,
-    RealSenseCamera.blueprint(enable_pointcloud=False),
-    EpisodeMonitorModule.blueprint(button_map=_DEFAULT_BUTTON_MAP),
-).transports(_TRANSPORTS)
+).transports({
+    ("buttons", Buttons): LCMTransport("/teleop/buttons", Buttons),
+    ("color_image", Image): LCMTransport("/camera/color_image", Image),
+    ("status", EpisodeStatus): LCMTransport("/learning/episode_status", EpisodeStatus),
+})
 
 
 __all__ = [
-    "learning_collect_quest_dual",
     "learning_collect_quest_piper",
-    "learning_collect_quest_xarm6",
     "learning_collect_quest_xarm7",
 ]

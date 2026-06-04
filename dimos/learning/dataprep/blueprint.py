@@ -20,21 +20,21 @@ Wraps `DataPrepModule` so users can run::
     dimos run learning-dataprep -o dataprepmodule.source=data/recordings/foo.db \\
                                 -o dataprepmodule.output.path=data/datasets/foo
 
-The defaults below target the included pickplace_001 demo. For single-demo
-recordings without an `episode_status` stream, `learning_dataprep_whole_session`
-treats the entire recording as one episode.
+The defaults below target the included pickplace_001 demo. Episodes are
+always segmented from the recording (the `episode_status` stream or
+explicit `ranges`) — we never collapse a session into a single episode.
 """
 
 from __future__ import annotations
 
 from dimos.core.coordination.blueprints import autoconnect
-from dimos.learning.dataprep import (
+from dimos.learning.dataprep.core import (
     EpisodeExtractor,
     OutputConfig,
     StreamField,
     SyncConfig,
 )
-from dimos.learning.dataprep_module import DataPrepModule
+from dimos.learning.dataprep.module import DataPrepModule
 
 learning_dataprep = autoconnect(
     DataPrepModule.blueprint(
@@ -61,26 +61,4 @@ learning_dataprep = autoconnect(
 ).transports({})
 
 
-learning_dataprep_whole_session = autoconnect(
-    DataPrepModule.blueprint(
-        source="data/session.db",
-        episodes=EpisodeExtractor(extractor="whole_session"),
-        observation={
-            "image":       StreamField(stream="camera_color_image", field="data"),
-            "joint_state": StreamField(stream="coordinator_joint_state", field="position"),
-        },
-        action={
-            "joint_target": StreamField(stream="coordinator_joint_command", field="position"),
-        },
-        sync=SyncConfig(anchor="image", rate_hz=30.0, tolerance_ms=50.0),
-        output=OutputConfig(
-            format="lerobot",
-            path="data/datasets/default",
-            metadata={"fps": 30, "robot": "xarm7"},
-        ),
-        auto_run=True,
-    ),
-).transports({})
-
-
-__all__ = ["learning_dataprep", "learning_dataprep_whole_session"]
+__all__ = ["learning_dataprep"]
