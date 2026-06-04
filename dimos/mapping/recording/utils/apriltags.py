@@ -32,7 +32,6 @@ from scipy.spatial.transform import Rotation
 
 from dimos.msgs.geometry_msgs.PoseStamped import PoseStamped
 from dimos.msgs.sensor_msgs.Image import Image
-from dimos.robot.unitree.go2.recording.camera import CAMERA_DISTORTION, CAMERA_INTRINSICS
 
 
 def make_detector(dictionary_name: str):
@@ -45,15 +44,15 @@ def _object_points(marker_length_m: float) -> np.ndarray:
     return np.array([[-h, h, 0.0], [h, h, 0.0], [h, -h, 0.0], [-h, -h, 0.0]], dtype=np.float32)
 
 
-def estimate_marker_pose(corners_pixels, marker_length_m):
+def estimate_marker_pose(corners_pixels, marker_length_m, intrinsics, distortion):
     """solvePnP a single tag -> (rotation_vector, translation_vector) in the
     camera_optical frame, or None if it failed."""
     image_corners = corners_pixels.reshape(4, 1, 2).astype(np.float32)
     found, rotation_vector, translation_vector = cv2.solvePnP(
         _object_points(marker_length_m),
         image_corners,
-        CAMERA_INTRINSICS,
-        CAMERA_DISTORTION,
+        intrinsics,
+        distortion,
         flags=cv2.SOLVEPNP_IPPE_SQUARE,
     )
     return (rotation_vector, translation_vector) if found else None
@@ -117,6 +116,8 @@ def cluster_medoid(cluster: list[dict], rotation_weight_m_per_rad: float) -> dic
 
 def detect_apriltags(
     store,
+    intrinsics,
+    distortion,
     image_stream="color_image",
     stream_name="april_tags",
     marker_length=0.10,
@@ -140,7 +141,7 @@ def detect_apriltags(
         if marker_ids is None:
             continue
         for corners, marker_id in zip(all_corners, marker_ids.flatten(), strict=False):
-            pose = estimate_marker_pose(corners, marker_length)
+            pose = estimate_marker_pose(corners, marker_length, intrinsics, distortion)
             if pose is None:
                 continue
             rotation_vector, translation_vector = pose

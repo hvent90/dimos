@@ -13,7 +13,7 @@
 # See the License for the specific language governing permissions and
 # limitations under the License.
 
-"""Sanity-check a go2 recording dir: pcap + mem2.db sizes, stream rates, pose travel."""
+"""Sanity-check a recording dir: pcap + mem2.db sizes, stream rates, pose travel."""
 
 from __future__ import annotations
 
@@ -27,15 +27,23 @@ import sys
 from typing import Any
 
 STREAMS = (
-    "livox_imu",
-    "livox_lidar",
     "lidar",
-    "fastlio_lidar",
-    "fastlio_odometry",
     "odom",
     "color_image",
+    "livox_imu",
+    "livox_lidar",
+    "fastlio_lidar",
+    "fastlio_odometry",
+    "go2_odom",
+    "go2_color_image",
+    "realsense_color_image",
+    "realsense_depth_image",
+    "realsense_pointcloud",
+    "realsense_camera_info",
+    "realsense_depth_camera_info",
+    "realsense_imu",
 )
-RECORDINGS_DIR = Path("go2_recordings")
+RECORDINGS_DIR = Path("recordings")
 # A pcap with only its global header (no packets) is exactly this many bytes.
 PCAP_HEADER_BYTES = 24
 

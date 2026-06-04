@@ -1,4 +1,3 @@
-#!/usr/bin/env python
 # Copyright 2026 Dimensional Inc.
 #
 # Licensed under the Apache License, Version 2.0 (the "License");
@@ -13,46 +12,42 @@
 # See the License for the specific language governing permissions and
 # limitations under the License.
 
-"""Post-process Go2 + Livox recordings: add AprilTag-corrected groundtruth + .rrd.
+"""Shared post-process runner for recording rigs (robot-agnostic).
 
-Thin orchestrator over dimos/robot/unitree/go2/recording/*. For every `mem2.db`
-under a recordings directory it:
+For every `mem2.db` under a recordings directory it:
   1. prints a recording sanity check (rec_check),
-  2. detects AprilTags -> `april_tags` stream                 (recording.apriltags),
-  3. solves a drift-corrected trajectory -> `gtsam_odom`       (recording.gtsam_gt),
-  4. re-anchors the lidar onto it -> `<lidar>_corrected`       (recording.lidar_reanchor),
-  5. writes a Rerun `.rrd` visualization                        (recording.build_rrd).
+  2. detects AprilTags -> `april_tags` stream                 (apriltags),
+  3. solves a drift-corrected trajectory -> `gtsam_odom`       (gtsam_gt),
+  4. re-anchors each lidar onto it -> `<lidar>_corrected`      (lidar_reanchor),
+  5. writes a Rerun `.rrd` visualization                        (build_rrd).
 
 A tag seen at several times pins the odometry chain and removes accumulated
 drift. Also writes `gtsam_odom.tum` next to each db (relocalization groundtruth).
 
-Run in a python env with dimos + cv2 + gtsam + scipy (from the dimos repo):
-
-    uv run --no-sync python \
-        dimos/robot/unitree/go2/scripts/go2_mid360_post_process.py [TARGET] [--force]
-
-TARGET may be a `mem2.db`, a recording dir containing one, or a dir to scan for
-recordings. With no TARGET it processes the most recently created recording
-under --recordings-dir.
+Each rig calls `run()` with its own re-anchor pairs and a `load_camera(db)`
+returning `(intrinsics, distortion, optical_in_base, resolution)`.
 """
 
 from __future__ import annotations
 
 import argparse
+from collections.abc import Callable
 from pathlib import Path
 
-from dimos.memory2.store.sqlite import SqliteStore
-from dimos.robot.unitree.go2.recording import rec_check
-from dimos.robot.unitree.go2.recording.apriltags import detect_apriltags
-from dimos.robot.unitree.go2.recording.build_rrd import build_rrd
-from dimos.robot.unitree.go2.recording.gtsam_gt import build_gtsam_gt, write_gtsam_odom
-from dimos.robot.unitree.go2.recording.lidar_reanchor import reanchor_stream
+import numpy as np
 
-# Lidar/odom pairs that may be re-anchored onto gtsam_odom — only when their odom
-# is the same frame family gtsam was built from (so the re-anchor composes). The
-# legacy Go2 onboard `lidar`/`odom` is a different estimator frame -> left as-is.
-REANCHOR_PAIRS = [("go2_lidar", "go2_odom"), ("fastlio_lidar", "fastlio_odometry")]
+from dimos.mapping.recording.utils import rec_check
+from dimos.mapping.recording.utils.apriltags import detect_apriltags
+from dimos.mapping.recording.utils.build_rrd import build_rrd
+from dimos.mapping.recording.utils.gtsam_gt import build_gtsam_gt, write_gtsam_odom
+from dimos.mapping.recording.utils.lidar_reanchor import reanchor_stream
+from dimos.memory2.store.sqlite import SqliteStore
+
 DB_NAME = "mem2.db"
+
+# (intrinsics 3x3, distortion, optical_in_base [x,y,z,qx,qy,qz,qw], (width, height))
+CameraParams = tuple[np.ndarray, np.ndarray, list[float], tuple[int, int]]
+ReanchorPairs = list[tuple[str, str]]
 
 
 def _created_time(path: Path) -> float:
@@ -91,21 +86,33 @@ def resolve_databases(target: str | None, recordings_dir: str) -> list[Path]:
     return [most_recent]
 
 
-def correct_db(db: Path, *, image_stream, apriltag_stream, gtsam_stream, marker_length, dictionary):
+def correct_db(
+    db: Path,
+    *,
+    intrinsics,
+    distortion,
+    optical_in_base,
+    reanchor_pairs: ReanchorPairs,
+    image_stream,
+    apriltag_stream,
+    gtsam_stream,
+    marker_length,
+    dictionary,
+):
     """AprilTag detection -> GTSAM trajectory -> re-anchor lidar. Returns True if
     a corrected trajectory was written."""
     with SqliteStore(path=str(db)) as store:
         detections = detect_apriltags(
-            store, image_stream, apriltag_stream, marker_length, dictionary
+            store, intrinsics, distortion, image_stream, apriltag_stream, marker_length, dictionary
         )
     if not detections:
         print("   no AprilTags detected — skipping gtsam_odom (no landmark constraints)")
         return False
-    trajectory = build_gtsam_gt(str(db), detections)
+    trajectory = build_gtsam_gt(str(db), detections, optical_in_base)
     with SqliteStore(path=str(db)) as store:
         write_gtsam_odom(store, trajectory, gtsam_stream, db.parent / "gtsam_odom.tum")
         stream_names = store.list_streams()
-        for lidar_stream, odom_stream in REANCHOR_PAIRS:
+        for lidar_stream, odom_stream in reanchor_pairs:
             if lidar_stream in stream_names and odom_stream in stream_names:
                 try:
                     reanchor_stream(
@@ -124,6 +131,11 @@ def correct_db(db: Path, *, image_stream, apriltag_stream, gtsam_stream, marker_
 def process_db(
     db: Path,
     *,
+    intrinsics,
+    distortion,
+    optical_in_base,
+    resolution,
+    reanchor_pairs: ReanchorPairs,
     image_stream,
     apriltag_stream,
     gtsam_stream,
@@ -161,6 +173,10 @@ def process_db(
     else:
         correct_db(
             db,
+            intrinsics=intrinsics,
+            distortion=distortion,
+            optical_in_base=optical_in_base,
+            reanchor_pairs=reanchor_pairs,
             image_stream=image_stream,
             apriltag_stream=apriltag_stream,
             gtsam_stream=gtsam_stream,
@@ -173,6 +189,9 @@ def process_db(
             build_rrd(
                 str(db),
                 str(db.parent / f"{db.parent.name}.rrd"),
+                intrinsics,
+                optical_in_base,
+                resolution,
                 camera_stride=camera_freq,
                 map_voxel=map_voxel,
                 cloud_stride=cloud_stride,
@@ -182,9 +201,16 @@ def process_db(
             print(f"   rrd failed: {error}")
 
 
-def main():
+def run(
+    *,
+    description: str | None,
+    reanchor_pairs: ReanchorPairs,
+    load_camera: Callable[[Path], CameraParams],
+) -> None:
+    """Parse CLI args and post-process each resolved recording. `load_camera`
+    supplies the rig's `(intrinsics, distortion, optical_in_base, resolution)`."""
     parser = argparse.ArgumentParser(
-        description=__doc__, formatter_class=argparse.RawDescriptionHelpFormatter
+        description=description, formatter_class=argparse.RawDescriptionHelpFormatter
     )
     parser.add_argument(
         "target",
@@ -237,7 +263,7 @@ def main():
         "--mid360-pitch",
         action="store_true",
         help="apply the legacy mid360->camera 44deg pitch correction (old fastlio "
-        "recordings; new go2_* data has correct transforms, leave off)",
+        "recordings; new data stores correct transforms, leave off)",
     )
     args = parser.parse_args()
 
@@ -245,8 +271,14 @@ def main():
     print(f"found {len(databases)} recording(s)")
     for db in databases:
         try:
+            intrinsics, distortion, optical_in_base, resolution = load_camera(db)
             process_db(
                 db,
+                intrinsics=intrinsics,
+                distortion=distortion,
+                optical_in_base=optical_in_base,
+                resolution=resolution,
+                reanchor_pairs=reanchor_pairs,
                 image_stream=args.image_stream,
                 apriltag_stream=args.apriltag_stream,
                 gtsam_stream=args.gtsam_stream,
@@ -264,7 +296,3 @@ def main():
         except Exception as error:
             print(f"   !! failed: {error}")
     print("done")
-
-
-if __name__ == "__main__":
-    main()

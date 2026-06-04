@@ -41,7 +41,6 @@ from dimos.memory2.store.sqlite import SqliteStore
 from dimos.msgs.geometry_msgs.PoseStamped import PoseStamped
 from dimos.msgs.sensor_msgs.Image import Image
 from dimos.msgs.sensor_msgs.PointCloud2 import PointCloud2
-from dimos.robot.unitree.go2.recording.camera import CAMERA_INTRINSICS
 
 TIMELINE = "ts"
 # one distinct base color per point cloud (height modulates brightness within each)
@@ -74,9 +73,6 @@ _PITCH_HALF = math.radians(44.0) / 2.0
 _M_FC_MID360 = _mat([-0.032, 0.0, 0.12], [0.0, math.sin(_PITCH_HALF), 0.0, math.cos(_PITCH_HALF)])
 _M_FC_OPTICAL = _mat([0.0, 0.0, 0.0], [-0.5, 0.5, -0.5, 0.5])  # REP-103 optical in camera body
 MID360_TO_OPTICAL = np.linalg.inv(_M_FC_MID360) @ _M_FC_OPTICAL  # legacy: optical pts -> mid360 pts
-# default (correct-transform data): odom frame already aligned with the camera body,
-# so just the camera mount offset + optical convention, no mid360 pitch hack.
-BASE_TO_OPTICAL = _mat([0.32715, 0.0, 0.04297], [-0.5, 0.5, -0.5, 0.5])
 
 
 def _pose7(p):
@@ -212,7 +208,7 @@ def _has_rows(conn, stream):
         return False
 
 
-def _log_apriltags(store, db_path, cam_xform, max_views_per_tag=40):
+def _log_apriltags(store, db_path, cam_xform, intrinsics, resolution, max_views_per_tag=40):
     """Place every AprilTag recognition in 3D via the corrected trajectory:
     T_world_tag = T_world_base(t) . T_base_optical . T_cam_tag. Per marker logs
     the detection cloud + a labeled marker, and for a sample of recognitions:
@@ -294,10 +290,10 @@ def _log_apriltags(store, db_path, cam_xform, max_views_per_tag=40):
             f"({len(positions)} detections, {len(sampled)} views, via {traj_stream})"
         )
 
-    _log_cam_frustums(store, camera_targets)
+    _log_cam_frustums(store, camera_targets, intrinsics, resolution)
 
 
-def _log_cam_frustums(store, camera_targets):
+def _log_cam_frustums(store, camera_targets, intrinsics, resolution):
     """Place the robot's-eye color image on a pinhole frustum at the camera pose
     for each (entity, T_world_optical, ts) target — rendered only in 3D."""
     if not camera_targets or "color_image" not in store.list_streams():
@@ -322,8 +318,8 @@ def _log_cam_frustums(store, camera_targets):
         rr.log(
             entity,
             rr.Pinhole(
-                image_from_camera=CAMERA_INTRINSICS,
-                resolution=[1280, 720],
+                image_from_camera=intrinsics,
+                resolution=list(resolution),
                 camera_xyz=rr.ViewCoordinates.RDF,
                 image_plane_distance=0.6,
             ),
@@ -390,15 +386,18 @@ def _log_jsonl(jsonl_path: Path) -> None:
 def build_rrd(
     db_path: str,
     out_path: str,
+    intrinsics,
+    optical_in_base,
+    resolution,
     *,
     map_voxel: float = 0.1,
     cloud_stride: int = 3,
     camera_stride: int = 30,
     mid360_pitch: bool = False,
 ):
-    rr.init("go2_post_process", recording_id=str(out_path))
+    rr.init("recording_post_process", recording_id=str(out_path))
     rr.save(str(out_path))
-    cam_xform = MID360_TO_OPTICAL if mid360_pitch else BASE_TO_OPTICAL
+    cam_xform = MID360_TO_OPTICAL if mid360_pitch else _mat7(optical_in_base)
     jsonl_path = _find_jsonl(db_path)
 
     with SqliteStore(path=db_path) as store:
@@ -462,7 +461,7 @@ def build_rrd(
                     _log_frames(store, stream, f"world/{ent}_lidar", cloud_stride, map_voxel, base)
                     _log_map(store, stream, f"world/{ent}_map", map_voxel, base)
 
-        _log_apriltags(store, db_path, cam_xform)
+        _log_apriltags(store, db_path, cam_xform, intrinsics, resolution)
 
         for stream, entity, base in [
             ("gtsam_odom", "world/gtsam_path", (0, 220, 0)),  # corrected GT -> green

@@ -28,7 +28,6 @@ import sqlite3
 import numpy as np
 
 from dimos.msgs.geometry_msgs.PoseStamped import PoseStamped
-from dimos.robot.unitree.go2.recording.camera import CAMERA_OPTICAL_IN_BASE
 
 
 def _pose_from7(pose7):
@@ -78,6 +77,7 @@ def pick_pose_stream(connection) -> str:
 def build_gtsam_gt(
     db_path,
     markers,
+    optical_in_base,
     *,
     node_stride=3,
     odom_rot_sig=0.004,
@@ -107,7 +107,7 @@ def build_gtsam_gt(
         f"{len(markers)} tag obs"
     )
 
-    base_to_optical = _pose_from7(CAMERA_OPTICAL_IN_BASE)
+    base_to_optical = _pose_from7(optical_in_base)
 
     def nearest_node(timestamp):
         node_index = int(np.searchsorted(node_timestamps, timestamp))
