@@ -211,6 +211,16 @@ jobs:
           uv pip install --python .venv/bin/python \
             "https://download.stereolabs.com/zedsdk/5.0/whl/linux_x86_64/pyzed-5.0-${PY_TAG}-${PY_TAG}-linux_x86_64.whl"
           echo "LD_LIBRARY_PATH=/usr/local/zed/lib:${LD_LIBRARY_PATH}" >> "$GITHUB_ENV"
+      - name: Verify ZED SDK Python import
+        # The test's compat.py swallows ImportError silently, so a broken
+        # pyzed shows up as "ZED SDK not installed" skips with no real cause.
+        # This step surfaces the actual error (missing libcudart, missing
+        # libsl_zed, ABI mismatch, etc.) instead of letting it hide.
+        env:
+          LD_LIBRARY_PATH: /usr/local/zed/lib:${{ env.LD_LIBRARY_PATH }}
+        run: |
+          ldd /usr/local/zed/lib/libsl_zed.so | head -30 || true
+          uv run python -c "import pyzed.sl; print('pyzed.sl loaded OK')"
       - name: Build C++ extensions in-place
         run: uv run python setup.py build_ext --inplace
       - name: Source ROS environment
