@@ -20,6 +20,7 @@ import platform
 import shutil
 import tempfile
 import threading
+import uuid
 
 # With pytest-xdist, pick a per-worker bucket and pin env vars *before*
 # any dimos module is imported, so parallel workers don't share LCM bus,
@@ -43,6 +44,11 @@ if _worker:
     os.environ["MCP_PORT"] = str(20000 + _BUCKET)
     os.environ["XDG_STATE_HOME"] = tempfile.mkdtemp(prefix=f"dimos-test-state-{_worker}-")
 
+# Tag every pytest descendant so a sidecar watchdog can sweep strays (dimsim, rerun, etc).
+DIMOS_PYTEST_RUN_ID_ENV = "DIMOS_PYTEST_RUN_ID"
+if not _worker:
+    os.environ[DIMOS_PYTEST_RUN_ID_ENV] = f"pytest-{uuid.uuid4().hex[:16]}"
+
 # Raise the open-file limit. Each LCM transport opens at least one
 # multicast socket; with pytest-xdist workers running many in parallel,
 # the macOS default soft cap (~256) gets exhausted and tests fail with
@@ -62,6 +68,7 @@ from dotenv import load_dotenv
 import pytest
 
 from dimos.core.coordination.module_coordinator import ModuleCoordinator
+from dimos.core.coordination.process_lifecycle import spawn_watchdog
 
 load_dotenv()
 
@@ -83,6 +90,12 @@ def _is_macos() -> bool:
     return platform.system() == "Darwin"
 
 
+def _no_sqlite_vec() -> bool:
+    # The aarch64 wheel ships a 32-bit binary ("wrong ELF class: ELFCLASS32"),
+    # and the macOS wheel fails to load via sqlite3 in CI.
+    return platform.machine() == "aarch64" or _is_macos()
+
+
 def pytest_configure(config):
     config.addinivalue_line("markers", "tool: dev tooling")
     config.addinivalue_line(
@@ -90,7 +103,9 @@ def pytest_configure(config):
         "self_hosted: tests that need the self-hosted runner (LFS, ROS, CUDA, etc.)",
     )
     config.addinivalue_line("markers", "mujoco: tests which open mujoco")
-    config.addinivalue_line("markers", "dimsim: tests which require dimsim")
+    config.addinivalue_line(
+        "markers", "self_hosted_large: tests that need a high-memory self-hosted runner"
+    )
     config.addinivalue_line("markers", "skipif_in_ci: skip when CI env var is set")
     config.addinivalue_line("markers", "skipif_no_openai: skip when OPENAI_API_KEY is not set")
     config.addinivalue_line("markers", "skipif_no_alibaba: skip when ALIBABA_API_KEY is not set")
@@ -98,9 +113,19 @@ def pytest_configure(config):
     config.addinivalue_line("markers", "skipif_no_nix: skip when the `nix` binary is not on PATH")
     config.addinivalue_line("markers", "skipif_macos_bug: skip known-buggy tests on macOS")
     config.addinivalue_line("markers", "skipif_macos: skip tests not intended to run on macOS")
+    config.addinivalue_line(
+        "markers", "skipif_no_sqlite_vec: skip when the sqlite-vec extension cannot be loaded"
+    )
 
     if config.pluginmanager.hasplugin("_cov"):
         os.environ["COVERAGE_PROCESS_START"] = str(config.rootpath / "pyproject.toml")
+
+    # Only spawn on the controller, without doing it on xdist workers.
+    if not hasattr(config, "workerinput"):
+        spawn_watchdog(
+            os.environ[DIMOS_PYTEST_RUN_ID_ENV],
+            env_var=DIMOS_PYTEST_RUN_ID_ENV,
+        )
 
 
 @pytest.fixture(scope="session")
@@ -131,6 +156,7 @@ def pytest_collection_modifyitems(config, items):
         "skipif_no_nix": (not _has_nix(), "nix binary is not on PATH"),
         "skipif_macos_bug": (_is_macos(), "Some tests are buggy on Mac OS"),
         "skipif_macos": (_is_macos(), "Not intended to run on macOS"),
+        "skipif_no_sqlite_vec": (_no_sqlite_vec(), "sqlite-vec extension not loadable here"),
     }
     for marker_name, (condition, reason) in _skipif_markers.items():
         if condition:
@@ -217,10 +243,6 @@ def monitor_threads(request):
             # HuggingFace safetensors conversion thread - no user cleanup API
             # https://github.com/huggingface/transformers/issues/29513
             "Thread-auto_conversion",
-            # rpyc spawns per-call response threads inside the connection's
-            # SpawnThread protocol. They get cleaned up when the connection
-            # is closed (in the rpyc client's teardown), not per-test.
-            "RpycSpawnThread-",
         ]
         new_threads = [
             t
