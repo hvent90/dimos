@@ -27,10 +27,12 @@ from dimos.hardware.sensors.camera.realsense.camera import RealSenseCamera
 from dimos.hardware.sensors.lidar.fastlio2.module import FastLio2
 from dimos.hardware.sensors.lidar.fastlio2.recorder import FastLio2Recorder, _default_recording_dir
 from dimos.hardware.sensors.lidar.livox.module import Mid360
+from dimos.mapping.recording.mid360_realsense.static_transforms import (
+    MID360_TO_WORLD,
+    REALSENSE_COLOR_OPTICAL_FRAME_TO_MID360_IMU_FRAME,
+)
 from dimos.memory2.stream import Stream
-from dimos.msgs.geometry_msgs.Quaternion import Quaternion
 from dimos.msgs.geometry_msgs.Transform import Transform
-from dimos.msgs.geometry_msgs.Vector3 import Vector3
 from dimos.msgs.nav_msgs.Odometry import Odometry
 from dimos.msgs.sensor_msgs.CameraInfo import CameraInfo
 from dimos.msgs.sensor_msgs.Image import Image
@@ -40,22 +42,14 @@ from dimos.utils.logging_config import set_run_log_dir, setup_logger
 
 logger = setup_logger()
 
-# Camera is mounted 1cm forward and 1cm below the lidar. In the mid360_link
-# frame (x forward, y left, z up) that is +1cm on x and -1cm on z.
-MID360_TO_CAMERA = Transform(
-    translation=Vector3(0.01, 0.0, -0.01),
-    rotation=Quaternion(0.0, 0.0, 0.0, 1.0),
-    frame_id="mid360_link",
-    child_frame_id="camera",
-)
+# FAST-LIO odom is the Mid-360 IMU frame; map it to the RealSense color optical
+# frame. See static_transforms.py for the geometry and sources.
+MID360_TO_CAMERA_OPTICAL = REALSENSE_COLOR_OPTICAL_FRAME_TO_MID360_IMU_FRAME.inverse()
 
-# Camera optical frame: standard ROS optical rotation (x-right, y-down, z-forward).
-MID360_TO_CAMERA_OPTICAL = MID360_TO_CAMERA + Transform(
-    translation=Vector3(0.0, 0.0, 0.0),
-    rotation=Quaternion(-0.5, 0.5, -0.5, 0.5),
-    frame_id="camera",
-    child_frame_id="camera_optical",
-)
+# FAST-LIO reports the Mid-360 pose in its own start frame. Re-anchor that onto a flat world
+# frame whose origin is the camera screw and whose axes are level (the camera is angled up).
+# Assumes FAST-LIO initializes at the rig's starting pose.
+WORLD_TO_MID360 = MID360_TO_WORLD.inverse()
 
 
 _LIDAR_IP = os.getenv("LIDAR_IP", "192.168.1.107")
@@ -110,6 +104,8 @@ class TfHackRecorder(FastLio2Recorder):
                 world_to_mid360 = self._world_to_mid360_from_fastlio()
                 if world_to_mid360 is not None:
                     pose = (world_to_mid360 + MID360_TO_CAMERA_OPTICAL).to_pose()
+            elif name == "go2_odom" or name == "odom":
+                pose = msg
             elif "odom" in name or "camera_info" in name or "imu" in name:
                 pass
             else:
@@ -125,13 +121,18 @@ class TfHackRecorder(FastLio2Recorder):
         odom = self._latest_fastlio_odom
         if odom is None:
             return None
-        return Transform(
+        fastlio_pose = Transform(
             translation=odom.position,
             rotation=odom.orientation,
-            frame_id="world",
+            frame_id="fastlio_world",
             child_frame_id="mid360_link",
             ts=odom.ts,
         )
+        world_to_mid360 = WORLD_TO_MID360 + fastlio_pose
+        world_to_mid360.frame_id = "world"
+        world_to_mid360.child_frame_id = "mid360_link"
+        world_to_mid360.ts = odom.ts
+        return world_to_mid360
 
 
 realsense_mid360_record = autoconnect(

@@ -13,7 +13,6 @@
 # See the License for the specific language governing permissions and
 # limitations under the License.
 
-import math
 import os
 import time
 from typing import Any
@@ -28,11 +27,13 @@ from dimos.hardware.sensors.lidar.fastlio2.module import FastLio2
 from dimos.hardware.sensors.lidar.fastlio2.recorder import FastLio2Recorder, _default_recording_dir
 from dimos.hardware.sensors.lidar.fastlio2.speed_warner import SpeedWarner
 from dimos.hardware.sensors.lidar.livox.module import Mid360
+from dimos.mapping.recording.go2_mid360.static_transforms import (
+    BASE_TO_CAMERA_OPTICAL,
+    MID360_TO_BASE,
+)
 from dimos.memory2.stream import Stream
 from dimos.msgs.geometry_msgs.PoseStamped import PoseStamped
-from dimos.msgs.geometry_msgs.Quaternion import Quaternion
 from dimos.msgs.geometry_msgs.Transform import Transform
-from dimos.msgs.geometry_msgs.Vector3 import Vector3
 from dimos.msgs.nav_msgs.Odometry import Odometry
 from dimos.msgs.sensor_msgs.Image import Image
 from dimos.msgs.sensor_msgs.Imu import Imu
@@ -43,35 +44,6 @@ from dimos.robot.unitree.keyboard_teleop import KeyboardTeleop
 from dimos.utils.logging_config import set_run_log_dir, setup_logger
 
 logger = setup_logger()
-
-# mid360_link is physically measured relative to camera (easier than measuring to base_link):
-# relative to camera the lidar is 3.2cm back, 12cm up, pitched 44deg down.
-# base_link -> front_camera -> mid360_link
-BASE_TO_FRONT_CAMERA = Transform(
-    translation=Vector3(0.32715, -0.00003, 0.04297),
-    rotation=Quaternion(0.0, 0.0, 0.0, 1.0),
-    frame_id="base_link",
-    child_frame_id="front_camera",
-)
-
-_MID360_PITCH_HALF = math.radians(44.0) / 2.0
-BASE_TO_MID360 = BASE_TO_FRONT_CAMERA + Transform(
-    translation=Vector3(-0.032, 0.0, 0.12),
-    rotation=Quaternion(0.0, math.sin(_MID360_PITCH_HALF), 0.0, math.cos(_MID360_PITCH_HALF)),
-    frame_id="front_camera",
-    child_frame_id="mid360_link",
-)
-MID360_TO_BASE = BASE_TO_MID360.inverse()
-
-# base_link -> camera_optical using the URDF front_camera mount plus the
-# standard ROS optical-frame rotation (x-right, y-down, z-forward).
-BASE_TO_CAMERA_OPTICAL = BASE_TO_FRONT_CAMERA + Transform(
-    translation=Vector3(0.0, 0.0, 0.0),
-    rotation=Quaternion(-0.5, 0.5, -0.5, 0.5),
-    frame_id="front_camera",
-    child_frame_id="camera_optical",
-)
-
 
 _LIDAR_IP = os.getenv("LIDAR_IP", "192.168.1.107")
 
