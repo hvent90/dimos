@@ -93,12 +93,31 @@ jobs:
         run: |
           git config --global --add safe.directory '*'
           git clean -ffdx
+      - name: Install apt dependencies
+        run: |
+          sudo apt-get update
+          sudo apt-get install libturbojpeg -y
       - name: Install uv
         uses: astral-sh/setup-uv@v6
         with:
           enable-cache: true
       - name: Install dependencies
         run: uv sync --group tests-self-hosted --frozen
+      - name: Install ZED SDK
+        # Stereolabs proprietary SDK, distributed as a self-extracting .run
+        # installer (not on apt/pip). `runtime_only` skips samples/headers/docs;
+        # `skip_cuda` assumes libcuda/libcudart are already on the runner —
+        # the SDK's .so files dlopen them at process start.
+        # `get_python_api.py` is the SDK's installer for the `pyzed` Python
+        # bindings against the venv's interpreter, so this step has to run
+        # after `Install dependencies` (which provisions the venv).
+        run: |
+          wget -qO /tmp/zed.run https://download.stereolabs.com/zedsdk/5.0/cu12/ubuntu22
+          chmod +x /tmp/zed.run
+          sudo /tmp/zed.run -- silent runtime_only skip_cuda skip_drivers
+          rm /tmp/zed.run
+          uv run python /usr/local/zed/get_python_api.py
+          echo "LD_LIBRARY_PATH=/usr/local/zed/lib:${LD_LIBRARY_PATH}" >> "$GITHUB_ENV"
       - name: Build C++ extensions in-place
         run: uv run python setup.py build_ext --inplace
       - name: Source ROS environment
