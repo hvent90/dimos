@@ -16,6 +16,11 @@
 
 import hashlib
 import re
+from typing import Literal, TypeAlias
+
+# Names of the color themes defined in mermaid.THEMES. Kept here (free of heavy
+# imports) so lightweight CLI entry-points can use it as a typer option type.
+ThemeName: TypeAlias = Literal["tailwind", "ocean", "ember", "forest", "light"]
 
 # Colors for type nodes and edges (bright, distinct, good on dark backgrounds)
 TYPE_COLORS = [

@@ -20,7 +20,7 @@ from collections import defaultdict
 from typing import TypedDict
 
 from dimos.core.coordination.blueprints import Blueprint
-from dimos.core.introspection.utils import sanitize_id
+from dimos.core.introspection.utils import ThemeName, sanitize_id
 from dimos.core.module import ModuleBase
 
 
@@ -31,7 +31,7 @@ class Theme(TypedDict):
     edges: list[str]
 
 
-THEMES: dict[str, Theme] = {
+THEMES: dict[ThemeName, Theme] = {
     "tailwind": {
         "background": "#1e1e1e",
         "mermaid_theme": "dark",
@@ -194,7 +194,7 @@ THEMES: dict[str, Theme] = {
     },
 }
 
-DEFAULT_THEME = "tailwind"
+DEFAULT_THEME: ThemeName = "tailwind"
 
 
 class _ColorAssigner:
@@ -220,7 +220,7 @@ def render_mermaid(
     ignored_streams: set[tuple[str, str]] | None = None,
     ignored_modules: set[str] | None = None,
     show_disconnected: bool = False,
-    theme: str = DEFAULT_THEME,
+    theme: ThemeName = DEFAULT_THEME,
 ) -> tuple[str, dict[str, str], set[str], dict[str, str]]:
     """Generate a Mermaid flowchart from a Blueprint.
 
@@ -275,7 +275,7 @@ def render_mermaid(
                 continue
             disconnected_keys.append(key)
 
-    palette = THEMES.get(theme, THEMES[DEFAULT_THEME])
+    palette = THEMES[theme]
     node_color = _ColorAssigner(palette["nodes"])
     edge_color = _ColorAssigner(palette["edges"])
 

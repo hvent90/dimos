@@ -33,6 +33,7 @@ import jinja2
 
 from dimos.core.coordination.blueprints import Blueprint
 from dimos.core.introspection.mermaid import DEFAULT_THEME, THEMES, render_mermaid
+from dimos.core.introspection.utils import ThemeName
 from dimos.utils.data import get_data
 
 _CLI_DIR = Path(__file__).parent
@@ -104,10 +105,10 @@ def _load_blueprints(python_file: str) -> list[tuple[str, Blueprint]]:
 
 
 def _build_html(
-    python_file: str, *, show_disconnected: bool = True, theme: str = DEFAULT_THEME
+    python_file: str, *, show_disconnected: bool = True, theme: ThemeName = DEFAULT_THEME
 ) -> str:
     blueprints = _load_blueprints(python_file)
-    palette = THEMES.get(theme, THEMES[DEFAULT_THEME])
+    palette = THEMES[theme]
     background = palette["background"]
     mermaid_theme = palette["mermaid_theme"]
     is_light = mermaid_theme != "dark"
@@ -222,7 +223,7 @@ def _build_html(
 
 
 def print_markdown(
-    python_file: str, *, show_disconnected: bool, theme: str = DEFAULT_THEME
+    python_file: str, *, show_disconnected: bool, theme: ThemeName = DEFAULT_THEME
 ) -> None:
     blueprints = _load_blueprints(python_file)
     sections: list[str] = []
@@ -237,7 +238,7 @@ def save_html(
     *,
     output_path: str,
     show_disconnected: bool,
-    theme: str = DEFAULT_THEME,
+    theme: ThemeName = DEFAULT_THEME,
 ) -> None:
     html = _build_html(python_file, show_disconnected=show_disconnected, theme=theme)
     with open(output_path, "w") as file:
@@ -246,7 +247,7 @@ def save_html(
 
 
 def serve_graph(
-    python_file: str, *, show_disconnected: bool, port: int, theme: str = DEFAULT_THEME
+    python_file: str, *, show_disconnected: bool, port: int, theme: ThemeName = DEFAULT_THEME
 ) -> None:
     html = _build_html(python_file, show_disconnected=show_disconnected, theme=theme)
     html_bytes = html.encode("utf-8")

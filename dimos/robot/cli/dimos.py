@@ -37,6 +37,7 @@ from dimos.agents.mcp.mcp_adapter import McpAdapter, McpError
 from dimos.constants import CONFIG_DIR, LOG_DIR
 from dimos.core.daemon import daemonize, install_signal_handlers
 from dimos.core.global_config import GlobalConfig, global_config
+from dimos.core.introspection.utils import ThemeName
 from dimos.core.run_registry import get_most_recent, is_pid_alive, stop_entry
 from dimos.mapping.utils.cli.map import main as _map_main
 from dimos.mapping.utils.cli.pose_fill import main as _map_pose_fill_main
@@ -813,9 +814,7 @@ def graph(
         False, "--markdown", help="Print Mermaid markdown to stdout and exit"
     ),
     html: str = typer.Option("", "--html", help="Write HTML to a file instead of serving"),
-    theme: str = typer.Option(
-        "tailwind", "--theme", help="Color theme (tailwind, ocean, ember, forest, light)"
-    ),
+    theme: ThemeName = typer.Option("tailwind", "--theme", help="Color theme"),
 ) -> None:
     """Render DimOS Blueprint graphs. Serves in browser by default, or use --markdown / --html."""
     from dimos.utils.cli.graph import print_markdown, save_html, serve_graph
