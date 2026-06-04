@@ -55,13 +55,13 @@ from dimos.perception.detection.moduleDB import ObjectDBModule, detectionDB_modu
 from dimos.perception.detection.person_tracker import PersonTracker, person_tracker_module
 from dimos.perception.object_tracker import object_tracking
 from dimos.perception.spatial_perception import spatial_memory
-from dimos.robot.doom_teleop import doom_teleop
 from dimos.robot.foxglove_bridge import foxglove_bridge
 from dimos.robot.unitree.connection.g1 import g1_connection
 from dimos.robot.unitree.connection.g1sim import g1_sim_connection
 from dimos.robot.unitree_webrtc.keyboard_teleop import keyboard_teleop
 from dimos.robot.unitree_webrtc.unitree_g1_skill_container import g1_skills
 from dimos.teleop.keyboard.doom_teleop import doom_teleop
+from dimos.utils.monitoring import utilization
 from dimos.web.websocket_vis.websocket_vis_module import websocket_vis
 
 _basic_no_nav = (
@@ -86,7 +86,7 @@ _basic_no_nav = (
         websocket_vis(),
         foxglove_bridge(),
     )
-    .global_config(n_dask_workers=4, robot_model="unitree_g1")
+    .global_config(n_workers=4, robot_model="unitree_g1")
     .transports(
         {
             ("cmd_vel", Twist): LCMTransport("/cmd_vel", Twist),
@@ -127,12 +127,12 @@ _perception_and_memory = autoconnect(
 standard = autoconnect(
     basic_ros,
     _perception_and_memory,
-).global_config(n_dask_workers=8)
+).global_config(n_workers=8)
 
 standard_sim = autoconnect(
     basic_sim,
     _perception_and_memory,
-).global_config(n_dask_workers=8)
+).global_config(n_workers=8)
 
 standard_with_shm = autoconnect(
     standard.transports(
@@ -186,7 +186,7 @@ detection = (
             cameraInfo=zed.CameraInfo.SingleWebcam,
         ),
     )
-    .global_config(n_dask_workers=8)
+    .global_config(n_workers=8)
     .remappings(
         [
             (Detection3DModule, "image", "color_image"),

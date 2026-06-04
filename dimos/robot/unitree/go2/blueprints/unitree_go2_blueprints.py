@@ -55,13 +55,13 @@ from dimos.perception.detection.module3D import Detection3DModule, detection3d_m
 from dimos.perception.experimental.temporal_memory import temporal_memory
 from dimos.perception.spatial_perception import spatial_memory
 from dimos.protocol.mcp.mcp import MCPModule
-from dimos.robot.doom_teleop import doom_teleop
 from dimos.robot.foxglove_bridge import foxglove_bridge
 import dimos.robot.unitree.connection.go2 as _go2_mod
 from dimos.robot.unitree.connection.go2 import GO2Connection, go2_connection
 from dimos.robot.unitree_webrtc.unitree_skill_container import unitree_skills
-from dimos.utils.monitoring import utilization
 from dimos.teleop.keyboard.doom_teleop import doom_teleop
+from dimos.utils.monitoring import utilization
+from dimos.web.websocket_vis.websocket_vis_module import websocket_vis
 
 _GO2_URDF = Path(_go2_mod.__file__).parent.parent / "go2" / "go2.urdf"
 
@@ -91,7 +91,7 @@ basic = autoconnect(
             ("world/robot/camera", "camera_optical", GO2Connection.camera_info_static),
         ],
     ),
-).global_config(n_dask_workers=4, robot_model="unitree_go2")
+).global_config(n_workers=4, robot_model="unitree_go2")
 
 go2_with_doom = autoconnect(
     basic,
@@ -104,7 +104,7 @@ nav = autoconnect(
     cost_mapper(),
     replanning_a_star_planner(),
     wavefront_frontier_explorer(),
-).global_config(n_dask_workers=6, robot_model="unitree_go2")
+).global_config(n_workers=6, robot_model="unitree_go2")
 
 ros = nav.transports(
     {
@@ -158,7 +158,7 @@ spatial = autoconnect(
     nav,
     spatial_memory(),
     utilization(),
-).global_config(n_dask_workers=8)
+).global_config(n_workers=8)
 
 with_jpeglcm = nav.transports(
     {
