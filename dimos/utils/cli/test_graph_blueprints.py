@@ -14,13 +14,9 @@
 
 from __future__ import annotations
 
-from pathlib import Path
-
 from dimos.core.coordination.blueprints import autoconnect
 from dimos.core.module import Module
 from dimos.core.stream import In, Out
-
-SNAPSHOT_PATH = Path(__file__).with_name("test_graph_snapshot.html")
 
 
 class ImageData:
