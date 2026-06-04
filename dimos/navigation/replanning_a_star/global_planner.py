@@ -20,6 +20,7 @@ from dimos_lcm.std_msgs import Bool
 from reactivex import Subject
 from reactivex.disposable import CompositeDisposable
 
+from dimos.constants import DEFAULT_THREAD_JOIN_TIMEOUT
 from dimos.core.global_config import GlobalConfig
 from dimos.core.resource import Resource
 from dimos.mapping.occupancy.path_resampling import smooth_resample_path
@@ -61,6 +62,7 @@ class GlobalPlanner(Resource):
     _replan_event: Event
     _replan_reason: StopMessage | None
     _lock: RLock
+    _safe_goal_clearance: float
 
     _safe_goal_tolerance: float = 4.0
     _goal_tolerance: float = 0.2
@@ -86,6 +88,7 @@ class GlobalPlanner(Resource):
         self._replan_event = Event()
         self._replan_reason = None
         self._lock = RLock()
+        self._reset_safe_goal_clearance()
 
     def start(self) -> None:
         self._local_planner.start()
@@ -104,7 +107,7 @@ class GlobalPlanner(Resource):
         self._replan_event.set()
 
         if self._thread is not None and self._thread is not current_thread():
-            self._thread.join(2)
+            self._thread.join(DEFAULT_THREAD_JOIN_TIMEOUT)
             if self._thread.is_alive():
                 logger.error("GlobalPlanner thread did not stop in time.")
             self._thread = None
@@ -126,6 +129,13 @@ class GlobalPlanner(Resource):
             self._goal_reached = False
         self._replan_limiter.reset()
         self._plan_path()
+
+    def set_safe_goal_clearance(self, clearance: float) -> None:
+        with self._lock:
+            self._safe_goal_clearance = clearance
+
+    def reset_safe_goal_clearance(self) -> None:
+        self._reset_safe_goal_clearance()
 
     def cancel_goal(self, *, but_will_try_again: bool = False, arrived: bool = False) -> None:
         logger.info("Cancelling goal.", but_will_try_again=but_will_try_again, arrived=arrived)
@@ -332,7 +342,7 @@ class GlobalPlanner(Resource):
             goal,
             algorithm="bfs_contiguous",
             cost_threshold=CostValues.OCCUPIED,
-            min_clearance=self._global_config.robot_rotation_diameter / 2,
+            min_clearance=self._safe_goal_clearance,
             max_search_distance=self._safe_goal_tolerance,
         )
 
@@ -347,3 +357,7 @@ class GlobalPlanner(Resource):
         logger.info("Found safe goal.", x=round(safe_goal.x, 2), y=round(safe_goal.y, 2))
 
         return safe_goal
+
+    def _reset_safe_goal_clearance(self) -> None:
+        with self._lock:
+            self._safe_goal_clearance = self._global_config.robot_rotation_diameter / 2

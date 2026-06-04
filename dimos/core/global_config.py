@@ -69,6 +69,11 @@ class GlobalConfig(BaseSettings):
         if self.structural_clear_threshold >= 0:
             raise ValueError("structural_clear_threshold must be < 0")
 
+        if self.structural_clear_threshold >= self.structural_write_threshold:
+            raise ValueError(
+                "structural_clear_threshold must be < structural_write_threshold"
+            )
+
         if self.live_map_retention_sec < 0:
             raise ValueError("live_map_retention_sec must be >= 0")
 

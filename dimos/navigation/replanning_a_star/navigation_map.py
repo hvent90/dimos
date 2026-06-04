@@ -57,7 +57,7 @@ class NavigationMap:
         with self._lock:
             if self._structural_map is None:
                 raise ValueError("No structural map available")
-            return self._structural_map
+            return self._structural_map.copy()
 
     @property
     def live_map(self) -> OccupancyGrid:
@@ -65,16 +65,17 @@ class NavigationMap:
             live_map = self._get_live_map(time.time())
             if live_map is None:
                 raise ValueError("No current live map available")
-            return live_map
+            return live_map.copy()
 
     @property
     def planning_map(self) -> OccupancyGrid:
         with self._lock:
             now = time.time()
-            self._refresh_planning_map(now, now)
+            output_ts = self._planning_map.ts if self._planning_map is not None else now
+            self._refresh_planning_map(now, output_ts)
             if self._planning_map is None:
                 raise ValueError("No current planning map available")
-            return self._planning_map
+            return self._planning_map.copy()
 
     @property
     def confirmation_counts(self) -> np.ndarray:

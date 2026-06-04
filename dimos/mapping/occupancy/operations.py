@@ -122,15 +122,15 @@ def update_structural_map(
     clear_threshold: int,
     ts: float,
 ) -> OccupancyGrid:
-    """Apply confidence thresholds to mutate a structural map."""
+    """Apply confidence thresholds to produce an updated structural map."""
     if structural_map.grid.shape != counts.shape:
         raise ValueError(
             f"Structural map shape must match counts: {structural_map.grid.shape} vs {counts.shape}"
         )
 
-    if clear_threshold > write_threshold:
+    if clear_threshold >= write_threshold:
         raise ValueError(
-            f"clear_threshold ({clear_threshold}) must be <= write_threshold ({write_threshold})"
+            f"clear_threshold ({clear_threshold}) must be < write_threshold ({write_threshold})"
         )
 
     result_grid = structural_map.grid.copy()
