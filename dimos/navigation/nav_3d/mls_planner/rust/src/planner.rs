@@ -101,19 +101,42 @@ pub fn plan(
     let goal_segment = walk_preds(&plg.cell_state, goal_cell);
     let goal_node = *node_idx_by_cell.get(goal_segment.last()?)?;
 
-    // Cost-to-go to the goal for every node, with predecessors pointing at the
-    // goal. Rooting the search at the fixed goal makes this single array the
-    // whole field we need. It is recomputed each scan, so churn in the node set
-    // between scans never matters.
+    // Rooted at the goal so one pass covers every node's cost-to-go.
     let (cost_to_go, pred_to_goal) = node_dijkstra(plg, goal_node);
 
-    // Candidate entry nodes: every node the robot can reach on the surface
-    // within a local radius, each with its true connect cost. Enter on the node
-    // that minimizes connect cost plus cost-to-go. This is the first node of the
-    // optimal robot-to-goal path, so the robot never detours to its nearest node
-    // when a node closer to the goal is just as reachable.
     let radius = (node_spacing_m * CANDIDATE_RADIUS_FACTOR).max(voxel_size);
-    let (connect_dist, connect_pred) = robot_search(&plg.cells, start_cell, radius);
+    let (lead_in, node_seq) = select_entry(
+        plg,
+        start_cell,
+        goal_node,
+        &cost_to_go,
+        &pred_to_goal,
+        &node_idx_by_cell,
+        radius,
+    )?;
+
+    // Shortcut height tolerance in cells, tied to the traversable step.
+    let smooth_tol_cells = ((node_step_threshold_m / voxel_size).round() as i32).max(1);
+
+    let cells = assemble_cells(plg, &node_seq, &lead_in, &goal_segment);
+    let cells = string_pull(plg, &cells, smooth_tol_cells);
+    Some(cells_to_waypoints(
+        plg, &cells, start_pose, goal_pose, voxel_size,
+    ))
+}
+
+/// Pick the entry node by connect cost plus cost-to-go, with its on-surface
+/// lead-in and the node sequence to the goal.
+fn select_entry(
+    plg: &PlannerGraph,
+    start_cell: CellId,
+    goal_node: NodeId,
+    cost_to_go: &[f32],
+    pred_to_goal: &[NodeId],
+    node_idx_by_cell: &AHashMap<CellId, NodeId>,
+    radius_m: f32,
+) -> Option<(Vec<CellId>, Vec<NodeId>)> {
+    let (connect_dist, connect_pred) = robot_search(&plg.cells, start_cell, radius_m);
 
     let mut entry_node = NO_NODE;
     let mut best_score = f32::INFINITY;
@@ -128,41 +151,25 @@ pub fn plan(
         }
     }
 
-    let (lead_in, node_seq) = if best_score.is_finite() {
-        // Lead in along the actual surface path the search found to the entry
-        // node, so the connection never leaves the surface or doubles back.
+    if best_score.is_finite() {
         let mut lead = walk_local_preds(&connect_pred, plg.nodes[entry_node as usize].cell_id);
         lead.reverse();
-        (lead, follow_preds(entry_node, goal_node, &pred_to_goal)?)
-    } else {
-        // The local search reached no node with a route to the goal. Fall back
-        // to the robot's region node and its on-surface lead-in.
-        let start_segment = walk_preds(&plg.cell_state, start_cell);
-        let region_node = *node_idx_by_cell.get(start_segment.last()?)?;
-        if !cost_to_go[region_node as usize].is_finite() {
-            return None;
-        }
-        (
-            start_segment,
-            follow_preds(region_node, goal_node, &pred_to_goal)?,
-        )
-    };
+        return Some((lead, follow_preds(entry_node, goal_node, pred_to_goal)?));
+    }
 
-    // Straight-line shortcut tolerance: how far the smoothed path may sit from
-    // the surface in height, in cells. Tied to the traversable step so a shortcut
-    // can ride over a slope but not float across a gap or cut through a step.
-    let smooth_tol_cells = ((node_step_threshold_m / voxel_size).round() as i32).max(1);
-
-    let cells = assemble_cells(plg, &node_seq, &lead_in, &goal_segment);
-    let cells = string_pull(plg, &cells, smooth_tol_cells);
-    Some(cells_to_waypoints(
-        plg, &cells, start_pose, goal_pose, voxel_size,
+    let start_segment = walk_preds(&plg.cell_state, start_cell);
+    let region_node = *node_idx_by_cell.get(start_segment.last()?)?;
+    if !cost_to_go[region_node as usize].is_finite() {
+        return None;
+    }
+    Some((
+        start_segment,
+        follow_preds(region_node, goal_node, pred_to_goal)?,
     ))
 }
 
-/// Bounded Dijkstra from the robot's cell over the surface, visiting only cells
-/// within `radius_m`. Returns per-cell distance and predecessor maps so the
-/// on-surface lead-in to any reached cell can be reconstructed.
+/// Bounded Dijkstra from the robot cell, visiting cells within the radius.
+/// Returns per-cell distance and predecessor maps.
 fn robot_search(
     cells: &SurfaceCells,
     source: CellId,
@@ -193,7 +200,7 @@ fn robot_search(
     (dist, pred)
 }
 
-/// Walk predecessors from `from` back to the search source.
+/// Walk predecessors back to the search source.
 fn walk_local_preds(pred: &AHashMap<CellId, CellId>, from: CellId) -> Vec<CellId> {
     let mut path = vec![from];
     let mut cur = from;
@@ -204,8 +211,8 @@ fn walk_local_preds(pred: &AHashMap<CellId, CellId>, from: CellId) -> Vec<CellId
     path
 }
 
-/// Cost-to-go to `source` for every node, plus a predecessor pointing one hop
-/// toward `source`. Unreachable nodes keep an infinite cost and `NO_NODE` pred.
+/// Cost-to-go to source for every node, with a predecessor pointing one hop
+/// toward it. Unreachable nodes stay at infinite cost.
 fn node_dijkstra(plg: &PlannerGraph, source: NodeId) -> (Vec<f32>, Vec<NodeId>) {
     let n = plg.nodes.len();
     let mut dist = vec![f32::INFINITY; n];
@@ -232,7 +239,7 @@ fn node_dijkstra(plg: &PlannerGraph, source: NodeId) -> (Vec<f32>, Vec<NodeId>) 
     (dist, pred)
 }
 
-/// Follow goal-pointing predecessors from `from` to `goal`.
+/// Build the node sequence by following goal-pointing predecessors.
 fn follow_preds(from: NodeId, goal: NodeId, pred: &[NodeId]) -> Option<Vec<NodeId>> {
     let mut seq = vec![from];
     let mut cur = from;
@@ -247,10 +254,8 @@ fn follow_preds(from: NodeId, goal: NodeId, pred: &[NodeId]) -> Option<Vec<NodeI
     Some(seq)
 }
 
-/// Append a cell to the path, collapsing out-and-back spurs. When the next cell
-/// equals the second-to-last, the path walked up a Voronoi-tree branch and is
-/// now retracing it. Drop the dead-end instead of stitching in a detour. This is
-/// what keeps the lead-in from looping out to the robot's region node and back.
+/// Append a cell, cancelling an out-and-back spur when the next cell retraces
+/// the second-to-last.
 fn push_cell(cells: &mut Vec<CellId>, c: CellId) {
     if cells.len() >= 2 && cells[cells.len() - 2] == c {
         cells.pop();
@@ -259,8 +264,7 @@ fn push_cell(cells: &mut Vec<CellId>, c: CellId) {
     }
 }
 
-/// Stitch the cell path: the lead-in to the entry node, the cell chains along
-/// each node-graph edge, and the goal segment, collapsing out-and-back spurs.
+/// Build the cell path from the entry lead-in through the node edges to the goal.
 fn assemble_cells(
     plg: &PlannerGraph,
     node_seq: &[NodeId],
@@ -299,8 +303,8 @@ fn assemble_cells(
     cells
 }
 
-/// Turn the cell path into world waypoints, bookended by the raw start and goal
-/// poses so the path begins and ends exactly where asked.
+/// Convert the cell path to world waypoints, with the raw start and goal poses
+/// as the endpoints.
 fn cells_to_waypoints(
     plg: &PlannerGraph,
     cells: &[CellId],
@@ -318,10 +322,8 @@ fn cells_to_waypoints(
     waypoints
 }
 
-/// Greedily replace runs of cells with straight shortcuts that stay on the
-/// surface. From each anchor, extend to the farthest cell still in line of sight
-/// and keep only that one, collapsing the staircase and Voronoi-boundary scallop
-/// into straight segments.
+/// Shortcut runs of cells with straight on-surface segments, keeping the
+/// farthest cell in line of sight from each anchor.
 fn string_pull(plg: &PlannerGraph, cells: &[CellId], tol_cells: i32) -> Vec<CellId> {
     if cells.len() <= 2 {
         return cells.to_vec();
@@ -346,10 +348,9 @@ fn string_pull(plg: &PlannerGraph, cells: &[CellId], tol_cells: i32) -> Vec<Cell
     out
 }
 
-/// True if the straight segment between two surface cells stays on the surface:
-/// every cell column the segment crosses must hold a surface cell whose height
-/// is within `tol_cells` of the segment. Rejects shortcuts that would float over
-/// a gap or cut across a step taller than the tolerance.
+/// True if every column the segment crosses holds a surface cell within
+/// tol_cells of the interpolated segment height. Checks per-column proximity
+/// only, not inter-column step connectivity.
 fn los_on_surface(
     surface_lookup: &SurfaceLookup,
     a: VoxelKey,
@@ -516,9 +517,7 @@ mod tests {
     fn plan_traces_surface_from_pose_to_first_node() {
         let plg = graph_with_nodes(&strip(20), &[(3, 0, 0), (15, 0, 0)]);
         let wp = plan_simple(&plg, (0.2, 0.0, 0.05), (1.7, 0.0, 0.05)).unwrap();
-        // The lead-in follows the surface from the robot's cell through its
-        // region node, so the first waypoint after the start pose is the robot's
-        // own snapped cell, not a straight jump ahead.
+        // First waypoint is the robot's own snapped cell, not a jump ahead.
         let start_cell_pos = surface_point_xyz(2, 0, 0, VOXEL);
         let goal_cell_pos = surface_point_xyz(17, 0, 0, VOXEL);
         assert_eq!(wp[1], start_cell_pos);
@@ -527,9 +526,7 @@ mod tests {
 
     #[test]
     fn plan_lead_in_does_not_backtrack_to_region_node() {
-        // Robot at cell 5 is in node (3)'s region but sits between that node and
-        // the goal-side node (15). The lead-in must head straight toward the goal
-        // along the surface, never looping back to cell 3.
+        // Robot at cell 5 is in node (3)'s region but sits between it and node (15).
         let plg = graph_with_nodes(&strip(20), &[(3, 0, 0), (15, 0, 0)]);
         let wp = plan_simple(&plg, (0.55, 0.0, 0.05), (1.7, 0.0, 0.05)).unwrap();
         let xs: Vec<i32> = wp[1..wp.len() - 1]
@@ -555,9 +552,8 @@ mod tests {
     fn plan_path_segments_stay_on_the_surface() {
         let plg = graph_with_nodes(&strip(20), &[(3, 0, 0), (10, 0, 0), (17, 0, 0)]);
         let wp = plan_simple(&plg, (0.2, 0.0, 0.05), (1.9, 0.0, 0.05)).unwrap();
-        // After smoothing the waypoints are no longer cell-adjacent, but each
-        // must land on a surface cell and each straight segment between
-        // consecutive waypoints must stay on the surface.
+        // Smoothed waypoints are no longer cell-adjacent, but each segment
+        // between them must still stay on the surface.
         let tol = ((0.25f32 / VOXEL).round() as i32).max(1);
         for w in &wp[1..wp.len() - 1] {
             assert!(
@@ -582,9 +578,8 @@ mod tests {
 
     #[test]
     fn string_pull_straightens_open_area() {
-        // A filled rectangle: every cell is surface, so any straight segment is
-        // on-surface. The diagonal corner-to-corner path must collapse to a
-        // near-straight shot instead of the node-graph staircase.
+        // Filled rectangle: every straight segment is on-surface, so the diagonal
+        // path collapses instead of staircasing through the nodes.
         let mut cells: Vec<VoxelKey> = Vec::new();
         for x in 0..10 {
             for y in 0..6 {
@@ -602,9 +597,7 @@ mod tests {
 
     #[test]
     fn plan_enters_on_goalward_node_not_nearest() {
-        // The robot sits past node (2) toward the goal. Node (2) is nearest, but
-        // node (10) is more reachable on a goal-minimizing basis. The entry must
-        // be the goalward node, so the path never visits node (2) behind it.
+        // Robot sits past node (2) toward the goal; entry must skip it for node (10).
         let plg = graph_with_nodes(&strip(20), &[(2, 0, 0), (10, 0, 0)]);
         let wp = plan_simple(&plg, (0.45, 0.0, 0.05), (1.25, 0.0, 0.05)).unwrap();
         let nearest = surface_point_xyz(2, 0, 0, VOXEL);
