@@ -549,7 +549,7 @@ def _process_one_prim(
         vis_path = cache_dir / f"{vis_name}.obj"
         try:
             _write_visual_obj(vis_path, v, t.astype(np.int32))
-            asset_lines.append(_ASSET_LINE.format(name=vis_name, file=str(vis_path)))
+            asset_lines.append(_ASSET_LINE.format(name=vis_name, file=vis_path.name))
             geom_lines.append(_VISUAL_GEOM_LINE.format(name=f"{vis_name}_geom", mesh=vis_name))
             counters["visuals"] = 1
         except Exception:
@@ -588,7 +588,11 @@ def _process_one_prim(
         asset_name = f"{prim.name}_h{j:03d}"
         obj_file = cache_dir / f"{asset_name}.obj"
         _write_hull_obj(obj_file, v_arr, f_arr)
-        asset_lines.append(_ASSET_LINE.format(name=asset_name, file=str(obj_file)))
+        # Reference by basename — the wrapper.xml lives in the same dir, so
+        # MuJoCo's compiler resolves the file via its own compiler-meshdir
+        # (we set that to the wrapper dir below). Keeping it relative is what
+        # makes the cooked package portable across machines.
+        asset_lines.append(_ASSET_LINE.format(name=asset_name, file=obj_file.name))
         geom_lines.append(
             _COL_MESH_LINE.format(
                 name=f"{asset_name}_geom", mesh=asset_name, friction=friction_attr
@@ -1005,11 +1009,34 @@ def _write_wrapper(
     statistic_center: np.ndarray,
     statistic_extent: float,
 ) -> None:
+    """Emit a self-contained wrapper.xml — robot MJCF and mesh assets are
+    bundled into ``wrapper_path.parent`` so the directory can be moved
+    between machines without invalidating any path inside the wrapper.
+
+    Layout written:
+        <wrapper_dir>/
+          wrapper.xml                      <- this file (paths all relative)
+          robot/<robot_mjcf_name>          <- copy of robot MJCF + its sibling
+                                              files (so its own <include>s work)
+          <robot stem files>.STL/.png      <- robot meshes/textures, symlinked
+                                              by default into the wrapper dir
+                                              so the wrapper's compiler-meshdir
+                                              ('.') resolves both robot meshes
+                                              and the cooked scene OBJs.
+          <hashed scene OBJs>              <- written by the bake earlier
+
+    Set DIMOS_PACKAGE_COPY_ASSETS=1 to copy instead of symlink (slower,
+    but produces a tar-portable package without -h dereferencing).
+    """
+    cache_dir = wrapper_path.parent
+    robot_dir = cache_dir / "robot"
+    _bundle_robot_tree(robot_mjcf_path, meshdir, cache_dir, robot_dir)
+
     visual_zfar = max(float(statistic_extent) * 20.0, 10000.0)
     wrapper_xml = _WRAPPER_TEMPLATE.format(
         model_name=f"robot_with_scene_{cache_key}",
-        meshdir=str(meshdir),
-        robot_mjcf_abs=str(robot_mjcf_path),
+        meshdir=".",
+        robot_mjcf_abs=f"robot/{robot_mjcf_path.name}",
         statistic_center=_fmt_vec(statistic_center),
         statistic_extent=f"{float(statistic_extent):.9g}",
         visual_zfar=f"{visual_zfar:.9g}",
@@ -1018,6 +1045,79 @@ def _write_wrapper(
     )
     wrapper_path.write_text(wrapper_xml)
     logger.info(f"_write_wrapper: wrote {wrapper_path}")
+
+
+def _bundle_robot_tree(
+    robot_mjcf_path: Path,
+    meshdir: Path,
+    cache_dir: Path,
+    robot_dir: Path,
+) -> None:
+    """Materialise the robot MJCF + its mesh/texture assets inside cache_dir
+    so the wrapper.xml can reference everything by relative paths.
+
+    Robot MJCF and its sibling files (siblings, not full tree — enough for
+    a typical setup where `<include>` references siblings) are copied into
+    ``robot/``. Mesh/texture files from ``meshdir`` are linked or copied
+    directly into ``cache_dir`` so the wrapper's ``meshdir="."`` resolves
+    both robot meshes and cooked scene OBJs without any meshdir override
+    inside the robot MJCF taking effect (the wrapper's compiler block sits
+    after the include, so MuJoCo's last-compiler-wins rule applies).
+    """
+    copy_assets = os.environ.get("DIMOS_PACKAGE_COPY_ASSETS", "0") == "1"
+
+    # Robot MJCF + sibling include files -> robot/
+    robot_dir.mkdir(parents=True, exist_ok=True)
+    _copy_or_link(robot_mjcf_path, robot_dir / robot_mjcf_path.name, copy=True)
+    for sibling in robot_mjcf_path.parent.iterdir():
+        if sibling == robot_mjcf_path or not sibling.is_file():
+            continue
+        if sibling.suffix.lower() in {".xml", ".mjcf"}:
+            _copy_or_link(sibling, robot_dir / sibling.name, copy=True)
+
+    # Robot mesh/texture assets -> wrapper dir (siblings of cooked OBJs)
+    if meshdir.exists() and meshdir.is_dir():
+        for entry in meshdir.iterdir():
+            if not entry.is_file():
+                continue
+            if entry.suffix.lower() in {
+                ".stl",
+                ".obj",
+                ".ply",
+                ".msh",
+                ".png",
+                ".jpg",
+                ".jpeg",
+                ".bmp",
+                ".tga",
+            }:
+                target = cache_dir / entry.name
+                if target.exists() or target.is_symlink():
+                    continue  # don't clobber cooked OBJs
+                _copy_or_link(entry, target, copy=copy_assets)
+
+
+def _copy_or_link(src: Path, dst: Path, *, copy: bool) -> None:
+    """Materialise src at dst, either as a symlink (default) or a copy.
+
+    Existing dst is left alone — caller is responsible for invalidation.
+    """
+    if dst.exists() or dst.is_symlink():
+        return
+    src = src.resolve()
+    if copy:
+        import shutil
+
+        shutil.copy2(src, dst)
+    else:
+        try:
+            dst.symlink_to(src)
+        except OSError:
+            # Filesystem doesn't support symlinks (Windows without dev mode,
+            # some network mounts) — fall back to copy.
+            import shutil
+
+            shutil.copy2(src, dst)
 
 
 def cli_main() -> None:

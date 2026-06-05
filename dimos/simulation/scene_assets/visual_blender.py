@@ -211,7 +211,10 @@ def cook_plan_visual_assets(
     static_visual_source = package_dir / "browser" / "static_visual_source.glb"
     plan_manifest = package_dir / "browser" / "visual_plan.json"
     plan_json = _blender_plan_json(plan, static_visual_source)
-    expected_paths = [static_visual_source, *(entity.visual_path for entity in plan.entities)]
+    expected_paths = [
+        static_visual_source,
+        *(entity.visual_path for entity in plan.entities if entity.visual_path is not None),
+    ]
     if (
         expected_paths
         and all(path.exists() for path in expected_paths)
@@ -272,7 +275,10 @@ def _blender_plan_json(plan: SceneCookPlan, static_visual_source: Path) -> dict[
                 "visual_path": str(entity.visual_path),
                 "remove_from_static": entity.spec.remove_from_static,
             }
+            # Synthetic entities have no source mesh to extract; skip them
+            # entirely so Blender doesn't try to match an empty pattern set.
             for entity in plan.entities
+            if entity.visual_path is not None
         ],
     }
 

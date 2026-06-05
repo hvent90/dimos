@@ -23,7 +23,7 @@ import pytest
 from dimos.simulation.scene_assets import plan as plan_module
 from dimos.simulation.scene_assets.mesh_scene import SceneMeshAlignment, ScenePrimMesh
 from dimos.simulation.scene_assets.sidecar import SceneCookSidecar
-from dimos.simulation.scene_assets.spec import ARTIFACT_FRAMES, load_scene_package
+from dimos.simulation.scene_assets.spec import ARTIFACT_FRAMES, ScenePackage, load_scene_package
 
 
 def _metadata(tmp_path: Path) -> dict[str, object]:
@@ -82,6 +82,44 @@ def test_load_scene_package_accepts_expected_artifact_frames(tmp_path: Path) -> 
     assert package.browser_collision_path == tmp_path / "collision.glb"
     assert package.objects_path == tmp_path / "objects.json"
     assert package.mujoco_model_path == tmp_path / "compiled.mjb"
+
+
+def test_scene_package_metadata_uses_package_relative_paths(tmp_path: Path) -> None:
+    package = ScenePackage(
+        package_dir=tmp_path,
+        source_path=tmp_path / "source.glb",
+        alignment=SceneMeshAlignment(),
+        visual_path=tmp_path / "browser" / "visual.glb",
+        browser_collision_path=tmp_path / "browser" / "collision.glb",
+        objects_path=tmp_path / "browser" / "objects.json",
+        mujoco_model_path=tmp_path / "mujoco" / "abc123" / "compiled.mjb",
+        mujoco_wrapper_path=tmp_path / "mujoco" / "abc123" / "wrapper.xml",
+        entities=[
+            {
+                "id": "chair_001",
+                "visual_path": str(tmp_path / "entities" / "chair_001" / "visual.glb"),
+            }
+        ],
+    )
+
+    metadata_path = package.write_metadata()
+    raw = json.loads(metadata_path.read_text())
+
+    assert raw["package_dir"] == "."
+    assert raw["artifacts"]["browser_visual"] == "browser/visual.glb"
+    assert raw["artifacts"]["browser_collision"] == "browser/collision.glb"
+    assert raw["artifacts"]["objects"] == "browser/objects.json"
+    assert raw["artifacts"]["mujoco_model"] == "mujoco/abc123/compiled.mjb"
+    assert raw["artifacts"]["mujoco_wrapper"] == "mujoco/abc123/wrapper.xml"
+    assert raw["entities"][0]["visual_path"] == "entities/chair_001/visual.glb"
+
+    loaded = load_scene_package(metadata_path)
+    assert loaded.package_dir == tmp_path
+    assert loaded.visual_path == tmp_path / "browser" / "visual.glb"
+    assert loaded.mujoco_model_path == tmp_path / "mujoco" / "abc123" / "compiled.mjb"
+    assert loaded.entities[0]["visual_path"] == str(
+        tmp_path / "entities" / "chair_001" / "visual.glb"
+    )
 
 
 def test_load_scene_package_tolerates_missing_objects_sidecar(tmp_path: Path) -> None:
@@ -220,3 +258,42 @@ def test_scene_cook_plan_maps_collision_prims_to_blender_visual_nodes(
     assert plan.collision_spec.resolve("Chair_a1b2c3")["type"] == "skip"
     assert plan.collision_spec.resolve("Chair.016_a1b2c3")["type"] == "skip"
     assert plan.collision_spec.resolve("Chair.001_a1b2c3")["type"] == "auto"
+
+
+def test_synthetic_entity_uses_pose_and_extents(tmp_path: Path) -> None:
+    sidecar = SceneCookSidecar.from_dict(
+        {
+            "interactables": [
+                {
+                    "id": "manip_cube",
+                    "pose": {"x": 0.0, "y": 0.75, "z": 0.69},
+                    "kind": "dynamic",
+                    "mass": 0.15,
+                    "physics": {"shape": "box", "extents": [0.08, 0.08, 0.08]},
+                    "visual": {"rgba": [0.85, 0.20, 0.20, 1.0]},
+                    "tags": ["manipulation"],
+                },
+            ]
+        }
+    )
+    plan = plan_module.build_scene_cook_plan(
+        tmp_path / "office.glb",
+        sidecar=sidecar,
+        alignment=SceneMeshAlignment(),
+        output_dir=tmp_path,
+    )
+
+    entity = plan.entities[0]
+    assert entity.spec.is_synthetic
+    assert entity.matched_prim_paths == ()
+    assert entity.visual_path is None
+    assert entity.center == (0.0, 0.75, 0.69)
+    assert entity.descriptor["shape_hint"] == "box"
+    assert entity.descriptor["extents"] == [0.08, 0.08, 0.08]
+    assert entity.descriptor["rgba"] == [0.85, 0.20, 0.20, 1.0]
+    assert entity.descriptor["mesh_ref"] == ""
+
+
+def test_interactable_requires_prims_or_pose() -> None:
+    with pytest.raises(ValueError, match="source_prim_paths.*or pose"):
+        SceneCookSidecar.from_dict({"interactables": [{"id": "ghost"}]})

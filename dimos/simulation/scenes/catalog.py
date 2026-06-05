@@ -39,8 +39,6 @@ _ALIASES = {
     "mall": "mall-babylon-nolights",
     "mall_babylon_nolights": "mall-babylon-nolights",
     "mall-babylon-nolights": "mall-babylon-nolights",
-    "mall-proxy": "mall-proxy",
-    "mall_proxy": "mall-proxy",
     "lowpoly": "lowpoly-tdm",
     "lowpoly-tdm": "lowpoly-tdm",
     "lowpoly_tdm": "lowpoly-tdm",
@@ -51,7 +49,6 @@ _PACKAGE_DIRS = {
     "dimos-office-splat": "dimos_office_splat",
     "street-lite": "street_lite",
     "mall-babylon-nolights": "mall_babylon_nolights",
-    "mall-proxy": "mall_proxy",
     "lowpoly-tdm": "lowpoly_tdm",
 }
 

@@ -42,10 +42,20 @@ _COOK_SIDECAR_SUFFIXES = (".cook.json", ".scene.json")
 
 @dataclass(frozen=True)
 class InteractableSpec:
-    """One hand-authored runtime entity extracted from a source scene."""
+    """One hand-authored runtime entity.
+
+    Two flavours:
+      * ``source_prim_paths`` set -> matched against scene prims, geometry
+        extracted from the source mesh (the chairs flow).
+      * ``source_prim_paths`` empty + ``pose`` set -> synthetic entity
+        with no scene-mesh source. Geometry comes from ``physics.shape``
+        + ``physics.extents``; pose comes from the spec directly. Used for
+        manip rigs, test cubes, anything not already in the source asset.
+    """
 
     id: str
-    source_prim_paths: tuple[str, ...]
+    source_prim_paths: tuple[str, ...] = ()
+    pose: dict[str, float] | None = None
     remove_from_static: bool = True
     spawn: CookEntitySpawn = "initial"
     kind: CookEntityKind = "dynamic"
@@ -53,21 +63,25 @@ class InteractableSpec:
     tags: tuple[str, ...] = ()
     physics: dict[str, Any] = field(default_factory=dict)
     visual: dict[str, Any] = field(default_factory=dict)
-    sensor: dict[str, Any] = field(default_factory=dict)
 
     @classmethod
     def from_dict(cls, raw: dict[str, Any]) -> InteractableSpec:
         prims = raw.get("source_prim_paths", raw.get("prim_paths", ()))
         if isinstance(prims, str):
             prims = (prims,)
-        if not prims:
-            raise ValueError(f"interactable {raw.get('id')!r} has no source_prim_paths")
+        pose = raw.get("pose")
+        if not prims and pose is None:
+            raise ValueError(
+                f"interactable {raw.get('id')!r}: needs either source_prim_paths "
+                f"(extract from scene) or pose (synthetic entity)"
+            )
         tags = raw.get("tags", ())
         if isinstance(tags, str):
             tags = (tags,)
         return cls(
             id=str(raw["id"]),
             source_prim_paths=tuple(str(pattern) for pattern in prims),
+            pose=dict(pose) if pose is not None else None,
             remove_from_static=bool(raw.get("remove_from_static", True)),
             spawn=raw.get("spawn", "initial"),
             kind=raw.get("kind", "dynamic"),
@@ -75,8 +89,11 @@ class InteractableSpec:
             tags=tuple(str(tag) for tag in tags),
             physics=dict(raw.get("physics", {})),
             visual=dict(raw.get("visual", {})),
-            sensor=dict(raw.get("sensor", {})),
         )
+
+    @property
+    def is_synthetic(self) -> bool:
+        return not self.source_prim_paths and self.pose is not None
 
     def to_json_dict(self) -> dict[str, Any]:
         raw = asdict(self)

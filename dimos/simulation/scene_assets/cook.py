@@ -49,7 +49,7 @@ logger = setup_logger()
 
 SCENE_PACKAGE_CACHE_DIR = Path.home() / ".cache" / "dimos" / "scene_packages"
 _CACHE_KEY_LEN = 12
-_COOK_VERSION = 2
+_COOK_VERSION = 3
 
 
 def cook_scene_package(
@@ -90,6 +90,7 @@ def cook_scene_package(
         else SCENE_PACKAGE_CACHE_DIR / _cache_key(cook_spec, robot_mjcf_path, meshdir, sidecar)
     )
     browser_dir = package_dir / "browser"
+    mujoco_dir = package_dir / "mujoco"
     package_dir.mkdir(parents=True, exist_ok=True)
 
     stats: dict[str, Any] = {
@@ -118,7 +119,12 @@ def cook_scene_package(
         }
 
     visual_source = source
-    if plan.has_entities and visual.enabled:
+    # Only invoke Blender when at least one entity actually extracts from
+    # the source mesh; pure-synthetic sidecars (manip rigs) don't need it.
+    needs_blender = visual.enabled and any(
+        entity.visual_path is not None for entity in plan.entities
+    )
+    if needs_blender:
         visual_source = cook_plan_visual_assets(
             source,
             package_dir,
@@ -159,6 +165,7 @@ def cook_scene_package(
             robot_mjcf_path=robot_mjcf_path,
             alignment=align,
             meshdir=meshdir,
+            cache_root=mujoco_dir,
             collision_spec=plan.collision_spec,
             include_visual_mesh=mujoco.include_visual_mesh,
             rebake=rebake,

@@ -51,8 +51,9 @@ class EntityCookPlan:
     aabb_min: tuple[float, float, float]
     aabb_max: tuple[float, float, float]
     center: tuple[float, float, float]
+    initial_quat: tuple[float, float, float, float]
     descriptor: dict[str, Any]
-    visual_path: Path
+    visual_path: Path | None
 
     def to_metadata(self) -> dict[str, Any]:
         return {
@@ -63,6 +64,7 @@ class EntityCookPlan:
             "visual_node_patterns": list(self.visual_node_patterns),
             "remove_from_static": self.spec.remove_from_static,
             "spawn": self.spec.spawn,
+            "synthetic": self.spec.is_synthetic,
             "aabb": {
                 "min": list(self.aabb_min),
                 "max": list(self.aabb_max),
@@ -71,16 +73,15 @@ class EntityCookPlan:
                 "x": self.center[0],
                 "y": self.center[1],
                 "z": self.center[2],
-                "qw": 1.0,
-                "qx": 0.0,
-                "qy": 0.0,
-                "qz": 0.0,
+                "qw": self.initial_quat[0],
+                "qx": self.initial_quat[1],
+                "qy": self.initial_quat[2],
+                "qz": self.initial_quat[3],
             },
-            "visual_path": str(self.visual_path),
+            "visual_path": str(self.visual_path) if self.visual_path else None,
             "descriptor": self.descriptor,
             "physics": self.spec.physics,
             "visual": self.spec.visual,
-            "sensor": self.spec.sensor,
         }
 
     def to_json_dict(self) -> dict[str, Any]:
@@ -91,8 +92,9 @@ class EntityCookPlan:
             "visual_node_patterns": list(self.visual_node_patterns),
             "aabb": {"min": list(self.aabb_min), "max": list(self.aabb_max)},
             "center": list(self.center),
+            "synthetic": self.spec.is_synthetic,
             "descriptor": self.descriptor,
-            "visual_path": str(self.visual_path),
+            "visual_path": str(self.visual_path) if self.visual_path else None,
             "remove_from_static": self.spec.remove_from_static,
         }
 
@@ -149,10 +151,16 @@ def build_scene_cook_plan(
             stats={"source_prims": 0, "entities": 0},
         )
 
-    prims = load_scene_prims(source, alignment=alignment)
     entities_dir = Path(output_dir).expanduser().resolve() / "entities"
+    needs_prims = any(item.source_prim_paths for item in sidecar.interactables)
+    prims = load_scene_prims(source, alignment=alignment) if needs_prims else []
     entities = tuple(
-        _build_entity_plan(item, prims, entities_dir) for item in sidecar.interactables
+        (
+            _build_synthetic_entity_plan(item, entities_dir)
+            if item.is_synthetic
+            else _build_matched_entity_plan(item, prims, entities_dir)
+        )
+        for item in sidecar.interactables
     )
     effective_collision = _collision_spec_with_entity_skips(base_collision, entities)
     return SceneCookPlan(
@@ -165,7 +173,7 @@ def build_scene_cook_plan(
     )
 
 
-def _build_entity_plan(
+def _build_matched_entity_plan(
     spec: InteractableSpec,
     prims: list[ScenePrimMesh],
     entities_dir: Path,
@@ -186,25 +194,8 @@ def _build_entity_plan(
     safe_id = _safe_entity_id(spec.id)
     visual_path = entities_dir / safe_id / "visual.glb"
 
-    shape_hint = str(spec.physics.get("shape", "box"))
-    shape_extents = spec.physics.get("extents")
-    if shape_extents is None and shape_hint == "box":
-        shape_extents = extents.tolist()
-    elif shape_extents is None and shape_hint == "sphere":
-        shape_extents = [float(max(extents) * 0.5)]
-    elif shape_extents is None and shape_hint == "cylinder":
-        shape_extents = [float(max(extents[0], extents[1]) * 0.5), float(extents[2])]
-    elif shape_extents is None:
-        shape_extents = []
-
-    descriptor = {
-        "entity_id": spec.id,
-        "kind": spec.kind,
-        "mesh_ref": f"entities/{safe_id}/visual.glb",
-        "shape_hint": shape_hint,
-        "extents": [float(value) for value in shape_extents],
-        "mass": float(spec.mass),
-    }
+    shape_hint, shape_extents = _resolve_shape(spec, extents)
+    descriptor = _make_descriptor(spec, shape_hint, shape_extents, visual_path)
 
     return EntityCookPlan(
         spec=spec,
@@ -214,9 +205,104 @@ def _build_entity_plan(
         aabb_min=tuple(float(value) for value in aabb_min_np),
         aabb_max=tuple(float(value) for value in aabb_max_np),
         center=tuple(float(value) for value in center_np),
+        initial_quat=(1.0, 0.0, 0.0, 0.0),
         descriptor=descriptor,
         visual_path=visual_path,
     )
+
+
+def _build_synthetic_entity_plan(
+    spec: InteractableSpec,
+    entities_dir: Path,
+) -> EntityCookPlan:
+    """Synthetic entity: no source-prim extraction, primitive geometry,
+    pose from the spec.  Used for manip rigs, test cubes, props you want
+    in the scene that aren't in the asset."""
+    pose = spec.pose or {}
+    center = (
+        float(pose.get("x", 0.0)),
+        float(pose.get("y", 0.0)),
+        float(pose.get("z", 0.0)),
+    )
+    quat = (
+        float(pose.get("qw", 1.0)),
+        float(pose.get("qx", 0.0)),
+        float(pose.get("qy", 0.0)),
+        float(pose.get("qz", 0.0)),
+    )
+    extents_raw = spec.physics.get("extents")
+    if not extents_raw:
+        raise ValueError(
+            f"synthetic interactable {spec.id!r}: physics.extents required "
+            f"(no source mesh to derive bounds from)"
+        )
+    extents_np = np.asarray([float(v) for v in extents_raw], dtype=float)
+    half = extents_np / 2.0 if len(extents_np) == 3 else extents_np
+    aabb_half = np.zeros(3, dtype=float)
+    aabb_half[: len(half)] = half[:3] if len(half) >= 3 else half
+    aabb_min = tuple(c - h for c, h in zip(center, aabb_half, strict=True))
+    aabb_max = tuple(c + h for c, h in zip(center, aabb_half, strict=True))
+
+    shape_hint, shape_extents = _resolve_shape(spec, extents_np)
+    safe_id = _safe_entity_id(spec.id)
+    descriptor = _make_descriptor(spec, shape_hint, shape_extents, visual_path=None)
+
+    return EntityCookPlan(
+        spec=spec,
+        safe_id=safe_id,
+        matched_prim_paths=(),
+        visual_node_patterns=(),
+        aabb_min=aabb_min,
+        aabb_max=aabb_max,
+        center=center,
+        initial_quat=quat,
+        descriptor=descriptor,
+        visual_path=None,
+    )
+
+
+def _resolve_shape(
+    spec: InteractableSpec,
+    extents_np: np.ndarray,
+) -> tuple[str, list[float]]:
+    shape_hint = str(spec.physics.get("shape", "box"))
+    shape_extents = spec.physics.get("extents")
+    if shape_extents is not None:
+        return shape_hint, [float(v) for v in shape_extents]
+    if shape_hint == "box":
+        return shape_hint, [float(v) for v in extents_np[:3]]
+    if shape_hint == "sphere":
+        return shape_hint, [float(max(extents_np) * 0.5)]
+    if shape_hint == "cylinder":
+        return shape_hint, [
+            float(max(extents_np[0], extents_np[1]) * 0.5),
+            float(extents_np[2] if len(extents_np) >= 3 else extents_np[-1]),
+        ]
+    return shape_hint, []
+
+
+def _make_descriptor(
+    spec: InteractableSpec,
+    shape_hint: str,
+    shape_extents: list[float],
+    visual_path: Path | None,
+) -> dict[str, Any]:
+    descriptor: dict[str, Any] = {
+        "entity_id": spec.id,
+        "kind": spec.kind,
+        "shape_hint": shape_hint,
+        "extents": [float(value) for value in shape_extents],
+        "mass": float(spec.mass),
+    }
+    if visual_path is not None:
+        safe_id = _safe_entity_id(spec.id)
+        descriptor["mesh_ref"] = f"entities/{safe_id}/visual.glb"
+    else:
+        descriptor["mesh_ref"] = ""
+    rgba = spec.visual.get("rgba") if spec.visual else None
+    if isinstance(rgba, list | tuple) and len(rgba) == 4:
+        descriptor["rgba"] = [float(v) for v in rgba]
+    return descriptor
 
 
 def _visual_node_patterns(prims: list[ScenePrimMesh]) -> tuple[str, ...]:

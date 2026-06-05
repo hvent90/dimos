@@ -20,6 +20,7 @@ the heavy bake themselves.
 
 from __future__ import annotations
 
+from copy import deepcopy
 from dataclasses import asdict, dataclass, field
 import json
 from pathlib import Path
@@ -97,23 +98,24 @@ class ScenePackage:
     stats: dict[str, Any] = field(default_factory=dict)
 
     def to_json_dict(self) -> dict[str, Any]:
+        package_dir = self.package_dir.expanduser().resolve()
+
         return {
             "source_path": str(self.source_path),
-            "package_dir": str(self.package_dir),
+            "package_dir": ".",
             "alignment": asdict(self.alignment),
             "artifact_frames": ARTIFACT_FRAMES,
             "artifacts": {
-                "browser_visual": str(self.visual_path) if self.visual_path else None,
-                "browser_collision": (
-                    str(self.browser_collision_path) if self.browser_collision_path else None
+                "browser_visual": _serialize_package_path(self.visual_path, package_dir),
+                "browser_collision": _serialize_package_path(
+                    self.browser_collision_path,
+                    package_dir,
                 ),
-                "objects": str(self.objects_path) if self.objects_path else None,
-                "mujoco_model": str(self.mujoco_model_path) if self.mujoco_model_path else None,
-                "mujoco_wrapper": (
-                    str(self.mujoco_wrapper_path) if self.mujoco_wrapper_path else None
-                ),
+                "objects": _serialize_package_path(self.objects_path, package_dir),
+                "mujoco_model": _serialize_package_path(self.mujoco_model_path, package_dir),
+                "mujoco_wrapper": _serialize_package_path(self.mujoco_wrapper_path, package_dir),
             },
-            "entities": self.entities,
+            "entities": _serialize_entity_paths(self.entities, package_dir),
             "stats": self.stats,
         }
 
@@ -131,23 +133,20 @@ def load_scene_package(path: str | Path) -> ScenePackage:
     _validate_artifact_frames(raw, metadata_path)
     artifacts = raw.get("artifacts", {})
     align = SceneMeshAlignment(**raw["alignment"])
+    package_dir = _resolve_package_dir(raw.get("package_dir"), metadata_path)
     return ScenePackage(
-        package_dir=Path(raw["package_dir"]),
+        package_dir=package_dir,
         source_path=Path(raw["source_path"]),
         alignment=align,
-        visual_path=Path(artifacts["browser_visual"]) if artifacts.get("browser_visual") else None,
+        visual_path=_resolve_package_path(artifacts.get("browser_visual"), package_dir),
         browser_collision_path=(
-            Path(artifacts["browser_collision"]) if artifacts.get("browser_collision") else None
+            _resolve_package_path(artifacts.get("browser_collision"), package_dir)
         ),
-        objects_path=Path(artifacts["objects"]) if artifacts.get("objects") else None,
-        mujoco_model_path=Path(artifacts["mujoco_model"])
-        if artifacts.get("mujoco_model")
-        else None,
-        mujoco_wrapper_path=(
-            Path(artifacts["mujoco_wrapper"]) if artifacts.get("mujoco_wrapper") else None
-        ),
+        objects_path=_resolve_package_path(artifacts.get("objects"), package_dir),
+        mujoco_model_path=_resolve_package_path(artifacts.get("mujoco_model"), package_dir),
+        mujoco_wrapper_path=_resolve_package_path(artifacts.get("mujoco_wrapper"), package_dir),
         metadata_path=metadata_path,
-        entities=raw.get("entities", []),
+        entities=_resolve_entity_paths(raw.get("entities", []), package_dir),
         stats=raw.get("stats", {}),
     )
 
@@ -173,6 +172,81 @@ def _validate_artifact_frames(raw: dict[str, Any], metadata_path: Path) -> None:
                 f"{frame_name}={frames.get(frame_name)!r}, "
                 f"expected {ARTIFACT_FRAMES[frame_name]!r}. Recook the scene package."
             )
+
+
+def _serialize_package_path(path: Path | None, package_dir: Path) -> str | None:
+    if path is None:
+        return None
+    resolved = path.expanduser().resolve()
+    try:
+        return resolved.relative_to(package_dir).as_posix()
+    except ValueError:
+        return str(resolved)
+
+
+def _resolve_package_dir(raw: str | None, metadata_path: Path) -> Path:
+    if raw is None:
+        return metadata_path.parent
+    path = Path(raw).expanduser()
+    if path.is_absolute():
+        return path
+    return (metadata_path.parent / path).resolve()
+
+
+def _resolve_package_path(raw: str | None, package_dir: Path) -> Path | None:
+    if not raw:
+        return None
+    path = Path(raw).expanduser()
+    if path.is_absolute():
+        return path
+    return (package_dir / path).resolve()
+
+
+_ENTITY_PATH_KEYS = ("visual_path", "collision_path", "mesh_path")
+
+
+def _serialize_entity_paths(
+    entities: list[dict[str, Any]], package_dir: Path
+) -> list[dict[str, Any]]:
+    out = deepcopy(entities)
+    for entity in out:
+        _rewrite_entity_paths(entity, package_dir, serialize=True)
+    return out
+
+
+def _resolve_entity_paths(
+    entities: list[dict[str, Any]], package_dir: Path
+) -> list[dict[str, Any]]:
+    out = deepcopy(entities)
+    for entity in out:
+        _rewrite_entity_paths(entity, package_dir, serialize=False)
+    return out
+
+
+def _rewrite_entity_paths(
+    entity: dict[str, Any],
+    package_dir: Path,
+    *,
+    serialize: bool,
+) -> None:
+    def rewrite(value: Any) -> Any:
+        if not isinstance(value, str):
+            return value
+        path = Path(value).expanduser()
+        if serialize:
+            return _serialize_package_path(path, package_dir)
+        if path.is_absolute():
+            return str(path)
+        return str((package_dir / path).resolve())
+
+    for key in _ENTITY_PATH_KEYS:
+        if key in entity:
+            entity[key] = rewrite(entity[key])
+
+    artifacts = entity.get("artifacts")
+    if isinstance(artifacts, dict):
+        for key, value in list(artifacts.items()):
+            artifacts[key] = rewrite(value)
 
 
 __all__ = [
