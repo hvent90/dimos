@@ -93,13 +93,13 @@ class Go2TfHackRecorder(FastLio2Recorder):
                 world_to_base = self._world_to_base_from_fastlio()
                 if world_to_base is not None:
                     pose = world_to_base.to_pose()
-            elif name == "color_image":
+            elif name in ("color_image", "go2_color_image"):
                 # anchor images to world frame as defined by fastlio odom
                 world_to_base = self._world_to_base_from_fastlio()
                 if world_to_base is not None:
                     pose = (world_to_base + BASE_TO_CAMERA_OPTICAL).to_pose()
-            elif "odom" in name:
-                pass
+            elif name == "go2_odom" or name == "odom":
+                pose = msg
             else:
                 if name not in self._warning_names:
                     self._warning_names.add(name)
