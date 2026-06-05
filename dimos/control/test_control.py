@@ -31,6 +31,10 @@ from dimos.control.task import (
     JointStateSnapshot,
     ResourceClaim,
 )
+from dimos.control.tasks.current_position_hold_task.current_position_hold_task import (
+    CurrentPositionHoldTask,
+    CurrentPositionHoldTaskConfig,
+)
 from dimos.control.tasks.trajectory_task.trajectory_task import (
     JointTrajectoryTask,
     JointTrajectoryTaskConfig,
@@ -517,3 +521,57 @@ class TestIntegration:
 
         assert traj_task.get_state() == TrajectoryState.COMPLETED
         assert mock_adapter.write_joint_positions.call_count > 0
+
+
+class TestCurrentPositionHoldTask:
+    def test_initial_state(self) -> None:
+        task = CurrentPositionHoldTask(
+            name="hold",
+            config=CurrentPositionHoldTaskConfig(
+                joint_names=["arm/joint1", "arm/joint2"],
+                priority=5,
+            ),
+        )
+        assert not task.is_active()
+        claim = task.claim()
+        assert claim.joints == frozenset({"arm/joint1", "arm/joint2"})
+        assert claim.priority == 5
+        assert claim.mode == ControlMode.SERVO_POSITION
+
+    def test_outputs_current_positions_when_started(self) -> None:
+        task = CurrentPositionHoldTask(
+            name="hold",
+            config=CurrentPositionHoldTaskConfig(
+                joint_names=["arm/joint1", "arm/joint2"],
+                priority=5,
+            ),
+        )
+        task.start()
+        state = CoordinatorState(
+            joints=JointStateSnapshot(
+                joint_positions={"arm/joint1": 0.1, "arm/joint2": -0.2},
+            ),
+            t_now=1.0,
+            dt=0.01,
+        )
+        output = task.compute(state)
+        assert output is not None
+        assert output.mode == ControlMode.SERVO_POSITION
+        assert output.joint_names == ["arm/joint1", "arm/joint2"]
+        assert output.positions == pytest.approx([0.1, -0.2])
+
+    def test_skips_output_until_all_positions_exist(self) -> None:
+        task = CurrentPositionHoldTask(
+            name="hold",
+            config=CurrentPositionHoldTaskConfig(
+                joint_names=["arm/joint1", "arm/joint2"],
+                priority=5,
+            ),
+        )
+        task.start()
+        state = CoordinatorState(
+            joints=JointStateSnapshot(joint_positions={"arm/joint1": 0.1}),
+            t_now=1.0,
+            dt=0.01,
+        )
+        assert task.compute(state) is None

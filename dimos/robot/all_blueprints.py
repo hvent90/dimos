@@ -21,6 +21,8 @@ all_blueprints = {
     "coordinator-cartesian-ik-mock": "dimos.control.blueprints.teleop:coordinator_cartesian_ik_mock",
     "coordinator-cartesian-ik-piper": "dimos.control.blueprints.teleop:coordinator_cartesian_ik_piper",
     "coordinator-combined-xarm6": "dimos.control.blueprints.teleop:coordinator_combined_xarm6",
+    "coordinator-dm-motor-openarm": "dimos.robot.manipulators.openarm.blueprints:coordinator_dm_motor_openarm",
+    "coordinator-dm-motor-openarm-hold-test": "dimos.robot.manipulators.openarm.blueprints:coordinator_dm_motor_openarm_hold_test",
     "coordinator-dual-mock": "dimos.control.blueprints.dual:coordinator_dual_mock",
     "coordinator-dual-xarm": "dimos.control.blueprints.dual:coordinator_dual_xarm",
     "coordinator-flowbase": "dimos.control.blueprints.mobile:coordinator_flowbase",
