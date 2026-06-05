@@ -36,12 +36,9 @@ from dimos.robot.unitree.go2.wholebody_connection import Go2WholeBodyConnection
 _go2_joints = make_quadruped_joints("go2")
 
 # Per-joint PD gains, applied by ConnectedWholeBody when converting
-# position commands → MotorCommand. kp=80 / kd=2 has enough torque
-# headroom to break static friction at sit→stand without overshoot at
-# steady state. Tune lower (40/3) for gentler holds, higher (120+) for
-# carrying payloads or aggressive trajectories.
-_KP = (80.0,) * 12
-_KD = (2.0,) * 12
+# position commands → MotorCommand
+_KP = (25.0,) * 12
+_KD = (0.5,) * 12
 
 # ROBOT_INTERFACE pins cyclonedds to a NIC; required on multi-NIC hosts.
 unitree_go2_wholebody_coordinator = (
