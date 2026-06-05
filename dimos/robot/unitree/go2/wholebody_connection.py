@@ -72,6 +72,11 @@ _MOTOR_MODE_DISABLE: int = 0x00
 
 _FIRST_LOWSTATE_TIMEOUT_S: float = 3.0
 
+# MotionSwitcher release loop bounds
+_MSC_RPC_TIMEOUT_S: float = 5.0
+_SPORT_RELEASE_DEADLINE_S: float = 30.0
+_SPORT_RELEASE_POLL_S: float = 1.0
+
 _dds_initialized: bool = False
 
 GO2_JOINT_NAMES: list[str] = make_quadruped_joints("go2")
@@ -377,7 +382,7 @@ class Go2WholeBodyConnection(Module):
         )
 
         msc = MotionSwitcherClient()
-        msc.SetTimeout(5.0)
+        msc.SetTimeout(_MSC_RPC_TIMEOUT_S)
         msc.Init()
 
         _status, result = msc.CheckMode()
@@ -385,10 +390,16 @@ class Go2WholeBodyConnection(Module):
             logger.info("Sport mode already released — skipping ReleaseMode")
             return
 
+        deadline = time.time() + _SPORT_RELEASE_DEADLINE_S
         while result and result.get("name"):
+            if time.time() > deadline:
+                raise RuntimeError(
+                    f"MotionSwitcher.ReleaseMode did not clear active controller "
+                    f"{result.get('name')!r} within {_SPORT_RELEASE_DEADLINE_S:.0f}s "
+                )
             msc.ReleaseMode()
             _status, result = msc.CheckMode()
-            time.sleep(1)
+            time.sleep(_SPORT_RELEASE_POLL_S)
 
         logger.info("Sport mode released — low-level control active")
 
