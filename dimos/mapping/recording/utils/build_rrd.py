@@ -37,6 +37,7 @@ import rerun as rr
 import rerun.blueprint as rrb
 from scipy.spatial.transform import Rotation
 
+from dimos.mapping.recording.utils import stream_names
 from dimos.memory2.store.sqlite import SqliteStore
 from dimos.msgs.geometry_msgs.PoseStamped import PoseStamped
 from dimos.msgs.sensor_msgs.Image import Image
@@ -176,10 +177,9 @@ def _log_odom_frames(db_path, stride=5):
     """A moving XYZ basis-vector triad per odom stream (Transform3D over time +
     a static axis triad). Doubles as the eye's tracking target."""
     for stream, name in [
-        ("gtsam_odom", "gtsam"),
-        ("go2_odom", "go2"),
-        ("fastlio_odometry", "fastlio"),
-        ("odom", "odom"),
+        (stream_names.GTSAM_ODOM, "gtsam"),
+        (stream_names.FASTLIO_ODOM, "fastlio"),
+        (stream_names.ODOM, "odom"),  # Go2 onboard leg odometry
     ]:
         try:
             conn = sqlite3.connect(db_path)
@@ -245,11 +245,15 @@ def _log_apriltags(store, db_path, cam_xform, intrinsics, resolution, max_views_
     the detection cloud + a labeled marker, and for a sample of recognitions:
     XYZ basis axes at the perceived tag pose and the robot's-eye camera image on
     a pinhole frustum at the camera pose (3D only — see the blueprint)."""
-    if "april_tags" not in store.list_streams():
+    if stream_names.APRIL_TAGS not in store.list_streams():
         return
     print("   rrd: placing april_tags in 3D ...", flush=True)
     connection = sqlite3.connect(db_path)
-    traj_stream = "gtsam_odom" if _has_rows(connection, "gtsam_odom") else "fastlio_odometry"
+    traj_stream = (
+        stream_names.GTSAM_ODOM
+        if _has_rows(connection, stream_names.GTSAM_ODOM)
+        else stream_names.FASTLIO_ODOM
+    )
     pose_rows = connection.execute(
         f"SELECT ts,pose_x,pose_y,pose_z,pose_qx,pose_qy,pose_qz,pose_qw "
         f'FROM "{traj_stream}" WHERE pose_qw IS NOT NULL ORDER BY ts'
@@ -266,7 +270,7 @@ def _log_apriltags(store, db_path, cam_xform, intrinsics, resolution, max_views_
         return _mat7(traj_poses[min(max(index, 0), len(traj_timestamps) - 1)]) @ cam_xform
 
     detections_by_marker: dict[int, dict] = {}
-    for detection_obs in store.stream("april_tags", PoseStamped):
+    for detection_obs in store.stream(stream_names.APRIL_TAGS, PoseStamped):
         marker_id = (detection_obs.tags or {}).get("marker_id")
         if marker_id is None or detection_obs.pose is None:
             continue
@@ -328,10 +332,10 @@ def _log_apriltags(store, db_path, cam_xform, intrinsics, resolution, max_views_
 def _log_cam_frustums(store, camera_targets, intrinsics, resolution):
     """Place the robot's-eye color image on a pinhole frustum at the camera pose
     for each (entity, T_world_optical, ts) target — rendered only in 3D."""
-    if not camera_targets or "color_image" not in store.list_streams():
+    if not camera_targets or stream_names.COLOR_IMAGE not in store.list_streams():
         return
     nearest = [(1e18, None) for _ in camera_targets]  # (time delta, image obs) per target
-    for image_obs in store.stream("color_image", Image):
+    for image_obs in store.stream(stream_names.COLOR_IMAGE, Image):
         for target_index, (_entity, _pose, target_ts) in enumerate(camera_targets):
             delta = abs(image_obs.ts - target_ts)
             if delta < nearest[target_index][0]:
@@ -439,10 +443,10 @@ def build_rrd(
         # pinhole. Heavy aggregated maps default to hidden (toggle in the entity
         # panel); the eye tracks the primary odom frame; left/bottom panels open.
         track = (
-            "/world/go2_frame"
-            if "go2_odom" in streams
+            "/world/odom_frame"
+            if stream_names.ODOM in streams
             else "/world/fastlio_frame"
-            if "fastlio_odometry" in streams
+            if stream_names.FASTLIO_ODOM in streams
             else "/world/gtsam_frame"
         )
         hide = {
@@ -482,9 +486,14 @@ def build_rrd(
 
         ci = 0  # rotate a distinct base color through each point cloud
         for raw, corr, name in [
-            ("go2_lidar", "go2_lidar_corrected", "go2"),  # new: correct transforms
-            ("fastlio_lidar", "fastlio_lidar_corrected", "fastlio"),  # legacy mid360
-            ("lidar", None, "onboard"),  # legacy Go2 onboard L1, own frame
+            # Go2 onboard L1 (re-anchored on gtsam)
+            (stream_names.LIDAR, stream_names.corrected(stream_names.LIDAR), "go2"),
+            # mid360
+            (
+                stream_names.FASTLIO_LIDAR,
+                stream_names.corrected(stream_names.FASTLIO_LIDAR),
+                "fastlio",
+            ),
         ]:
             for stream, ent in [(raw, name), (corr, f"corrected_{name}")]:
                 if stream and stream in streams:
@@ -496,17 +505,16 @@ def build_rrd(
         _log_apriltags(store, db_path, cam_xform, intrinsics, resolution)
 
         for stream, entity, base in [
-            ("gtsam_odom", "world/gtsam_path", (0, 220, 0)),  # corrected GT -> green
-            ("go2_odom", "world/go2_path", (220, 200, 0)),  # go2 odom -> yellow
-            ("fastlio_odometry", "world/fastlio_path", (0, 200, 220)),  # cyan
-            ("odom", "world/odom_path", (255, 165, 0)),  # Go2 onboard odom -> orange
+            (stream_names.GTSAM_ODOM, "world/gtsam_path", (0, 220, 0)),  # corrected GT -> green
+            (stream_names.FASTLIO_ODOM, "world/fastlio_path", (0, 200, 220)),  # cyan
+            (stream_names.ODOM, "world/odom_path", (255, 165, 0)),  # Go2 onboard odom -> orange
         ]:
             _log_path_gradient(db_path, stream, entity, base)
         _log_odom_frames(db_path)  # moving XYZ basis triads (+ eye tracking target)
 
-        if "color_image" in streams:
+        if stream_names.COLOR_IMAGE in streams:
             n = 0
-            for k, obs in enumerate(store.stream("color_image", Image)):
+            for k, obs in enumerate(store.stream(stream_names.COLOR_IMAGE, Image)):
                 if k % camera_stride:
                     continue
                 rr.set_time(TIMELINE, timestamp=obs.ts)

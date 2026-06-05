@@ -21,29 +21,22 @@ from datetime import datetime
 import json
 import math
 from pathlib import Path
+import re
 import sqlite3
 import subprocess
 import sys
 from typing import Any
 
-STREAMS = (
-    "lidar",
-    "odom",
-    "color_image",
-    "livox_imu",
-    "livox_lidar",
-    "fastlio_lidar",
-    "fastlio_odometry",
-    "go2_odom",
-    "go2_color_image",
-    "realsense_color_image",
-    "realsense_depth_image",
-    "realsense_pointcloud",
-    "realsense_camera_info",
-    "realsense_depth_camera_info",
-    "realsense_imu",
-)
+from dimos.mapping.recording.utils import stream_names
+
+APRIL_TAG_STREAM = stream_names.APRIL_TAGS
+MIN_DISTINCT_TAGS = 3  # groundtruth/anchoring needs >=3 non-collinear static tags
+_MARKER_ID_RE = re.compile(rb"marker_id[#:= ]*(-?\d+)")
+
 RECORDINGS_DIR = Path("recordings")
+TRAVEL_STREAM = stream_names.FASTLIO_ODOM
+POSE_PCT_MIN = 99.0  # a "pose-bearing" stream should have nearly all rows posed
+COVERAGE_MIN = 0.9  # required streams must span >=90% of the longest stream
 # A pcap with only its global header (no packets) is exactly this many bytes.
 PCAP_HEADER_BYTES = 24
 
@@ -125,6 +118,19 @@ def _pcap_stats_via_tcpdump(pcap: Path) -> tuple[int, float, float] | None:
     return len(timestamps), timestamps[0], timestamps[-1]
 
 
+def list_stream_names(cur: sqlite3.Cursor) -> list[str]:
+    """The recording's actual stream names, in creation order. Reads the mem2
+    `_streams` metadata table; falls back to data tables that have a `_blob` twin."""
+    try:
+        rows = cur.execute("SELECT name FROM _streams ORDER BY rowid").fetchall()
+        if rows:
+            return [row[0] for row in rows]
+    except sqlite3.OperationalError:
+        pass
+    tables = {row[0] for row in cur.execute("SELECT name FROM sqlite_master WHERE type='table'")}
+    return sorted(name for name in tables if f"{name}_blob" in tables)
+
+
 def stream_rows(cur: sqlite3.Cursor, name: str) -> tuple[int, float | None, float | None, int]:
     tables = {row[0] for row in cur.execute("SELECT name FROM sqlite_master WHERE type='table'")}
     if name not in tables:
@@ -134,9 +140,26 @@ def stream_rows(cur: sqlite3.Cursor, name: str) -> tuple[int, float | None, floa
     return n, t0, t1, pose_non_null
 
 
+def april_tag_markers(cur: sqlite3.Cursor) -> list[int] | None:
+    """Distinct AprilTag marker ids in the `april_tags` stream, or None if the
+    stream doesn't exist yet (detection hasn't run). The per-row `tags` blob
+    embeds a literal `marker_id#<n>`, so a regex reads the ids without decoding."""
+    try:
+        rows = cur.execute(f'SELECT tags FROM "{APRIL_TAG_STREAM}"').fetchall()
+    except sqlite3.OperationalError:
+        return None
+    markers: set[int] = set()
+    for (blob,) in rows:
+        if blob is None:
+            continue
+        raw = blob if isinstance(blob, (bytes, bytearray)) else str(blob).encode()
+        markers.update(int(match) for match in _MARKER_ID_RE.findall(raw))
+    return sorted(markers)
+
+
 def odometry_travel(cur: sqlite3.Cursor) -> dict | None:
     rows = cur.execute(
-        "SELECT pose_x, pose_y, pose_z FROM fastlio_odometry WHERE pose_x IS NOT NULL ORDER BY ts"
+        f'SELECT pose_x, pose_y, pose_z FROM "{TRAVEL_STREAM}" WHERE pose_x IS NOT NULL ORDER BY ts'
     ).fetchall()
     if not rows:
         return None
@@ -193,7 +216,7 @@ def summarize(directory: Path) -> dict[str, Any]:
 
     connection = sqlite3.connect(db)
     cur = connection.cursor()
-    for name in STREAMS:
+    for name in list_stream_names(cur):
         n, t0, t1, pose_n = stream_rows(cur, name)
         if n == 0:
             summary["streams"][name] = {"rows": 0}
@@ -204,7 +227,10 @@ def summarize(directory: Path) -> dict[str, Any]:
             "span_s": span,
             "hz": (n - 1) / span if span > 0 else 0,
             "pose_pct": 100 * pose_n / n if n else 0,
+            "t0": t0,
+            "t1": t1,
         }
+    summary["april_markers"] = april_tag_markers(cur)
     summary["fastlio_odometry_travel"] = odometry_travel(cur)
     connection.close()
     return summary
@@ -219,6 +245,100 @@ def write_summary(directory: Path) -> Path:
 
 def main() -> int:
     return report(find_dir(sys.argv))
+
+
+def evaluate_checks(summary: dict[str, Any]) -> list[tuple[str, str, str]]:
+    """Turn a summarize() dict into (status, label, detail) rows, status in
+    {PASS, FAIL, N/A}. Validates the streams a go2+mid360 recording needs and
+    what each must do (poses populated, overlap, full coverage)."""
+    streams = summary.get("streams", {})
+
+    def info(name: str) -> dict[str, Any]:
+        return streams.get(name) or {}
+
+    def present(name: str) -> bool:
+        return info(name).get("rows", 0) > 0
+
+    def has_poses(name: str) -> bool:
+        return present(name) and info(name).get("pose_pct", 0) >= POSE_PCT_MIN
+
+    checks: list[tuple[str, str, str]] = [
+        (
+            "PASS" if has_poses(stream_names.FASTLIO_ODOM) else "FAIL",
+            stream_names.FASTLIO_ODOM,
+            "6-DoF poses",
+        ),
+        (
+            "PASS" if has_poses(stream_names.FASTLIO_LIDAR) else "FAIL",
+            stream_names.FASTLIO_LIDAR,
+            "clouds carry poses",
+        ),
+        (
+            "PASS" if present(stream_names.COLOR_IMAGE) else "FAIL",
+            stream_names.COLOR_IMAGE,
+            "present",
+        ),
+    ]
+
+    markers = summary.get("april_markers")
+    if markers is None:
+        checks.append(("N/A", "april_tags", "stream absent — detection not run"))
+    elif len(markers) >= MIN_DISTINCT_TAGS:
+        checks.append(("PASS", "april_tags", f"{len(markers)} distinct markers {markers}"))
+    else:
+        checks.append(
+            ("FAIL", "april_tags", f"only {len(markers)} distinct markers {markers} (need >=3)")
+        )
+
+    is_go2 = present(stream_names.ODOM) or present(stream_names.LIDAR)
+    if is_go2:
+        checks.append(
+            (
+                "PASS" if has_poses(stream_names.ODOM) else "FAIL",
+                stream_names.ODOM,
+                "poses (for go2-align)",
+            )
+        )
+        checks.append(
+            ("PASS" if present(stream_names.LIDAR) else "FAIL", stream_names.LIDAR, "present")
+        )
+        odom, fastlio = info(stream_names.ODOM), info(stream_names.FASTLIO_ODOM)
+        label = f"{stream_names.ODOM} ∩ fastlio"
+        if odom.get("t0") and fastlio.get("t0"):
+            overlap = max(odom["t0"], fastlio["t0"]) < min(odom["t1"], fastlio["t1"])
+            checks.append(("PASS" if overlap else "FAIL", label, "time ranges overlap"))
+        else:
+            checks.append(("N/A", label, "no timestamps to compare"))
+
+    required = [stream_names.FASTLIO_ODOM, stream_names.FASTLIO_LIDAR, stream_names.COLOR_IMAGE]
+    if is_go2:
+        required += [stream_names.ODOM, stream_names.LIDAR]
+    max_span = max((info(name).get("span_s", 0) for name in streams), default=0)
+    short = [
+        name
+        for name in required
+        if present(name) and max_span > 0 and info(name).get("span_s", 0) < COVERAGE_MIN * max_span
+    ]
+    coverage_detail = f"all span >= {COVERAGE_MIN:.0%} of {max_span:.0f}s"
+    if short:
+        coverage_detail += f" — short: {', '.join(short)}"
+    checks.append(("PASS" if not short else "FAIL", "stream coverage", coverage_detail))
+    return checks
+
+
+def print_checks(summary: dict[str, Any]) -> int:
+    """Print the ✓/✗ checklist; return the number of failed checks."""
+    glyph = {"PASS": "✓", "FAIL": "✗", "N/A": "-"}
+    checks = evaluate_checks(summary)
+    label_width = max(len(label) for _status, label, _detail in checks)
+    print("checks:")
+    failed = 0
+    for status, label, detail in checks:
+        print(f"  {glyph[status]} {label:<{label_width}}  {detail}")
+        failed += status == "FAIL"
+    print()
+    print(f"  {'PASS — all checks ok' if not failed else f'FAIL — {failed} check(s) failed'}")
+    return failed
 
 
 def report(directory: Path) -> int:
@@ -259,13 +379,18 @@ def report(directory: Path) -> int:
 
     connection = sqlite3.connect(db)
     cur = connection.cursor()
-    header = f"{'stream':<18} {'rows':>9} {'span_s':>8} {'hz':>7} {'pose%':>7}  blob"
+    names = list_stream_names(cur)
+    indent = "  "
+    name_width = max(len("stream"), max((len(name) for name in names), default=0))
+    header = (
+        f"{indent}{'stream':<{name_width}}  {'rows':>9} {'span_s':>8} {'hz':>7} {'pose%':>7}  blob"
+    )
     print(header)
     print("-" * len(header))
-    for name in STREAMS:
+    for name in names:
         n, t0, t1, pose_n = stream_rows(cur, name)
         if n == 0:
-            print(f"  {name:<16} {'-':>9}  (no rows)")
+            print(f"{indent}{name:<{name_width}}  {'-':>9}  (no rows)")
             continue
         span = (t1 - t0) if (t0 and t1) else 0
         rate = (n - 1) / span if span > 0 else 0
@@ -274,7 +399,10 @@ def report(directory: Path) -> int:
             f'SELECT LENGTH(b.data) FROM "{name}" t JOIN "{name}_blob" b ON t.id=b.id LIMIT 1'
         ).fetchone()
         blob_label = human_size(blob[0]) if blob else "-"
-        print(f"  {name:<16} {n:>9,} {span:>8.1f} {rate:>7.1f} {pose_pct:>6.0f}%  {blob_label}")
+        print(
+            f"{indent}{name:<{name_width}}  {n:>9,} {span:>8.1f} {rate:>7.1f} "
+            f"{pose_pct:>6.0f}%  {blob_label}"
+        )
 
     travel = odometry_travel(cur)
     print()
@@ -293,8 +421,11 @@ def report(directory: Path) -> int:
         )
     else:
         print("fastlio_odometry travel: no pose-stamped rows")
+    connection.close()
 
-    return 0
+    print()
+    failed = print_checks(summarize(directory))
+    return 1 if failed else 0
 
 
 if __name__ == "__main__":

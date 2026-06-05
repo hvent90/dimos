@@ -153,6 +153,7 @@ def process_db(
     cloud_stride=3,
     mid360_pitch=False,
     check_only=False,
+    extra_steps=None,
 ):
     print(f">> {db}")
     try:
@@ -167,6 +168,12 @@ def process_db(
 
     if check_only:
         return
+
+    if extra_steps is not None:
+        try:
+            extra_steps(db)
+        except Exception as error:
+            print(f"   extra step failed: {error}")
 
     with SqliteStore(path=str(db)) as store:
         already_corrected = gtsam_stream in store.list_streams()
@@ -212,9 +219,11 @@ def run(
     description: str | None,
     reanchor_pairs: ReanchorPairs,
     load_camera: Callable[[Path], CameraParams],
+    extra_steps: Callable[[Path], None] | None = None,
 ) -> None:
     """Parse CLI args and post-process each resolved recording. `load_camera`
-    supplies the rig's `(intrinsics, distortion, optical_in_base, resolution)`."""
+    supplies the rig's `(intrinsics, distortion, optical_in_base, resolution)`.
+    `extra_steps(db)` runs an optional rig-specific post-step per recording."""
     parser = argparse.ArgumentParser(
         description=description, formatter_class=argparse.RawDescriptionHelpFormatter
     )
@@ -304,6 +313,7 @@ def run(
                 cloud_stride=args.cloud_stride,
                 mid360_pitch=args.mid360_pitch,
                 check_only=args.check,
+                extra_steps=extra_steps,
             )
         except Exception as error:
             print(f"   !! failed: {error}")

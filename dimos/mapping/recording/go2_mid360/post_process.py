@@ -30,6 +30,8 @@ from __future__ import annotations
 
 from pathlib import Path
 
+from dimos.mapping.recording.utils import stream_names
+from dimos.mapping.recording.utils.go2_align import adjust_go2_streams
 from dimos.mapping.recording.utils.post_process import CameraParams, run
 from dimos.robot.unitree.go2.config import (
     GO2_FRONT_CAMERA_DISTORTION,
@@ -38,10 +40,13 @@ from dimos.robot.unitree.go2.config import (
     GO2_FRONT_CAMERA_RESOLUTION,
 )
 
-# Lidar/odom pairs that may be re-anchored onto gtsam_odom — only when their odom
-# is the same frame family gtsam was built from. The legacy Go2 onboard
-# `lidar`/`odom` is a different estimator frame -> left as-is.
-REANCHOR_PAIRS = [("go2_lidar", "go2_odom"), ("fastlio_lidar", "fastlio_odometry")]
+# (lidar, odom) pairs re-anchored onto gtsam_odom: each cloud's own odometry is
+# subtracted and the corrected gtsam pose re-applied, so the source odom frame
+# need not match gtsam's. Both the Go2 onboard and the mid360/FAST-LIO clouds.
+REANCHOR_PAIRS = [
+    (stream_names.LIDAR, stream_names.ODOM),
+    (stream_names.FASTLIO_LIDAR, stream_names.FASTLIO_ODOM),
+]
 
 
 def load_camera(db: Path) -> CameraParams:
@@ -54,4 +59,9 @@ def load_camera(db: Path) -> CameraParams:
 
 
 if __name__ == "__main__":
-    run(description=__doc__, reanchor_pairs=REANCHOR_PAIRS, load_camera=load_camera)
+    run(
+        description=__doc__,
+        reanchor_pairs=REANCHOR_PAIRS,
+        load_camera=load_camera,
+        extra_steps=adjust_go2_streams,
+    )

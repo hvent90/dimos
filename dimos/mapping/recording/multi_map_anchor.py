@@ -43,12 +43,12 @@ from typing import cast
 import numpy as np
 import rerun as rr
 import rerun.blueprint as rrb
-from scipy.spatial.transform import Rotation
 
 from dimos.mapping.recording.go2_mid360.post_process import load_camera as load_go2_camera
 from dimos.mapping.recording.mid360_realsense.post_process import (
     load_camera as load_realsense_camera,
 )
+from dimos.mapping.recording.utils import stream_names
 from dimos.mapping.recording.utils.apriltags import detect_apriltags
 from dimos.mapping.recording.utils.build_rrd import _log_map, _log_path_gradient
 from dimos.mapping.recording.utils.gtsam_gt import build_gtsam_gt, write_gtsam_odom
@@ -62,11 +62,11 @@ MIN_SHARED_TAGS = 3  # rigid SE3 needs >=3 non-collinear correspondences
 
 DB_NAME = "mem2.db"
 DOG_TAG_ID = 17  # mounted on the robot dog -> not a static landmark, ignored
-GTSAM_STREAM = "gtsam_odom"
-FASTLIO_LIDAR = "fastlio_lidar"
-FASTLIO_ODOM = "fastlio_odometry"
-LOOP_LIDAR = "livox_lidar"  # raw sensor-frame cloud (loop closure needs sensor, not world, frame)
-CORRECTED_LIDAR = "fastlio_lidar_corrected"
+GTSAM_STREAM = stream_names.GTSAM_ODOM
+FASTLIO_LIDAR = stream_names.FASTLIO_LIDAR
+FASTLIO_ODOM = stream_names.FASTLIO_ODOM
+LOOP_LIDAR = stream_names.LIVOX_LIDAR  # raw sensor-frame cloud (loop closure needs sensor frame)
+CORRECTED_LIDAR = stream_names.corrected(stream_names.FASTLIO_LIDAR)
 REALSENSE_INFO_STREAM = "realsense_camera_info"
 
 
@@ -92,18 +92,6 @@ def _is_realsense(db: Path) -> bool:
 
 def _load_camera(db: Path) -> CameraParams:
     return load_realsense_camera(db) if _is_realsense(db) else load_go2_camera(db)
-
-
-def _mat_from_pose7(pose7: list[float]) -> np.ndarray:
-    matrix = np.eye(4)
-    matrix[:3, :3] = Rotation.from_quat(pose7[3:7]).as_matrix()
-    matrix[:3, 3] = pose7[:3]
-    return matrix
-
-
-def _pose7_from_mat(matrix: np.ndarray) -> list[float]:
-    quaternion = Rotation.from_matrix(matrix[:3, :3]).as_quat()
-    return [*matrix[:3, 3].tolist(), *quaternion.tolist()]
 
 
 def _rigid_align(source_points: np.ndarray, target_points: np.ndarray) -> np.ndarray:
@@ -142,16 +130,29 @@ def _align_to_anchor(target_map: TagMap, anchor_map: TagMap) -> np.ndarray:
     return transform
 
 
-def _solve(
-    db: Path,
-    *,
-    image_stream: str,
-    marker_length: float,
-    dictionary: str,
-    add_loop_closures: bool,
-) -> tuple[Trajectory, TagMap]:
-    """Detect tags and run the GTSAM solve (ignoring the dog tag), each map in its
-    own frame. Returns its corrected trajectory and optimized static tag map."""
+def _report_pinned_residual(pinned_map: TagMap, anchor_map: TagMap) -> None:
+    """How far the target's tags ended up from the ground-truth tags they were
+    pinned to (both now in the anchor frame). Near-zero == the deform took."""
+    shared = sorted(set(pinned_map) & set(anchor_map))
+    residuals = np.array(
+        [
+            np.linalg.norm(
+                np.array(pinned_map[marker_id][:3]) - np.array(anchor_map[marker_id][:3])
+            )
+            for marker_id in shared
+        ]
+    )
+    print(
+        f"   pinned: residual to ground-truth tags "
+        f"mean {residuals.mean():.3f} m, max {residuals.max():.3f} m"
+    )
+
+
+def _detect(
+    db: Path, *, image_stream: str, marker_length: float, dictionary: str
+) -> tuple[list[dict], list[float]]:
+    """Detect AprilTags once (the slow, image-loading step). Returns the detections
+    and the camera's optical_in_base extrinsic."""
     intrinsics, distortion, optical_in_base, _resolution = _load_camera(db)
     with SqliteStore(path=str(db)) as store:
         detections = detect_apriltags(
@@ -159,7 +160,21 @@ def _solve(
         )
     if not detections:
         raise SystemExit(f"no AprilTags detected in {db} -- cannot anchor")
+    return detections, optical_in_base
 
+
+def _solve(
+    db: Path,
+    detections: list[dict],
+    optical_in_base: list[float],
+    *,
+    add_loop_closures: bool,
+    landmark_priors: TagMap | None = None,
+    init_transform: np.ndarray | None = None,
+) -> tuple[Trajectory, TagMap]:
+    """GTSAM solve (ignoring the dog tag) on the fastlio chain. With
+    `landmark_priors` the trajectory is deformed onto that ground-truth tag map
+    (in its frame); `init_transform` seeds the solve there so it can't diverge."""
     return cast(
         "tuple[Trajectory, TagMap]",
         build_gtsam_gt(
@@ -170,6 +185,8 @@ def _solve(
             pose_stream=FASTLIO_ODOM,
             loop_lidar_stream=LOOP_LIDAR,
             add_loop_closures=add_loop_closures,
+            landmark_priors=landmark_priors,
+            init_transform=init_transform,
             return_landmarks=True,
         ),
     )
@@ -270,28 +287,39 @@ def main() -> None:
     print(f"anchor (realsense): {anchor_db.parent}")
     print(f"target (go2):       {target_db.parent}")
 
-    common = {
+    detect_kwargs = {
         "image_stream": args.image_stream,
         "marker_length": args.marker_length,
         "dictionary": args.dictionary,
-        "add_loop_closures": args.loop,
     }
 
     # The anchor (realsense) defines the world frame: solve it, write it as-is.
     print(">> solving anchor (defines the world frame)")
-    anchor_trajectory, anchor_map = _solve(anchor_db, **common)
+    anchor_detections, anchor_optical = _detect(anchor_db, **detect_kwargs)
+    anchor_trajectory, anchor_map = _solve(
+        anchor_db, anchor_detections, anchor_optical, add_loop_closures=args.loop
+    )
     _write_corrected(anchor_db, anchor_trajectory)
 
-    # The target (go2) is solved in its own frame, then rigidly placed into the
-    # anchor frame via the tags both maps share.
-    print(">> solving target")
-    target_trajectory, target_map = _solve(target_db, **common)
-    print(">> aligning target onto the anchor frame")
-    transform = _align_to_anchor(target_map, anchor_map)
-    target_trajectory = [
-        (timestamp, _pose7_from_mat(transform @ _mat_from_pose7(pose7)))
-        for timestamp, pose7 in target_trajectory
-    ]
+    # The target (go2): a first solve in its own frame just to get a rigid init,
+    # then a second solve pinned to the anchor's ground-truth tag map -- this
+    # deforms the target onto the anchor's tags (drift fixed, frame matched).
+    print(">> solving target (first pass: own frame, for initialization)")
+    target_detections, target_optical = _detect(target_db, **detect_kwargs)
+    _, target_map = _solve(
+        target_db, target_detections, target_optical, add_loop_closures=args.loop
+    )
+    init_transform = _align_to_anchor(target_map, anchor_map)
+    print(">> solving target (second pass: pinned to the anchor's ground-truth tags)")
+    target_trajectory, target_map = _solve(
+        target_db,
+        target_detections,
+        target_optical,
+        add_loop_closures=args.loop,
+        landmark_priors=anchor_map,
+        init_transform=init_transform,
+    )
+    _report_pinned_residual(target_map, anchor_map)
     _write_corrected(target_db, target_trajectory)
 
     out_path = args.out or str(anchor_db.parent / "multi_map_anchor.rrd")

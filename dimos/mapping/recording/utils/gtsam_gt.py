@@ -28,6 +28,7 @@ import sqlite3
 import numpy as np
 
 from dimos.mapping.recording.utils.lidar_loop_closure import find_loop_closures
+from dimos.mapping.recording.utils.stream_names import FASTLIO_ODOM, ODOM
 from dimos.msgs.geometry_msgs.PoseStamped import PoseStamped
 
 
@@ -57,9 +58,9 @@ def _pose_to7(pose3):
 
 
 def pick_pose_stream(connection) -> str:
-    """The odom stream to use as the pose chain (go2_odom / fastlio_odometry preferred)."""
+    """The odom stream to use as the pose chain (odom / fastlio_odometry preferred)."""
     stream_names = [row[0] for row in connection.execute("SELECT name FROM _streams").fetchall()]
-    candidates = [name for name in ["go2_odom", "fastlio_odometry"] if name in stream_names]
+    candidates = [name for name in [ODOM, FASTLIO_ODOM] if name in stream_names]
     candidates += [
         name for name in stream_names if "odom" in name.lower() and name not in candidates
     ]
@@ -93,6 +94,11 @@ def build_gtsam_gt(
     loop_huber=1.0,
     exclude_marker_ids=(),
     pose_stream=None,
+    landmark_priors=None,
+    landmark_prior_rot_sig=0.3,
+    landmark_prior_trans_sig=0.02,
+    anchor_prior_sig=1.0,
+    init_transform=None,
     return_landmarks=False,
 ):
     """Landmark-SLAM the odom chain + AprilTag landmarks + lidar loop closures.
@@ -106,6 +112,14 @@ def build_gtsam_gt(
     robot is not a static landmark). `pose_stream` forces which odom stream is the
     pose chain (default: auto-pick) — set it to match the stream the lidar is
     re-anchored through, so trajectory and clouds share a frame.
+
+    `landmark_priors` ({marker_id: pose7_world}) pins shared tags to an external
+    *ground-truth* map: the trajectory is then deformed to honour those positions
+    (tight `landmark_prior_trans_sig`, loose `landmark_prior_rot_sig`) and solved in
+    that map's world frame, with the first-pose prior loosened to `anchor_prior_sig`
+    so the truth tags set the gauge. `init_transform` (4x4) pre-places every initial
+    node/landmark into the target frame — pass the rigid tag alignment so the solve
+    starts at the answer and can't diverge.
 
     Returns [(ts, pose7), ...], or ([(ts, pose7), ...], {marker_id: pose7_world})
     of the optimized static-tag world poses when `return_landmarks` is set."""
@@ -146,9 +160,16 @@ def build_gtsam_gt(
     if exclude:
         markers = [marker for marker in markers if int(marker["marker_id"]) not in exclude]
 
+    init_pose = gtsam.Pose3(init_transform) if init_transform is not None else gtsam.Pose3()
+
+    def placed(pose):
+        """Initial node/landmark estimate moved into the target frame."""
+        return init_pose.compose(pose)
+
     graph = gtsam.NonlinearFactorGraph()
     initial = gtsam.Values()
-    prior_noise = gtsam.noiseModel.Diagonal.Sigmas(np.full(6, 1e-4))
+    first_pose_sig = anchor_prior_sig if landmark_priors else 1e-4
+    prior_noise = gtsam.noiseModel.Diagonal.Sigmas(np.full(6, first_pose_sig))
     odom_noise = gtsam.noiseModel.Diagonal.Sigmas(
         np.array([odom_rot_sig] * 3 + [odom_trans_sig] * 3)
     )
@@ -160,8 +181,8 @@ def build_gtsam_gt(
     )
 
     for node_index in range(num_nodes):
-        initial.insert(X(node_index), node_poses[node_index])
-    graph.add(PriorFactorPose3(X(0), node_poses[0], prior_noise))
+        initial.insert(X(node_index), placed(node_poses[node_index]))
+    graph.add(PriorFactorPose3(X(0), placed(node_poses[0]), prior_noise))
     for node_index in range(num_nodes - 1):
         relative = node_poses[node_index].between(node_poses[node_index + 1])
         graph.add(BetweenFactorPose3(X(node_index), X(node_index + 1), relative, odom_noise))
@@ -172,9 +193,24 @@ def build_gtsam_gt(
         node_index = nearest_node(detection["ts"])
         tag_in_body = base_to_optical.compose(_pose_from7(detection["t_cam_marker"]))
         if marker_id not in landmark_ids:
-            initial.insert(L(marker_id), node_poses[node_index].compose(tag_in_body))
+            initial.insert(L(marker_id), placed(node_poses[node_index].compose(tag_in_body)))
             landmark_ids.add(marker_id)
         graph.add(BetweenFactorPose3(X(node_index), L(marker_id), tag_in_body, tag_noise))
+
+    anchored_ids = []
+    if landmark_priors:
+        landmark_prior_noise = gtsam.noiseModel.Diagonal.Sigmas(
+            np.array([landmark_prior_rot_sig] * 3 + [landmark_prior_trans_sig] * 3)
+        )
+        for marker_id, world_pose7 in landmark_priors.items():
+            if int(marker_id) in landmark_ids:
+                graph.add(
+                    PriorFactorPose3(
+                        L(int(marker_id)), _pose_from7(world_pose7), landmark_prior_noise
+                    )
+                )
+                anchored_ids.append(int(marker_id))
+        print(f"   gtsam: pinned to ground-truth tag map on landmarks {sorted(anchored_ids)}")
 
     loops = []
     if add_loop_closures:

@@ -64,15 +64,11 @@ class Go2TfHackRecorder(FastLio2Recorder):
 
     fastlio_lidar: In[PointCloud2]
     fastlio_odometry: In[Odometry]
-    go2_lidar: In[PointCloud2]
-    go2_odom: In[PoseStamped]
+    lidar: In[PointCloud2]  # Go2 onboard L1 lidar
+    odom: In[PoseStamped]  # Go2 onboard leg odometry
     color_image: In[Image]
     livox_lidar: In[PointCloud2]
     livox_imu: In[Imu]
-    # Shadow the parent's generic companion ports so they're not recorded as
-    # empty `lidar`/`odom` streams; the go2-prefixed ports above take their place.
-    lidar: None = None  # type: ignore[assignment]
-    odom: None = None  # type: ignore[assignment]
     # sanity check
     fastlio_lidar_no_cap: In[PointCloud2]
     fastlio_odometry_no_cap: In[Odometry]
@@ -98,7 +94,7 @@ class Go2TfHackRecorder(FastLio2Recorder):
                 world_to_base = self._world_to_base_from_fastlio()
                 if world_to_base is not None:
                     pose = (world_to_base + BASE_TO_CAMERA_OPTICAL).to_pose()
-            elif name == "go2_odom" or name == "odom":
+            elif name == "odom":
                 pose = msg
             else:
                 if name not in self._warning_names:
@@ -130,12 +126,7 @@ class FastLio2NoCap(FastLio2):
 unitree_go2_record = autoconnect(
     KeyboardTeleop.blueprint(),
     MovementManager.blueprint(),
-    GO2Connection.blueprint().remappings(
-        [
-            (GO2Connection, "lidar", "go2_lidar"),
-            (GO2Connection, "odom", "go2_odom"),
-        ]
-    ),
+    GO2Connection.blueprint(),
     Mid360.blueprint(
         lidar_ip=_LIDAR_IP,
     ).remappings(

@@ -110,7 +110,7 @@ class TfHackRecorder(FastLio2Recorder):
                 world_to_mid360 = self._world_to_mid360_from_fastlio()
                 if world_to_mid360 is not None:
                     pose = (world_to_mid360 + MID360_TO_CAMERA_OPTICAL).to_pose()
-            elif name == "go2_odom" or name == "odom":
+            elif name == "odom":
                 pose = msg
             elif "odom" in name or "camera_info" in name or "imu" in name:
                 pass
