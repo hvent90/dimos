@@ -206,8 +206,7 @@ class Go2WholeBodyConnection(Module):
                 with self._lock:
                     self._reset_motor_cmd_slots(_MOTOR_MODE_DISABLE)
                     self._low_cmd.crc = self._crc.Crc(self._low_cmd)
-                    snapshot = self._low_cmd
-                self._publisher.Write(snapshot)
+                    self._publisher.Write(self._low_cmd)
                 logger.info("Sent safe-stop lowcmd (motors disabled)")
             except (OSError, RuntimeError, AttributeError) as e:
                 logger.warning(f"Safe-stop lowcmd failed: {e}")
@@ -349,9 +348,7 @@ class Go2WholeBodyConnection(Module):
                 self._low_cmd.motor_cmd[i].tau = msg.tau[i]
 
             self._low_cmd.crc = self._crc.Crc(self._low_cmd)
-            snapshot = self._low_cmd
-            publisher = self._publisher
-        publisher.Write(snapshot)
+            self._publisher.Write(self._low_cmd)
 
     def _reset_motor_cmd_slots(self, mode: int) -> None:
         """Reset all 20 motor_cmd slots in self._low_cmd to a safe baseline.
