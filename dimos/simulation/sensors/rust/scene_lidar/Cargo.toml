@@ -1,0 +1,25 @@
+[package]
+name = "dimos-scene-lidar"
+version = "0.1.0"
+edition = "2021"
+description = "Native scene collision raycast lidar module for DimOS"
+license = "Apache-2.0"
+
+[[bin]]
+name = "scene_lidar"
+path = "src/main.rs"
+
+[dependencies]
+dimos-module = { path = "../../../../../native/rust/dimos-module" }
+lcm-msgs = { git = "https://github.com/dimensionalOS/dimos-lcm.git", branch = "rust-codegen" }
+tokio = { version = "1", features = ["rt-multi-thread", "macros", "signal"] }
+serde = { version = "1", features = ["derive"] }
+serde_json = "1"
+validator = { version = "0.20", features = ["derive"] }
+gltf = { version = "1", features = ["KHR_texture_transform"] }
+glam = "0.29"
+rayon = "1"
+
+[profile.release]
+lto = "thin"
+codegen-units = 1
