@@ -27,12 +27,21 @@ from dimos.control.components import HardwareComponent, HardwareType, make_quadr
 from dimos.control.coordinator import ControlCoordinator, TaskConfig
 from dimos.core.coordination.blueprints import autoconnect
 from dimos.core.transport import LCMTransport
+from dimos.hardware.whole_body.spec import WholeBodyConfig
 from dimos.msgs.sensor_msgs.Imu import Imu
 from dimos.msgs.sensor_msgs.JointState import JointState
 from dimos.msgs.sensor_msgs.MotorCommandArray import MotorCommandArray
 from dimos.robot.unitree.go2.wholebody_connection import Go2WholeBodyConnection
 
 _go2_joints = make_quadruped_joints("go2")
+
+# Per-joint PD gains, applied by ConnectedWholeBody when converting
+# position commands → MotorCommand. kp=80 / kd=2 has enough torque
+# headroom to break static friction at sit→stand without overshoot at
+# steady state. Tune lower (40/3) for gentler holds, higher (120+) for
+# carrying payloads or aggressive trajectories.
+_KP = (80.0,) * 12
+_KD = (2.0,) * 12
 
 # ROBOT_INTERFACE pins cyclonedds to a NIC; required on multi-NIC hosts.
 unitree_go2_wholebody_coordinator = (
@@ -49,6 +58,7 @@ unitree_go2_wholebody_coordinator = (
                     hardware_type=HardwareType.WHOLE_BODY,
                     joints=_go2_joints,
                     adapter_type="transport_lcm",
+                    wb_config=WholeBodyConfig(kp=_KP, kd=_KD),
                 ),
             ],
             tasks=[
