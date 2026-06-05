@@ -104,6 +104,7 @@ impl Planner {
             config.voxel_size,
             config.robot_height,
             config.node_spacing_m,
+            config.node_step_threshold_m,
         )
     }
 

@@ -83,6 +83,7 @@ pub fn plan(
     voxel_size: f32,
     z_tolerance_m: f32,
     node_spacing_m: f32,
+    node_step_threshold_m: f32,
 ) -> Option<Vec<(f32, f32, f32)>> {
     let start_coord =
         snap_pose_to_cell(&plg.surface_lookup, start_pose, voxel_size, z_tolerance_m)?;
@@ -147,14 +148,15 @@ pub fn plan(
         )
     };
 
-    Some(assemble_waypoints(
-        plg,
-        &node_seq,
-        start_pose,
-        &lead_in,
-        goal_pose,
-        &goal_segment,
-        voxel_size,
+    // Straight-line shortcut tolerance: how far the smoothed path may sit from
+    // the surface in height, in cells. Tied to the traversable step so a shortcut
+    // can ride over a slope but not float across a gap or cut through a step.
+    let smooth_tol_cells = ((node_step_threshold_m / voxel_size).round() as i32).max(1);
+
+    let cells = assemble_cells(plg, &node_seq, &lead_in, &goal_segment);
+    let cells = string_pull(plg, &cells, smooth_tol_cells);
+    Some(cells_to_waypoints(
+        plg, &cells, start_pose, goal_pose, voxel_size,
     ))
 }
 
@@ -257,17 +259,16 @@ fn push_cell(cells: &mut Vec<CellId>, c: CellId) {
     }
 }
 
-fn assemble_waypoints(
+/// Stitch the cell path: the lead-in to the entry node, the cell chains along
+/// each node-graph edge, and the goal segment, collapsing out-and-back spurs.
+fn assemble_cells(
     plg: &PlannerGraph,
     node_seq: &[NodeId],
-    start_pose: (f32, f32, f32),
-    start_segment: &[CellId],
-    goal_pose: (f32, f32, f32),
+    lead_in: &[CellId],
     goal_segment: &[CellId],
-    voxel_size: f32,
-) -> Vec<(f32, f32, f32)> {
+) -> Vec<CellId> {
     let mut cells: Vec<CellId> = Vec::new();
-    for &c in start_segment {
+    for &c in lead_in {
         push_cell(&mut cells, c);
     }
 
@@ -295,14 +296,93 @@ fn assemble_waypoints(
         push_cell(&mut cells, c);
     }
 
+    cells
+}
+
+/// Turn the cell path into world waypoints, bookended by the raw start and goal
+/// poses so the path begins and ends exactly where asked.
+fn cells_to_waypoints(
+    plg: &PlannerGraph,
+    cells: &[CellId],
+    start_pose: (f32, f32, f32),
+    goal_pose: (f32, f32, f32),
+    voxel_size: f32,
+) -> Vec<(f32, f32, f32)> {
     let mut waypoints: Vec<(f32, f32, f32)> = Vec::with_capacity(cells.len() + 2);
     waypoints.push(start_pose);
-    for id in cells {
+    for &id in cells {
         let (ix, iy, iz) = plg.cells.coord(id);
         waypoints.push(surface_point_xyz(ix, iy, iz, voxel_size));
     }
     waypoints.push(goal_pose);
     waypoints
+}
+
+/// Greedily replace runs of cells with straight shortcuts that stay on the
+/// surface. From each anchor, extend to the farthest cell still in line of sight
+/// and keep only that one, collapsing the staircase and Voronoi-boundary scallop
+/// into straight segments.
+fn string_pull(plg: &PlannerGraph, cells: &[CellId], tol_cells: i32) -> Vec<CellId> {
+    if cells.len() <= 2 {
+        return cells.to_vec();
+    }
+    let mut out = vec![cells[0]];
+    let mut anchor = 0;
+    while anchor + 1 < cells.len() {
+        let anchor_coord = plg.cells.coord(cells[anchor]);
+        let mut last_ok = anchor + 1;
+        let mut j = anchor + 1;
+        while j < cells.len() {
+            let coord = plg.cells.coord(cells[j]);
+            if !los_on_surface(&plg.surface_lookup, anchor_coord, coord, tol_cells) {
+                break;
+            }
+            last_ok = j;
+            j += 1;
+        }
+        out.push(cells[last_ok]);
+        anchor = last_ok;
+    }
+    out
+}
+
+/// True if the straight segment between two surface cells stays on the surface:
+/// every cell column the segment crosses must hold a surface cell whose height
+/// is within `tol_cells` of the segment. Rejects shortcuts that would float over
+/// a gap or cut across a step taller than the tolerance.
+fn los_on_surface(
+    surface_lookup: &SurfaceLookup,
+    a: VoxelKey,
+    b: VoxelKey,
+    tol_cells: i32,
+) -> bool {
+    let (dx, dy, dz) = (b.0 - a.0, b.1 - a.1, b.2 - a.2);
+    let samples = dx.abs().max(dy.abs()) * 2;
+    if samples == 0 {
+        return true;
+    }
+    let (mut last_ix, mut last_iy) = (i32::MIN, i32::MIN);
+    for k in 0..=samples {
+        let t = k as f32 / samples as f32;
+        let ix = (a.0 as f32 + t * dx as f32).round() as i32;
+        let iy = (a.1 as f32 + t * dy as f32).round() as i32;
+        if ix == last_ix && iy == last_iy {
+            continue;
+        }
+        last_ix = ix;
+        last_iy = iy;
+        let iz_line = a.2 as f32 + t * dz as f32;
+        let Some(zs) = surface_lookup.get(&(ix, iy)) else {
+            return false;
+        };
+        if !zs
+            .iter()
+            .any(|&iz| (iz as f32 - iz_line).abs() <= tol_cells as f32)
+        {
+            return false;
+        }
+    }
+    true
 }
 
 fn edge_between(plg: &PlannerGraph, a: NodeId, b: NodeId) -> Option<NodeEdgeIdx> {
@@ -378,7 +458,7 @@ mod tests {
         start: (f32, f32, f32),
         goal: (f32, f32, f32),
     ) -> Option<Vec<(f32, f32, f32)>> {
-        plan(plg, start, goal, VOXEL, Z_TOL, 1.0)
+        plan(plg, start, goal, VOXEL, Z_TOL, 1.0, 0.25)
     }
 
     #[test]
@@ -463,31 +543,61 @@ mod tests {
         );
     }
 
+    fn waypoint_key(w: &(f32, f32, f32)) -> VoxelKey {
+        (
+            (w.0 / VOXEL).floor() as i32,
+            (w.1 / VOXEL).floor() as i32,
+            (w.2 / VOXEL).round() as i32 - 1,
+        )
+    }
+
     #[test]
-    fn plan_path_waypoints_are_all_on_the_surface() {
+    fn plan_path_segments_stay_on_the_surface() {
         let plg = graph_with_nodes(&strip(20), &[(3, 0, 0), (10, 0, 0), (17, 0, 0)]);
         let wp = plan_simple(&plg, (0.2, 0.0, 0.05), (1.9, 0.0, 0.05)).unwrap();
-        // Every waypoint between the raw start and goal poses must land on a
-        // surface cell. Consecutive waypoints must also be adjacent cells, so the
-        // path never jumps across a gap.
-        let on_surface = |w: &(f32, f32, f32)| {
-            let ix = (w.0 / VOXEL).floor() as i32;
-            let iy = (w.1 / VOXEL).floor() as i32;
-            plg.cells.id((ix, iy, 0)).is_some()
-        };
+        // After smoothing the waypoints are no longer cell-adjacent, but each
+        // must land on a surface cell and each straight segment between
+        // consecutive waypoints must stay on the surface.
+        let tol = ((0.25f32 / VOXEL).round() as i32).max(1);
         for w in &wp[1..wp.len() - 1] {
-            assert!(on_surface(w), "waypoint {w:?} is off the surface");
+            assert!(
+                plg.cells.id(waypoint_key(w)).is_some(),
+                "waypoint {w:?} is off the surface"
+            );
         }
         for pair in wp[1..wp.len() - 1].windows(2) {
-            let dx = ((pair[0].0 - pair[1].0) / VOXEL).round().abs() as i32;
-            let dy = ((pair[0].1 - pair[1].1) / VOXEL).round().abs() as i32;
             assert!(
-                dx + dy <= 1,
-                "waypoints {:?} and {:?} are not adjacent",
+                los_on_surface(
+                    &plg.surface_lookup,
+                    waypoint_key(&pair[0]),
+                    waypoint_key(&pair[1]),
+                    tol
+                ),
+                "segment {:?} -> {:?} leaves the surface",
                 pair[0],
                 pair[1]
             );
         }
+    }
+
+    #[test]
+    fn string_pull_straightens_open_area() {
+        // A filled rectangle: every cell is surface, so any straight segment is
+        // on-surface. The diagonal corner-to-corner path must collapse to a
+        // near-straight shot instead of the node-graph staircase.
+        let mut cells: Vec<VoxelKey> = Vec::new();
+        for x in 0..10 {
+            for y in 0..6 {
+                cells.push((x, y, 0));
+            }
+        }
+        let plg = graph_with_nodes(&cells, &[(2, 2, 0), (7, 3, 0)]);
+        let wp = plan_simple(&plg, (0.05, 0.05, 0.05), (0.85, 0.55, 0.05)).unwrap();
+        let interior = wp.len() - 2;
+        assert!(
+            interior <= 4,
+            "path not straightened: {interior} interior points"
+        );
     }
 
     #[test]
