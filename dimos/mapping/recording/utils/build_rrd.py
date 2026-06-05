@@ -37,6 +37,10 @@ import rerun as rr
 import rerun.blueprint as rrb
 from scipy.spatial.transform import Rotation
 
+from dimos.mapping.recording.go2_mid360.static_transforms import (
+    GO2_BODY_HALF_SIZES,
+    MID360_TO_BASE,
+)
 from dimos.mapping.recording.utils import stream_names
 from dimos.memory2.store.sqlite import SqliteStore
 from dimos.msgs.geometry_msgs.PoseStamped import PoseStamped
@@ -176,6 +180,10 @@ def _path(db_path, stream):
 def _log_odom_frames(db_path, stride=5):
     """A moving XYZ basis-vector triad per odom stream (Transform3D over time +
     a static axis triad). Doubles as the eye's tracking target."""
+    conn = sqlite3.connect(db_path)
+    present = {row[0] for row in conn.execute("SELECT name FROM _streams")}
+    conn.close()
+    is_go2 = stream_names.ODOM in present or stream_names.LIDAR in present
     for stream, name in [
         (stream_names.GTSAM_ODOM, "gtsam"),
         (stream_names.FASTLIO_ODOM, "fastlio"),
@@ -201,12 +209,37 @@ def _log_odom_frames(db_path, stride=5):
             ),
             static=True,
         )
-        # green box marking the odom source (child -> inherits the moving transform)
-        rr.log(
-            f"{ent}/box",
-            rr.Boxes3D(half_sizes=[[0.35, 0.2, 0.15]], colors=[[0, 220, 0]]),
-            static=True,
-        )
+        # green box marking the odom source (child -> inherits the moving transform).
+        # On a Go2, the fastlio (mid360) frame's box is the dog trunk, statically
+        # offset to base_link (mid360->base from static_transforms.urdf).
+        if name == "fastlio" and is_go2:
+            offset = MID360_TO_BASE
+            rr.log(
+                f"{ent}/box",
+                rr.Transform3D(
+                    translation=[offset.translation.x, offset.translation.y, offset.translation.z],
+                    quaternion=rr.Quaternion(
+                        xyzw=[
+                            offset.rotation.x,
+                            offset.rotation.y,
+                            offset.rotation.z,
+                            offset.rotation.w,
+                        ]
+                    ),
+                ),
+                static=True,
+            )
+            rr.log(
+                f"{ent}/box",
+                rr.Boxes3D(half_sizes=[list(GO2_BODY_HALF_SIZES)], colors=[[0, 220, 0]]),
+                static=True,
+            )
+        else:
+            rr.log(
+                f"{ent}/box",
+                rr.Boxes3D(half_sizes=[[0.35, 0.2, 0.15]], colors=[[0, 220, 0]]),
+                static=True,
+            )
         for r in rows[::stride]:
             rr.set_time(TIMELINE, timestamp=r[0])
             rr.log(

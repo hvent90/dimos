@@ -1,0 +1,185 @@
+<?xml version="1.0"?>
+<!--
+  Static transforms between the RealSense D435i frames and the Mid-360 odom frame.
+  Generated from static_transforms.py.
+
+  RealSense D435i frame transforms are transcribed from the official realsense2_description
+  xacro (use_nominal_extrinsics=true). Mid-360 geometry is from the Livox Mid-360 manual and
+  the lidar-to-IMU extrinsic in dimos/hardware/sensors/lidar/fastlio2/config/mid360.yaml.
+
+  FAST-LIO odometry is the IMU ("body") frame, tracked here as imu_frame (NOT lidar_frame).
+-->
+<robot name="d435i">
+
+  <link name="d435i"/>
+
+  <link name="bottom_screw_frame">
+    <visual>
+      <!-- D435i body box (90 x 25 x 25 mm), bottom face on the screw plane. -->
+      <origin xyz="0 0 0.0125" rpy="0 0 0"/>
+      <geometry>
+        <box size="0.025 0.09 0.025"/>
+      </geometry>
+      <material name="camera_blue">
+        <color rgba="0.313725 0.627451 0.901961 1.0"/>
+      </material>
+    </visual>
+  </link>
+
+  <link name="world"/>
+  <link name="link"/>
+  <link name="depth_frame"/>
+  <link name="depth_optical_frame"/>
+  <link name="infra1_frame"/>
+  <link name="infra1_optical_frame"/>
+  <link name="infra2_frame"/>
+  <link name="infra2_optical_frame"/>
+  <link name="color_frame"/>
+  <link name="color_optical_frame"/>
+  <link name="accel_frame"/>
+  <link name="accel_optical_frame"/>
+  <link name="gyro_frame"/>
+  <link name="gyro_optical_frame"/>
+  <link name="box_pitch_frame"/>
+
+  <link name="box_center">
+    <visual>
+      <!-- Mid-360 body box (65 x 65 x 60 mm), centered on box_center. -->
+      <origin xyz="0 0 0" rpy="0 0 0"/>
+      <geometry>
+        <box size="0.065 0.065 0.06"/>
+      </geometry>
+      <material name="lidar_orange">
+        <color rgba="0.901961 0.627451 0.156863 1.0"/>
+      </material>
+    </visual>
+  </link>
+
+  <link name="lidar_frame"/>
+  <link name="imu_frame"/>
+
+  <joint name="d435i_to_bottom_screw_frame" type="fixed">
+    <parent link="d435i"/>
+    <child link="bottom_screw_frame"/>
+    <origin xyz="0 0 0" rpy="0 0 0"/>
+  </joint>
+
+  <!-- world: screw frame pitched down by CAMERA_ANGLE_UP (10 deg) into a gravity-flat frame. -->
+  <joint name="bottom_screw_frame_to_world" type="fixed">
+    <parent link="bottom_screw_frame"/>
+    <child link="world"/>
+    <origin xyz="0 0 0" rpy="0 0.17453292519943295 0"/>
+  </joint>
+
+  <!-- MESH_X_OFFSET=0.0106, DEPTH_PY=0.0175, DEPTH_PZ=0.0125 -->
+  <joint name="bottom_screw_frame_to_link" type="fixed">
+    <parent link="bottom_screw_frame"/>
+    <child link="link"/>
+    <origin xyz="0.0106 0.0175 0.0125" rpy="0 0 0"/>
+  </joint>
+
+  <joint name="link_to_depth_frame" type="fixed">
+    <parent link="link"/>
+    <child link="depth_frame"/>
+    <origin xyz="0 0 0" rpy="0 0 0"/>
+  </joint>
+
+  <!-- OPTICAL_RPY = (-pi/2, 0, -pi/2) -->
+  <joint name="depth_frame_to_depth_optical_frame" type="fixed">
+    <parent link="depth_frame"/>
+    <child link="depth_optical_frame"/>
+    <origin xyz="0 0 0" rpy="-1.5707963267948966 0 -1.5707963267948966"/>
+  </joint>
+
+  <joint name="link_to_infra1_frame" type="fixed">
+    <parent link="link"/>
+    <child link="infra1_frame"/>
+    <origin xyz="0 0 0" rpy="0 0 0"/>
+  </joint>
+
+  <joint name="infra1_frame_to_infra1_optical_frame" type="fixed">
+    <parent link="infra1_frame"/>
+    <child link="infra1_optical_frame"/>
+    <origin xyz="0 0 0" rpy="-1.5707963267948966 0 -1.5707963267948966"/>
+  </joint>
+
+  <!-- DEPTH_TO_INFRA2_OFFSET = -0.050 -->
+  <joint name="link_to_infra2_frame" type="fixed">
+    <parent link="link"/>
+    <child link="infra2_frame"/>
+    <origin xyz="0 -0.05 0" rpy="0 0 0"/>
+  </joint>
+
+  <joint name="infra2_frame_to_infra2_optical_frame" type="fixed">
+    <parent link="infra2_frame"/>
+    <child link="infra2_optical_frame"/>
+    <origin xyz="0 0 0" rpy="-1.5707963267948966 0 -1.5707963267948966"/>
+  </joint>
+
+  <!-- DEPTH_TO_COLOR_OFFSET = 0.015 -->
+  <joint name="link_to_color_frame" type="fixed">
+    <parent link="link"/>
+    <child link="color_frame"/>
+    <origin xyz="0 0.015 0" rpy="0 0 0"/>
+  </joint>
+
+  <joint name="color_frame_to_color_optical_frame" type="fixed">
+    <parent link="color_frame"/>
+    <child link="color_optical_frame"/>
+    <origin xyz="0 0 0" rpy="-1.5707963267948966 0 -1.5707963267948966"/>
+  </joint>
+
+  <!-- IMU_XYZ = (-0.01174, -0.00552, 0.0051) -->
+  <joint name="link_to_accel_frame" type="fixed">
+    <parent link="link"/>
+    <child link="accel_frame"/>
+    <origin xyz="-0.01174 -0.00552 0.0051" rpy="0 0 0"/>
+  </joint>
+
+  <joint name="accel_frame_to_accel_optical_frame" type="fixed">
+    <parent link="accel_frame"/>
+    <child link="accel_optical_frame"/>
+    <origin xyz="0 0 0" rpy="-1.5707963267948966 0 -1.5707963267948966"/>
+  </joint>
+
+  <joint name="link_to_gyro_frame" type="fixed">
+    <parent link="link"/>
+    <child link="gyro_frame"/>
+    <origin xyz="-0.01174 -0.00552 0.0051" rpy="0 0 0"/>
+  </joint>
+
+  <joint name="gyro_frame_to_gyro_optical_frame" type="fixed">
+    <parent link="gyro_frame"/>
+    <child link="gyro_optical_frame"/>
+    <origin xyz="0 0 0" rpy="-1.5707963267948966 0 -1.5707963267948966"/>
+  </joint>
+
+  <!-- BOX_PITCH_DOWN = 26 deg + CAMERA_ANGLE_UP (10 deg) = 36 deg = 0.6283185307179586 rad -->
+  <joint name="bottom_screw_frame_to_box_pitch_frame" type="fixed">
+    <parent link="bottom_screw_frame"/>
+    <child link="box_pitch_frame"/>
+    <origin xyz="0 0 0" rpy="0 0.6283185307179586 0"/>
+  </joint>
+
+  <!-- BOX_BACK = 0.085, BOX_UP = 0.037 -->
+  <joint name="box_pitch_frame_to_box_center" type="fixed">
+    <parent link="box_pitch_frame"/>
+    <child link="box_center"/>
+    <origin xyz="-0.085 0 0.037" rpy="0 0 0"/>
+  </joint>
+
+  <!-- LIDAR_ABOVE_BOX_CENTER = 0.017 (point-cloud origin O above box center) -->
+  <joint name="box_center_to_lidar_frame" type="fixed">
+    <parent link="box_center"/>
+    <child link="lidar_frame"/>
+    <origin xyz="0 0 0.017" rpy="0 0 0"/>
+  </joint>
+
+  <!-- IMU_IN_LIDAR = (0.011, 0.02329, -0.04412): IMU position in point-cloud coords. -->
+  <joint name="lidar_frame_to_imu_frame" type="fixed">
+    <parent link="lidar_frame"/>
+    <child link="imu_frame"/>
+    <origin xyz="0.011 0.02329 -0.04412" rpy="0 0 0"/>
+  </joint>
+
+</robot>

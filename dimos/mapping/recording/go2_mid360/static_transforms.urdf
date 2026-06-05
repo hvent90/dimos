@@ -1,0 +1,60 @@
+<?xml version="1.0"?>
+<!--
+  Static transforms between the Go2 body, its front camera, and the Mid-360 odom frame.
+  Generated from static_transforms.py.
+
+  Mount geometry (measured on the physical rig):
+    - base_link -> front_camera: 32.7cm forward, ~4.3cm up.
+    - front_camera -> mid360_link: lidar 3.2cm back, 12cm up, pitched 44 deg down.
+    - front_camera -> camera_optical: standard ROS optical rotation (x-right, y-down, z-forward).
+
+  FAST-LIO odometry is the Mid-360 IMU ("body") frame, tracked here as mid360_link.
+-->
+<robot name="go2">
+
+  <link name="go2"/>
+
+  <link name="base_link">
+    <visual>
+      <!-- Approximate Go2 trunk box (~65 x 31 x 15 cm), centered on base_link. -->
+      <origin xyz="0 0 0" rpy="0 0 0"/>
+      <geometry>
+        <box size="0.65 0.31 0.15"/>
+      </geometry>
+      <material name="trunk_gray">
+        <color rgba="0.470588 0.470588 0.509804 1.0"/>
+      </material>
+    </visual>
+  </link>
+
+  <link name="front_camera"/>
+  <link name="mid360_link"/>
+  <link name="camera_optical"/>
+
+  <joint name="go2_to_base_link" type="fixed">
+    <parent link="go2"/>
+    <child link="base_link"/>
+    <origin xyz="0 0 0" rpy="0 0 0"/>
+  </joint>
+
+  <joint name="base_link_to_front_camera" type="fixed">
+    <parent link="base_link"/>
+    <child link="front_camera"/>
+    <origin xyz="0.32715 -0.00003 0.04297" rpy="0 0 0"/>
+  </joint>
+
+  <!-- 44 deg pitch down = 0.7679448708775051 rad -->
+  <joint name="front_camera_to_mid360_link" type="fixed">
+    <parent link="front_camera"/>
+    <child link="mid360_link"/>
+    <origin xyz="-0.032 0 0.12" rpy="0 0.7679448708775051 0"/>
+  </joint>
+
+  <!-- OPTICAL_RPY = (-pi/2, 0, -pi/2) -->
+  <joint name="front_camera_to_camera_optical" type="fixed">
+    <parent link="front_camera"/>
+    <child link="camera_optical"/>
+    <origin xyz="0 0 0" rpy="-1.5707963267948966 0 -1.5707963267948966"/>
+  </joint>
+
+</robot>
