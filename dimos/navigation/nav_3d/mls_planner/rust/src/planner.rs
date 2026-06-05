@@ -6,10 +6,13 @@ use std::collections::BinaryHeap;
 
 use ahash::AHashMap;
 
-use crate::adjacency::{CellId, SurfaceLookup};
+use crate::adjacency::{CellId, SurfaceCells, SurfaceLookup};
 use crate::dijkstra::walk_preds;
 use crate::edges::{NodeEdgeIdx, NodeId, PlannerGraph, NO_NODE};
 use crate::voxel::{surface_point_xyz, VoxelKey};
+
+/// Robot-rooted candidate search radius, in multiples of node spacing.
+const CANDIDATE_RADIUS_FACTOR: f32 = 3.0;
 
 /// Snap a pose to the best surface cell.
 pub fn snap_pose_to_cell(
@@ -79,6 +82,7 @@ pub fn plan(
     goal_pose: (f32, f32, f32),
     voxel_size: f32,
     z_tolerance_m: f32,
+    node_spacing_m: f32,
 ) -> Option<Vec<(f32, f32, f32)>> {
     let start_coord =
         snap_pose_to_cell(&plg.surface_lookup, start_pose, voxel_size, z_tolerance_m)?;
@@ -93,40 +97,124 @@ pub fn plan(
         .map(|(i, n)| (n.cell_id, i as NodeId))
         .collect();
 
-    let start_segment = walk_preds(&plg.cell_state, start_cell);
     let goal_segment = walk_preds(&plg.cell_state, goal_cell);
-    let start_node = *node_idx_by_cell.get(start_segment.last()?)?;
     let goal_node = *node_idx_by_cell.get(goal_segment.last()?)?;
 
-    let node_seq = shortest_path_nodes(plg, start_node, goal_node)?;
+    // Cost-to-go to the goal for every node, with predecessors pointing at the
+    // goal. Rooting the search at the fixed goal makes this single array the
+    // whole field we need. It is recomputed each scan, so churn in the node set
+    // between scans never matters.
+    let (cost_to_go, pred_to_goal) = node_dijkstra(plg, goal_node);
+
+    // Candidate entry nodes: every node the robot can reach on the surface
+    // within a local radius, each with its true connect cost. Enter on the node
+    // that minimizes connect cost plus cost-to-go. This is the first node of the
+    // optimal robot-to-goal path, so the robot never detours to its nearest node
+    // when a node closer to the goal is just as reachable.
+    let radius = (node_spacing_m * CANDIDATE_RADIUS_FACTOR).max(voxel_size);
+    let (connect_dist, connect_pred) = robot_search(&plg.cells, start_cell, radius);
+
+    let mut entry_node = NO_NODE;
+    let mut best_score = f32::INFINITY;
+    for (i, node) in plg.nodes.iter().enumerate() {
+        let Some(&connect) = connect_dist.get(&node.cell_id) else {
+            continue;
+        };
+        let score = connect + cost_to_go[i];
+        if score < best_score {
+            best_score = score;
+            entry_node = i as NodeId;
+        }
+    }
+
+    let (lead_in, node_seq) = if best_score.is_finite() {
+        // Lead in along the actual surface path the search found to the entry
+        // node, so the connection never leaves the surface or doubles back.
+        let mut lead = walk_local_preds(&connect_pred, plg.nodes[entry_node as usize].cell_id);
+        lead.reverse();
+        (lead, follow_preds(entry_node, goal_node, &pred_to_goal)?)
+    } else {
+        // The local search reached no node with a route to the goal. Fall back
+        // to the robot's region node and its on-surface lead-in.
+        let start_segment = walk_preds(&plg.cell_state, start_cell);
+        let region_node = *node_idx_by_cell.get(start_segment.last()?)?;
+        if !cost_to_go[region_node as usize].is_finite() {
+            return None;
+        }
+        (
+            start_segment,
+            follow_preds(region_node, goal_node, &pred_to_goal)?,
+        )
+    };
+
     Some(assemble_waypoints(
         plg,
         &node_seq,
         start_pose,
-        &start_segment,
+        &lead_in,
         goal_pose,
         &goal_segment,
         voxel_size,
     ))
 }
 
-pub fn shortest_path_nodes(plg: &PlannerGraph, start: NodeId, goal: NodeId) -> Option<Vec<NodeId>> {
-    if start == goal {
-        return Some(vec![start]);
+/// Bounded Dijkstra from the robot's cell over the surface, visiting only cells
+/// within `radius_m`. Returns per-cell distance and predecessor maps so the
+/// on-surface lead-in to any reached cell can be reconstructed.
+fn robot_search(
+    cells: &SurfaceCells,
+    source: CellId,
+    radius_m: f32,
+) -> (AHashMap<CellId, f32>, AHashMap<CellId, CellId>) {
+    let mut dist: AHashMap<CellId, f32> = AHashMap::new();
+    let mut pred: AHashMap<CellId, CellId> = AHashMap::new();
+    let mut heap: BinaryHeap<Scored> = BinaryHeap::new();
+    dist.insert(source, 0.0);
+    heap.push(Scored(0.0, source));
+
+    while let Some(Scored(d, u)) = heap.pop() {
+        if d > radius_m {
+            break;
+        }
+        if d > dist.get(&u).copied().unwrap_or(f32::INFINITY) {
+            continue;
+        }
+        for edge in cells.neighbors(u) {
+            let nd = d + edge.cost;
+            if nd < dist.get(&edge.dest).copied().unwrap_or(f32::INFINITY) {
+                dist.insert(edge.dest, nd);
+                pred.insert(edge.dest, u);
+                heap.push(Scored(nd, edge.dest));
+            }
+        }
     }
+    (dist, pred)
+}
+
+/// Walk predecessors from `from` back to the search source.
+fn walk_local_preds(pred: &AHashMap<CellId, CellId>, from: CellId) -> Vec<CellId> {
+    let mut path = vec![from];
+    let mut cur = from;
+    while let Some(&p) = pred.get(&cur) {
+        cur = p;
+        path.push(cur);
+    }
+    path
+}
+
+/// Cost-to-go to `source` for every node, plus a predecessor pointing one hop
+/// toward `source`. Unreachable nodes keep an infinite cost and `NO_NODE` pred.
+fn node_dijkstra(plg: &PlannerGraph, source: NodeId) -> (Vec<f32>, Vec<NodeId>) {
     let n = plg.nodes.len();
     let mut dist = vec![f32::INFINITY; n];
     let mut pred = vec![NO_NODE; n];
-    dist[start as usize] = 0.0;
+    dist[source as usize] = 0.0;
     let mut heap: BinaryHeap<Scored> = BinaryHeap::new();
-    heap.push(Scored(0.0, start));
+    heap.push(Scored(0.0, source));
 
     while let Some(Scored(d, u)) = heap.pop() {
         if d > dist[u as usize] {
             continue;
-        }
-        if u == goal {
-            break;
         }
         for &edge_idx in &plg.node_adj[u as usize] {
             let edge = &plg.node_edges[edge_idx as usize];
@@ -139,18 +227,34 @@ pub fn shortest_path_nodes(plg: &PlannerGraph, start: NodeId, goal: NodeId) -> O
             }
         }
     }
+    (dist, pred)
+}
 
-    if !dist[goal as usize].is_finite() {
-        return None;
+/// Follow goal-pointing predecessors from `from` to `goal`.
+fn follow_preds(from: NodeId, goal: NodeId, pred: &[NodeId]) -> Option<Vec<NodeId>> {
+    let mut seq = vec![from];
+    let mut cur = from;
+    while cur != goal {
+        let next = pred[cur as usize];
+        if next == NO_NODE {
+            return None;
+        }
+        cur = next;
+        seq.push(cur);
     }
-    let mut path = vec![goal];
-    let mut cur = goal;
-    while pred[cur as usize] != NO_NODE {
-        cur = pred[cur as usize];
-        path.push(cur);
+    Some(seq)
+}
+
+/// Append a cell to the path, collapsing out-and-back spurs. When the next cell
+/// equals the second-to-last, the path walked up a Voronoi-tree branch and is
+/// now retracing it. Drop the dead-end instead of stitching in a detour. This is
+/// what keeps the lead-in from looping out to the robot's region node and back.
+fn push_cell(cells: &mut Vec<CellId>, c: CellId) {
+    if cells.len() >= 2 && cells[cells.len() - 2] == c {
+        cells.pop();
+    } else if cells.last() != Some(&c) {
+        cells.push(c);
     }
-    path.reverse();
-    Some(path)
 }
 
 fn assemble_waypoints(
@@ -163,7 +267,9 @@ fn assemble_waypoints(
     voxel_size: f32,
 ) -> Vec<(f32, f32, f32)> {
     let mut cells: Vec<CellId> = Vec::new();
-    cells.extend_from_slice(start_segment);
+    for &c in start_segment {
+        push_cell(&mut cells, c);
+    }
 
     for pair in node_seq.windows(2) {
         let (a, b) = (pair[0], pair[1]);
@@ -181,16 +287,12 @@ fn assemble_waypoints(
         let to_b = walk_preds(&plg.cell_state, end_side);
 
         for c in from_a.into_iter().chain(to_b) {
-            if cells.last() != Some(&c) {
-                cells.push(c);
-            }
+            push_cell(&mut cells, c);
         }
     }
 
     for &c in goal_segment.iter().rev() {
-        if cells.last() != Some(&c) {
-            cells.push(c);
-        }
+        push_cell(&mut cells, c);
     }
 
     let mut waypoints: Vec<(f32, f32, f32)> = Vec::with_capacity(cells.len() + 2);
@@ -271,6 +373,14 @@ mod tests {
         (0..n).map(|x| (x, 0, 0)).collect()
     }
 
+    fn plan_simple(
+        plg: &PlannerGraph,
+        start: (f32, f32, f32),
+        goal: (f32, f32, f32),
+    ) -> Option<Vec<(f32, f32, f32)>> {
+        plan(plg, start, goal, VOXEL, Z_TOL, 1.0)
+    }
+
     #[test]
     fn snap_picks_in_column_cell() {
         let mut lookup = SurfaceLookup::new();
@@ -299,7 +409,7 @@ mod tests {
     #[test]
     fn plan_returns_none_if_start_cant_snap() {
         let plg = graph_with_nodes(&strip(20), &[(10, 0, 0)]);
-        let result = plan(&plg, (0.5, 0.0, 10.0), (1.0, 0.0, 0.1), VOXEL, Z_TOL);
+        let result = plan_simple(&plg, (0.5, 0.0, 10.0), (1.0, 0.0, 0.1));
         assert!(result.is_none());
     }
 
@@ -308,14 +418,14 @@ mod tests {
         let mut cells: Vec<VoxelKey> = (0..5).map(|x| (x, 0, 0)).collect();
         cells.extend((10..15).map(|x| (x, 0, 0)));
         let plg = graph_with_nodes(&cells, &[(2, 0, 0), (12, 0, 0)]);
-        let result = plan(&plg, (0.25, 0.0, 0.1), (1.25, 0.0, 0.1), VOXEL, Z_TOL);
+        let result = plan_simple(&plg, (0.25, 0.0, 0.1), (1.25, 0.0, 0.1));
         assert!(result.is_none());
     }
 
     #[test]
     fn plan_same_start_and_goal_passes_through_snap_cell() {
         let plg = graph_with_nodes(&strip(20), &[(10, 0, 0)]);
-        let wp = plan(&plg, (1.0, 0.0, 0.05), (1.0, 0.0, 0.05), VOXEL, Z_TOL).unwrap();
+        let wp = plan_simple(&plg, (1.0, 0.0, 0.05), (1.0, 0.0, 0.05)).unwrap();
         assert_eq!(wp.first(), Some(&(1.0, 0.0, 0.05)));
         assert_eq!(wp.last(), Some(&(1.0, 0.0, 0.05)));
         let snap = surface_point_xyz(10, 0, 0, VOXEL);
@@ -325,7 +435,10 @@ mod tests {
     #[test]
     fn plan_traces_surface_from_pose_to_first_node() {
         let plg = graph_with_nodes(&strip(20), &[(3, 0, 0), (15, 0, 0)]);
-        let wp = plan(&plg, (0.2, 0.0, 0.05), (1.7, 0.0, 0.05), VOXEL, Z_TOL).unwrap();
+        let wp = plan_simple(&plg, (0.2, 0.0, 0.05), (1.7, 0.0, 0.05)).unwrap();
+        // The lead-in follows the surface from the robot's cell through its
+        // region node, so the first waypoint after the start pose is the robot's
+        // own snapped cell, not a straight jump ahead.
         let start_cell_pos = surface_point_xyz(2, 0, 0, VOXEL);
         let goal_cell_pos = surface_point_xyz(17, 0, 0, VOXEL);
         assert_eq!(wp[1], start_cell_pos);
@@ -333,16 +446,69 @@ mod tests {
     }
 
     #[test]
-    fn plan_three_nodes_visits_them_all() {
+    fn plan_lead_in_does_not_backtrack_to_region_node() {
+        // Robot at cell 5 is in node (3)'s region but sits between that node and
+        // the goal-side node (15). The lead-in must head straight toward the goal
+        // along the surface, never looping back to cell 3.
+        let plg = graph_with_nodes(&strip(20), &[(3, 0, 0), (15, 0, 0)]);
+        let wp = plan_simple(&plg, (0.55, 0.0, 0.05), (1.7, 0.0, 0.05)).unwrap();
+        let xs: Vec<i32> = wp[1..wp.len() - 1]
+            .iter()
+            .map(|w| (w.0 / VOXEL).floor() as i32)
+            .collect();
+        assert_eq!(xs.first(), Some(&5));
+        assert!(
+            xs.windows(2).all(|p| p[1] >= p[0]),
+            "lead-in walked backward: {xs:?}"
+        );
+    }
+
+    #[test]
+    fn plan_path_waypoints_are_all_on_the_surface() {
         let plg = graph_with_nodes(&strip(20), &[(3, 0, 0), (10, 0, 0), (17, 0, 0)]);
-        let wp = plan(&plg, (0.2, 0.0, 0.05), (1.9, 0.0, 0.05), VOXEL, Z_TOL).unwrap();
-        let node_xy: Vec<(f32, f32)> = plg.nodes.iter().map(|n| (n.pos.0, n.pos.1)).collect();
-        for &(nx, ny) in &node_xy {
+        let wp = plan_simple(&plg, (0.2, 0.0, 0.05), (1.9, 0.0, 0.05)).unwrap();
+        // Every waypoint between the raw start and goal poses must land on a
+        // surface cell. Consecutive waypoints must also be adjacent cells, so the
+        // path never jumps across a gap.
+        let on_surface = |w: &(f32, f32, f32)| {
+            let ix = (w.0 / VOXEL).floor() as i32;
+            let iy = (w.1 / VOXEL).floor() as i32;
+            plg.cells.id((ix, iy, 0)).is_some()
+        };
+        for w in &wp[1..wp.len() - 1] {
+            assert!(on_surface(w), "waypoint {w:?} is off the surface");
+        }
+        for pair in wp[1..wp.len() - 1].windows(2) {
+            let dx = ((pair[0].0 - pair[1].0) / VOXEL).round().abs() as i32;
+            let dy = ((pair[0].1 - pair[1].1) / VOXEL).round().abs() as i32;
             assert!(
-                wp.iter()
-                    .any(|w| (w.0 - nx).abs() < 1e-5 && (w.1 - ny).abs() < 1e-5),
-                "node ({nx}, {ny}) should appear among waypoints"
+                dx + dy <= 1,
+                "waypoints {:?} and {:?} are not adjacent",
+                pair[0],
+                pair[1]
             );
         }
+    }
+
+    #[test]
+    fn plan_enters_on_goalward_node_not_nearest() {
+        // The robot sits past node (2) toward the goal. Node (2) is nearest, but
+        // node (10) is more reachable on a goal-minimizing basis. The entry must
+        // be the goalward node, so the path never visits node (2) behind it.
+        let plg = graph_with_nodes(&strip(20), &[(2, 0, 0), (10, 0, 0)]);
+        let wp = plan_simple(&plg, (0.45, 0.0, 0.05), (1.25, 0.0, 0.05)).unwrap();
+        let nearest = surface_point_xyz(2, 0, 0, VOXEL);
+        assert!(
+            !wp.iter().any(|w| (w.0 - nearest.0).abs() < 1e-5),
+            "path doubled back to the nearest node: {wp:?}"
+        );
+        let xs: Vec<i32> = wp[1..wp.len() - 1]
+            .iter()
+            .map(|w| (w.0 / VOXEL).floor() as i32)
+            .collect();
+        assert!(
+            xs.windows(2).all(|p| p[1] >= p[0]),
+            "path stepped backward: {xs:?}"
+        );
     }
 }

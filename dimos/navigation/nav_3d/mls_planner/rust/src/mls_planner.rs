@@ -103,6 +103,7 @@ impl Planner {
             goal,
             config.voxel_size,
             config.robot_height,
+            config.node_spacing_m,
         )
     }
 
