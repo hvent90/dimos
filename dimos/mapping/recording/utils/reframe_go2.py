@@ -102,7 +102,27 @@ def _update_point_pose(
         )
 
 
-def reframe(db_path: str, urdf_path: str, rrd_path: str) -> None:
+def _static_transforms(urdf_path: str, self_leveled: bool) -> tuple[Transform, Transform]:
+    """(mid360 -> base, mid360 -> camera_optical) from the URDF.
+
+    When FAST-LIO `--self-leveled`, the mid360 frame it reports is gravity-leveled,
+    so the mount's downward pitch is already gone: pre-compose the mount rotation
+    to cancel the URDF's pitch (leveled mid360 == base orientation). Otherwise the
+    reported frame is the physically-pitched mid360 and the URDF transform is used
+    as-is.
+    """
+    graph = parse_urdf_graph(urdf_path)
+    mid360_to_base = transform_between(graph, WORLD_FRAME, BASE_FRAME)
+    mid360_to_camera = transform_between(graph, WORLD_FRAME, CAMERA_FRAME)
+    if self_leveled:
+        mount = transform_between(graph, BASE_FRAME, WORLD_FRAME).rotation  # base->mid360 pitch
+        leveler = Transform(translation=Vector3(0.0, 0.0, 0.0), rotation=mount)
+        mid360_to_base = leveler + mid360_to_base
+        mid360_to_camera = leveler + mid360_to_camera
+    return mid360_to_base, mid360_to_camera
+
+
+def reframe(db_path: str, urdf_path: str, rrd_path: str, self_leveled: bool = False) -> None:
     # --- 1. truncate to the first fastlio_odometry message ---
     t0 = first_fastlio_ts(db_path)
     if t0 is None:
@@ -112,9 +132,8 @@ def reframe(db_path: str, urdf_path: str, rrd_path: str) -> None:
         f"   truncate: removed {sum(removed.values())} pre-fastlio rows from {len(removed)} streams"
     )
 
-    graph = parse_urdf_graph(urdf_path)
-    mid360_to_base = transform_between(graph, WORLD_FRAME, BASE_FRAME)
-    mid360_to_camera = transform_between(graph, WORLD_FRAME, CAMERA_FRAME)
+    mid360_to_base, mid360_to_camera = _static_transforms(urdf_path, self_leveled)
+    print(f"   frames: {'self-leveled' if self_leveled else 'physically-pitched'} mid360")
 
     # --- read fastlio world->mid360 (the raw odom value), the Go2 odom values, and
     # the Go2 lidar clouds. `.data` is lazy, so materialize everything here while
@@ -194,6 +213,12 @@ def main() -> None:
     )
     parser.add_argument("recording", help="recording dir (or its mem2.db)")
     parser.add_argument("--urdf", default=str(DEFAULT_URDF), help="URDF frame tree")
+    parser.add_argument(
+        "--self-leveled",
+        action="store_true",
+        help="FAST-LIO self-leveled this recording (its mid360 frame is gravity-leveled, "
+        "so cancel the mount's downward pitch in the static transforms)",
+    )
     args = parser.parse_args()
 
     target = Path(args.recording)
@@ -204,7 +229,7 @@ def main() -> None:
     rrd_path = db_path.parent / (RRD_NAME if db_path.name == DB_NAME else f"{db_path.stem}.rrd")
 
     print(f">> reframing {db_path.parent.name} into the {WORLD_FRAME} world")
-    reframe(str(db_path), args.urdf, str(rrd_path))
+    reframe(str(db_path), args.urdf, str(rrd_path), self_leveled=args.self_leveled)
     print("done")
 
 
