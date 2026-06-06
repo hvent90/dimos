@@ -28,7 +28,22 @@
   </link>
 
   <link name="front_camera"/>
-  <link name="mid360_link"/>
+
+  <link name="mid360_link">
+    <visual>
+      <!-- Mid-360 body box (65 x 65 x 60 mm), centered on mid360_link. -->
+      <origin xyz="0 0 0" rpy="0 0 0"/>
+      <geometry>
+        <box size="0.065 0.065 0.06"/>
+      </geometry>
+      <material name="lidar_orange">
+        <color rgba="0.901961 0.627451 0.156863 1.0"/>
+      </material>
+    </visual>
+  </link>
+
+  <link name="lidar_frame"/>
+  <link name="imu_frame"/>
   <link name="camera_optical"/>
 
   <joint name="go2_to_base_link" type="fixed">
@@ -48,6 +63,20 @@
     <parent link="front_camera"/>
     <child link="mid360_link"/>
     <origin xyz="-0.032 0 0.12" rpy="0 0.7679448708775051 0"/>
+  </joint>
+
+  <!-- LIDAR_ABOVE_BOX_CENTER = 0.017 (point-cloud origin O above box center) -->
+  <joint name="mid360_link_to_lidar_frame" type="fixed">
+    <parent link="mid360_link"/>
+    <child link="lidar_frame"/>
+    <origin xyz="0 0 0.017" rpy="0 0 0"/>
+  </joint>
+
+  <!-- IMU_IN_LIDAR = (0.011, 0.02329, -0.04412): IMU position in point-cloud coords. -->
+  <joint name="lidar_frame_to_imu_frame" type="fixed">
+    <parent link="lidar_frame"/>
+    <child link="imu_frame"/>
+    <origin xyz="0.011 0.02329 -0.04412" rpy="0 0 0"/>
   </joint>
 
   <!-- OPTICAL_RPY = (-pi/2, 0, -pi/2) -->

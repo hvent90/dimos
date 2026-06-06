@@ -209,9 +209,11 @@ def _log_odom_frames(db_path, stride=5):
             ),
             static=True,
         )
-        # green box marking the odom source (child -> inherits the moving transform).
-        # On a Go2, the fastlio (mid360) frame's box is the dog trunk, statically
-        # offset to base_link (mid360->base from static_transforms.urdf).
+        # translucent box marking the odom source (child -> inherits the moving
+        # transform); the fastlio_odometry box is yellow, the others green. On a
+        # Go2, the fastlio (mid360) frame's box is the dog trunk, statically offset
+        # to base_link (mid360->base from static_transforms.urdf).
+        box_color = [220, 220, 0, 128] if name == "fastlio" else [0, 220, 0, 128]
         if name == "fastlio" and is_go2:
             offset = MID360_TO_BASE
             rr.log(
@@ -231,13 +233,13 @@ def _log_odom_frames(db_path, stride=5):
             )
             rr.log(
                 f"{ent}/box",
-                rr.Boxes3D(half_sizes=[list(GO2_BODY_HALF_SIZES)], colors=[[0, 220, 0]]),
+                rr.Boxes3D(half_sizes=[list(GO2_BODY_HALF_SIZES)], colors=[box_color]),
                 static=True,
             )
         else:
             rr.log(
                 f"{ent}/box",
-                rr.Boxes3D(half_sizes=[[0.35, 0.2, 0.15]], colors=[[0, 220, 0]]),
+                rr.Boxes3D(half_sizes=[[0.35, 0.2, 0.15]], colors=[box_color]),
                 static=True,
             )
         for r in rows[::stride]:

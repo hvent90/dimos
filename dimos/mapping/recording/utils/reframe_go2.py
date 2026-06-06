@@ -34,10 +34,12 @@ then rebuilds the recording's `main.rrd`. World frame = the FAST-LIO odom frame
 from __future__ import annotations
 
 import argparse
+import math
 from pathlib import Path
 import sqlite3
 
 import numpy as np
+from scipy.spatial.transform import Rotation
 
 from dimos.mapping.recording.utils.db_reform import _nearest, parse_urdf_graph, transform_between
 from dimos.mapping.recording.utils.trunc import first_fastlio_ts, rebuild_rrd, truncate_db
@@ -85,6 +87,40 @@ def _pose7(transform: Transform) -> tuple[float, float, float, float, float, flo
     )
 
 
+def _mat(transform: Transform) -> np.ndarray:
+    matrix = np.eye(4)
+    rot = transform.rotation
+    matrix[:3, :3] = Rotation.from_quat([rot.x, rot.y, rot.z, rot.w]).as_matrix()
+    matrix[:3, 3] = [transform.translation.x, transform.translation.y, transform.translation.z]
+    return matrix
+
+
+def _transform_from_mat(matrix: np.ndarray) -> Transform:
+    quat = Rotation.from_matrix(matrix[:3, :3]).as_quat()
+    return Transform(
+        translation=Vector3(matrix[0, 3], matrix[1, 3], matrix[2, 3]),
+        rotation=Quaternion(quat[0], quat[1], quat[2], quat[3]),
+    )
+
+
+def _level_in_place(align: Transform, start: Transform) -> Transform:
+    """Compose an in-place rotation onto `align` so the go2 `start` pose is flat
+    (zero roll/pitch, yaw kept), pivoting about its own position so it doesn't move.
+    Levels the whole go2 trajectory + lidar even if FAST-LIO's frame is tilted."""
+    position = np.array([start.translation.x, start.translation.y, start.translation.z])
+    rotation = Rotation.from_quat(
+        [start.rotation.x, start.rotation.y, start.rotation.z, start.rotation.w]
+    ).as_matrix()
+    forward = rotation @ np.array([1.0, 0.0, 0.0])  # body x-axis in world
+    yaw = math.atan2(forward[1], forward[0])
+    level = Rotation.from_euler("z", yaw).as_matrix()
+    correction = level @ rotation.T  # world rotation that levels the start orientation
+    pivot = np.eye(4)
+    pivot[:3, :3] = correction
+    pivot[:3, 3] = position - correction @ position  # rotate about `position`, no translation
+    return _transform_from_mat(pivot @ _mat(align))
+
+
 def _update_point_pose(
     conn: sqlite3.Connection, stream: str, row_id: int, pose: tuple, has_rtree: bool
 ) -> None:
@@ -102,27 +138,7 @@ def _update_point_pose(
         )
 
 
-def _static_transforms(urdf_path: str, self_leveled: bool) -> tuple[Transform, Transform]:
-    """(mid360 -> base, mid360 -> camera_optical) from the URDF.
-
-    When FAST-LIO `--self-leveled`, the mid360 frame it reports is gravity-leveled,
-    so the mount's downward pitch is already gone: pre-compose the mount rotation
-    to cancel the URDF's pitch (leveled mid360 == base orientation). Otherwise the
-    reported frame is the physically-pitched mid360 and the URDF transform is used
-    as-is.
-    """
-    graph = parse_urdf_graph(urdf_path)
-    mid360_to_base = transform_between(graph, WORLD_FRAME, BASE_FRAME)
-    mid360_to_camera = transform_between(graph, WORLD_FRAME, CAMERA_FRAME)
-    if self_leveled:
-        mount = transform_between(graph, BASE_FRAME, WORLD_FRAME).rotation  # base->mid360 pitch
-        leveler = Transform(translation=Vector3(0.0, 0.0, 0.0), rotation=mount)
-        mid360_to_base = leveler + mid360_to_base
-        mid360_to_camera = leveler + mid360_to_camera
-    return mid360_to_base, mid360_to_camera
-
-
-def reframe(db_path: str, urdf_path: str, rrd_path: str, self_leveled: bool = False) -> None:
+def reframe(db_path: str, urdf_path: str, rrd_path: str) -> None:
     # --- 1. truncate to the first fastlio_odometry message ---
     t0 = first_fastlio_ts(db_path)
     if t0 is None:
@@ -132,12 +148,13 @@ def reframe(db_path: str, urdf_path: str, rrd_path: str, self_leveled: bool = Fa
         f"   truncate: removed {sum(removed.values())} pre-fastlio rows from {len(removed)} streams"
     )
 
-    mid360_to_base, mid360_to_camera = _static_transforms(urdf_path, self_leveled)
-    print(f"   frames: {'self-leveled' if self_leveled else 'physically-pitched'} mid360")
+    graph = parse_urdf_graph(urdf_path)
+    mid360_to_base = transform_between(graph, WORLD_FRAME, BASE_FRAME)
+    mid360_to_camera = transform_between(graph, WORLD_FRAME, CAMERA_FRAME)
 
-    # --- read fastlio world->mid360 (the raw odom value), the Go2 odom values, and
-    # the Go2 lidar clouds. `.data` is lazy, so materialize everything here while
-    # the store is open. ---
+    # `.data` is lazy, so materialize everything while the store is open. World =
+    # FAST-LIO's world (it reports world->mid360 as the odom value); reframe leaves
+    # the fastlio streams untouched and only expresses camera/odom/lidar in it.
     with SqliteStore(path=db_path) as store:
         fastlio_ts, fastlio_pose = [], []  # world -> mid360
         for obs in store.stream(FASTLIO_ODOM, Odometry):
@@ -177,6 +194,8 @@ def reframe(db_path: str, urdf_path: str, rrd_path: str, self_leveled: bool = Fa
     # --- 2. align Go2 odom + lidar with one rigid transform A ---
     target0 = fastlio_pose[_nearest(fastlio_ts, odom_ts[0])] + mid360_to_base
     align = target0 + odom_pose[0].inverse()  # go2 odom frame -> mid360 world
+    align = _level_in_place(align, target0)  # force the go2 lidar flat with the ground
+    print("   level: go2 frame leveled in place (roll/pitch zeroed at start)")
 
     with SqliteStore(path=db_path) as store:
         store.delete_stream(ODOM)
@@ -213,12 +232,6 @@ def main() -> None:
     )
     parser.add_argument("recording", help="recording dir (or its mem2.db)")
     parser.add_argument("--urdf", default=str(DEFAULT_URDF), help="URDF frame tree")
-    parser.add_argument(
-        "--self-leveled",
-        action="store_true",
-        help="FAST-LIO self-leveled this recording (its mid360 frame is gravity-leveled, "
-        "so cancel the mount's downward pitch in the static transforms)",
-    )
     args = parser.parse_args()
 
     target = Path(args.recording)
@@ -229,7 +242,7 @@ def main() -> None:
     rrd_path = db_path.parent / (RRD_NAME if db_path.name == DB_NAME else f"{db_path.stem}.rrd")
 
     print(f">> reframing {db_path.parent.name} into the {WORLD_FRAME} world")
-    reframe(str(db_path), args.urdf, str(rrd_path), self_leveled=args.self_leveled)
+    reframe(str(db_path), args.urdf, str(rrd_path))
     print("done")
 
 
