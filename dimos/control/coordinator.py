@@ -644,10 +644,8 @@ class ControlCoordinator(Module):
                 )
 
         # Subscribe to cartesian commands if any task type consumes PoseStamped.
-        # quest_joint joins the existing IK tasks - it routes pose deltas to
-        # joint deltas without IK (see dimos/control/tasks/quest_joint_task/).
         has_cartesian_ik = any(
-            t.type in ("cartesian_ik", "teleop_ik", "quest_joint") for t in self.config.tasks
+            t.type in ("cartesian_ik", "teleop_ik") for t in self.config.tasks
         )
         if has_cartesian_ik:
             try:

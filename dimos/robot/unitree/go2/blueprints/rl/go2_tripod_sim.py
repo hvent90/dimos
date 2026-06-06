@@ -17,8 +17,8 @@
 
 Loads the trained 3-leg velocity policy ([data/2026-05-28_11-42-04/model_1200.pt])
 and walks the Go2 in MuJoCo. The FR ("right arm") is owned by a
-QuestJointTask gated by the right primary (A) button; the policy controls
-the other 9 leg joints.
+TeleopIKTask (translation-only) gated by the right primary (A) button via
+the upstream Quest module; the policy controls the other 9 leg joints.
 
 Quest controller mapping:
     left thumbstick   -> twist linear (drive)
@@ -82,7 +82,7 @@ go2_tripod_sim = autoconnect(
             ),
         ],
         tasks=[
-            # RL walking policy - masks FR so the QuestJointTask owns it.
+            # RL walking policy - masks FR so the FR teleop task owns it.
             TaskConfig(
                 name="rl_walk_go2",
                 type="rl_policy_go2",
@@ -97,13 +97,17 @@ go2_tripod_sim = autoconnect(
                     "device": "cpu",
                 },
             ),
-            # FR-leg joint-space teleop. Receives PoseStamped via the
-            # coordinator's cartesian_command routing (frame_id matches
-            # this task name). Higher priority than rl_walk_go2 so it
-            # wins per-joint arbitration on FR_*.
+            # FR-leg teleop. Same TeleopIKTask the manipulator arms use, with
+            # `translation_only=True` (3-DOF leg can't realize 6-DOF poses) and
+            # `hand=None` (engagement gating is upstream — the Quest module
+            # only publishes right_controller_output while A is held, so we
+            # just listen for fresh pose deltas and time out when they stop).
+            # Receives PoseStamped via the coordinator's cartesian_command
+            # routing (frame_id matches this task name). Higher priority than
+            # rl_walk_go2 so it wins per-joint arbitration on FR_*.
             TaskConfig(
                 name=_FR_TASK_NAME,
-                type="quest_joint",
+                type="teleop_ik",
                 joint_names=_FR_JOINTS,
                 priority=20,
                 auto_start=True,
@@ -114,7 +118,9 @@ go2_tripod_sim = autoconnect(
                     # in delta math.
                     "model_path": "data/go2_mjlab/go2_fr_leg.urdf",
                     "ee_joint_id": 3,
-                    "command_timeout": 0.3,
+                    "hand": None,  # upstream gating
+                    "translation_only": True,  # 3-DOF chain
+                    "timeout": 0.3,
                     "max_joint_delta_deg": 30.0,
                 },
             ),
@@ -131,7 +137,7 @@ go2_tripod_sim = autoconnect(
         # Joystick twist -> coordinator twist_command -> RLPolicyTask.set_velocity_command.
         ("twist_command", Twist): LCMTransport("/cmd_vel", Twist),
         ("cmd_vel", Twist): LCMTransport("/cmd_vel", Twist),
-        # Right controller pose -> coordinator cartesian_command -> QuestJointTask.
+        # Right controller pose -> coordinator cartesian_command -> FR teleop task.
         ("cartesian_command", PoseStamped): LCMTransport("/cartesian_command", PoseStamped),
         ("right_controller_output", PoseStamped): LCMTransport("/cartesian_command", PoseStamped),
         # Buttons - coordinator forwards to all tasks.
