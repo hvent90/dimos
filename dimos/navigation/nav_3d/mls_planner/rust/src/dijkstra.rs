@@ -200,8 +200,8 @@ impl PartialOrd for Scored {
 }
 impl Ord for Scored {
     fn cmp(&self, other: &Self) -> Ordering {
-        // Min-distance pops first; tie-break by coordinate so the result is
-        // independent of CellId assignment (incremental == full rebuild).
+        // Min-distance pops first. Coordinate tie-break keeps the result
+        // independent of CellId assignment, so incremental matches full rebuild.
         other.0.total_cmp(&self.0).then(other.1.cmp(&self.1))
     }
 }

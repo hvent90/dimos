@@ -536,7 +536,7 @@ mod tests {
 
     #[test]
     fn plan_lead_in_does_not_backtrack_to_region_node() {
-        // Robot at cell 5 is in node (3)'s region but sits between it and node (15).
+        // Robot at cell 5 is in node 3's region but sits between it and node 15.
         let plg = graph_with_nodes(&strip(20), &[(3, 0, 0), (15, 0, 0)]);
         let wp = plan_simple(&plg, (0.55, 0.0, 0.05), (1.7, 0.0, 0.05)).unwrap();
         let xs: Vec<i32> = wp[1..wp.len() - 1]
@@ -607,7 +607,7 @@ mod tests {
 
     #[test]
     fn plan_enters_on_goalward_node_not_nearest() {
-        // Robot sits past node (2) toward the goal; entry must skip it for node (10).
+        // Robot sits past node 2 toward the goal. Entry must skip it for node 10.
         let plg = graph_with_nodes(&strip(20), &[(2, 0, 0), (10, 0, 0)]);
         let wp = plan_simple(&plg, (0.45, 0.0, 0.05), (1.25, 0.0, 0.05)).unwrap();
         let nearest = surface_point_xyz(2, 0, 0, VOXEL);

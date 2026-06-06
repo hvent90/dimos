@@ -232,11 +232,9 @@ pub fn build_surface_cells(
 }
 
 /// Recompute outgoing edges for every live cell within one step of a changed
-/// cell, matching `build_surface_cells` edge logic. Call after surgical
-/// insert/remove so the affected region's adjacency matches a full rebuild.
-///
-/// `seeds` are the changed (added and removed) cell coordinates. The recompute
-/// set is the live cells at those coordinates plus their surface neighbors.
+/// cell, matching build_surface_cells edge logic. Call after surgical
+/// insert or remove so the affected region matches a full rebuild. The seed
+/// coordinates are the changed cells, and their surface neighbors are included.
 pub fn rebuild_edges_around(
     cells: &mut SurfaceCells,
     surface_lookup: &SurfaceLookup,

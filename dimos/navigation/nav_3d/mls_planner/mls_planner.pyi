@@ -43,8 +43,7 @@ class MLSPlanner:
     ) -> None:
         """Replace the cylindrical region with a local map slice and rebuild.
 
-        Removes cached voxels inside the cylinder, inserts the local map points,
-        and leaves everything outside untouched. Points are (N, 3) float32.
+        Points are (N, 3) float32.
         """
         ...
 

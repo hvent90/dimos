@@ -39,18 +39,40 @@ pub fn place_nodes(
     collect_wall_adjacent_cells(cells, &mut wall_seeds);
     dijkstra(cells, &wall_seeds, state, Weight::Base);
 
-    let mut candidates: Vec<CellId> = cells
+    let candidates: Vec<CellId> = cells
         .ids()
         .filter(|&id| state.dist[id as usize] >= node_wall_buffer_m)
         .collect();
+    place_from_candidates(
+        cells,
+        candidates,
+        &state.dist,
+        &[],
+        voxel_size,
+        node_spacing_m,
+        out_nodes,
+    );
+
+    apply_wall_safe_penalty(cells, &state.dist, node_wall_buffer_m);
+}
+
+/// Sort candidates by descending wall distance, thin them with NMS against the
+/// seed nodes, and append the survivors as nodes.
+fn place_from_candidates(
+    cells: &SurfaceCells,
+    mut candidates: Vec<CellId>,
+    dist: &[f32],
+    seeds: &[CellId],
+    voxel_size: f32,
+    node_spacing_m: f32,
+    out_nodes: &mut Vec<NodeData>,
+) {
     candidates.par_sort_unstable_by(|&a, &b| {
-        state.dist[b as usize]
-            .total_cmp(&state.dist[a as usize])
+        dist[b as usize]
+            .total_cmp(&dist[a as usize])
             .then(cells.coord(a).cmp(&cells.coord(b)))
     });
-
-    let survivors = nms_grid(cells, &candidates, &[], voxel_size, node_spacing_m);
-
+    let survivors = nms_grid(cells, &candidates, seeds, voxel_size, node_spacing_m);
     out_nodes.reserve(survivors.len());
     for &id in &survivors {
         let (ix, iy, iz) = cells.coord(id);
@@ -59,8 +81,6 @@ pub fn place_nodes(
             pos: surface_point_xyz(ix, iy, iz, voxel_size),
         });
     }
-
-    apply_wall_safe_penalty(cells, &state.dist, node_wall_buffer_m);
 }
 
 /// Regional counterpart to place_nodes: recompute the wall-distance field and
@@ -82,31 +102,25 @@ pub fn place_nodes_region(
     nodes.retain(|n| cells.is_live(n.cell_id) && !window.contains(&n.cell_id));
     let kept: Vec<CellId> = nodes.iter().map(|n| n.cell_id).collect();
 
-    let mut candidates: Vec<CellId> = window
+    let candidates: Vec<CellId> = window
         .iter()
         .copied()
         .filter(|&id| cells.is_live(id) && wall_state.dist[id as usize] >= node_wall_buffer_m)
         .collect();
-    candidates.par_sort_unstable_by(|&a, &b| {
-        wall_state.dist[b as usize]
-            .total_cmp(&wall_state.dist[a as usize])
-            .then(cells.coord(a).cmp(&cells.coord(b)))
-    });
-
-    let survivors = nms_grid(cells, &candidates, &kept, voxel_size, node_spacing_m);
-    nodes.reserve(survivors.len());
-    for &id in &survivors {
-        let (ix, iy, iz) = cells.coord(id);
-        nodes.push(NodeData {
-            cell_id: id,
-            pos: surface_point_xyz(ix, iy, iz, voxel_size),
-        });
-    }
+    place_from_candidates(
+        cells,
+        candidates,
+        &wall_state.dist,
+        &kept,
+        voxel_size,
+        node_spacing_m,
+        nodes,
+    );
 
     apply_wall_safe_penalty_region(cells, &wall_state.dist, node_wall_buffer_m, window);
 }
 
-/// Wall-adjacency over a cell subset, matching `collect_wall_adjacent_cells`.
+/// Wall-adjacency over a cell subset, matching collect_wall_adjacent_cells.
 fn collect_wall_adjacent_in_window(
     cells: &SurfaceCells,
     window: &AHashSet<CellId>,
@@ -177,9 +191,8 @@ fn collect_wall_adjacent_cells(cells: &SurfaceCells, out: &mut Vec<CellId>) {
 
 /// Space out nodes based on minimum distance.
 ///
-/// `seeds` are pre-existing nodes that suppress nearby candidates without
-/// themselves being emitted, used to keep a regional re-placement consistent
-/// with cached nodes just outside the window.
+/// The seed nodes suppress nearby candidates without being emitted, keeping a
+/// regional re-placement consistent with cached nodes outside the window.
 fn nms_grid(
     cells: &SurfaceCells,
     candidates_sorted: &[CellId],

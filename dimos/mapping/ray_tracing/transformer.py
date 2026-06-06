@@ -62,8 +62,7 @@ class RayTraceMap(Transformer[PointCloud2, PointCloud2]):
     ) -> tuple[float, float, float, float, float]:
         """Robot-centered cylinder sized to a percentile of the observed points.
 
-        Falls back to a zero-radius region at the robot when no finite points
-        were seen, so an empty lidar frame is a no-op update rather than a crash.
+        An empty or all-nonfinite frame yields a zero-radius region at the robot.
         """
         margin = self._mapper_kwargs.get("shadow_depth", 0.2) + self.voxel_size
         points = (

@@ -146,7 +146,7 @@ fn best_boundary_edges(cells: &SurfaceCells, state: &DijkstraState, out: &mut Ve
     out.par_sort_unstable_by_key(|e| (e.a, e.b));
 }
 
-/// Cheapest Voronoi-boundary crossing per adjacent node pair, scanning `scan`.
+/// Cheapest Voronoi-boundary crossing per adjacent node pair over the scanned cells.
 fn boundary_edge_map(
     cells: &SurfaceCells,
     state: &DijkstraState,

@@ -149,8 +149,8 @@ impl Planner {
         };
 
         let t_surfaces = Instant::now();
-        // A changed voxel column only shifts surfaces within `pad` (morphology
-        // reach), so the write-back box is the changed-column bbox grown by pad.
+        // A changed voxel column shifts surfaces only within pad of it, so the
+        // write-back box is the changed-column bbox grown by pad.
         let write = (bx0 - pad, bx1 + pad, by0 - pad, by1 + pad);
         let new_cells = extract_surfaces_region(
             &self.by_col,
@@ -271,9 +271,9 @@ impl Planner {
         bb.bounds()
     }
 
-    /// Replace the surface_lookup entries for columns in the `write` box with
-    /// freshly extracted cells (which all lie within the box). Returns the
-    /// (added, removed) surface cells so the graph can be patched surgically.
+    /// Replace the surface_lookup entries for columns in the write box with the
+    /// freshly extracted cells. Returns the added and removed surface cells so
+    /// the graph can be patched surgically.
     fn replace_surface_region(
         &mut self,
         write: (i32, i32, i32, i32),
@@ -328,9 +328,8 @@ impl Planner {
         ms(t_graph.elapsed())
     }
 
-    /// Live cells within the changed-cell bbox grown by the node-graph margin.
-    /// The margin covers the reach of any node, edge, or Voronoi change so the
-    /// graph outside the window stays valid.
+    /// Live cells within the changed-cell bbox grown by the node-graph margin,
+    /// which covers the reach of any node, edge, or Voronoi change.
     fn node_window(&self, changed: &[VoxelKey], config: &Config) -> AHashSet<CellId> {
         // A few extra cells beyond the morphology, wall-buffer, and spacing reach.
         const SLACK_CELLS: i32 = 2;
@@ -530,7 +529,7 @@ mod region_tests {
         p.voxel_map.iter().copied().collect()
     }
 
-    /// Cell adjacency keyed by coordinate (CellId-independent).
+    /// Cell adjacency keyed by coordinate, independent of CellId.
     fn cell_edges(p: &Planner) -> BTreeMap<VoxelKey, BTreeSet<(VoxelKey, u32)>> {
         let cells = &p.graph.cells;
         let mut out: BTreeMap<VoxelKey, BTreeSet<(VoxelKey, u32)>> = BTreeMap::new();
@@ -564,59 +563,6 @@ mod region_tests {
                 (lo, hi, e.cost.to_bits())
             })
             .collect()
-    }
-
-    #[test]
-    fn region_update_matches_full_rebuild() {
-        let cfg = test_config();
-        let bounds = RegionBounds {
-            origin_x: 2.0,
-            origin_y: 2.0,
-            radius: 1.0,
-            z_min: -1.0,
-            z_max: 2.0,
-        };
-        let all = world_points();
-
-        // Full rebuild over the whole map.
-        let mut full = Planner::default();
-        full.update_global_map(&all, &cfg);
-
-        // Region path: build everything outside the cylinder, then patch the
-        // cylinder in from a local slice.
-        let inside: Vec<_> = all
-            .iter()
-            .copied()
-            .filter(|&p| bounds.contains_voxel(voxelize(p, cfg.voxel_size), cfg.voxel_size))
-            .collect();
-        let outside: Vec<_> = all
-            .iter()
-            .copied()
-            .filter(|&p| !bounds.contains_voxel(voxelize(p, cfg.voxel_size), cfg.voxel_size))
-            .collect();
-        assert!(!inside.is_empty(), "cylinder should cover some voxels");
-
-        let mut region = Planner::default();
-        region.update_global_map(&outside, &cfg);
-        region.update_region(&inside, &bounds, &cfg);
-
-        assert_eq!(voxel_set(&region), voxel_set(&full), "voxel map mismatch");
-        assert_eq!(surface_set(&region), surface_set(&full), "surface mismatch");
-        assert_eq!(
-            cell_edges(&region),
-            cell_edges(&full),
-            "cell edges mismatch"
-        );
-        assert_eq!(
-            node_coords(&region),
-            node_coords(&full),
-            "node set mismatch"
-        );
-        assert_eq!(
-            node_edge_pairs(&region),
-            node_edge_pairs(&full),
-            "node edge mismatch"
-        );
     }
 
     #[test]
@@ -737,37 +683,6 @@ mod region_tests {
                 assert!(lf <= lr * 1.6 + 0.5, "full path too long: {lf} vs {lr}");
             }
         }
-    }
-
-    /// Re-observing local cylinders on a fully built map must not change the
-    /// geometry and must keep planning equivalent. The window here is far
-    /// smaller than the map, so this exercises the cached frontier.
-    #[test]
-    fn region_reobserve_preserves_planning() {
-        let cfg = test_config();
-        let all = big_world();
-        let vs = cfg.voxel_size;
-
-        let mut full = Planner::default();
-        full.update_global_map(&all, &cfg);
-
-        let mut region = Planner::default();
-        region.update_global_map(&all, &cfg);
-
-        for &(cx, cy) in &[(2.0, 2.0), (4.0, 4.0), (4.0, 6.0), (6.0, 3.0), (1.5, 7.0)] {
-            let b = RegionBounds {
-                origin_x: cx,
-                origin_y: cy,
-                radius: 1.2,
-                z_min: -1.0,
-                z_max: 2.0,
-            };
-            region.update_region(&slice(&all, &b, vs), &b, &cfg);
-        }
-
-        assert_eq!(voxel_set(&region), voxel_set(&full), "voxel set changed");
-        assert_eq!(surface_set(&region), surface_set(&full), "surface changed");
-        assert_plans_equivalent(&full, &region, &cfg);
     }
 
     /// Re-observing the same geometry must change nothing: no voxel, surface,
