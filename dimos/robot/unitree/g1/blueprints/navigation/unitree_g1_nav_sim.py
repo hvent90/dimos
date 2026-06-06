@@ -26,6 +26,7 @@ physics, then publish a goal to ``/clicked_point``.
 
 from __future__ import annotations
 
+import os
 from typing import Any
 
 from dimos.core.coordination.blueprints import autoconnect
@@ -61,8 +62,17 @@ nav_config: dict[str, Any] = dict(
     },
 )
 
+# Load a real scene (not the empty flat floor) and spawn on a road within it.
+# Override the scene with DIMOS_PIMSIM_SCENE (name or path to a scene.meta.json).
+_SCENE = os.getenv("DIMOS_PIMSIM_SCENE", "cyberpunk-city")
+
 unitree_g1_nav_sim = autoconnect(
-    build_babylon_nav(vehicle_height=G1.height_clearance, nav_config=nav_config),
+    build_babylon_nav(
+        _SCENE,
+        vehicle_height=G1.height_clearance,
+        nav_config=nav_config,
+        load_visual=True,
+    ),
     vis_module(
         viewer_backend=global_config.viewer,
         rerun_config=nav_stack_rerun_config(

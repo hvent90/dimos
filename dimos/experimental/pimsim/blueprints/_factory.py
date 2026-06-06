@@ -92,8 +92,17 @@ def _resolve_spawn(package: Any) -> tuple[float, float, float]:
     return _SCENE_SPAWNS.get(package_name, (0.0, 0.0, 0.0))
 
 
-def build_babylon_sim(scene: str | None = None, *, vehicle_height: float = 0.40) -> Blueprint:
-    """Box-proxy viewer + rust lidar on a cooked scene (name or scene.meta.json)."""
+def build_babylon_sim(
+    scene: str | None = None,
+    *,
+    vehicle_height: float = 0.40,
+    load_visual: bool | None = None,
+) -> Blueprint:
+    """Box-proxy viewer + rust lidar on a cooked scene (name or scene.meta.json).
+
+    ``load_visual`` overrides the DIMOS_PIMSIM_VISUAL env default — pass True so
+    the browser actually renders the scene mesh (not just collision).
+    """
     package = resolve_scene_package(scene or DEFAULT_SCENE)
     if package is None or package.browser_collision_path is None:
         raise RuntimeError(
@@ -101,10 +110,11 @@ def build_babylon_sim(scene: str | None = None, *, vehicle_height: float = 0.40)
             "browser collision mesh (python -m dimos.simulation.scene_assets.cook ...)."
         )
     spawn_x, spawn_y, spawn_yaw = _resolve_spawn(package)
+    show_visual = _LOAD_VISUAL if load_visual is None else load_visual
 
     viewer = BabylonSceneViewerModule.blueprint(
         mjcf_path=_PROXY_MJCF,
-        scene_path=str(package.visual_path) if (_LOAD_VISUAL and package.visual_path) else None,
+        scene_path=str(package.visual_path) if (show_visual and package.visual_path) else None,
         browser_collision_path=str(package.browser_collision_path),
         scene_scale=package.alignment.scale,
         scene_translation=package.alignment.translation,
@@ -214,6 +224,7 @@ def build_babylon_nav(
     vehicle_height: float = 0.40,
     nav_config: dict[str, Any] | None = None,
     with_vis: bool = False,
+    load_visual: bool | None = None,
 ) -> Blueprint:
     """pimsim sim + odom/TF adapters + nav stack.
 
@@ -222,7 +233,11 @@ def build_babylon_nav(
     publishes /lidar, the adapters supply the /odometry + map->body TF the stack
     needs, and the stack's nav_cmd_vel flows back to the browser base.
     """
-    sim = build_babylon_sim(scene or ensure_flat_floor_scene(), vehicle_height=vehicle_height)
+    sim = build_babylon_sim(
+        scene or ensure_flat_floor_scene(),
+        vehicle_height=vehicle_height,
+        load_visual=load_visual,
+    )
     odom_adapter = PoseStampedToOdometry.blueprint().transports(
         {
             ("pose", PoseStamped): LCMTransport("/odom", PoseStamped),
