@@ -5,11 +5,11 @@
 //! nodes at local maxima via NMS, and rescale cell-edge costs to push paths
 //! toward corridor centers.
 
-use ahash::AHashMap;
+use ahash::{AHashMap, AHashSet};
 use rayon::prelude::*;
 
 use crate::adjacency::{CellId, Edge, SurfaceCells};
-use crate::dijkstra::{dijkstra, DijkstraState};
+use crate::dijkstra::{dijkstra, dijkstra_region, DijkstraState};
 use crate::voxel::{surface_point_xyz, VoxelKey};
 
 #[derive(Clone, Copy, Debug)]
@@ -37,7 +37,7 @@ pub fn place_nodes(
 
     let mut wall_seeds: Vec<CellId> = Vec::new();
     collect_wall_adjacent_cells(cells, &mut wall_seeds);
-    dijkstra(cells, &wall_seeds, state);
+    dijkstra(cells, &wall_seeds, state, true);
 
     let mut candidates: Vec<CellId> = cells
         .ids()
@@ -46,10 +46,10 @@ pub fn place_nodes(
     candidates.par_sort_unstable_by(|&a, &b| {
         state.dist[b as usize]
             .total_cmp(&state.dist[a as usize])
-            .then(a.cmp(&b))
+            .then(cells.coord(a).cmp(&cells.coord(b)))
     });
 
-    let survivors = nms_grid(cells, &candidates, voxel_size, node_spacing_m);
+    let survivors = nms_grid(cells, &candidates, &[], voxel_size, node_spacing_m);
 
     out_nodes.reserve(survivors.len());
     for &id in &survivors {
@@ -63,27 +63,111 @@ pub fn place_nodes(
     apply_wall_safe_penalty(cells, &state.dist, node_wall_buffer_m);
 }
 
-/// Cells missing any of their 4 xy-direction neighbors are treated as
-/// boundaries. Direction membership is tracked with a 4-bit mask so the
-/// 349k-cell case avoids per-cell hashset allocation.
+/// Regional counterpart to `place_nodes`.
+///
+/// Recomputes the wall-distance field and node placement only inside the dirty
+/// `window`, keeping cached nodes outside it. Cached nodes are fed to NMS as
+/// seeds so freshly placed nodes respect spacing across the window seam.
+pub fn place_nodes_region(
+    cells: &mut SurfaceCells,
+    window: &AHashSet<CellId>,
+    voxel_size: f32,
+    node_spacing_m: f32,
+    node_wall_buffer_m: f32,
+    wall_state: &mut DijkstraState,
+    nodes: &mut Vec<NodeData>,
+) {
+    let mut wall_seeds: Vec<CellId> = Vec::new();
+    collect_wall_adjacent_in_window(cells, window, &mut wall_seeds);
+    dijkstra_region(cells, &wall_seeds, window, wall_state, true);
+
+    nodes.retain(|n| cells.is_live(n.cell_id) && !window.contains(&n.cell_id));
+    let kept: Vec<CellId> = nodes.iter().map(|n| n.cell_id).collect();
+
+    let mut candidates: Vec<CellId> = window
+        .iter()
+        .copied()
+        .filter(|&id| cells.is_live(id) && wall_state.dist[id as usize] >= node_wall_buffer_m)
+        .collect();
+    candidates.par_sort_unstable_by(|&a, &b| {
+        wall_state.dist[b as usize]
+            .total_cmp(&wall_state.dist[a as usize])
+            .then(cells.coord(a).cmp(&cells.coord(b)))
+    });
+
+    let survivors = nms_grid(cells, &candidates, &kept, voxel_size, node_spacing_m);
+    nodes.reserve(survivors.len());
+    for &id in &survivors {
+        let (ix, iy, iz) = cells.coord(id);
+        nodes.push(NodeData {
+            cell_id: id,
+            pos: surface_point_xyz(ix, iy, iz, voxel_size),
+        });
+    }
+
+    apply_wall_safe_penalty_region(cells, &wall_state.dist, node_wall_buffer_m, window);
+}
+
+/// Wall-adjacency over a cell subset, matching `collect_wall_adjacent_cells`.
+fn collect_wall_adjacent_in_window(
+    cells: &SurfaceCells,
+    window: &AHashSet<CellId>,
+    out: &mut Vec<CellId>,
+) {
+    out.clear();
+    for &id in window {
+        if cells.is_live(id) && is_wall_adjacent(cells, id) {
+            out.push(id);
+        }
+    }
+}
+
+/// A cell is wall-adjacent when it is missing at least one of its 4 xy-direction
+/// neighbors. Membership is tracked with a 4-bit mask to avoid per-cell
+/// allocation on the 349k-cell case.
+fn is_wall_adjacent(cells: &SurfaceCells, id: CellId) -> bool {
+    let (cx, cy, _) = cells.coord(id);
+    let mut mask: u8 = 0;
+    for e in cells.neighbors(id) {
+        let (nx, ny, _) = cells.coord(e.dest);
+        mask |= match (nx - cx, ny - cy) {
+            (-1, 0) => 1,
+            (1, 0) => 2,
+            (0, -1) => 4,
+            (0, 1) => 8,
+            _ => 0,
+        };
+    }
+    mask != 0b1111
+}
+
+/// Re-scale edge costs for cells whose wall distance changed. The changed set
+/// is the window plus its immediate neighbors, since an edge cost depends on
+/// the wall distance at both endpoints. Idempotent via `base_cost`.
+fn apply_wall_safe_penalty_region(
+    cells: &mut SurfaceCells,
+    dist: &[f32],
+    buffer_m: f32,
+    window: &AHashSet<CellId>,
+) {
+    let mut affected: AHashSet<CellId> = AHashSet::with_capacity(window.len() * 2);
+    for &w in window {
+        affected.insert(w);
+        for e in cells.neighbors(w) {
+            affected.insert(e.dest);
+        }
+    }
+    for id in affected {
+        scale_edges(cells.edges_mut(id), id, dist, buffer_m);
+    }
+}
+
+/// Wall-adjacent cells over the whole graph. Falls back to a single cell so a
+/// fully-enclosed map still seeds the wall-distance field.
 fn collect_wall_adjacent_cells(cells: &SurfaceCells, out: &mut Vec<CellId>) {
     out.clear();
-    for (id, edges) in cells.iter() {
-        let (cx, cy, _) = cells.coord(id);
-
-        // Check if all 4 neighbors are present
-        let mut mask: u8 = 0;
-        for e in edges {
-            let (nx, ny, _) = cells.coord(e.dest);
-            mask |= match (nx - cx, ny - cy) {
-                (-1, 0) => 1,
-                (1, 0) => 2,
-                (0, -1) => 4,
-                (0, 1) => 8,
-                _ => 0,
-            };
-        }
-        if mask != 0b1111 {
+    for id in cells.ids() {
+        if is_wall_adjacent(cells, id) {
             out.push(id);
         }
     }
@@ -95,9 +179,14 @@ fn collect_wall_adjacent_cells(cells: &SurfaceCells, out: &mut Vec<CellId>) {
 }
 
 /// Space out nodes based on minimum distance.
+///
+/// `seeds` are pre-existing nodes that suppress nearby candidates without
+/// themselves being emitted, used to keep a regional re-placement consistent
+/// with cached nodes just outside the window.
 fn nms_grid(
     cells: &SurfaceCells,
     candidates_sorted: &[CellId],
+    seeds: &[CellId],
     voxel_size: f32,
     node_spacing_m: f32,
 ) -> Vec<CellId> {
@@ -113,6 +202,9 @@ fn nms_grid(
     };
 
     let mut bins: AHashMap<(i32, i32, i32), Vec<CellId>> = AHashMap::new();
+    for &s in seeds {
+        bins.entry(bin_of(cells.coord(s))).or_default().push(s);
+    }
     let mut survivors: Vec<CellId> = Vec::new();
     for &id in candidates_sorted {
         let coord = cells.coord(id);
@@ -150,12 +242,19 @@ fn nms_grid(
 fn apply_wall_safe_penalty(cells: &mut SurfaceCells, dist: &[f32], buffer_m: f32) {
     let mut edge_lists: Vec<(CellId, &mut Vec<Edge>)> = cells.iter_edges_mut().collect();
     edge_lists.par_iter_mut().for_each(|(src, edges)| {
-        let pu = penalty_of(dist[*src as usize], buffer_m);
-        for edge in edges.iter_mut() {
-            let pv = penalty_of(dist[edge.dest as usize], buffer_m);
-            edge.cost *= (pu + pv) / 2.0;
-        }
+        scale_edges(edges, *src, dist, buffer_m);
     });
+}
+
+/// Rescale one cell's outgoing edges from their geometric `base_cost`. Reading
+/// from `base_cost` keeps this idempotent, so a regional repass cannot compound.
+#[inline]
+fn scale_edges(edges: &mut [Edge], src: CellId, dist: &[f32], buffer_m: f32) {
+    let pu = penalty_of(dist[src as usize], buffer_m);
+    for edge in edges.iter_mut() {
+        let pv = penalty_of(dist[edge.dest as usize], buffer_m);
+        edge.cost = edge.base_cost * (pu + pv) / 2.0;
+    }
 }
 
 #[inline]

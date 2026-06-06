@@ -196,6 +196,7 @@ def main(
                 max_range=max_range,
                 ray_subsample=ray_subsample,
                 emit_every=emit_every,
+                emit_local=True,
             )
         ).transform(
             MLSPlan(
@@ -220,7 +221,11 @@ def main(
                 rr.log("world/start", rr.Points3D([start], colors=[[0, 255, 0]], radii=0.1))
 
                 voxel_map = obs.tags["voxel_map"]
-                rr.log("world/voxel_map", voxel_map.to_rerun(voxel_size=render_voxel))
+                if voxel_map.size:
+                    rr.log(
+                        "world/voxel_map",
+                        rr.Points3D(voxel_map, colors=[[80, 80, 80]], radii=render_voxel / 2),
+                    )
 
                 surface = obs.tags["surface_map"]
                 if surface.size:

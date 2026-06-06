@@ -93,8 +93,13 @@ class MLSPlan(Transformer[PointCloud2, Path]):
             x, y, z, *_ = obs.pose_tuple
             start = (float(x), float(y), float(z) - self.robot_height)
 
-            voxel_map = obs.data
-            planner.update_global_map(voxel_map.points_f32())
+            bounds = obs.tags.get("region_bounds")
+            if bounds is None:
+                raise ValueError(
+                    "MLSPlan consumes local map slices; construct RayTraceMap(emit_local=True)"
+                )
+            ox, oy, radius, z_min, z_max = bounds
+            planner.update_region(obs.data.points_f32(), (ox, oy), radius, z_min, z_max)
             t_plan = time.perf_counter()
             waypoints = planner.plan(start, self.goal)
             plan_ms = (time.perf_counter() - t_plan) * 1000
@@ -107,7 +112,7 @@ class MLSPlan(Transformer[PointCloud2, Path]):
                 data=path,
                 tags={
                     **obs.tags,
-                    "voxel_map": voxel_map,
+                    "voxel_map": planner.voxel_map(),
                     "surface_map": planner.surface_map(),
                     "nodes": planner.nodes(),
                     "node_edges": planner.node_edges(),
