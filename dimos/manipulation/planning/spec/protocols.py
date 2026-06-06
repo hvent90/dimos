@@ -182,6 +182,12 @@ class WorldSpec(Protocol):
         """Animate a path in visualization."""
         ...
 
+    def animate_paths(
+        self, paths: dict[WorldRobotID, JointPath], duration: float = 3.0
+    ) -> None:
+        """Animate multiple paths together in visualization."""
+        ...
+
     def close(self) -> None:
         """Release visualization resources."""
         ...

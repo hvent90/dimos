@@ -94,6 +94,7 @@ def _make_module():
         module._lock = threading.Lock()
         module._error_message = ""
         module._robots = {}
+        module._active_plan = None
         module._planned_paths = {}
         module._planned_trajectories = {}
         module._world_monitor = None
@@ -267,6 +268,110 @@ class TestExecute:
 
         assert module.execute() is False
         assert module._state == ManipulationState.FAULT
+
+    def test_execute_robot_list(self, simple_trajectory):
+        module = _make_module()
+        left = RobotModelConfig(
+            name="left_arm",
+            model_path=Path("/path"),
+            base_pose=PoseStamped(position=Vector3(), orientation=Quaternion()),
+            joint_names=["j1", "j2", "j3"],
+            end_effector_link="ee",
+            coordinator_task_name="traj_left",
+        )
+        right = RobotModelConfig(
+            name="right_arm",
+            model_path=Path("/path"),
+            base_pose=PoseStamped(position=Vector3(), orientation=Quaternion()),
+            joint_names=["j1", "j2", "j3"],
+            end_effector_link="ee",
+            coordinator_task_name="traj_right",
+        )
+        module._robots = {
+            "left_arm": ("left_id", left, MagicMock()),
+            "right_arm": ("right_id", right, MagicMock()),
+        }
+        module._planned_trajectories = {
+            "left_arm": simple_trajectory,
+            "right_arm": simple_trajectory,
+        }
+        mock_client = MagicMock()
+        mock_client.task_invoke.return_value = True
+        module._coordinator_client = mock_client
+
+        assert module.execute(["left_arm", "right_arm"]) is True
+        assert mock_client.task_invoke.call_count == 2
+        assert [call.args[0] for call in mock_client.task_invoke.call_args_list] == [
+            "traj_left",
+            "traj_right",
+        ]
+
+    def test_synchronized_trajectory_split(self, robot_config, robot_config_with_mapping):
+        module = _make_module()
+        robots = [
+            ("test_arm", "robot_test_arm", robot_config, MagicMock()),
+            ("left_arm", "robot_left_arm", robot_config_with_mapping, MagicMock()),
+        ]
+        composite_path = [
+            JointState(position=[0.0, 0.0, 0.0, 0.2, 0.2, 0.2]),
+            JointState(position=[0.5, 0.5, 0.5, -0.1, -0.1, -0.1]),
+        ]
+
+        trajectories = module._generate_synchronized_trajectories(composite_path, robots)
+
+        left_times = [p.time_from_start for p in trajectories["test_arm"].points]
+        right_times = [p.time_from_start for p in trajectories["left_arm"].points]
+        assert left_times == right_times
+        assert trajectories["test_arm"].duration == trajectories["left_arm"].duration
+
+
+class TestPreview:
+    def test_preview_robot_list_uses_synchronized_animation(self):
+        module = _make_module()
+        left = RobotModelConfig(
+            name="left_arm",
+            model_path=Path("/path"),
+            base_pose=PoseStamped(position=Vector3(), orientation=Quaternion()),
+            joint_names=["j1", "j2"],
+            end_effector_link="ee",
+        )
+        right = RobotModelConfig(
+            name="right_arm",
+            model_path=Path("/path"),
+            base_pose=PoseStamped(position=Vector3(), orientation=Quaternion()),
+            joint_names=["j1", "j2"],
+            end_effector_link="ee",
+        )
+        module._robots = {
+            "left_arm": ("left_id", left, MagicMock()),
+            "right_arm": ("right_id", right, MagicMock()),
+        }
+        module._planned_paths = {
+            "left_arm": [JointState(position=[0.0, 0.0]), JointState(position=[0.1, 0.1])],
+            "right_arm": [JointState(position=[0.0, 0.0]), JointState(position=[-0.1, -0.1])],
+        }
+        module._world_monitor = MagicMock()
+
+        assert module.preview_path(1.0, ["left_arm", "right_arm"]) is True
+
+        module._world_monitor.world.animate_path.assert_not_called()
+        module._world_monitor.world.animate_paths.assert_called_once()
+        paths, duration = module._world_monitor.world.animate_paths.call_args.args
+        assert set(paths) == {"left_id", "right_id"}
+        assert duration == 1.0
+
+    def test_preview_single_robot_keeps_single_animation_call(self, robot_config):
+        module = _make_module()
+        module._robots = {"test_arm": ("robot_id", robot_config, MagicMock())}
+        module._planned_paths = {
+            "test_arm": [JointState(position=[0.0, 0.0]), JointState(position=[0.1, 0.1])]
+        }
+        module._world_monitor = MagicMock()
+
+        assert module.preview_path(1.0) is True
+
+        module._world_monitor.world.animate_path.assert_called_once()
+        module._world_monitor.world.animate_paths.assert_not_called()
 
 
 class TestRobotModelConfigMapping:

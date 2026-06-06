@@ -57,6 +57,7 @@ all_blueprints = {
     "desk-marker-tf": "dimos.perception.fiducial.blueprints.desk_marker_tf:desk_marker_tf",
     "drone-agentic": "dimos.robot.drone.blueprints.agentic.drone_agentic:drone_agentic",
     "drone-basic": "dimos.robot.drone.blueprints.basic.drone_basic:drone_basic",
+    "dual-xarm6-mock-planner-coordinator": "dimos.manipulation.blueprints:dual_xarm6_mock_planner_coordinator",
     "dual-xarm6-planner": "dimos.manipulation.blueprints:dual_xarm6_planner",
     "keyboard-teleop-a750": "dimos.robot.manipulators.a750.blueprints:keyboard_teleop_a750",
     "keyboard-teleop-openarm": "dimos.robot.manipulators.openarm.blueprints:keyboard_teleop_openarm",

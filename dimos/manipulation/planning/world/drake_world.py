@@ -1061,6 +1061,41 @@ class DrakeWorld(WorldSpec):
             self.publish_visualization()
             time.sleep(dt)
 
+    def animate_paths(
+        self,
+        paths: dict[WorldRobotID, JointPath],
+        duration: float = 3.0,
+    ) -> None:
+        if self._meshcat is None or not paths:
+            return
+
+        valid_paths = {
+            robot_id: path
+            for robot_id, path in paths.items()
+            if len(path) >= 2
+            and (robot_data := self._robots.get(robot_id)) is not None
+            and robot_data.preview_model_instance is not None
+        }
+        if not valid_paths:
+            return
+
+        import time
+
+        for robot_id in valid_paths:
+            self.show_preview(robot_id)
+
+        frame_count = max(len(path) for path in valid_paths.values())
+        dt = duration / (frame_count - 1)
+        for frame_index in range(frame_count):
+            with self._lock:
+                assert self._plant_context is not None
+                for robot_id, path in valid_paths.items():
+                    path_index = round(frame_index * (len(path) - 1) / (frame_count - 1))
+                    positions = np.array(path[path_index].position, dtype=np.float64)
+                    self._set_preview_positions(self._plant_context, robot_id, positions)
+            self.publish_visualization()
+            time.sleep(dt)
+
     def close(self) -> None:
         """Shut down the viz thread."""
         if self._meshcat is not None:

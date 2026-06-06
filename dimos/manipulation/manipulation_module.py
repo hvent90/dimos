@@ -24,11 +24,13 @@ Subclass PickAndPlaceModule (pick_and_place_module.py) adds perception integrati
 
 from __future__ import annotations
 
+from dataclasses import dataclass
 from enum import Enum
 import threading
 import time
-from typing import TYPE_CHECKING, Any, TypeAlias
+from typing import TYPE_CHECKING, Any, Literal, TypeAlias, cast
 
+import numpy as np
 from pydantic import Field
 
 from dimos.agents.annotation import skill
@@ -42,7 +44,7 @@ from dimos.manipulation.planning.monitor.world_monitor import WorldMonitor
 from dimos.manipulation.planning.spec.config import RobotModelConfig
 from dimos.manipulation.planning.spec.enums import ObstacleType
 from dimos.manipulation.planning.spec.models import JointPath, Obstacle, RobotName, WorldRobotID
-from dimos.manipulation.planning.spec.protocols import KinematicsSpec, PlannerSpec
+from dimos.manipulation.planning.spec.protocols import KinematicsSpec, PlannerSpec, WorldSpec
 from dimos.manipulation.planning.trajectory_generator.joint_trajectory_generator import (
     JointTrajectoryGenerator,
 )
@@ -52,6 +54,7 @@ from dimos.msgs.geometry_msgs.Quaternion import Quaternion
 from dimos.msgs.geometry_msgs.Vector3 import Vector3
 from dimos.msgs.sensor_msgs.JointState import JointState
 from dimos.msgs.trajectory_msgs.JointTrajectory import JointTrajectory
+from dimos.msgs.trajectory_msgs.TrajectoryPoint import TrajectoryPoint
 from dimos.utils.logging_config import setup_logger
 
 if TYPE_CHECKING:
@@ -71,6 +74,104 @@ PlannedPaths: TypeAlias = dict[RobotName, JointPath]
 
 PlannedTrajectories: TypeAlias = dict[RobotName, JointTrajectory]
 """Maps robot_name -> planned trajectory"""
+
+RobotNameSelection: TypeAlias = RobotName | list[RobotName] | None
+
+
+@dataclass(frozen=True)
+class MotionPlan:
+    robot_names: list[RobotName]
+    paths: PlannedPaths
+    trajectories: PlannedTrajectories
+    duration: float
+    created_from: Literal["joints", "pose"]
+
+
+@dataclass(frozen=True)
+class _CompositeRobotSpan:
+    robot_id: WorldRobotID
+    config: RobotModelConfig
+    start: int
+    dof: int
+
+
+class _CompositePlanningWorld:
+    _COMPOSITE_ROBOT_ID: WorldRobotID = "composite_multi_robot"
+
+    def __init__(
+        self,
+        world: WorldSpec,
+        spans: list[_CompositeRobotSpan],
+        lower_limits: list[float],
+        upper_limits: list[float],
+    ) -> None:
+        self._world = world
+        self._spans = spans
+        self._lower_limits = np.array(lower_limits, dtype=np.float64)
+        self._upper_limits = np.array(upper_limits, dtype=np.float64)
+
+    @property
+    def is_finalized(self) -> bool:
+        return self._world.is_finalized
+
+    def get_robot_ids(self) -> list[WorldRobotID]:
+        return [self._COMPOSITE_ROBOT_ID]
+
+    def get_joint_limits(
+        self, robot_id: WorldRobotID
+    ) -> tuple[np.ndarray[Any, np.dtype[np.float64]], np.ndarray[Any, np.dtype[np.float64]]]:
+        self._assert_composite_robot(robot_id)
+        return self._lower_limits, self._upper_limits
+
+    def check_config_collision_free(
+        self, robot_id: WorldRobotID, joint_state: JointState
+    ) -> bool:
+        self._assert_composite_robot(robot_id)
+        with self._world.scratch_context() as ctx:
+            self._set_composite_state(ctx, joint_state)
+            return self._world.is_collision_free(ctx, self._spans[0].robot_id)
+
+    def check_edge_collision_free(
+        self,
+        robot_id: WorldRobotID,
+        start: JointState,
+        end: JointState,
+        step_size: float = 0.05,
+    ) -> bool:
+        self._assert_composite_robot(robot_id)
+        q_start = np.array(start.position, dtype=np.float64)
+        q_end = np.array(end.position, dtype=np.float64)
+        dist = float(np.linalg.norm(q_end - q_start))
+        if dist < 1e-8:
+            return self.check_config_collision_free(robot_id, start)
+
+        n_steps = max(2, int(np.ceil(dist / step_size)) + 1)
+        with self._world.scratch_context() as ctx:
+            for i in range(n_steps):
+                t = i / (n_steps - 1)
+                q = q_start + t * (q_end - q_start)
+                self._set_composite_state(
+                    ctx, JointState(name=start.name, position=q.tolist())
+                )
+                if not self._world.is_collision_free(ctx, self._spans[0].robot_id):
+                    return False
+        return True
+
+    def _set_composite_state(self, ctx: Any, joint_state: JointState) -> None:
+        for span in self._spans:
+            end = span.start + span.dof
+            self._world.set_joint_state(
+                ctx,
+                span.robot_id,
+                JointState(
+                    name=span.config.joint_names,
+                    position=list(joint_state.position[span.start : end]),
+                ),
+            )
+
+    def _assert_composite_robot(self, robot_id: WorldRobotID) -> None:
+        if robot_id != self._COMPOSITE_ROBOT_ID:
+            raise KeyError(f"Robot '{robot_id}' not found")
 
 
 class ManipulationState(Enum):
@@ -128,6 +229,7 @@ class ManipulationModule(Module):
         self._robots: RobotRegistry = {}
 
         # Stored path for plan/preview/execute workflow (per robot)
+        self._active_plan: MotionPlan | None = None
         self._planned_paths: PlannedPaths = {}
         self._planned_trajectories: PlannedTrajectories = {}
 
@@ -244,6 +346,52 @@ class ManipulationModule(Module):
 
         robot_id, config, traj_gen = self._robots[robot_name]
         return (robot_name, robot_id, config, traj_gen)
+
+    def _get_robots(
+        self, robot_names: list[RobotName]
+    ) -> list[tuple[RobotName, WorldRobotID, RobotModelConfig, JointTrajectoryGenerator]] | None:
+        if len(robot_names) == 0:
+            logger.error("No robots specified")
+            return None
+        if len(set(robot_names)) != len(robot_names):
+            logger.error(f"Duplicate robot names: {robot_names}")
+            return None
+
+        robots: list[tuple[RobotName, WorldRobotID, RobotModelConfig, JointTrajectoryGenerator]] = []
+        for robot_name in robot_names:
+            if robot_name not in self._robots:
+                logger.error(f"Unknown robot: {robot_name}")
+                return None
+            robot_id, config, traj_gen = self._robots[robot_name]
+            robots.append((robot_name, robot_id, config, traj_gen))
+        return robots
+
+    def _begin_multi_robot_planning(
+        self, robot_names: list[RobotName]
+    ) -> list[tuple[RobotName, WorldRobotID, RobotModelConfig, JointTrajectoryGenerator]] | None:
+        if self._world_monitor is None:
+            logger.error("Planning not initialized")
+            return None
+        robots = self._get_robots(robot_names)
+        if robots is None:
+            return None
+        with self._lock:
+            if self._state not in (ManipulationState.IDLE, ManipulationState.COMPLETED):
+                logger.warning(f"Cannot plan: state is {self._state.name}")
+                return None
+            self._state = ManipulationState.PLANNING
+        return robots
+
+    def _selected_plan_robot_names(self, robot_name: RobotNameSelection) -> list[RobotName] | None:
+        if isinstance(robot_name, list):
+            return list(robot_name)
+        if robot_name is None:
+            default = self._get_default_robot_name()
+            if default is None:
+                logger.error("Multiple robots configured, must specify robot_name")
+                return None
+            return [default]
+        return [robot_name]
 
     def _on_joint_state(self, msg: JointState) -> None:
         """Callback when joint state received from driver.
@@ -446,13 +594,21 @@ class ManipulationModule(Module):
             world.publish_visualization()
 
     @rpc
-    def plan_to_pose(self, pose: Pose, robot_name: RobotName | None = None) -> bool:
+    def plan_to_pose(
+        self, pose: Pose | list[Pose], robot_name: RobotNameSelection = None
+    ) -> bool:
         """Plan motion to pose. Use preview_path() then execute().
 
         Args:
             pose: Target end-effector pose
             robot_name: Robot to plan for (required if multiple robots configured)
         """
+        if isinstance(pose, list):
+            if not isinstance(robot_name, list):
+                return self._fail("Multi-robot pose planning requires a robot_name list")
+            return self._plan_to_poses(pose, robot_name)
+        if isinstance(robot_name, list):
+            return self._fail("Single pose planning requires a single robot_name")
         if self._kinematics is None or (r := self._begin_planning(robot_name)) is None:
             return False
         robot_name, robot_id = r
@@ -482,24 +638,36 @@ class ManipulationModule(Module):
             return self._fail(f"IK failed: {ik.status.name}")
 
         logger.info(f"IK solved, error: {ik.position_error:.4f}m")
-        return self._plan_path_only(robot_name, robot_id, ik.joint_state)
+        return self._plan_path_only(robot_name, robot_id, ik.joint_state, "pose")
 
     @rpc
-    def plan_to_joints(self, joints: JointState, robot_name: RobotName | None = None) -> bool:
+    def plan_to_joints(
+        self, joints: JointState | list[JointState], robot_name: RobotNameSelection = None
+    ) -> bool:
         """Plan motion to joint config. Use preview_path() then execute().
 
         Args:
             joints: Target joint state (names + positions)
             robot_name: Robot to plan for (required if multiple robots configured)
         """
+        if isinstance(joints, list):
+            if not isinstance(robot_name, list):
+                return self._fail("Multi-robot joint planning requires a robot_name list")
+            return self._plan_to_joint_list(joints, robot_name)
+        if isinstance(robot_name, list):
+            return self._fail("Single joint planning requires a single robot_name")
         if (r := self._begin_planning(robot_name)) is None:
             return False
         robot_name, robot_id = r
         logger.info(f"Planning to joints for {robot_name}: {[f'{j:.3f}' for j in joints.position]}")
-        return self._plan_path_only(robot_name, robot_id, joints)
+        return self._plan_path_only(robot_name, robot_id, joints, "joints")
 
     def _plan_path_only(
-        self, robot_name: RobotName, robot_id: WorldRobotID, goal: JointState
+        self,
+        robot_name: RobotName,
+        robot_id: WorldRobotID,
+        goal: JointState,
+        created_from: Literal["joints", "pose"],
     ) -> bool:
         """Plan path from current position to goal, store result."""
         assert self._world_monitor and self._planner  # guaranteed by _begin_planning
@@ -527,19 +695,246 @@ class ManipulationModule(Module):
             return self._fail(f"Planning failed: {result.status.name}")
 
         logger.info(f"Path: {len(result.path)} waypoints")
-        self._planned_paths[robot_name] = result.path
 
         _, _, traj_gen = self._robots[robot_name]
         # Convert JointState path to list of position lists for trajectory generator
         traj = traj_gen.generate([list(state.position) for state in result.path])
-        self._planned_trajectories[robot_name] = traj
+        traj.joint_names = list(result.path[0].name) if result.path else []
+        self._store_motion_plan(
+            MotionPlan(
+                robot_names=[robot_name],
+                paths={robot_name: result.path},
+                trajectories={robot_name: traj},
+                duration=traj.duration,
+                created_from=created_from,
+            )
+        )
         logger.info(f"Trajectory: {traj.duration:.3f}s")
 
         self._state = ManipulationState.COMPLETED
         return True
 
+    def _plan_to_poses(self, poses: list[Pose], robot_names: list[RobotName]) -> bool:
+        if self._kinematics is None:
+            logger.error("Kinematics not initialized")
+            return False
+        if len(poses) != len(robot_names):
+            return self._fail("Pose target count must match robot_name count")
+        robots = self._begin_multi_robot_planning(robot_names)
+        if robots is None:
+            return False
+        assert self._world_monitor
+
+        from dimos.msgs.geometry_msgs.PoseStamped import PoseStamped
+
+        goals: list[JointState] = []
+        for pose, (_, robot_id, _, _) in zip(poses, robots, strict=True):
+            current = self._world_monitor.get_current_joint_state(robot_id)
+            if current is None:
+                return self._fail("No joint state")
+            ik = self._kinematics.solve(
+                world=self._world_monitor.world,
+                robot_id=robot_id,
+                target_pose=PoseStamped(
+                    frame_id="world",
+                    position=pose.position,
+                    orientation=pose.orientation,
+                ),
+                seed=current,
+                check_collision=True,
+            )
+            if not ik.is_success() or ik.joint_state is None:
+                return self._fail(f"IK failed: {ik.status.name}")
+            goals.append(ik.joint_state)
+
+        return self._plan_multi_robot_path(robots, goals, "pose")
+
+    def _plan_to_joint_list(
+        self, joints: list[JointState], robot_names: list[RobotName]
+    ) -> bool:
+        if len(joints) != len(robot_names):
+            return self._fail("Joint target count must match robot_name count")
+        robots = self._begin_multi_robot_planning(robot_names)
+        if robots is None:
+            return False
+        return self._plan_multi_robot_path(robots, joints, "joints")
+
+    def _plan_multi_robot_path(
+        self,
+        robots: list[tuple[RobotName, WorldRobotID, RobotModelConfig, JointTrajectoryGenerator]],
+        goals: list[JointState],
+        created_from: Literal["joints", "pose"],
+    ) -> bool:
+        assert self._world_monitor and self._planner
+
+        starts: list[JointState] = []
+        trimmed_goals: list[JointState] = []
+        lower_limits: list[float] = []
+        upper_limits: list[float] = []
+        composite_names: list[str] = []
+        spans: list[_CompositeRobotSpan] = []
+        offset = 0
+
+        for (robot_name, robot_id, config, _), goal in zip(robots, goals, strict=True):
+            self._dismiss_preview(robot_id)
+            start = self._world_monitor.get_current_joint_state(robot_id)
+            if start is None:
+                return self._fail(f"No joint state for {robot_name}")
+            goal = self._trim_goal_to_dof(goal, len(start.position))
+            if len(goal.position) != len(start.position):
+                return self._fail(f"Wrong joint count for {robot_name}")
+
+            starts.append(start)
+            trimmed_goals.append(goal)
+            lower, upper = self._world_monitor.get_joint_limits(robot_id)
+            lower_limits.extend(float(v) for v in lower)
+            upper_limits.extend(float(v) for v in upper)
+            composite_names.extend(f"{robot_name}/{name}" for name in start.name)
+            spans.append(
+                _CompositeRobotSpan(
+                    robot_id=robot_id,
+                    config=config,
+                    start=offset,
+                    dof=len(start.position),
+                )
+            )
+            offset += len(start.position)
+
+        composite_start = JointState(
+            name=composite_names,
+            position=[p for state in starts for p in state.position],
+        )
+        composite_goal = JointState(
+            name=composite_names,
+            position=[p for state in trimmed_goals for p in state.position],
+        )
+        composite_world = _CompositePlanningWorld(
+            self._world_monitor.world,
+            spans,
+            lower_limits,
+            upper_limits,
+        )
+
+        result = self._planner.plan_joint_path(
+            world=cast(WorldSpec, composite_world),
+            robot_id=_CompositePlanningWorld._COMPOSITE_ROBOT_ID,
+            start=composite_start,
+            goal=composite_goal,
+            timeout=self.config.planning_timeout,
+        )
+        if not result.is_success():
+            return self._fail(f"Planning failed: {result.status.name}")
+
+        paths = self._split_composite_path(result.path, robots)
+        trajectories = self._generate_synchronized_trajectories(result.path, robots)
+        duration = max((traj.duration for traj in trajectories.values()), default=0.0)
+        self._store_motion_plan(
+            MotionPlan(
+                robot_names=[name for name, _, _, _ in robots],
+                paths=paths,
+                trajectories=trajectories,
+                duration=duration,
+                created_from=created_from,
+            )
+        )
+        self._state = ManipulationState.COMPLETED
+        logger.info(f"Coordinated trajectory: {duration:.3f}s")
+        return True
+
+    def _trim_goal_to_dof(self, goal: JointState, planner_dof: int) -> JointState:
+        if len(goal.position) <= planner_dof:
+            return goal
+        return JointState(
+            name=list(goal.name[:planner_dof]) if goal.name else [],
+            position=list(goal.position[:planner_dof]),
+        )
+
+    def _split_composite_path(
+        self,
+        composite_path: JointPath,
+        robots: list[tuple[RobotName, WorldRobotID, RobotModelConfig, JointTrajectoryGenerator]],
+    ) -> PlannedPaths:
+        paths: PlannedPaths = {robot_name: [] for robot_name, _, _, _ in robots}
+        spans = self._robot_spans_from_path(composite_path, robots)
+        for state in composite_path:
+            for robot_name, config, start, dof in spans:
+                end = start + dof
+                paths[robot_name].append(
+                    JointState(
+                        name=config.joint_names,
+                        position=list(state.position[start:end]),
+                    )
+                )
+        return paths
+
+    def _generate_synchronized_trajectories(
+        self,
+        composite_path: JointPath,
+        robots: list[tuple[RobotName, WorldRobotID, RobotModelConfig, JointTrajectoryGenerator]],
+    ) -> PlannedTrajectories:
+        max_velocity: list[float] = []
+        max_acceleration: list[float] = []
+        for _, _, config, _ in robots:
+            dof = len(config.joint_names)
+            max_velocity.extend(self._expand_limit(config.max_velocity, dof))
+            max_acceleration.extend(self._expand_limit(config.max_acceleration, dof))
+
+        composite_gen = JointTrajectoryGenerator(
+            num_joints=len(max_velocity),
+            max_velocity=max_velocity,
+            max_acceleration=max_acceleration,
+        )
+        composite_traj = composite_gen.generate([list(state.position) for state in composite_path])
+        spans = self._robot_spans_from_path(composite_path, robots)
+        trajectories: PlannedTrajectories = {}
+        for robot_name, config, start, dof in spans:
+            end = start + dof
+            points = [
+                TrajectoryPoint(
+                    time_from_start=point.time_from_start,
+                    positions=list(point.positions[start:end]),
+                    velocities=list(point.velocities[start:end]),
+                )
+                for point in composite_traj.points
+            ]
+            trajectories[robot_name] = JointTrajectory(
+                joint_names=config.joint_names,
+                points=points,
+                timestamp=composite_traj.timestamp,
+            )
+        return trajectories
+
+    def _robot_spans_from_path(
+        self,
+        composite_path: JointPath,
+        robots: list[tuple[RobotName, WorldRobotID, RobotModelConfig, JointTrajectoryGenerator]],
+    ) -> list[tuple[RobotName, RobotModelConfig, int, int]]:
+        spans: list[tuple[RobotName, RobotModelConfig, int, int]] = []
+        offset = 0
+        for robot_name, _, config, _ in robots:
+            dof = len(config.joint_names)
+            if composite_path:
+                remaining = len(composite_path[0].position) - offset
+                dof = min(dof, remaining)
+            spans.append((robot_name, config, offset, dof))
+            offset += dof
+        return spans
+
+    def _expand_limit(self, value: list[float] | float, dof: int) -> list[float]:
+        if isinstance(value, (int, float)):
+            return [float(value)] * dof
+        values = [float(v) for v in value[:dof]]
+        if len(values) < dof:
+            values.extend([1.0] * (dof - len(values)))
+        return values
+
+    def _store_motion_plan(self, plan: MotionPlan) -> None:
+        self._active_plan = plan
+        self._planned_paths = dict(plan.paths)
+        self._planned_trajectories = dict(plan.trajectories)
+
     @rpc
-    def preview_path(self, duration: float = 3.0, robot_name: RobotName | None = None) -> bool:
+    def preview_path(self, duration: float = 3.0, robot_name: RobotNameSelection = None) -> bool:
         """Preview the planned path in the visualizer.
 
         Args:
@@ -551,19 +946,29 @@ class ManipulationModule(Module):
         if self._world_monitor is None:
             return False
 
-        robot = self._get_robot(robot_name)
-        if robot is None:
-            return False
-        robot_name, robot_id, _, _ = robot
-
-        planned_path = self._planned_paths.get(robot_name)
-        if planned_path is None or len(planned_path) == 0:
-            logger.warning(f"No planned path to preview for {robot_name}")
+        robot_names = self._selected_plan_robot_names(robot_name)
+        if robot_names is None:
             return False
 
-        # Interpolate and animate
-        interpolated = interpolate_path(planned_path, resolution=0.1)
-        self._world_monitor.world.animate_path(robot_id, interpolated, duration)
+        robots = self._get_robots(robot_names)
+        if robots is None:
+            return False
+
+        for selected_name, robot_id, _, _ in robots:
+            planned_path = self._planned_paths.get(selected_name)
+            if planned_path is None or len(planned_path) == 0:
+                logger.warning(f"No planned path to preview for {selected_name}")
+                return False
+
+        preview_paths = {
+            robot_id: interpolate_path(self._planned_paths[selected_name], resolution=0.1)
+            for selected_name, robot_id, _, _ in robots
+        }
+        if len(preview_paths) == 1:
+            robot_id, path = next(iter(preview_paths.items()))
+            self._world_monitor.world.animate_path(robot_id, path, duration)
+        else:
+            self._world_monitor.world.animate_paths(preview_paths, duration)
         return True
 
     @rpc
@@ -573,13 +978,14 @@ class ManipulationModule(Module):
         Returns:
             True if a path is planned and ready
         """
-        robot = self._get_robot()
-        if robot is None:
+        robot_names = self._selected_plan_robot_names(None)
+        if robot_names is None:
             return False
-        robot_name, _, _, _ = robot
 
-        path = self._planned_paths.get(robot_name)
-        return path is not None and len(path) > 0
+        return all(
+            (path := self._planned_paths.get(robot_name)) is not None and len(path) > 0
+            for robot_name in robot_names
+        )
 
     @rpc
     def get_visualization_url(self) -> str | None:
@@ -599,13 +1005,17 @@ class ManipulationModule(Module):
         Returns:
             True if cleared
         """
-        robot = self._get_robot()
-        if robot is None:
+        robot_names = self._selected_plan_robot_names(None)
+        if robot_names is None:
             return False
-        robot_name, _, _, _ = robot
 
-        self._planned_paths.pop(robot_name, None)
-        self._planned_trajectories.pop(robot_name, None)
+        for robot_name in robot_names:
+            self._planned_paths.pop(robot_name, None)
+            self._planned_trajectories.pop(robot_name, None)
+        if self._active_plan and all(
+            robot_name not in self._planned_paths for robot_name in self._active_plan.robot_names
+        ):
+            self._active_plan = None
         return True
 
     @rpc
@@ -748,37 +1158,47 @@ class ManipulationModule(Module):
         )
 
     @rpc
-    def execute(self, robot_name: RobotName | None = None) -> bool:
+    def execute(self, robot_name: RobotNameSelection = None) -> bool:
         """Execute planned trajectory via ControlCoordinator."""
-        if (robot := self._get_robot(robot_name)) is None:
+        robot_names = self._selected_plan_robot_names(robot_name)
+        if robot_names is None:
             return False
-        robot_name, _, config, _ = robot
+        robots = self._get_robots(robot_names)
+        if robots is None:
+            return False
 
-        if (traj := self._planned_trajectories.get(robot_name)) is None:
-            logger.warning("No planned trajectory")
-            return False
-        if not config.coordinator_task_name:
-            logger.error(f"No coordinator_task_name for '{robot_name}'")
-            return False
+        payloads: list[tuple[RobotName, str, JointTrajectory]] = []
+        for selected_name, _, config, _ in robots:
+            traj = self._planned_trajectories.get(selected_name)
+            if traj is None:
+                logger.warning(f"No planned trajectory for {selected_name}")
+                return False
+            if not config.coordinator_task_name:
+                logger.error(f"No coordinator_task_name for '{selected_name}'")
+                return False
+            payloads.append(
+                (
+                    selected_name,
+                    config.coordinator_task_name,
+                    self._translate_trajectory_to_coordinator(traj, config),
+                )
+            )
+
         if (client := self._get_coordinator_client()) is None:
             logger.error("No coordinator client")
             return False
 
-        translated = self._translate_trajectory_to_coordinator(traj, config)
-        logger.info(
-            f"Executing: task='{config.coordinator_task_name}', {len(translated.points)} pts, {translated.duration:.2f}s"
-        )
-
         self._state = ManipulationState.EXECUTING
-        result = client.task_invoke(
-            config.coordinator_task_name, "execute", {"trajectory": translated}
-        )
-        if result:
-            logger.info("Trajectory accepted")
-            self._state = ManipulationState.COMPLETED
-            return True
-        else:
-            return self._fail("Coordinator rejected trajectory")
+        for selected_name, task_name, translated in payloads:
+            logger.info(
+                f"Executing {selected_name}: task='{task_name}', {len(translated.points)} pts, {translated.duration:.2f}s"
+            )
+            if not client.task_invoke(task_name, "execute", {"trajectory": translated}):
+                return self._fail(f"Coordinator rejected trajectory for {selected_name}")
+
+        logger.info("Trajectory accepted")
+        self._state = ManipulationState.COMPLETED
+        return True
 
     @rpc
     def get_trajectory_status(self, robot_name: RobotName | None = None) -> dict[str, Any] | None:

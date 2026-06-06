@@ -14,6 +14,10 @@ dimos run keyboard-teleop-xarm7
 # 3. Interactive RPC client (plan, preview, execute from Python):
 dimos run xarm7-planner-coordinator                                    # terminal 1
 python -i -m dimos.manipulation.planning.examples.manipulation_client  # terminal 2
+
+# 4. Manual QA for coordinated dual-arm planning (mock, no hardware):
+dimos run dual-xarm6-mock-planner-coordinator                          # terminal 1
+python -i -m dimos.manipulation.planning.examples.demo_dual_arm_planning # terminal 2
 ```
 
 In the interactive client:
@@ -131,6 +135,7 @@ module.execute()  # Sends to coordinator
 | `xarm6_planner_only` | XArm 6-DOF standalone (no coordinator) |
 | `xarm7-planner-coordinator` | XArm 7-DOF with coordinator |
 | `dual-xarm6-planner` | Dual XArm 6-DOF |
+| `dual-xarm6-mock-planner-coordinator` | Dual XArm6 mock coordinator + planner for manual QA |
 
 ## Directory Structure
 

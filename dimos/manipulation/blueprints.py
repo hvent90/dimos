@@ -92,6 +92,46 @@ dual_xarm6_planner = ManipulationModule.blueprint(
 )
 
 
+_mock_left_xarm6_cfg = _catalog_xarm6(
+    name="left_arm",
+    adapter_type="mock",
+    y_offset=0.5,
+)
+_mock_right_xarm6_cfg = _catalog_xarm6(
+    name="right_arm",
+    adapter_type="mock",
+    y_offset=-0.5,
+)
+
+dual_xarm6_mock_planner_coordinator = autoconnect(
+    ManipulationModule.blueprint(
+        robots=[
+            _mock_left_xarm6_cfg.to_robot_model_config(),
+            _mock_right_xarm6_cfg.to_robot_model_config(),
+        ],
+        planning_timeout=10.0,
+        enable_viz=True,
+    ),
+    ControlCoordinator.blueprint(
+        tick_rate=100.0,
+        publish_joint_state=True,
+        joint_state_frame_id="coordinator",
+        hardware=[
+            _mock_left_xarm6_cfg.to_hardware_component(),
+            _mock_right_xarm6_cfg.to_hardware_component(),
+        ],
+        tasks=[
+            _mock_left_xarm6_cfg.to_task_config(),
+            _mock_right_xarm6_cfg.to_task_config(),
+        ],
+    ),
+).transports(
+    {
+        ("joint_state", JointState): LCMTransport("/coordinator/joint_state", JointState),
+    }
+)
+
+
 # Single XArm7 planner + coordinator (uses real hardware when XARM7_IP is set)
 # Usage: XARM7_IP=<ip> dimos run xarm7-planner-coordinator
 _xarm7_cfg = _catalog_xarm7(
@@ -338,6 +378,7 @@ xarm_perception_sim_agent = autoconnect(
 
 
 __all__ = [
+    "dual_xarm6_mock_planner_coordinator",
     "dual_xarm6_planner",
     "xarm6_planner_only",
     "xarm7_planner_coordinator",
