@@ -55,9 +55,7 @@ class CurrentPositionHoldTask(BaseControlTask):
         self._joint_names = frozenset(config.joint_names)
         self._joint_names_list = list(config.joint_names)
         self._active = False
-        logger.info(
-            f"CurrentPositionHoldTask {name} initialized for joints: {config.joint_names}"
-        )
+        logger.info(f"CurrentPositionHoldTask {name} initialized for joints: {config.joint_names}")
 
     @property
     def name(self) -> str:

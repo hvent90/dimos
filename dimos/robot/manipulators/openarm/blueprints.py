@@ -251,8 +251,8 @@ keyboard_teleop_openarm = autoconnect(
 
 
 __all__ = [
-    "coordinator_openarm_bimanual",
     "coordinator_dm_motor_openarm",
+    "coordinator_openarm_bimanual",
     "coordinator_openarm_left",
     "coordinator_openarm_mock",
     "coordinator_openarm_right",

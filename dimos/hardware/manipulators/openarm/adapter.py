@@ -63,7 +63,15 @@ class OpenArmAdapter(DamiaoArmAdapterBase):
     _V10_POS_UPPER_LEFT: tuple[float, ...] = (1.35, 0.15, 1.50, 2.40, 1.50, 0.75, 1.50)
     _V10_POS_LOWER_RIGHT: tuple[float, ...] = (-1.35, -0.15, -1.50, -0.01, -1.50, -0.75, -1.50)
     _V10_POS_UPPER_RIGHT: tuple[float, ...] = (3.45, 3.30, 1.50, 2.40, 1.50, 0.75, 1.50)
-    _V10_VEL_MAX: tuple[float, ...] = (16.754666, 16.754666, 5.445426, 5.445426, 20.943946, 20.943946, 20.943946)
+    _V10_VEL_MAX: tuple[float, ...] = (
+        16.754666,
+        16.754666,
+        5.445426,
+        5.445426,
+        20.943946,
+        20.943946,
+        20.943946,
+    )
     _DEFAULT_KP: tuple[float, ...] = (100.0, 100.0, 80.0, 80.0, 60.0, 60.0, 60.0)
     _DEFAULT_KD: tuple[float, ...] = (1.5, 1.5, 1.0, 1.0, 0.8, 0.8, 0.8)
     _STATE_MAX_AGE_S = 0.1

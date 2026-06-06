@@ -120,9 +120,15 @@ class DMMotorArm(DamiaoArmAdapterBase):
             vendor="Damiao",
             model="DMMotorArm",
             motors=tuple(specs),
-            position_lower=position_lower if position_lower is not None else self._DEFAULT_POSITION_LOWER[:dof],
-            position_upper=position_upper if position_upper is not None else self._DEFAULT_POSITION_UPPER[:dof],
-            velocity_max=velocity_max if velocity_max is not None else self._DEFAULT_VELOCITY_MAX[:dof],
+            position_lower=position_lower
+            if position_lower is not None
+            else self._DEFAULT_POSITION_LOWER[:dof],
+            position_upper=position_upper
+            if position_upper is not None
+            else self._DEFAULT_POSITION_UPPER[:dof],
+            velocity_max=velocity_max
+            if velocity_max is not None
+            else self._DEFAULT_VELOCITY_MAX[:dof],
             kp=kp if kp is not None else self._DEFAULT_KP[:dof],
             kd=kd if kd is not None else self._DEFAULT_KD[:dof],
             gravity_model_path=gravity_model_path,
@@ -240,7 +246,9 @@ class DMMotorArm(DamiaoArmAdapterBase):
             try:
                 self._robot.disable()
             except Exception as exc:
-                logger.warning(f"DMMotorArm {self._hardware_id} disable on disconnect failed: {exc}")
+                logger.warning(
+                    f"DMMotorArm {self._hardware_id} disable on disconnect failed: {exc}"
+                )
         self._enabled = False
         self._connected = False
         self._robot = None
@@ -250,9 +258,7 @@ class DMMotorArm(DamiaoArmAdapterBase):
     def is_connected(self) -> bool:
         return self._connected
 
-    def refresh_state(
-        self, *, force: bool = False
-    ) -> tuple[list[float], list[float], list[float]]:
+    def refresh_state(self, *, force: bool = False) -> tuple[list[float], list[float], list[float]]:
         if self._robot is None or self._arm is None:
             raise RuntimeError("DMMotorArm is not connected")
         now = time.monotonic()
@@ -333,7 +339,11 @@ class DMMotorArm(DamiaoArmAdapterBase):
             return False
         if len(efforts) != self._dof:
             return False
-        q = self._last_positions if self._last_positions is not None else self.read_joint_positions()
+        q = (
+            self._last_positions
+            if self._last_positions is not None
+            else self.read_joint_positions()
+        )
         return self.write_mit_commands(
             q=q,
             dq=self._zero_vector(),
@@ -350,9 +360,7 @@ class DMMotorArm(DamiaoArmAdapterBase):
             logger.warning(f"Skipping DMMotor gravity compensation due to invalid state: {exc}")
             return False
         kd = [float(damping)] * self._dof if isinstance(damping, int | float) else list(damping)
-        return self.write_mit_commands(
-            q=q, dq=dq, kp=self._zero_vector(), kd=kd, tau=tau
-        )
+        return self.write_mit_commands(q=q, dq=dq, kp=self._zero_vector(), kd=kd, tau=tau)
 
     def write_mit_commands(
         self,
@@ -366,7 +374,9 @@ class DMMotorArm(DamiaoArmAdapterBase):
         if self._arm is None or self._robot is None or not self._enabled:
             return False
         rows = self._mit_command_rows(q=q, dq=dq, kp=kp, kd=kd, tau=tau)
-        cmds = np.array([(row[2], row[3], row[0], row[1], row[4]) for row in rows], dtype=np.float64)
+        cmds = np.array(
+            [(row[2], row[3], row[0], row[1], row[4]) for row in rows], dtype=np.float64
+        )
         self._arm.mit_control(cmds)
         self._robot.tick(self._tick_deadline_us)
         self._state_cache = None

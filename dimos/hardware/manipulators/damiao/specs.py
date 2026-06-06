@@ -57,6 +57,7 @@ class DamiaoArmSpec:
     @property
     def dof(self) -> int:
         return len(self.motors)
+
     @property
     def joint_names(self) -> tuple[str, ...]:
         return tuple(motor.name for motor in self.motors)

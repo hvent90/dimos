@@ -67,8 +67,12 @@ class DamiaoArmAdapterBase:
         self._validate_length("kp", self._kp)
         self._validate_length("kd", self._kd)
         self._gravity_comp = gravity_comp
-        resolved_gravity_model = gravity_model_path if gravity_model_path is not None else arm_spec.gravity_model_path
-        self._gravity_model_path = str(resolved_gravity_model) if resolved_gravity_model is not None else None
+        resolved_gravity_model = (
+            gravity_model_path if gravity_model_path is not None else arm_spec.gravity_model_path
+        )
+        self._gravity_model_path = (
+            str(resolved_gravity_model) if resolved_gravity_model is not None else None
+        )
         resolved_torque_limits = (
             gravity_torque_limits
             if gravity_torque_limits is not None
