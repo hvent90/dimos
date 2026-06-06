@@ -1,0 +1,11 @@
+{
+  "frame": "world",
+  "markers": [
+    {
+      "name": "main_start",
+      "x": 45.308,
+      "y": 89.9873,
+      "z": 0
+    }
+  ]
+}
