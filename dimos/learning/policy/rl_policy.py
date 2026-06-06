@@ -12,9 +12,13 @@
 # See the License for the specific language governing permissions and
 # limitations under the License.
 
-"""rsl_rl PPO actor loader. Single-step `act(obs)` for reactive control.
+"""MLP actor loader. Single-step `act(obs)` for reactive control.
 
-Checkpoint layout (verified against the Go2 velocity policy):
+Loads a PyTorch checkpoint (`.pt`) whose actor is a plain Linear/ELU
+MLP with a Gaussian distribution head and an empirical observation
+normalizer. Verified against on-policy actor-critic checkpoints
+(PPO/A2C/TRPO families); compatible with any trainer that follows
+this on-disk convention:
 
     {
       "actor_state_dict": {
@@ -22,8 +26,9 @@ Checkpoint layout (verified against the Go2 velocity policy):
         "obs_normalizer._var":  (1, obs_dim),
         "obs_normalizer._std":  (1, obs_dim),
         "obs_normalizer.count": ...,
-        "distribution.std_param": (action_dim,),
-        "mlp.{0,2,4,6}.weight": ...,
+        "distribution.std_param": (action_dim,),   # we take the mean,
+                                                   # ignore the std at deploy
+        "mlp.{0,2,4,6}.weight": ...,               # Linear / ELU / Linear / ...
         "mlp.{0,2,4,6}.bias":   ...,
       },
       "critic_state_dict": ...,    # unused at deploy time
@@ -32,9 +37,13 @@ Checkpoint layout (verified against the Go2 velocity policy):
       "infos": {...},
     }
 
-We reconstruct the MLP from the weight shapes (no need to import rsl_rl),
-apply (obs - mean) / std normalization, and return the mean action (no
-exploration noise at deploy time).
+NOT compatible with: off-policy actors (SAC's tanh-squashing,
+TD3's deterministic head), value-based methods (DQN), or
+SB3 / CleanRL checkpoint formats. Those need their own loaders.
+
+We reconstruct the MLP from the saved weight shapes (no training-library
+dependency at deploy time), apply (obs - mean) / std normalization, and
+return the mean action (no exploration noise at deploy time).
 """
 
 from __future__ import annotations
@@ -46,8 +55,8 @@ import numpy as np
 
 
 @dataclass
-class RslRlPolicyConfig:
-    """Architecture metadata recovered from the rsl_rl checkpoint."""
+class MLPPolicyConfig:
+    """Architecture metadata recovered from the MLP-actor checkpoint."""
 
     obs_dim: int
     action_dim: int
@@ -56,15 +65,19 @@ class RslRlPolicyConfig:
     normalize_obs: bool = True
 
 
-class RslRlPolicy:
-    """rsl_rl PPO actor + empirical observation normalizer."""
+class MLPPolicy:
+    """Deployed MLP actor with an empirical observation normalizer.
+
+    Stateless. Same `obs` in, same `action` out. The caller (a ControlTask)
+    owns any per-tick state (gait clock, last_action cache, etc.).
+    """
 
     def __init__(
         self,
         actor,  # torch.nn.Module
         obs_mean: np.ndarray,  # (obs_dim,)
         obs_std: np.ndarray,  # (obs_dim,)
-        cfg: RslRlPolicyConfig,
+        cfg: MLPPolicyConfig,
         device: str,
     ) -> None:
         self._actor = actor
@@ -80,7 +93,7 @@ class RslRlPolicy:
         self._std_t = torch.from_numpy(obs_std).to(device)
 
     @classmethod
-    def load(cls, path: str | Path, device: str = "cpu") -> RslRlPolicy:
+    def load(cls, path: str | Path, device: str = "cpu") -> MLPPolicy:
         import torch
         from torch import nn
 
@@ -123,13 +136,13 @@ class RslRlPolicy:
         mlp.load_state_dict(own_sd, strict=True)
         mlp.eval().to(device)
 
-        # Obs normalizer: rsl_rl stores (mean, var, std) as (1, obs_dim).
+        # Obs normalizer: stored as (1, obs_dim) tensors of (mean, var, std).
         obs_mean = sd["obs_normalizer._mean"].cpu().numpy().reshape(-1).astype(np.float32)
         obs_std = sd["obs_normalizer._std"].cpu().numpy().reshape(-1).astype(np.float32)
         # Guard against zero std (e.g. unused dims).
         obs_std = np.where(obs_std < 1e-6, 1.0, obs_std)
 
-        cfg = RslRlPolicyConfig(
+        cfg = MLPPolicyConfig(
             obs_dim=obs_dim,
             action_dim=action_dim,
             hidden_dims=hidden_dims,
@@ -137,7 +150,7 @@ class RslRlPolicy:
         return cls(mlp, obs_mean, obs_std, cfg, device)
 
     @property
-    def config(self) -> RslRlPolicyConfig:
+    def config(self) -> MLPPolicyConfig:
         return self._cfg
 
     def act(self, obs: np.ndarray) -> np.ndarray:
@@ -158,4 +171,4 @@ class RslRlPolicy:
         return action.cpu().numpy()
 
 
-__all__ = ["RslRlPolicy", "RslRlPolicyConfig"]
+__all__ = ["MLPPolicy", "MLPPolicyConfig"]

@@ -12,7 +12,7 @@
 # See the License for the specific language governing permissions and
 # limitations under the License.
 
-"""ControlTask wrapping an rsl_rl PPO policy for the Go2 velocity tracker.
+"""ControlTask wrapping an MLP policy for the Go2 velocity tracker.
 
 Runs the actor inside the 100Hz tick loop, subsampled to its training rate
 (50Hz default). Emits 12-joint SERVO_POSITION targets each tick (or 9 if
@@ -44,7 +44,7 @@ from dimos.learning.inference.obs_builder import (
     TwistCommand,
     projected_gravity_from_quat,
 )
-from dimos.learning.policy.rl_policy import RslRlPolicy
+from dimos.learning.policy.rl_policy import MLPPolicy
 from dimos.protocol.service.spec import BaseConfig
 from dimos.utils.logging_config import setup_logger
 
@@ -82,12 +82,12 @@ class RLPolicyTaskConfig:
 
 
 class RLPolicyTask(BaseControlTask):
-    """Reactive rsl_rl PPO actor running in the tick loop."""
+    """Reactive MLP actor running in the tick loop."""
 
     def __init__(self, name: str, config: RLPolicyTaskConfig) -> None:
         self._name = name
         self._config = config
-        self._policy = RslRlPolicy.load(config.policy_path, device=config.device)
+        self._policy = MLPPolicy.load(config.policy_path, device=config.device)
         if self._policy.config.obs_dim != 47 or self._policy.config.action_dim != 12:
             raise ValueError(
                 f"Policy shape mismatch: expected 47->12, got "
@@ -255,7 +255,7 @@ class RLPolicyTask(BaseControlTask):
 class RLPolicyTaskParams(BaseConfig):
     """Schema for TaskConfig.params - validated in `create_task`."""
 
-    policy_path: str = Field(..., description="Path to rsl_rl checkpoint (.pt)")
+    policy_path: str = Field(..., description="Path to MLP actor checkpoint (.pt)")
     hardware_id: str = "go2"
     inference_period: float = 0.02
     mask_fr: bool = False
