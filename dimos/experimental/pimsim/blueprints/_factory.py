@@ -92,7 +92,7 @@ def _resolve_spawn(package: Any) -> tuple[float, float, float]:
     return _SCENE_SPAWNS.get(package_name, (0.0, 0.0, 0.0))
 
 
-def build_babylon_sim(scene: str | None = None) -> Blueprint:
+def build_babylon_sim(scene: str | None = None, *, vehicle_height: float = 0.40) -> Blueprint:
     """Box-proxy viewer + rust lidar on a cooked scene (name or scene.meta.json)."""
     package = resolve_scene_package(scene or DEFAULT_SCENE)
     if package is None or package.browser_collision_path is None:
@@ -113,7 +113,7 @@ def build_babylon_sim(scene: str | None = None) -> Blueprint:
         initial_entities=package.entities,
         enable_sim=True,
         sim_rate=100.0,
-        vehicle_height=0.40,
+        vehicle_height=vehicle_height,
         step_offset=0.10,
         support_floor=True,
         lock_z=True,
@@ -208,9 +208,21 @@ def ensure_flat_floor_scene() -> str:
     return str(package.metadata_path)
 
 
-def build_babylon_nav(scene: str | None = None, *, with_vis: bool = False) -> Blueprint:
-    """pimsim sim (open floor) + odom/TF adapters + FAR nav stack."""
-    sim = build_babylon_sim(scene or ensure_flat_floor_scene())
+def build_babylon_nav(
+    scene: str | None = None,
+    *,
+    vehicle_height: float = 0.40,
+    nav_config: dict[str, Any] | None = None,
+    with_vis: bool = False,
+) -> Blueprint:
+    """pimsim sim + odom/TF adapters + nav stack.
+
+    The babylon sim is a drop-in replacement for any sim that drives the nav
+    stack (e.g. the Unity bridge): the viewer publishes /odom, the rust lidar
+    publishes /lidar, the adapters supply the /odometry + map->body TF the stack
+    needs, and the stack's nav_cmd_vel flows back to the browser base.
+    """
+    sim = build_babylon_sim(scene or ensure_flat_floor_scene(), vehicle_height=vehicle_height)
     odom_adapter = PoseStampedToOdometry.blueprint().transports(
         {
             ("pose", PoseStamped): LCMTransport("/odom", PoseStamped),
@@ -220,12 +232,15 @@ def build_babylon_nav(scene: str | None = None, *, with_vis: bool = False) -> Bl
     tf_broadcaster = OdomTfBroadcaster.blueprint().transports(
         {("pose", PoseStamped): LCMTransport("/odom", PoseStamped)}
     )
-    nav_stack = create_nav_stack(
+    config = nav_config or dict(
         planner="simple",
-        vehicle_height=0.40,
+        vehicle_height=vehicle_height,
         max_speed=0.8,
         waypoint_threshold=WAYPOINT_THRESHOLD_M,
-    ).transports({("registered_scan", PointCloud2): LCMTransport("/lidar", PointCloud2)})
+    )
+    nav_stack = create_nav_stack(**config).transports(
+        {("registered_scan", PointCloud2): LCMTransport("/lidar", PointCloud2)}
+    )
     movement_manager = MovementManager.blueprint()
     parts = [sim, odom_adapter, tf_broadcaster, nav_stack, movement_manager]
     if with_vis:

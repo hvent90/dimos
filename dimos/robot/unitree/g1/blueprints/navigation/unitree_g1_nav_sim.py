@@ -13,17 +13,27 @@
 # See the License for the specific language governing permissions and
 # limitations under the License.
 
+"""G1 nav stack on the pimsim (Babylon + Havok) browser sim.
+
+Previously this drove the Unity sim via ``UnityBridgeModule``; it now runs on
+the in-repo pimsim. ``build_babylon_nav`` supplies the same contract the nav
+stack consumed from Unity — /odometry, /lidar registered scan, and the
+map->body TF — and the stack's nav_cmd_vel flows back to the browser base.
+
+Open ``http://localhost:8091/`` (or run a headless browser) to tick the in-browser
+physics, then publish a goal to ``/clicked_point``.
+"""
+
 from __future__ import annotations
 
 from typing import Any
 
 from dimos.core.coordination.blueprints import autoconnect
 from dimos.core.global_config import global_config
-from dimos.navigation.movement_manager.movement_manager import MovementManager
-from dimos.navigation.nav_stack.main import create_nav_stack, nav_stack_rerun_config
+from dimos.experimental.pimsim.blueprints._factory import build_babylon_nav
+from dimos.navigation.nav_stack.main import nav_stack_rerun_config
 from dimos.robot.unitree.g1.config import G1, G1_LOCAL_PLANNER_PRECOMPUTED_PATHS
 from dimos.robot.unitree.g1.g1_rerun import g1_static_robot
-from dimos.simulation.unity.module import UnityBridgeModule
 from dimos.visualization.vis_module import vis_module
 
 nav_config: dict[str, Any] = dict(
@@ -51,39 +61,18 @@ nav_config: dict[str, Any] = dict(
     },
 )
 
-unitree_g1_nav_sim = (
-    autoconnect(
-        UnityBridgeModule.blueprint(
-            vehicle_height=G1.height_clearance,
-            lock_z=True,
-            publish_images=False,
-        ),
-        create_nav_stack(**nav_config),
-        MovementManager.blueprint(),
-        vis_module(
-            viewer_backend=global_config.viewer,
-            rerun_config=nav_stack_rerun_config(
-                {
-                    "visual_override": {
-                        "world/camera_info": UnityBridgeModule.rerun_suppress_camera_info,
-                    },
-                    "static": {
-                        "world/color_image": UnityBridgeModule.rerun_static_pinhole,
-                        "world/tf/robot": g1_static_robot,
-                    },
+unitree_g1_nav_sim = autoconnect(
+    build_babylon_nav(vehicle_height=G1.height_clearance, nav_config=nav_config),
+    vis_module(
+        viewer_backend=global_config.viewer,
+        rerun_config=nav_stack_rerun_config(
+            {
+                "static": {
+                    "world/tf/robot": g1_static_robot,
                 },
-                # Rate-limit heavy point cloud topics to prevent rerun crashing
-                vis_throttle=0.1,
-            ),
+            },
+            # Rate-limit heavy point cloud topics to prevent rerun crashing
+            vis_throttle=0.1,
         ),
-    )
-    .remappings(
-        [
-            # Unity needs the extended (persistent) terrain map for Z-height, not the local one
-            (UnityBridgeModule, "terrain_map", "terrain_map_ext"),
-            # Planner owns way_point — disconnect MovementManager's click relay
-            (MovementManager, "way_point", "_mgr_way_point_unused"),
-        ]
-    )
-    .global_config(n_workers=8, robot_model="unitree_g1", simulation=True)
-)
+    ),
+).global_config(n_workers=8, robot_model="unitree_g1", simulation=True)
