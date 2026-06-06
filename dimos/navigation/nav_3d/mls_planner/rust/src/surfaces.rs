@@ -84,6 +84,92 @@ pub fn extract_surfaces(
     );
 }
 
+/// Insert a voxel into the per-column index, keeping each column sorted.
+pub fn add_to_by_col(by_col: &mut ColumnIz, (ix, iy, iz): VoxelKey) {
+    let zs = by_col.entry((ix, iy)).or_default();
+    if let Err(pos) = zs.binary_search(&iz) {
+        zs.insert(pos, iz);
+    }
+}
+
+/// Remove a voxel from the per-column index, dropping emptied columns.
+pub fn remove_from_by_col(by_col: &mut ColumnIz, (ix, iy, iz): VoxelKey) {
+    if let Some(zs) = by_col.get_mut(&(ix, iy)) {
+        if let Ok(pos) = zs.binary_search(&iz) {
+            zs.remove(pos);
+        }
+        if zs.is_empty() {
+            by_col.remove(&(ix, iy));
+        }
+    }
+}
+
+/// Re-extract surface cells whose columns fall in the inclusive `write` box
+/// `(x0, x1, y0, y1)`. Reads `by_col` over `write` expanded by the morphology
+/// halo so closing at the box boundary matches a full rebuild, then filters
+/// the result back to `write`. `by_col` must already be current.
+pub fn extract_surfaces_region(
+    by_col: &ColumnIz,
+    clearance_cells: i32,
+    dilation_passes: u32,
+    erosion_passes: u32,
+    write: (i32, i32, i32, i32),
+) -> Vec<VoxelKey> {
+    let (wx0, wx1, wy0, wy1) = write;
+    let pad = (dilation_passes + erosion_passes) as i32;
+
+    let standable: Vec<VoxelKey> = ((wx0 - pad)..(wx1 + pad + 1))
+        .into_par_iter()
+        .flat_map_iter(|ix| {
+            let mut local: Vec<VoxelKey> = Vec::new();
+            for iy in (wy0 - pad)..=(wy1 + pad) {
+                let Some(zs) = by_col.get(&(ix, iy)) else {
+                    continue;
+                };
+                for w in zs.windows(2) {
+                    if w[1] - w[0] > clearance_cells {
+                        local.push((ix, iy, w[0]));
+                    }
+                }
+                if let Some(&last_iz) = zs.last() {
+                    local.push((ix, iy, last_iz));
+                }
+            }
+            local
+        })
+        .collect();
+
+    let in_write = |ix: i32, iy: i32| ix >= wx0 && ix <= wx1 && iy >= wy0 && iy <= wy1;
+
+    if dilation_passes == 0 && erosion_passes == 0 {
+        return standable
+            .into_iter()
+            .filter(|&(ix, iy, _)| in_write(ix, iy))
+            .collect();
+    }
+
+    let mut by_z: AHashMap<i32, Vec<(i32, i32)>> = AHashMap::new();
+    for &(ix, iy, iz) in &standable {
+        by_z.entry(iz).or_default().push((ix, iy));
+    }
+    let slices: Vec<(i32, Vec<(i32, i32)>)> = by_z.into_iter().collect();
+    slices
+        .par_iter()
+        .flat_map_iter(|(iz, xys)| {
+            close_at_z(
+                xys,
+                *iz,
+                by_col,
+                dilation_passes,
+                erosion_passes,
+                clearance_cells,
+            )
+            .into_iter()
+            .filter(|c| in_write(c.0, c.1))
+        })
+        .collect()
+}
+
 /// Dilation and erosion on all xy slices of the extracted surfaces
 /// to fill in small holes.
 fn close_surface_holes(

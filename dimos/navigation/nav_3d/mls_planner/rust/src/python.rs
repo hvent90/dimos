@@ -9,7 +9,7 @@ use pyo3::types::PyDict;
 use validator::Validate;
 
 use crate::edges::edges_to_segments;
-use crate::mls_planner::{Config, Planner};
+use crate::mls_planner::{Config, Planner, RegionBounds};
 use crate::voxel::surface_point_xyz;
 
 #[pyclass]
@@ -87,12 +87,56 @@ impl MLSPlanner {
         Ok(())
     }
 
+    #[pyo3(signature = (points, origin, radius, z_min, z_max))]
+    fn update_region(
+        &mut self,
+        py: Python<'_>,
+        points: &Bound<'_, PyAny>,
+        origin: (f32, f32),
+        radius: f32,
+        z_min: f32,
+        z_max: f32,
+    ) -> PyResult<()> {
+        let points: PyReadonlyArray2<'_, f32> = points
+            .extract()
+            .map_err(|_| PyValueError::new_err("points must be a (N, 3) float32 numpy array"))?;
+        let shape = points.shape();
+        if shape[1] != 3 {
+            return Err(PyValueError::new_err(format!(
+                "points must be (N, 3) float32, got shape {:?}",
+                shape
+            )));
+        }
+        let arr = points.as_array();
+        let n = shape[0];
+        let pts: Vec<(f32, f32, f32)> = (0..n)
+            .filter_map(|i| {
+                let x = arr[[i, 0]];
+                let y = arr[[i, 1]];
+                let z = arr[[i, 2]];
+                (x.is_finite() && y.is_finite() && z.is_finite()).then_some((x, y, z))
+            })
+            .collect();
+
+        let bounds = RegionBounds {
+            origin_x: origin.0,
+            origin_y: origin.1,
+            radius,
+            z_min,
+            z_max,
+        };
+        let config = &self.config;
+        let planner = &mut self.planner;
+        py.allow_threads(move || planner.update_region(&pts, &bounds, config));
+        Ok(())
+    }
+
     fn surface_map<'py>(&self, py: Python<'py>) -> Bound<'py, PyArray2<f32>> {
         let voxel_size = self.config.voxel_size;
         let surface = self.planner.surface();
         let positions: Vec<f32> = py.allow_threads(|| {
             let mut out: Vec<f32> = Vec::with_capacity(surface.len() * 3);
-            for &(ix, iy, iz) in surface {
+            for (ix, iy, iz) in surface {
                 let (x, y, z) = surface_point_xyz(ix, iy, iz, voxel_size);
                 out.push(x);
                 out.push(y);
@@ -169,7 +213,27 @@ impl MLSPlanner {
         self.planner.voxel_count()
     }
 
-    /// Per-substep wall-clock cost (ms) of the most recent ``update_global_map``.
+    /// Accumulated occupied voxel centers as (N, 3) float32, for visualization.
+    fn voxel_map<'py>(&self, py: Python<'py>) -> Bound<'py, PyArray2<f32>> {
+        let vs = self.config.voxel_size;
+        let half = vs * 0.5;
+        let keys: Vec<(i32, i32, i32)> = self.planner.voxel_keys().collect();
+        let positions: Vec<f32> = py.allow_threads(|| {
+            let mut out: Vec<f32> = Vec::with_capacity(keys.len() * 3);
+            for (kx, ky, kz) in keys {
+                out.push(kx as f32 * vs + half);
+                out.push(ky as f32 * vs + half);
+                out.push(kz as f32 * vs + half);
+            }
+            out
+        });
+        let n = positions.len() / 3;
+        Array2::from_shape_vec((n, 3), positions)
+            .expect("3 elements pushed per voxel")
+            .into_pyarray(py)
+    }
+
+    /// Per-substep wall-clock cost (ms) of the most recent map update.
     fn last_timings<'py>(&self, py: Python<'py>) -> PyResult<Bound<'py, PyDict>> {
         let t = self.planner.last_timings();
         let d = PyDict::new(py);

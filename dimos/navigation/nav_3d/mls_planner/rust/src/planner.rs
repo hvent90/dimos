@@ -4,7 +4,7 @@
 use std::cmp::Ordering;
 use std::collections::BinaryHeap;
 
-use ahash::AHashMap;
+use ahash::{AHashMap, AHashSet};
 
 use crate::adjacency::{CellId, SurfaceCells, SurfaceLookup};
 use crate::dijkstra::walk_preds;
@@ -91,15 +91,13 @@ pub fn plan(
     let start_cell = plg.cells.id(start_coord)?;
     let goal_cell = plg.cells.id(goal_coord)?;
 
-    let node_idx_by_cell: AHashMap<CellId, NodeId> = plg
-        .nodes
-        .iter()
-        .enumerate()
-        .map(|(i, n)| (n.cell_id, i as NodeId))
-        .collect();
+    let node_cells: AHashSet<NodeId> = plg.nodes.iter().map(|n| n.cell_id).collect();
 
     let goal_segment = walk_preds(&plg.cell_state, goal_cell);
-    let goal_node = *node_idx_by_cell.get(goal_segment.last()?)?;
+    let goal_node = *goal_segment.last()?;
+    if !node_cells.contains(&goal_node) {
+        return None;
+    }
 
     // Rooted at the goal so one pass covers every node's cost-to-go.
     let (cost_to_go, pred_to_goal) = node_dijkstra(plg, goal_node);
@@ -111,7 +109,7 @@ pub fn plan(
         goal_node,
         &cost_to_go,
         &pred_to_goal,
-        &node_idx_by_cell,
+        &node_cells,
         radius,
     )?;
 
@@ -131,35 +129,40 @@ fn select_entry(
     plg: &PlannerGraph,
     start_cell: CellId,
     goal_node: NodeId,
-    cost_to_go: &[f32],
-    pred_to_goal: &[NodeId],
-    node_idx_by_cell: &AHashMap<CellId, NodeId>,
+    cost_to_go: &AHashMap<NodeId, f32>,
+    pred_to_goal: &AHashMap<NodeId, NodeId>,
+    node_cells: &AHashSet<NodeId>,
     radius_m: f32,
 ) -> Option<(Vec<CellId>, Vec<NodeId>)> {
     let (connect_dist, connect_pred) = robot_search(&plg.cells, start_cell, radius_m);
 
     let mut entry_node = NO_NODE;
     let mut best_score = f32::INFINITY;
-    for (i, node) in plg.nodes.iter().enumerate() {
+    for node in &plg.nodes {
         let Some(&connect) = connect_dist.get(&node.cell_id) else {
             continue;
         };
-        let score = connect + cost_to_go[i];
+        let Some(&ctg) = cost_to_go.get(&node.cell_id) else {
+            continue;
+        };
+        let score = connect + ctg;
         if score < best_score {
             best_score = score;
-            entry_node = i as NodeId;
+            entry_node = node.cell_id;
         }
     }
 
     if best_score.is_finite() {
-        let mut lead = walk_local_preds(&connect_pred, plg.nodes[entry_node as usize].cell_id);
+        let mut lead = walk_local_preds(&connect_pred, entry_node);
         lead.reverse();
         return Some((lead, follow_preds(entry_node, goal_node, pred_to_goal)?));
     }
 
     let start_segment = walk_preds(&plg.cell_state, start_cell);
-    let region_node = *node_idx_by_cell.get(start_segment.last()?)?;
-    if !cost_to_go[region_node as usize].is_finite() {
+    let region_node = *start_segment.last()?;
+    if !node_cells.contains(&region_node)
+        || !cost_to_go.get(&region_node).is_some_and(|c| c.is_finite())
+    {
         return None;
     }
     Some((
@@ -211,27 +214,33 @@ fn walk_local_preds(pred: &AHashMap<CellId, CellId>, from: CellId) -> Vec<CellId
     path
 }
 
-/// Cost-to-go to source for every node, with a predecessor pointing one hop
-/// toward it. Unreachable nodes stay at infinite cost.
-fn node_dijkstra(plg: &PlannerGraph, source: NodeId) -> (Vec<f32>, Vec<NodeId>) {
-    let n = plg.nodes.len();
-    let mut dist = vec![f32::INFINITY; n];
-    let mut pred = vec![NO_NODE; n];
-    dist[source as usize] = 0.0;
+/// Cost-to-go to source for every reachable node, with a predecessor pointing
+/// one hop toward it. Nodes are keyed by their CellId. Unreachable nodes are
+/// simply absent from the maps.
+fn node_dijkstra(
+    plg: &PlannerGraph,
+    source: NodeId,
+) -> (AHashMap<NodeId, f32>, AHashMap<NodeId, NodeId>) {
+    let mut dist: AHashMap<NodeId, f32> = AHashMap::new();
+    let mut pred: AHashMap<NodeId, NodeId> = AHashMap::new();
+    dist.insert(source, 0.0);
     let mut heap: BinaryHeap<Scored> = BinaryHeap::new();
     heap.push(Scored(0.0, source));
 
     while let Some(Scored(d, u)) = heap.pop() {
-        if d > dist[u as usize] {
+        if d > dist.get(&u).copied().unwrap_or(f32::INFINITY) {
             continue;
         }
-        for &edge_idx in &plg.node_adj[u as usize] {
+        let Some(adj) = plg.node_adj.get(&u) else {
+            continue;
+        };
+        for &edge_idx in adj {
             let edge = &plg.node_edges[edge_idx as usize];
             let neighbor = if edge.a == u { edge.b } else { edge.a };
             let nd = d + edge.cost;
-            if nd < dist[neighbor as usize] {
-                dist[neighbor as usize] = nd;
-                pred[neighbor as usize] = u;
+            if nd < dist.get(&neighbor).copied().unwrap_or(f32::INFINITY) {
+                dist.insert(neighbor, nd);
+                pred.insert(neighbor, u);
                 heap.push(Scored(nd, neighbor));
             }
         }
@@ -240,14 +249,15 @@ fn node_dijkstra(plg: &PlannerGraph, source: NodeId) -> (Vec<f32>, Vec<NodeId>) 
 }
 
 /// Build the node sequence by following goal-pointing predecessors.
-fn follow_preds(from: NodeId, goal: NodeId, pred: &[NodeId]) -> Option<Vec<NodeId>> {
+fn follow_preds(
+    from: NodeId,
+    goal: NodeId,
+    pred: &AHashMap<NodeId, NodeId>,
+) -> Option<Vec<NodeId>> {
     let mut seq = vec![from];
     let mut cur = from;
     while cur != goal {
-        let next = pred[cur as usize];
-        if next == NO_NODE {
-            return None;
-        }
+        let &next = pred.get(&cur)?;
         cur = next;
         seq.push(cur);
     }
@@ -387,7 +397,7 @@ fn los_on_surface(
 }
 
 fn edge_between(plg: &PlannerGraph, a: NodeId, b: NodeId) -> Option<NodeEdgeIdx> {
-    for &edge_idx in &plg.node_adj[a as usize] {
+    for &edge_idx in plg.node_adj.get(&a)? {
         let edge = &plg.node_edges[edge_idx as usize];
         let other = if edge.a == a { edge.b } else { edge.a };
         if other == b {

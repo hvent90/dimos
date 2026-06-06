@@ -33,6 +33,21 @@ class MLSPlanner:
         """Voxelize the map and rebuild surfaces, nodes, and edges. Shape (N, 3) float32."""
         ...
 
+    def update_region(
+        self,
+        points: NDArray[np.float32],
+        origin: tuple[float, float],
+        radius: float,
+        z_min: float,
+        z_max: float,
+    ) -> None:
+        """Replace the cylindrical region with a local map slice and rebuild.
+
+        Removes cached voxels inside the cylinder, inserts the local map points,
+        and leaves everything outside untouched. Points are (N, 3) float32.
+        """
+        ...
+
     def surface_map(self) -> NDArray[np.float32]:
         """Standable surface cells as (M, 3) float32 centers."""
         ...
@@ -55,6 +70,10 @@ class MLSPlanner:
 
     def voxel_count(self) -> int:
         """Number of occupied voxels in the current map."""
+        ...
+
+    def voxel_map(self) -> NDArray[np.float32]:
+        """Accumulated occupied voxel centers as (N, 3) float32, for visualization."""
         ...
 
     def last_timings(self) -> dict[str, float]:

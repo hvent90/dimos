@@ -8,17 +8,19 @@
 //! the Voronoi region. We use the boundaries of these regions to build the
 //! edges between start nodes.
 
-use ahash::AHashMap;
+use ahash::{AHashMap, AHashSet};
 use rayon::prelude::*;
 
 use crate::adjacency::{CellId, Edge, SurfaceCells, SurfaceLookup, NO_CELL};
-use crate::dijkstra::{dijkstra, walk_preds, DijkstraState};
+use crate::dijkstra::{dijkstra, dijkstra_region, walk_preds, DijkstraState};
 use crate::nodes::NodeData;
 use crate::voxel::VoxelKey;
 
-/// Index into planner graph nodes
-pub type NodeId = u32;
-pub const NO_NODE: NodeId = u32::MAX;
+/// A node is identified by the CellId it sits on. This stays stable across
+/// incremental updates as long as that cell is untouched, so cached node
+/// edges and the Voronoi forest survive a regional rebuild.
+pub type NodeId = CellId;
+pub const NO_NODE: NodeId = NO_CELL;
 
 /// Index into planner graph node edges
 pub type NodeEdgeIdx = u32;
@@ -40,8 +42,13 @@ pub struct PlannerGraph {
     pub surface_lookup: SurfaceLookup,
     pub nodes: Vec<NodeData>,
     pub node_edges: Vec<NodeEdge>,
-    pub node_adj: Vec<Vec<NodeEdgeIdx>>,
+    pub node_adj: AHashMap<NodeId, Vec<NodeEdgeIdx>>,
+    /// Voronoi forest: each cell's nearest node, distance, and predecessor.
+    /// Read by the planner to expand node edges into surface-cell paths.
     pub cell_state: DijkstraState,
+    /// Persistent wall-distance field, kept so a regional node rebuild can
+    /// reseed its wavefront from cached values outside the dirty window.
+    pub wall_state: DijkstraState,
 }
 
 impl PlannerGraph {
@@ -59,7 +66,7 @@ pub fn build_node_edges(
     nodes: &[NodeData],
     state: &mut DijkstraState,
     out_edges: &mut Vec<NodeEdge>,
-    out_adj: &mut Vec<Vec<NodeEdgeIdx>>,
+    out_adj: &mut AHashMap<NodeId, Vec<NodeEdgeIdx>>,
 ) {
     out_edges.clear();
     out_adj.clear();
@@ -70,18 +77,126 @@ pub fn build_node_edges(
     }
 
     let source_cells: Vec<CellId> = nodes.iter().map(|n| n.cell_id).collect();
-    dijkstra(cells, &source_cells, state);
+    dijkstra(cells, &source_cells, state, false);
 
     best_boundary_edges(cells, state, out_edges);
 
-    out_adj.resize_with(nodes.len(), Vec::new);
-    for v in out_adj.iter_mut() {
-        v.clear();
+    rebuild_node_adj(out_edges, out_adj);
+}
+
+/// Rebuild the per-node edge index from the edge list.
+fn rebuild_node_adj(edges: &[NodeEdge], out_adj: &mut AHashMap<NodeId, Vec<NodeEdgeIdx>>) {
+    out_adj.clear();
+    for (edge_idx, edge) in edges.iter().enumerate() {
+        out_adj
+            .entry(edge.a)
+            .or_default()
+            .push(edge_idx as NodeEdgeIdx);
+        out_adj
+            .entry(edge.b)
+            .or_default()
+            .push(edge_idx as NodeEdgeIdx);
     }
-    for (edge_idx, edge) in out_edges.iter().enumerate() {
-        out_adj[edge.a as usize].push(edge_idx as NodeEdgeIdx);
-        out_adj[edge.b as usize].push(edge_idx as NodeEdgeIdx);
+}
+
+/// Regional counterpart to `build_node_edges`.
+///
+/// Recomputes the Voronoi forest only inside `window`, then rebuilds the node
+/// edges by keeping cached edges whose boundary lies entirely outside the
+/// window and rescanning window cells for fresh boundary crossings.
+pub fn build_node_edges_region(
+    cells: &SurfaceCells,
+    nodes: &[NodeData],
+    window: &AHashSet<CellId>,
+    state: &mut DijkstraState,
+    out_edges: &mut Vec<NodeEdge>,
+    out_adj: &mut AHashMap<NodeId, Vec<NodeEdgeIdx>>,
+) {
+    let source_cells: Vec<CellId> = nodes.iter().map(|n| n.cell_id).collect();
+    if source_cells.is_empty() {
+        state.reset(cells.slot_capacity());
+        out_edges.clear();
+        out_adj.clear();
+        return;
     }
+    dijkstra_region(cells, &source_cells, window, state, false);
+
+    let live_node: AHashSet<NodeId> = source_cells.iter().copied().collect();
+
+    let mut merged: AHashMap<(NodeId, NodeId), NodeEdge> = AHashMap::new();
+    for e in out_edges.iter() {
+        if window.contains(&e.boundary_u) || window.contains(&e.boundary_v) {
+            continue;
+        }
+        if !live_node.contains(&e.a) || !live_node.contains(&e.b) {
+            continue;
+        }
+        merged.insert((e.a, e.b), *e);
+    }
+
+    let win_cells: Vec<CellId> = window.iter().copied().collect();
+    let fresh = win_cells
+        .par_iter()
+        .fold(
+            AHashMap::<(NodeId, NodeId), NodeEdge>::new,
+            |mut local, &u| {
+                let du = state.dist[u as usize];
+                if du.is_finite() {
+                    let sa = state.source[u as usize];
+                    for edge in cells.neighbors(u) {
+                        let v = edge.dest;
+                        let dv = state.dist[v as usize];
+                        if !dv.is_finite() {
+                            continue;
+                        }
+                        let sb = state.source[v as usize];
+                        if sa == sb {
+                            continue;
+                        }
+                        let cost = du + edge.cost + dv;
+                        let (key_a, key_b, bu, bv) = if sa < sb {
+                            (sa, sb, u, v)
+                        } else {
+                            (sb, sa, v, u)
+                        };
+                        let entry = local.entry((key_a, key_b)).or_insert(NodeEdge {
+                            a: key_a,
+                            b: key_b,
+                            cost: f32::INFINITY,
+                            boundary_u: NO_CELL,
+                            boundary_v: NO_CELL,
+                        });
+                        if cost < entry.cost {
+                            entry.cost = cost;
+                            entry.boundary_u = bu;
+                            entry.boundary_v = bv;
+                        }
+                    }
+                }
+                local
+            },
+        )
+        .reduce(AHashMap::<(NodeId, NodeId), NodeEdge>::new, |mut a, b| {
+            for (k, v_edge) in b {
+                let entry = a.entry(k).or_insert(v_edge);
+                if v_edge.cost < entry.cost {
+                    *entry = v_edge;
+                }
+            }
+            a
+        });
+
+    for (k, fe) in fresh {
+        let entry = merged.entry(k).or_insert(fe);
+        if fe.cost < entry.cost {
+            *entry = fe;
+        }
+    }
+
+    out_edges.clear();
+    out_edges.extend(merged.into_values());
+    out_edges.par_sort_unstable_by_key(|e| (e.a, e.b));
+    rebuild_node_adj(out_edges, out_adj);
 }
 
 fn best_boundary_edges(cells: &SurfaceCells, state: &DijkstraState, out: &mut Vec<NodeEdge>) {
@@ -211,16 +326,25 @@ mod tests {
         let pg = setup(&strip_cells(), &[(3, 0, 0), (15, 0, 0)]);
         assert_eq!(pg.node_edges.len(), 1);
         let e = &pg.node_edges[0];
-        assert_eq!((e.a, e.b), (0, 1));
-        assert_eq!(pg.node_adj[0], vec![0]);
-        assert_eq!(pg.node_adj[1], vec![0]);
+        let a = pg.cells.id((3, 0, 0)).unwrap();
+        let b = pg.cells.id((15, 0, 0)).unwrap();
+        assert_eq!((e.a.min(e.b), e.a.max(e.b)), (a.min(b), a.max(b)));
+        assert_eq!(pg.node_adj[&a], vec![0]);
+        assert_eq!(pg.node_adj[&b], vec![0]);
     }
 
     #[test]
     fn three_nodes_in_line_form_a_chain() {
         let pg = setup(&strip_cells(), &[(3, 0, 0), (10, 0, 0), (17, 0, 0)]);
+        let c = |k| pg.cells.id(k).unwrap();
         let pairs: Vec<(NodeId, NodeId)> = pg.node_edges.iter().map(|e| (e.a, e.b)).collect();
-        assert_eq!(pairs, vec![(0, 1), (1, 2)]);
+        assert_eq!(
+            pairs,
+            vec![
+                (c((3, 0, 0)), c((10, 0, 0))),
+                (c((10, 0, 0)), c((17, 0, 0)))
+            ]
+        );
     }
 
     #[test]
