@@ -66,6 +66,7 @@ class FakeArm:
         self.mit_commands: list[np.ndarray] = []
         self.position_commands: list[np.ndarray] = []
         self.velocity_commands: list[np.ndarray] = []
+        self.refresh_count = 0
         self.motors = {f"joint{i + 1}": FakeMotor() for i in range(dof)}
 
     def __len__(self) -> int:
@@ -82,6 +83,9 @@ class FakeArm:
 
     def torques(self) -> np.ndarray:
         return self.torques_value
+
+    def refresh(self) -> None:
+        self.refresh_count += 1
 
     def mit_control(self, cmds: np.ndarray) -> None:
         self.mit_commands.append(cmds.copy())
@@ -299,12 +303,29 @@ def test_state_reads_share_one_tick() -> None:
     assert adapter.connect() is True
     robot = FakeRobot.last
     assert robot is not None
+    robot.arm.refresh_count = 0
     robot.tick_count = 0
     adapter._state_cache = None
     adapter.read_joint_positions()
     adapter.read_joint_velocities()
     adapter.read_joint_efforts()
     assert robot.tick_count == 1
+    assert robot.arm.refresh_count == 1
+
+
+def test_uncached_state_read_queues_no_motion_refresh() -> None:
+    adapter = DMMotorArm(use_mock_bus=True, state_cache_ttl_s=0.0)
+    assert adapter.connect() is True
+    robot = FakeRobot.last
+    assert robot is not None
+
+    robot.arm.refresh_count = 0
+    robot.tick_count = 0
+    assert adapter.read_joint_positions() == pytest.approx([0.0, 0.1, 0.2, 0.3, 0.4, 0.5, 0.6])
+
+    assert robot.arm.refresh_count == 1
+    assert robot.tick_count == 1
+    assert robot.arm.mit_commands == []
 
 
 def test_default_gains_match_openarm_ros2_presets() -> None:

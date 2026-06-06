@@ -268,6 +268,7 @@ class DMMotorArm(DamiaoArmAdapterBase):
             and now - self._state_cache_time <= self._state_cache_ttl_s
         ):
             return self._state_cache
+        self._arm.refresh()
         self._robot.tick(self._tick_deadline_us)
         state = (
             self._arm.positions().astype(float).tolist(),
