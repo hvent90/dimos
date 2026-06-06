@@ -26,8 +26,7 @@ pub struct Edge {
     pub dest: CellId,
     /// Geometric cost, set at build time and never mutated.
     pub base_cost: f32,
-    /// Effective cost = base_cost scaled by the wall-safe penalty. Derived
-    /// from base_cost each frame so the penalty stays idempotent.
+    /// base_cost scaled by the wall-safe penalty, recomputed each update.
     pub cost: f32,
 }
 

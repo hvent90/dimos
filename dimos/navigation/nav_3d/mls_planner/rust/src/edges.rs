@@ -11,14 +11,13 @@
 use ahash::{AHashMap, AHashSet};
 use rayon::prelude::*;
 
-use crate::adjacency::{CellId, Edge, SurfaceCells, SurfaceLookup, NO_CELL};
-use crate::dijkstra::{dijkstra, dijkstra_region, walk_preds, DijkstraState};
+use crate::adjacency::{CellId, SurfaceCells, SurfaceLookup, NO_CELL};
+use crate::dijkstra::{dijkstra, dijkstra_region, walk_preds, DijkstraState, Weight};
 use crate::nodes::NodeData;
 use crate::voxel::VoxelKey;
 
-/// A node is identified by the CellId it sits on. This stays stable across
-/// incremental updates as long as that cell is untouched, so cached node
-/// edges and the Voronoi forest survive a regional rebuild.
+/// A node is identified by the CellId it sits on, stable across incremental
+/// updates so cached edges and the Voronoi forest survive a regional rebuild.
 pub type NodeId = CellId;
 pub const NO_NODE: NodeId = NO_CELL;
 
@@ -43,11 +42,9 @@ pub struct PlannerGraph {
     pub nodes: Vec<NodeData>,
     pub node_edges: Vec<NodeEdge>,
     pub node_adj: AHashMap<NodeId, Vec<NodeEdgeIdx>>,
-    /// Voronoi forest: each cell's nearest node, distance, and predecessor.
-    /// Read by the planner to expand node edges into surface-cell paths.
+    /// Voronoi forest read by the planner to expand node edges into cell paths.
     pub cell_state: DijkstraState,
-    /// Persistent wall-distance field, kept so a regional node rebuild can
-    /// reseed its wavefront from cached values outside the dirty window.
+    /// Persistent wall-distance field, reseeded regionally from cached values.
     pub wall_state: DijkstraState,
 }
 
@@ -77,7 +74,7 @@ pub fn build_node_edges(
     }
 
     let source_cells: Vec<CellId> = nodes.iter().map(|n| n.cell_id).collect();
-    dijkstra(cells, &source_cells, state, false);
+    dijkstra(cells, &source_cells, state, Weight::Penalized);
 
     best_boundary_edges(cells, state, out_edges);
 
@@ -99,11 +96,9 @@ fn rebuild_node_adj(edges: &[NodeEdge], out_adj: &mut AHashMap<NodeId, Vec<NodeE
     }
 }
 
-/// Regional counterpart to `build_node_edges`.
-///
-/// Recomputes the Voronoi forest only inside `window`, then rebuilds the node
-/// edges by keeping cached edges whose boundary lies entirely outside the
-/// window and rescanning window cells for fresh boundary crossings.
+/// Regional counterpart to build_node_edges: recompute the Voronoi only inside
+/// the window, keep cached edges whose boundary is outside it, and rescan the
+/// window for fresh crossings.
 pub fn build_node_edges_region(
     cells: &SurfaceCells,
     nodes: &[NodeData],
@@ -119,7 +114,7 @@ pub fn build_node_edges_region(
         out_adj.clear();
         return;
     }
-    dijkstra_region(cells, &source_cells, window, state, false);
+    dijkstra_region(cells, &source_cells, window, state, Weight::Penalized);
 
     let live_node: AHashSet<NodeId> = source_cells.iter().copied().collect();
 
@@ -135,63 +130,7 @@ pub fn build_node_edges_region(
     }
 
     let win_cells: Vec<CellId> = window.iter().copied().collect();
-    let fresh = win_cells
-        .par_iter()
-        .fold(
-            AHashMap::<(NodeId, NodeId), NodeEdge>::new,
-            |mut local, &u| {
-                let du = state.dist[u as usize];
-                if du.is_finite() {
-                    let sa = state.source[u as usize];
-                    for edge in cells.neighbors(u) {
-                        let v = edge.dest;
-                        let dv = state.dist[v as usize];
-                        if !dv.is_finite() {
-                            continue;
-                        }
-                        let sb = state.source[v as usize];
-                        if sa == sb {
-                            continue;
-                        }
-                        let cost = du + edge.cost + dv;
-                        let (key_a, key_b, bu, bv) = if sa < sb {
-                            (sa, sb, u, v)
-                        } else {
-                            (sb, sa, v, u)
-                        };
-                        let entry = local.entry((key_a, key_b)).or_insert(NodeEdge {
-                            a: key_a,
-                            b: key_b,
-                            cost: f32::INFINITY,
-                            boundary_u: NO_CELL,
-                            boundary_v: NO_CELL,
-                        });
-                        if cost < entry.cost {
-                            entry.cost = cost;
-                            entry.boundary_u = bu;
-                            entry.boundary_v = bv;
-                        }
-                    }
-                }
-                local
-            },
-        )
-        .reduce(AHashMap::<(NodeId, NodeId), NodeEdge>::new, |mut a, b| {
-            for (k, v_edge) in b {
-                let entry = a.entry(k).or_insert(v_edge);
-                if v_edge.cost < entry.cost {
-                    *entry = v_edge;
-                }
-            }
-            a
-        });
-
-    for (k, fe) in fresh {
-        let entry = merged.entry(k).or_insert(fe);
-        if fe.cost < entry.cost {
-            *entry = fe;
-        }
-    }
+    merge_min(&mut merged, boundary_edge_map(cells, state, &win_cells));
 
     out_edges.clear();
     out_edges.extend(merged.into_values());
@@ -200,19 +139,29 @@ pub fn build_node_edges_region(
 }
 
 fn best_boundary_edges(cells: &SurfaceCells, state: &DijkstraState, out: &mut Vec<NodeEdge>) {
-    let cell_entries: Vec<(CellId, &[Edge])> = cells.iter().collect();
+    let scan: Vec<CellId> = cells.ids().collect();
+    let merged = boundary_edge_map(cells, state, &scan);
+    out.clear();
+    out.extend(merged.into_values());
+    out.par_sort_unstable_by_key(|e| (e.a, e.b));
+}
 
-    let merged: AHashMap<(NodeId, NodeId), NodeEdge> = cell_entries
-        .par_iter()
+/// Cheapest Voronoi-boundary crossing per adjacent node pair, scanning `scan`.
+fn boundary_edge_map(
+    cells: &SurfaceCells,
+    state: &DijkstraState,
+    scan: &[CellId],
+) -> AHashMap<(NodeId, NodeId), NodeEdge> {
+    scan.par_iter()
         .fold(
             AHashMap::<(NodeId, NodeId), NodeEdge>::new,
-            |mut local, (u, edges)| {
-                let du = state.dist[*u as usize];
+            |mut local, &u| {
+                let du = state.dist[u as usize];
                 if !du.is_finite() {
                     return local;
                 }
-                let sa = state.source[*u as usize];
-                for edge in *edges {
+                let sa = state.source[u as usize];
+                for edge in cells.neighbors(u) {
                     let v = edge.dest;
                     let dv = state.dist[v as usize];
                     if !dv.is_finite() {
@@ -223,13 +172,11 @@ fn best_boundary_edges(cells: &SurfaceCells, state: &DijkstraState, out: &mut Ve
                         continue;
                     }
                     let cost = du + edge.cost + dv;
-
                     let (key_a, key_b, bu, bv) = if sa < sb {
-                        (sa, sb, *u, v)
+                        (sa, sb, u, v)
                     } else {
-                        (sb, sa, v, *u)
+                        (sb, sa, v, u)
                     };
-
                     let entry = local.entry((key_a, key_b)).or_insert(NodeEdge {
                         a: key_a,
                         b: key_b,
@@ -246,19 +193,23 @@ fn best_boundary_edges(cells: &SurfaceCells, state: &DijkstraState, out: &mut Ve
                 local
             },
         )
-        .reduce(AHashMap::<(NodeId, NodeId), NodeEdge>::new, |mut a, b| {
-            for (k, v_edge) in b {
-                let entry = a.entry(k).or_insert(v_edge);
-                if v_edge.cost < entry.cost {
-                    *entry = v_edge;
-                }
-            }
+        .reduce(AHashMap::new, |mut a, b| {
+            merge_min(&mut a, b);
             a
-        });
+        })
+}
 
-    out.clear();
-    out.extend(merged.into_values());
-    out.par_sort_unstable_by_key(|e| (e.a, e.b));
+/// Keep the lower-cost edge for each node pair when merging two maps.
+fn merge_min(
+    into: &mut AHashMap<(NodeId, NodeId), NodeEdge>,
+    from: AHashMap<(NodeId, NodeId), NodeEdge>,
+) {
+    for (k, edge) in from {
+        let entry = into.entry(k).or_insert(edge);
+        if edge.cost < entry.cost {
+            *entry = edge;
+        }
+    }
 }
 
 /// Walk every node-graph edge and emit one segment per consecutive cell
