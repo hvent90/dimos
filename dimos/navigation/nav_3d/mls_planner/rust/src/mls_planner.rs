@@ -39,7 +39,7 @@ pub struct Config {
     pub node_step_threshold_m: f32,
 }
 
-/// Wall-clock cost of each stage of the most recent full rebuild, in milliseconds.
+/// Wall-clock cost in ms of each stage of the most recent map update.
 #[derive(Default, Clone, Copy)]
 pub struct RebuildTimings {
     pub voxelize_ms: f64,
@@ -47,10 +47,8 @@ pub struct RebuildTimings {
     pub graph_ms: f64,
 }
 
-/// Cylindrical dirty region the planner re-derives from a local map slice.
-///
-/// The xy test matches the ray tracer's LocalBounds so that removing the
-/// region and re-inserting the local map points is an exact replacement.
+/// Cylindrical region the planner re-derives from a local map slice. The xy
+/// test mirrors the ray tracer so the slice is an exact replacement.
 pub struct RegionBounds {
     pub origin_x: f32,
     pub origin_y: f32,
@@ -124,13 +122,8 @@ impl Planner {
         };
     }
 
-    /// Re-derive the planner from a cylindrical slice of the map.
-    ///
-    /// Replaces the cached voxels inside the cylinder with the local map slice,
-    /// then recomputes surfaces and the graph only where voxels actually
-    /// changed (plus a correctness margin), leaving everything else cached. The
-    /// cylinder bounds what can change. The realized change is usually far
-    /// smaller, so the work each frame scales with the change, not the map.
+    /// Re-derive the planner from a local map slice, recomputing only where
+    /// voxels changed and reusing everything else.
     pub fn update_region(
         &mut self,
         local_points: &[(f32, f32, f32)],
@@ -170,45 +163,7 @@ impl Planner {
         let surfaces_ms = ms(t_surfaces.elapsed());
 
         let t_graph = Instant::now();
-        let step = (config.node_step_threshold_m / voxel_size).floor() as i32;
-        for &c in &removed {
-            self.graph.cells.remove(c);
-        }
-        for &c in &added {
-            self.graph.cells.insert(c);
-        }
-        let mut seeds = added;
-        seeds.extend_from_slice(&removed);
-
-        // No surface cell changed, so nodes and edges are untouched.
-        if !seeds.is_empty() {
-            rebuild_edges_around(
-                &mut self.graph.cells,
-                &self.graph.surface_lookup,
-                &seeds,
-                voxel_size,
-                step,
-            );
-
-            let window = self.node_window(&seeds, config);
-            place_nodes_region(
-                &mut self.graph.cells,
-                &window,
-                config.voxel_size,
-                config.node_spacing_m,
-                config.node_wall_buffer_m,
-                &mut self.graph.wall_state,
-                &mut self.graph.nodes,
-            );
-            build_node_edges_region(
-                &self.graph.cells,
-                &self.graph.nodes,
-                &window,
-                &mut self.graph.cell_state,
-                &mut self.graph.node_edges,
-                &mut self.graph.node_adj,
-            );
-        }
+        self.rebuild_region_graph(added, removed, config);
         let graph_ms = ms(t_graph.elapsed());
 
         self.last_timings = RebuildTimings {
@@ -218,14 +173,57 @@ impl Planner {
         };
     }
 
-    /// Replace the voxels inside the cylinder with the local map points,
-    /// keeping the per-column index in sync. Returns the inclusive column bbox
-    /// of voxels that actually changed (added or removed), or None if nothing
-    /// changed, so downstream work can be scoped to the realized change.
-    ///
-    /// Work is bounded by the cylinder region: the cached voxels inside it are
-    /// enumerated through the per-column index over the cylinder's column bbox,
-    /// never by scanning the whole map.
+    /// Patch cells for the changed surface, then re-place nodes and edges over
+    /// the change window. A no-op when no surface cell changed.
+    fn rebuild_region_graph(
+        &mut self,
+        added: Vec<VoxelKey>,
+        removed: Vec<VoxelKey>,
+        config: &Config,
+    ) {
+        let step = (config.node_step_threshold_m / config.voxel_size).floor() as i32;
+        for &c in &removed {
+            self.graph.cells.remove(c);
+        }
+        for &c in &added {
+            self.graph.cells.insert(c);
+        }
+        let mut seeds = added;
+        seeds.extend_from_slice(&removed);
+        if seeds.is_empty() {
+            return;
+        }
+
+        rebuild_edges_around(
+            &mut self.graph.cells,
+            &self.graph.surface_lookup,
+            &seeds,
+            config.voxel_size,
+            step,
+        );
+        let window = self.node_window(&seeds, config);
+        place_nodes_region(
+            &mut self.graph.cells,
+            &window,
+            config.voxel_size,
+            config.node_spacing_m,
+            config.node_wall_buffer_m,
+            &mut self.graph.wall_state,
+            &mut self.graph.nodes,
+        );
+        build_node_edges_region(
+            &self.graph.cells,
+            &self.graph.nodes,
+            &window,
+            &mut self.graph.cell_state,
+            &mut self.graph.node_edges,
+            &mut self.graph.node_adj,
+        );
+    }
+
+    /// Replace the cylinder's voxels with the local map points and keep the
+    /// per-column index in sync. Returns the column bbox of changed voxels, or
+    /// None if nothing changed. Bounded by the cylinder, never the whole map.
     fn replace_region_voxels(
         &mut self,
         local_points: &[(f32, f32, f32)],
@@ -330,17 +328,17 @@ impl Planner {
         ms(t_graph.elapsed())
     }
 
-    /// Live cells within the bbox of the changed surface cells, grown by the
-    /// node-graph margin. The margin must exceed the reach of any label change
-    /// (surface morphology pad, the wall-distance buffer, and the node spacing)
-    /// so cached nodes, edges, and the Voronoi forest outside the window stay
-    /// valid and identical to a full rebuild.
+    /// Live cells within the changed-cell bbox grown by the node-graph margin.
+    /// The margin covers the reach of any node, edge, or Voronoi change so the
+    /// graph outside the window stays valid.
     fn node_window(&self, changed: &[VoxelKey], config: &Config) -> AHashSet<CellId> {
+        // A few extra cells beyond the morphology, wall-buffer, and spacing reach.
+        const SLACK_CELLS: i32 = 2;
         let voxel_size = config.voxel_size;
         let pad = (config.surface_dilation_passes + config.surface_erosion_passes) as i32;
         let buffer_cells = (config.node_wall_buffer_m / voxel_size).ceil() as i32;
         let spacing_cells = (config.node_spacing_m / voxel_size).ceil() as i32;
-        let margin = pad + buffer_cells + spacing_cells + 2;
+        let margin = pad + buffer_cells + spacing_cells + SLACK_CELLS;
 
         let mut bb = ChangeBounds::new();
         for &(ix, iy, _) in changed {

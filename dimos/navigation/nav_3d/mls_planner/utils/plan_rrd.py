@@ -60,8 +60,8 @@ def _print_summary(streams: dict[str, dict[str, Stream[float]]]) -> None:
 
 
 def _stitch_svgs(svgs: list[str]) -> str:
-    """Stack standalone SVGs vertically into one. Namespaces each panel's ids
-    so matplotlib's reused ids (axes_1, clip paths, glyphs) don't collide."""
+    """Stack standalone SVGs vertically into one, namespacing each panel's ids
+    so matplotlib's reused ids do not collide."""
     panels: list[str] = []
     widths: list[float] = []
     offset = 0.0
@@ -168,6 +168,12 @@ def main(
     plot_out: FsPath | None = typer.Option(
         None, "--plot-out", help="Write an SVG timing/size plot here when the run ends"
     ),
+    from_time: float | None = typer.Option(
+        None, "--from-time", help="Start timestamp (s); default is the stream start"
+    ),
+    to_time: float | None = typer.Option(
+        None, "--to-time", help="End timestamp (s); default is the stream end"
+    ),
 ) -> None:
     db_path = resolve_named_path(dataset, ".db")
 
@@ -184,7 +190,11 @@ def main(
 
     store = SqliteStore(path=str(db_path))
     with store:
-        lidar = store.stream(lidar_stream, PointCloud2).order_by("ts").from_time(110).to_time(120)
+        lidar = store.stream(lidar_stream, PointCloud2).order_by("ts")
+        if from_time is not None:
+            lidar = lidar.from_time(from_time)
+        if to_time is not None:
+            lidar = lidar.to_time(to_time)
         odom = store.stream(odom_stream, Odometry).order_by("ts")
 
         pose_tagged = lidar.align(odom, tolerance=align_tol).transform(

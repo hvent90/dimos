@@ -9,7 +9,7 @@ use ahash::{AHashMap, AHashSet};
 use rayon::prelude::*;
 
 use crate::adjacency::{CellId, Edge, SurfaceCells};
-use crate::dijkstra::{dijkstra, dijkstra_region, DijkstraState};
+use crate::dijkstra::{dijkstra, dijkstra_region, DijkstraState, Weight};
 use crate::voxel::{surface_point_xyz, VoxelKey};
 
 #[derive(Clone, Copy, Debug)]
@@ -37,7 +37,7 @@ pub fn place_nodes(
 
     let mut wall_seeds: Vec<CellId> = Vec::new();
     collect_wall_adjacent_cells(cells, &mut wall_seeds);
-    dijkstra(cells, &wall_seeds, state, true);
+    dijkstra(cells, &wall_seeds, state, Weight::Base);
 
     let mut candidates: Vec<CellId> = cells
         .ids()
@@ -63,11 +63,9 @@ pub fn place_nodes(
     apply_wall_safe_penalty(cells, &state.dist, node_wall_buffer_m);
 }
 
-/// Regional counterpart to `place_nodes`.
-///
-/// Recomputes the wall-distance field and node placement only inside the dirty
-/// `window`, keeping cached nodes outside it. Cached nodes are fed to NMS as
-/// seeds so freshly placed nodes respect spacing across the window seam.
+/// Regional counterpart to place_nodes: recompute the wall-distance field and
+/// node placement inside the window, keeping cached nodes outside it as NMS
+/// seeds so spacing holds across the seam.
 pub fn place_nodes_region(
     cells: &mut SurfaceCells,
     window: &AHashSet<CellId>,
@@ -79,7 +77,7 @@ pub fn place_nodes_region(
 ) {
     let mut wall_seeds: Vec<CellId> = Vec::new();
     collect_wall_adjacent_in_window(cells, window, &mut wall_seeds);
-    dijkstra_region(cells, &wall_seeds, window, wall_state, true);
+    dijkstra_region(cells, &wall_seeds, window, wall_state, Weight::Base);
 
     nodes.retain(|n| cells.is_live(n.cell_id) && !window.contains(&n.cell_id));
     let kept: Vec<CellId> = nodes.iter().map(|n| n.cell_id).collect();
@@ -141,9 +139,8 @@ fn is_wall_adjacent(cells: &SurfaceCells, id: CellId) -> bool {
     mask != 0b1111
 }
 
-/// Re-scale edge costs for cells whose wall distance changed. The changed set
-/// is the window plus its immediate neighbors, since an edge cost depends on
-/// the wall distance at both endpoints. Idempotent via `base_cost`.
+/// Rescale edge costs for the window and its neighbors, whose wall distance may
+/// have changed. Idempotent via base_cost.
 fn apply_wall_safe_penalty_region(
     cells: &mut SurfaceCells,
     dist: &[f32],
@@ -246,8 +243,8 @@ fn apply_wall_safe_penalty(cells: &mut SurfaceCells, dist: &[f32], buffer_m: f32
     });
 }
 
-/// Rescale one cell's outgoing edges from their geometric `base_cost`. Reading
-/// from `base_cost` keeps this idempotent, so a regional repass cannot compound.
+/// Rescale one cell's outgoing edges from base_cost. Idempotent, so a regional
+/// repass cannot compound the penalty.
 #[inline]
 fn scale_edges(edges: &mut [Edge], src: CellId, dist: &[f32], buffer_m: f32) {
     let pu = penalty_of(dist[src as usize], buffer_m);

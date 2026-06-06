@@ -28,6 +28,8 @@ from dimos.utils.logging_config import setup_logger
 if TYPE_CHECKING:
     from collections.abc import Iterator
 
+    from numpy.typing import NDArray
+
     from dimos.memory2.type.observation import Observation
 
 logger = setup_logger()
@@ -61,21 +63,33 @@ class RayTraceMap(Transformer[PointCloud2, PointCloud2]):
         self.emit_local = emit_local
         self.region_percentile = region_percentile
 
-    def _robust_bounds(
-        self, points: np.ndarray, origins: np.ndarray
+    def _local_bounds(
+        self,
+        batch_points: list[NDArray[np.float32]],
+        batch_origins: list[tuple[float, float, float]],
+        last_obs: Observation[PointCloud2],
     ) -> tuple[float, float, float, float, float]:
-        """Robot-centered cylinder sized to a percentile of the observed points,
-        so a sparse far tail of returns does not inflate the local region.
+        """Robot-centered cylinder sized to a percentile of the observed points.
 
-        The radius covers `region_percentile` of points by xy distance, and the
-        z band is trimmed to the same percentile to drop ceiling/tall returns.
+        Falls back to a zero-radius region at the robot when no finite points
+        were seen, so an empty lidar frame is a no-op update rather than a crash.
         """
         margin = self.shadow_depth + self.voxel_size
+        points = (
+            np.concatenate(batch_points, axis=0)
+            if batch_points
+            else np.empty((0, 3), dtype=np.float32)
+        )
+        points = points[np.isfinite(points).all(axis=1)]
+        if points.size == 0:
+            rx, ry, rz, *_ = last_obs.pose_tuple
+            return rx, ry, 0.0, rz, rz
+
+        origins = np.asarray(batch_origins, dtype=np.float64)
         cx = float(origins[:, 0].mean())
         cy = float(origins[:, 1].mean())
         dist = np.hypot(points[:, 0] - cx, points[:, 1] - cy)
         radius = float(np.percentile(dist, self.region_percentile)) + margin
-
         lo_pct = 100.0 - self.region_percentile
         z_min = float(np.percentile(points[:, 2], lo_pct)) - margin
         z_max = float(np.percentile(points[:, 2], self.region_percentile)) + margin
@@ -86,14 +100,12 @@ class RayTraceMap(Transformer[PointCloud2, PointCloud2]):
         mapper: VoxelRayMapper,
         last_obs: Observation[PointCloud2],
         count: int,
-        batch_points: list[np.ndarray],
+        batch_points: list[NDArray[np.float32]],
         batch_origins: list[tuple[float, float, float]],
     ) -> Observation[PointCloud2]:
         tags = {**last_obs.tags, "frame_count": count}
-        if self.emit_local and batch_points:
-            points = np.concatenate(batch_points, axis=0)
-            origins = np.asarray(batch_origins, dtype=np.float64)
-            cx, cy, radius, z_min, z_max = self._robust_bounds(points, origins)
+        if self.emit_local:
+            cx, cy, radius, z_min, z_max = self._local_bounds(batch_points, batch_origins, last_obs)
             positions = mapper.local_map((cx, cy, 0.0), radius, z_min, z_max)
             tags["region_bounds"] = (cx, cy, radius, z_min, z_max)
         else:
@@ -118,7 +130,7 @@ class RayTraceMap(Transformer[PointCloud2, PointCloud2]):
         )
         last_obs: Observation[PointCloud2] | None = None
         count = 0
-        batch_points: list[np.ndarray] = []
+        batch_points: list[NDArray[np.float32]] = []
         batch_origins: list[tuple[float, float, float]] = []
 
         for obs in upstream:

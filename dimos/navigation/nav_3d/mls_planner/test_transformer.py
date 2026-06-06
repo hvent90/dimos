@@ -21,12 +21,26 @@ from dimos.msgs.sensor_msgs.PointCloud2 import PointCloud2
 from dimos.navigation.nav_3d.mls_planner.transformer import MLSPlan
 
 
-def _obs(points: np.ndarray, pose: tuple[float, float, float]) -> Observation[PointCloud2]:
-    return Observation(id=0, ts=0.0, pose=pose, _data=PointCloud2.from_numpy(points))
+def _obs(
+    points: np.ndarray,
+    pose: tuple[float, float, float],
+    region_bounds: tuple[float, float, float, float, float],
+) -> Observation[PointCloud2]:
+    return Observation(
+        id=0,
+        ts=0.0,
+        pose=pose,
+        tags={"region_bounds": region_bounds},
+        _data=PointCloud2.from_numpy(points),
+    )
 
 
 def test_start_z_is_dropped_by_robot_height() -> None:
-    obs = _obs(np.zeros((1, 3), dtype=np.float32), pose=(1.0, 2.0, 3.0))
+    obs = _obs(
+        np.zeros((1, 3), dtype=np.float32),
+        pose=(1.0, 2.0, 3.0),
+        region_bounds=(1.0, 2.0, 5.0, -1.0, 5.0),
+    )
 
     [out] = list(MLSPlan(goal=(10.0, 10.0, 0.0), robot_height=0.4)(iter([obs])))
 
@@ -36,7 +50,11 @@ def test_start_z_is_dropped_by_robot_height() -> None:
 def test_no_route_yields_empty_path_with_planned_false() -> None:
     # Random points form no traversable surface, so plan() returns None.
     rng = np.random.default_rng(0)
-    obs = _obs(rng.random((50, 3)).astype(np.float32), pose=(0.0, 0.0, 0.0))
+    obs = _obs(
+        rng.random((50, 3)).astype(np.float32),
+        pose=(0.0, 0.0, 0.0),
+        region_bounds=(0.5, 0.5, 2.0, -1.0, 2.0),
+    )
 
     [out] = list(MLSPlan(goal=(100.0, 100.0, 100.0))(iter([obs])))
 

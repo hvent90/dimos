@@ -43,16 +43,31 @@ impl DijkstraState {
     }
 }
 
-/// Multi-source dijkstra.
-///
-/// Labels each node with distance to nearest source, the source id, and the path.
-/// When `use_base` is set, edges are weighted by their geometric `base_cost`
-/// instead of the penalized `cost` (used for the wall-distance field).
+/// Which edge weight a search uses.
+#[derive(Clone, Copy)]
+pub enum Weight {
+    /// Geometric distance, for the wall-distance field.
+    Base,
+    /// Wall-safe penalized cost, for the node Voronoi.
+    Penalized,
+}
+
+impl Weight {
+    #[inline]
+    fn of(self, edge: &crate::adjacency::Edge) -> f32 {
+        match self {
+            Weight::Base => edge.base_cost,
+            Weight::Penalized => edge.cost,
+        }
+    }
+}
+
+/// Multi-source dijkstra labeling each cell with its nearest source and path.
 pub fn dijkstra(
     cells: &SurfaceCells,
     sources: &[CellId],
     state: &mut DijkstraState,
-    use_base: bool,
+    weight: Weight,
 ) {
     state.reset(cells.slot_capacity());
 
@@ -72,7 +87,7 @@ pub fn dijkstra(
         }
         let su = state.source[u as usize];
         for edge in cells.neighbors(u) {
-            let nd = d + if use_base { edge.base_cost } else { edge.cost };
+            let nd = d + weight.of(edge);
             let v = edge.dest as usize;
             if nd < state.dist[v] {
                 state.dist[v] = nd;
@@ -86,20 +101,15 @@ pub fn dijkstra(
     }
 }
 
-/// Bounded multi-source Dijkstra that only re-labels cells in `window`,
-/// keeping every cached label outside it.
-///
-/// Window cells are cleared, then the wavefront is re-seeded two ways: from
-/// any sources that lie inside the window, and from the frontier of already
-/// labeled cells just outside it. Relaxation never writes a cell outside the
-/// window, so the result inside is consistent with the cached labels around it
-/// as long as the window margin exceeds the reach of the change.
+/// Bounded multi-source dijkstra that re-labels only cells in `window`, seeding
+/// the wavefront from in-window sources and the cached frontier just outside it.
+/// Correct while the window margin exceeds the reach of the change.
 pub fn dijkstra_region(
     cells: &SurfaceCells,
     sources: &[CellId],
     window: &AHashSet<CellId>,
     state: &mut DijkstraState,
-    use_base: bool,
+    weight: Weight,
 ) {
     state.ensure_capacity(cells.slot_capacity());
     state.heap.clear();
@@ -145,7 +155,7 @@ pub fn dijkstra_region(
             if !window.contains(&v) {
                 continue;
             }
-            let nd = d + if use_base { edge.base_cost } else { edge.cost };
+            let nd = d + weight.of(edge);
             if nd < state.dist[v as usize] {
                 state.dist[v as usize] = nd;
                 state.pred[v as usize] = u;
@@ -229,11 +239,11 @@ mod tests {
         let sources = [sc.id((0, 0, 0)).unwrap(), sc.id((9, 9, 0)).unwrap()];
 
         let mut full = DijkstraState::default();
-        dijkstra(&sc, &sources, &mut full, false);
+        dijkstra(&sc, &sources, &mut full, Weight::Penalized);
 
         let window: AHashSet<CellId> = sc.ids().collect();
         let mut region = DijkstraState::default();
-        dijkstra_region(&sc, &sources, &window, &mut region, false);
+        dijkstra_region(&sc, &sources, &window, &mut region, Weight::Penalized);
 
         for id in sc.ids() {
             assert_eq!(
@@ -251,7 +261,7 @@ mod tests {
         let sources = [sc.id((0, 0, 0)).unwrap(), sc.id((11, 11, 0)).unwrap()];
 
         let mut full = DijkstraState::default();
-        dijkstra(&sc, &sources, &mut full, false);
+        dijkstra(&sc, &sources, &mut full, Weight::Penalized);
 
         // Seed the regional state with the full result as the cache, then
         // recompute an interior block. Nothing changed, so the block must come
@@ -270,7 +280,7 @@ mod tests {
                 (3..=8).contains(&x) && (3..=8).contains(&y)
             })
             .collect();
-        dijkstra_region(&sc, &sources, &window, &mut region, false);
+        dijkstra_region(&sc, &sources, &window, &mut region, Weight::Penalized);
 
         for &id in &window {
             assert_eq!(
@@ -303,7 +313,7 @@ mod tests {
     fn single_source_dist_and_pred() {
         let (sc, ids) = chain(5);
         let mut st = DijkstraState::default();
-        dijkstra(&sc, &[ids[0]], &mut st, false);
+        dijkstra(&sc, &[ids[0]], &mut st, Weight::Penalized);
         for (i, &id) in ids.iter().enumerate().take(5) {
             assert_eq!(st.dist[id as usize], i as f32);
             assert_eq!(st.source[id as usize], 0);
@@ -323,7 +333,7 @@ mod tests {
     fn multi_source_labels_by_nearest() {
         let (sc, ids) = chain(5);
         let mut st = DijkstraState::default();
-        dijkstra(&sc, &[ids[0], ids[4]], &mut st, false);
+        dijkstra(&sc, &[ids[0], ids[4]], &mut st, Weight::Penalized);
         assert_eq!(st.source[ids[0] as usize], ids[0]);
         assert_eq!(st.source[ids[1] as usize], ids[0]);
         assert_eq!(st.source[ids[3] as usize], ids[4]);
@@ -349,7 +359,7 @@ mod tests {
         sc.add_edge(c, d, 1.0);
         sc.add_edge(d, c, 1.0);
         let mut st = DijkstraState::default();
-        dijkstra(&sc, &[a], &mut st, false);
+        dijkstra(&sc, &[a], &mut st, Weight::Penalized);
         assert_eq!(st.dist[a as usize], 0.0);
         assert_eq!(st.dist[b as usize], 1.0);
         assert!(!st.dist[c as usize].is_finite());
@@ -369,7 +379,7 @@ mod tests {
         sc.add_edge(c, b, 1.0);
         sc.add_edge(b, c, 1.0);
         let mut st = DijkstraState::default();
-        dijkstra(&sc, &[a], &mut st, false);
+        dijkstra(&sc, &[a], &mut st, Weight::Penalized);
         assert_eq!(st.dist[b as usize], 2.0);
         assert_eq!(st.pred[b as usize], c);
     }
@@ -378,9 +388,9 @@ mod tests {
     fn buffer_reuse_does_not_leak_prior_state() {
         let (sc1, ids1) = chain(5);
         let mut st = DijkstraState::default();
-        dijkstra(&sc1, &[ids1[0]], &mut st, false);
+        dijkstra(&sc1, &[ids1[0]], &mut st, Weight::Penalized);
         let (sc2, ids2) = chain(3);
-        dijkstra(&sc2, &[ids2[0]], &mut st, false);
+        dijkstra(&sc2, &[ids2[0]], &mut st, Weight::Penalized);
         for (i, &id) in ids2.iter().enumerate().take(3) {
             assert_eq!(st.dist[id as usize], i as f32);
         }
