@@ -38,17 +38,35 @@ from typing import Callable
 import numpy as np
 
 
-# mjlab's articulation joint ordering (verified via robot.joint_names).
-# NOT the MJCF actuator order - mjlab reorders to FL, FR, RL, RR.
+# Wire / DimOS canonical joint order: matches make_quadruped_joints("go2") and
+# Unitree's LowCmd_.motor_cmd[0..11] layout. This is what HardwareComponent
+# joint names use and what the WHOLE_BODY adapter publishes/consumes.
 GO2_JOINT_ORDER: tuple[str, ...] = (
-    "FL_hip_joint", "FL_thigh_joint", "FL_calf_joint",
-    "FR_hip_joint", "FR_thigh_joint", "FR_calf_joint",
-    "RL_hip_joint", "RL_thigh_joint", "RL_calf_joint",
-    "RR_hip_joint", "RR_thigh_joint", "RR_calf_joint",
+    "FR_hip", "FR_thigh", "FR_calf",
+    "FL_hip", "FL_thigh", "FL_calf",
+    "RR_hip", "RR_thigh", "RR_calf",
+    "RL_hip", "RL_thigh", "RL_calf",
 )
 
-# Default joint positions from the training env's init_state, in the order above.
-# Verified against env.default_joint_pos: FL hip=-0.1, FR hip=+0.1, RL hip=-0.1, RR hip=+0.1.
+# mjlab's articulation order (FL, FR, RL, RR) - what the trained actor expects.
+# The obs builder consumes joint vectors in THIS order; the task permutes between
+# wire order (above) and this order at the read/write boundary.
+GO2_MJLAB_JOINT_ORDER: tuple[str, ...] = (
+    "FL_hip", "FL_thigh", "FL_calf",
+    "FR_hip", "FR_thigh", "FR_calf",
+    "RL_hip", "RL_thigh", "RL_calf",
+    "RR_hip", "RR_thigh", "RR_calf",
+)
+
+# Index permutation: wire index -> mjlab index. Apply with arr[WIRE_TO_MJLAB]
+# to turn a wire-ordered (12,) array into mjlab-ordered. Inverse is the same
+# triple-swap pattern (involutive permutation).
+WIRE_TO_MJLAB: tuple[int, ...] = (3, 4, 5, 0, 1, 2, 9, 10, 11, 6, 7, 8)
+MJLAB_TO_WIRE: tuple[int, ...] = WIRE_TO_MJLAB  # same permutation, applied twice = identity
+
+# Default joint positions in MJLAB order (FL, FR, RL, RR). This is the
+# `joint_pos_rel` reference the actor was trained on. Verified via
+# articulation.data.default_joint_pos: FL/RL hip = -0.1, FR/RR hip = +0.1.
 GO2_DEFAULT_POSE: tuple[float, ...] = (
     -0.1,  0.9, -1.8,   # FL
      0.1,  0.9, -1.8,   # FR
@@ -151,8 +169,11 @@ def projected_gravity_from_quat(quat_wxyz: tuple[float, float, float, float]) ->
 __all__ = [
     "GO2_DEFAULT_POSE",
     "GO2_JOINT_ORDER",
+    "GO2_MJLAB_JOINT_ORDER",
     "Go2VelocityObsBuilder",
     "HeightScanFn",
+    "MJLAB_TO_WIRE",
     "TwistCommand",
+    "WIRE_TO_MJLAB",
     "projected_gravity_from_quat",
 ]

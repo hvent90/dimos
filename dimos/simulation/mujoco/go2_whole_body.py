@@ -56,14 +56,14 @@ class MujocoGo2Config:
     render: bool = False
 
 
-# Joint order used by the trained policy (mjlab's articulation ordering,
-# NOT the raw MJCF actuator order which is FR, FL, RR, RL). Resolution from
-# joint name to MuJoCo actuator id happens in connect().
+# Wire / DimOS canonical joint order: matches make_quadruped_joints("go2") and
+# Unitree's LowCmd_.motor_cmd[0..11] indexing. Short names (no '_joint' suffix);
+# connect() appends '_joint' when resolving MJCF joint ids.
 GO2_ACTUATOR_ORDER: tuple[str, ...] = (
-    "FL_hip_joint", "FL_thigh_joint", "FL_calf_joint",
-    "FR_hip_joint", "FR_thigh_joint", "FR_calf_joint",
-    "RL_hip_joint", "RL_thigh_joint", "RL_calf_joint",
-    "RR_hip_joint", "RR_thigh_joint", "RR_calf_joint",
+    "FR_hip", "FR_thigh", "FR_calf",
+    "FL_hip", "FL_thigh", "FL_calf",
+    "RR_hip", "RR_thigh", "RR_calf",
+    "RL_hip", "RL_thigh", "RL_calf",
 )
 
 
@@ -103,18 +103,19 @@ class MujocoGo2WholeBody(WholeBodyAdapter):
         self._mj_model = mujoco.MjModel.from_xml_path(str(path))
         self._mj_data = mujoco.MjData(self._mj_model)
 
-        # Resolve actuator + joint ids for the 12 motors, in our canonical order.
-        for joint_name in GO2_ACTUATOR_ORDER:
-            # Actuator names in the MJCF strip "_joint" (e.g. "FR_hip" for
-            # joint "FR_hip_joint").
-            act_name = joint_name.removesuffix("_joint")
-            act_id = mujoco.mj_name2id(self._mj_model, mujoco.mjtObj.mjOBJ_ACTUATOR, act_name)
+        # Resolve actuator + joint ids for the 12 motors, in our canonical
+        # (wire) order. GO2_ACTUATOR_ORDER uses short names (no _joint suffix);
+        # the MJCF actuator names match those directly, while MJCF joint
+        # names need the "_joint" suffix appended.
+        for short_name in GO2_ACTUATOR_ORDER:
+            act_id = mujoco.mj_name2id(self._mj_model, mujoco.mjtObj.mjOBJ_ACTUATOR, short_name)
             if act_id < 0:
-                logger.error(f"Actuator {act_name!r} not found in MJCF")
+                logger.error(f"Actuator {short_name!r} not found in MJCF")
                 return False
-            jnt_id = mujoco.mj_name2id(self._mj_model, mujoco.mjtObj.mjOBJ_JOINT, joint_name)
+            jnt_name = f"{short_name}_joint"
+            jnt_id = mujoco.mj_name2id(self._mj_model, mujoco.mjtObj.mjOBJ_JOINT, jnt_name)
             if jnt_id < 0:
-                logger.error(f"Joint {joint_name!r} not found in MJCF")
+                logger.error(f"Joint {jnt_name!r} not found in MJCF")
                 return False
             self._actuator_ids.append(act_id)
             self._qpos_ids.append(int(self._mj_model.jnt_qposadr[jnt_id]))

@@ -12,6 +12,7 @@
 # See the License for the specific language governing permissions and
 # limitations under the License.
 
+from dimos.robot.unitree.go2.blueprints.rl.go2_tripod_real import go2_tripod_real
 from dimos.robot.unitree.go2.blueprints.rl.go2_tripod_sim import go2_tripod_sim
 
-__all__ = ["go2_tripod_sim"]
+__all__ = ["go2_tripod_real", "go2_tripod_sim"]

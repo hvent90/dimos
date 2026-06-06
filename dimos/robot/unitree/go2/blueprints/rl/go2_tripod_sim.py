@@ -65,7 +65,7 @@ _joints = [f"{_HW}/{j}" for j in GO2_JOINT_ORDER]
 
 # FR leg's three joints (in mjlab/training order). These are owned by the
 # Quest teleop task; the RL policy masks them.
-_FR_JOINTS = [f"{_HW}/FR_hip_joint", f"{_HW}/FR_thigh_joint", f"{_HW}/FR_calf_joint"]
+_FR_JOINTS = [f"{_HW}/FR_hip", f"{_HW}/FR_thigh", f"{_HW}/FR_calf"]
 
 # Task name the Quest module stamps into right-controller PoseStamped frame_id.
 # The coordinator routes the PoseStamped to the task with this exact name.
