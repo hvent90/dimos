@@ -75,9 +75,8 @@ def _stitch_svgs(svgs: list[str]) -> str:
         body = re.sub(r'id="([^"]+)"', rf'id="{prefix}\1"', body)
         body = re.sub(r"url\(#([^)]+)\)", rf"url(#{prefix}\1)", body)
         body = re.sub(r'xlink:href="#([^"]+)"', rf'xlink:href="#{prefix}\1"', body)
-        # Drop the "pt" unit so the nested width/height are read as parent user
-        # units (the outer viewBox is unitless); otherwise pt->px conversion
-        # overflows the parent viewport and clips each panel on the right.
+        # Drop the pt unit so nested width/height read as parent user units.
+        # Otherwise pt to px conversion overflows the viewport and clips panels.
         body = body.replace(m.group(0), f'width="{width}" height="{height}"', 1)
         body = body.replace("<svg", f'<svg x="0" y="{offset}"', 1)
         panels.append(body)

@@ -61,14 +61,7 @@ pub fn extract_surfaces(
         .par_iter()
         .flat_map_iter(|((ix, iy), zs)| {
             let mut local: Vec<VoxelKey> = Vec::new();
-            for w in zs.windows(2) {
-                if w[1] - w[0] > clearance_cells {
-                    local.push((*ix, *iy, w[0]));
-                }
-            }
-            if let Some(&last_iz) = zs.last() {
-                local.push((*ix, *iy, last_iz));
-            }
+            standable_in_column(*ix, *iy, zs, clearance_cells, &mut local);
             local
         })
         .collect();
@@ -82,6 +75,25 @@ pub fn extract_surfaces(
         clearance_cells,
         out,
     );
+}
+
+/// Standable cells in one column: any cell with robot clearance above, plus
+/// the topmost cell.
+fn standable_in_column(
+    ix: i32,
+    iy: i32,
+    zs: &[i32],
+    clearance_cells: i32,
+    out: &mut Vec<VoxelKey>,
+) {
+    for w in zs.windows(2) {
+        if w[1] - w[0] > clearance_cells {
+            out.push((ix, iy, w[0]));
+        }
+    }
+    if let Some(&last_iz) = zs.last() {
+        out.push((ix, iy, last_iz));
+    }
 }
 
 /// Insert a voxel into the per-column index, keeping each column sorted.
@@ -104,10 +116,10 @@ pub fn remove_from_by_col(by_col: &mut ColumnIz, (ix, iy, iz): VoxelKey) {
     }
 }
 
-/// Re-extract surface cells whose columns fall in the inclusive `write` box
-/// `(x0, x1, y0, y1)`. Reads `by_col` over `write` expanded by the morphology
-/// halo so closing at the box boundary matches a full rebuild, then filters
-/// the result back to `write`. `by_col` must already be current.
+/// Re-extract surface cells whose columns fall in the inclusive write box.
+/// Reads by_col over the box plus the morphology halo so closing at the
+/// boundary matches a full rebuild, then filters back to the box. by_col must
+/// already be current.
 pub fn extract_surfaces_region(
     by_col: &ColumnIz,
     clearance_cells: i32,
@@ -123,50 +135,26 @@ pub fn extract_surfaces_region(
         .flat_map_iter(|ix| {
             let mut local: Vec<VoxelKey> = Vec::new();
             for iy in (wy0 - pad)..=(wy1 + pad) {
-                let Some(zs) = by_col.get(&(ix, iy)) else {
-                    continue;
-                };
-                for w in zs.windows(2) {
-                    if w[1] - w[0] > clearance_cells {
-                        local.push((ix, iy, w[0]));
-                    }
-                }
-                if let Some(&last_iz) = zs.last() {
-                    local.push((ix, iy, last_iz));
+                if let Some(zs) = by_col.get(&(ix, iy)) {
+                    standable_in_column(ix, iy, zs, clearance_cells, &mut local);
                 }
             }
             local
         })
         .collect();
 
-    let in_write = |ix: i32, iy: i32| ix >= wx0 && ix <= wx1 && iy >= wy0 && iy <= wy1;
-
-    if dilation_passes == 0 && erosion_passes == 0 {
-        return standable
-            .into_iter()
-            .filter(|&(ix, iy, _)| in_write(ix, iy))
-            .collect();
-    }
-
-    let mut by_z: AHashMap<i32, Vec<(i32, i32)>> = AHashMap::new();
-    for &(ix, iy, iz) in &standable {
-        by_z.entry(iz).or_default().push((ix, iy));
-    }
-    let slices: Vec<(i32, Vec<(i32, i32)>)> = by_z.into_iter().collect();
-    slices
-        .par_iter()
-        .flat_map_iter(|(iz, xys)| {
-            close_at_z(
-                xys,
-                *iz,
-                by_col,
-                dilation_passes,
-                erosion_passes,
-                clearance_cells,
-            )
-            .into_iter()
-            .filter(|c| in_write(c.0, c.1))
-        })
+    let mut closed: Vec<VoxelKey> = Vec::new();
+    close_surface_holes(
+        standable,
+        by_col,
+        dilation_passes,
+        erosion_passes,
+        clearance_cells,
+        &mut closed,
+    );
+    closed
+        .into_iter()
+        .filter(|&(ix, iy, _)| ix >= wx0 && ix <= wx1 && iy >= wy0 && iy <= wy1)
         .collect()
 }
 
