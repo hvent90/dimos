@@ -11,7 +11,7 @@ preprocess:
     blind: 0.5
 
 mapping:
-    acc_cov: 0.1
+    acc_cov: 0.6 # default is 0.1, but 0.6 protects against high acceleration events
     gyr_cov: 0.1
     b_acc_cov: 0.0001
     b_gyr_cov: 0.0001
