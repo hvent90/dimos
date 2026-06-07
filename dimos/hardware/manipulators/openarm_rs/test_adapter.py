@@ -14,8 +14,10 @@
 
 from __future__ import annotations
 
+import builtins
+from collections.abc import Mapping
 from enum import IntEnum
-import importlib
+import sys
 from types import ModuleType
 from unittest.mock import MagicMock
 
@@ -177,8 +179,9 @@ class FakeDMControl(ModuleType):
 def fake_can_motor_control(monkeypatch: pytest.MonkeyPatch) -> None:
     fake_dm = FakeDMControl("can_motor_control")
     fake_damiao = FakeDamiao("can_motor_control.damiao")
-    monkeypatch.setitem(__import__("sys").modules, "can_motor_control", fake_dm)
-    monkeypatch.setitem(__import__("sys").modules, "can_motor_control.damiao", fake_damiao)
+    monkeypatch.setattr(fake_dm, "damiao", fake_damiao, raising=False)
+    monkeypatch.setitem(sys.modules, "can_motor_control", fake_dm)
+    monkeypatch.setitem(sys.modules, "can_motor_control.damiao", fake_damiao)
     FakeRobot.last = None
 
 
@@ -237,35 +240,66 @@ def test_canfd_flag_and_legacy_fd_override_can_disable_fd() -> None:
 def test_default_motor_specs_use_binding_motor_type_values() -> None:
     adapter = OpenArmRSAdapter(use_mock_bus=True)
     assert adapter.connect() is True
-    assert adapter._robot is not None
-    assert adapter._robot.arm.dof == 7
+    robot = FakeRobot.last
+    assert robot is not None
+    assert robot.arm.dof == 7
 
 
-def test_renamed_can_motor_control_binding_is_used(monkeypatch: pytest.MonkeyPatch) -> None:
+def test_can_motor_control_binding_uses_normal_import_style(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
     imported: list[str] = []
-    real_import_module = importlib.import_module
+    real_import = builtins.__import__
 
-    def track_can_motor_control(name: str, package: str | None = None) -> ModuleType:
-        if name.startswith("dm_control"):
-            raise ImportError(name)
-        imported.append(name)
-        return real_import_module(name, package)
+    def track_can_motor_control(
+        name: str,
+        globals: Mapping[str, object] | None = None,
+        locals: Mapping[str, object] | None = None,
+        fromlist: tuple[str, ...] = (),
+        level: int = 0,
+    ) -> ModuleType:
+        if name.startswith("can_motor_control"):
+            imported.append(name)
+        module = real_import(name, globals, locals, fromlist, level)
+        if not isinstance(module, ModuleType):
+            raise TypeError(f"expected module import for {name}")
+        return module
 
-    monkeypatch.setattr(importlib, "import_module", track_can_motor_control)
+    def fail_importlib_for_binding(name: str, package: str | None = None) -> ModuleType:
+        if name.startswith("can_motor_control"):
+            raise AssertionError("can_motor_control must use normal import syntax")
+        module = real_import(name, fromlist=("*",))
+        if not isinstance(module, ModuleType):
+            raise TypeError(f"expected module import for {name}")
+        return module
+
+    monkeypatch.setattr(builtins, "__import__", track_can_motor_control)
+    monkeypatch.setattr("importlib.import_module", fail_importlib_for_binding)
     adapter = OpenArmRSAdapter(use_mock_bus=True)
     assert adapter.connect() is True
-    assert imported[:2] == ["can_motor_control", "can_motor_control.damiao"]
+    assert imported[:2] == ["can_motor_control", "can_motor_control"]
 
 
 def test_missing_binding_fails_only_when_selected(monkeypatch: pytest.MonkeyPatch) -> None:
-    real_import_module = importlib.import_module
+    real_import = builtins.__import__
+    monkeypatch.delitem(sys.modules, "can_motor_control", raising=False)
+    monkeypatch.delitem(sys.modules, "can_motor_control.damiao", raising=False)
 
-    def fail_can_motor_control(name: str, package: str | None = None) -> ModuleType:
+    def fail_can_motor_control(
+        name: str,
+        globals: Mapping[str, object] | None = None,
+        locals: Mapping[str, object] | None = None,
+        fromlist: tuple[str, ...] = (),
+        level: int = 0,
+    ) -> ModuleType:
         if name.startswith("can_motor_control"):
             raise ImportError(name)
-        return real_import_module(name, package)
+        module = real_import(name, globals, locals, fromlist, level)
+        if not isinstance(module, ModuleType):
+            raise TypeError(f"expected module import for {name}")
+        return module
 
-    monkeypatch.setattr(importlib, "import_module", fail_can_motor_control)
+    monkeypatch.setattr(builtins, "__import__", fail_can_motor_control)
     adapter = OpenArmRSAdapter(use_mock_bus=True)
     with pytest.raises(OpenArmRSBindingUnavailableError, match="openarm_rs.*can-motor-control"):
         adapter.connect()

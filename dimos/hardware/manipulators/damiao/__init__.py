@@ -12,7 +12,15 @@
 # See the License for the specific language governing permissions and
 # limitations under the License.
 
-from dimos.hardware.manipulators.damiao.base_adapter import DamiaoArmAdapterBase
+from dimos.hardware.manipulators.damiao.base_adapter import (
+    DamiaoArmAdapterBase,
+    DamiaoBindingUnavailableError,
+)
 from dimos.hardware.manipulators.damiao.specs import DamiaoArmSpec, DamiaoMotorSpec
 
-__all__ = ["DamiaoArmAdapterBase", "DamiaoArmSpec", "DamiaoMotorSpec"]
+__all__ = [
+    "DamiaoArmAdapterBase",
+    "DamiaoArmSpec",
+    "DamiaoBindingUnavailableError",
+    "DamiaoMotorSpec",
+]
