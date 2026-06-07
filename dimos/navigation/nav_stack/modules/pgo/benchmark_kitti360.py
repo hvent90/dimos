@@ -30,6 +30,28 @@ from dimos.navigation.nav_stack.benchmarks.pose_graph_kitti360.runner import (
 )
 from dimos.navigation.nav_stack.modules.pgo.pgo import PGO
 
+# KITTI native lidar rate.
+DEFAULT_PUBLISH_INTERVAL_SEC = 0.1
+
+# Tuned PGO config for the KITTI-360 benchmark. See benchmark_regen.py
+# for the script that consumes this when re-generating regression JSONs.
+DEFAULT_PGO_KWARGS: dict[str, object] = {
+    "scan_context_match_threshold": 0.4,
+    # ICP fitness on KITTI urban submaps has a 5-50 m² noise floor;
+    # the 0.15 default rejects nearly all true loops. Trust scan-context.
+    "loop_score_thresh": 10000.0,
+    "loop_search_radius": 1.0,
+    "loop_candidate_max_distance_m": 10.0,
+    "loop_time_thresh": 50.0,
+    "min_loop_detect_duration": 0.0,
+    "key_pose_delta_trans": 0.5,
+    # CMU's 0.1m + half=5 overflows PCL VoxelGrid int32 on KITTI.
+    "submap_resolution": 0.5,
+    "loop_submap_half_range": 2,
+    "global_map_publish_rate": 0.001,
+    "drain_stale_scans": False,
+}
+
 
 def main() -> None:
     parser = argparse.ArgumentParser(
@@ -38,22 +60,13 @@ def main() -> None:
     parser.add_argument("--kitti360-root", type=Path, required=True)
     parser.add_argument("--sequence", type=int, default=2)
     parser.add_argument("--max-scans", type=int, default=None)
-    parser.add_argument("--scan-context-match-threshold", type=float, default=0.4)
-    parser.add_argument("--loop-score-thresh", type=float, default=0.5)
-    parser.add_argument("--loop-search-radius-m", type=float, default=1.0)
-    parser.add_argument("--key-pose-delta-trans", type=float, default=0.5)
-    parser.add_argument("--publish-interval-sec", type=float, default=0.02)
+    parser.add_argument("--publish-interval-sec", type=float, default=DEFAULT_PUBLISH_INTERVAL_SEC)
     parser.add_argument("--output-json", type=Path, default=None)
     args = parser.parse_args()
 
     results = run_benchmark(
         module_under_test=PGO,
-        module_kwargs={
-            "scan_context_match_threshold": args.scan_context_match_threshold,
-            "loop_score_thresh": args.loop_score_thresh,
-            "loop_search_radius": args.loop_search_radius_m,
-            "key_pose_delta_trans": args.key_pose_delta_trans,
-        },
+        module_kwargs=DEFAULT_PGO_KWARGS,
         kitti360_root=args.kitti360_root,
         sequence_id=args.sequence,
         max_scans=args.max_scans,

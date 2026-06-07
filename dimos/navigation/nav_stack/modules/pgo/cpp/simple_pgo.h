@@ -41,6 +41,9 @@ struct Config
     int loop_submap_half_range = 5;
     double submap_resolution = 0.1;
     double min_loop_detect_duration = 10.0;
+    // Sanity gate: skip ICP if candidate keyframe is farther than this
+    // from current keyframe in global pose. 0 disables the check.
+    double loop_candidate_max_distance_m = 30.0;
 
     // Scan Context settings
     bool use_scan_context = true;

@@ -262,6 +262,7 @@ int main(int argc, char** argv)
     config.scan_context_top_k = native_module.arg_int("scan_context_top_k", 10);
     config.scan_context_match_threshold = native_module.arg_float("scan_context_match_threshold", 0.4f);
     config.scan_context_lidar_height_m = native_module.arg_float("scan_context_lidar_height_m", 2.0f);
+    config.loop_candidate_max_distance_m = native_module.arg_float("loop_candidate_max_distance_m", 30.0f);
 
     // Node-level config
     std::string frame_id = native_module.arg("frame_id", "map");
@@ -273,6 +274,10 @@ int main(int argc, char** argv)
 
     // Unregister mode: transform world-frame scans to body-frame
     bool unregister_input = native_module.arg_bool("unregister_input", true);
+
+    // true (default, real-time) drops older queued scans each tick;
+    // false uses strict FIFO (set this in benchmarks).
+    bool drain_stale_scans = native_module.arg_bool("drain_stale_scans", true);
 
     bool debug = native_module.arg_bool("debug", false);
 
@@ -326,15 +331,18 @@ int main(int argc, char** argv)
         // Drain all pending LCM messages
         while (lcm.handleTimeout(0) > 0) {}
 
-        // Check buffer
+        // See drain_stale_scans config comment above.
         CloudWithPose cloud_with_pose;
         bool has_data = false;
         {
             std::lock_guard<std::mutex> lock(g_buffer_mutex);
             if (!g_cloud_buffer.empty()) {
                 cloud_with_pose = g_cloud_buffer.front();
-                // Drain entire queue (matching original: process oldest, discard rest)
-                while (!g_cloud_buffer.empty()) {
+                if (drain_stale_scans) {
+                    while (!g_cloud_buffer.empty()) {
+                        g_cloud_buffer.pop();
+                    }
+                } else {
                     g_cloud_buffer.pop();
                 }
                 has_data = true;

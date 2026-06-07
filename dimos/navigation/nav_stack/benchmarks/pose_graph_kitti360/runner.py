@@ -56,7 +56,7 @@ def run_benchmark(
     module_kwargs: dict[str, Any] | None = None,
     sequence_id: int = 2,
     max_scans: int | None = None,
-    publish_interval_sec: float = 0.02,
+    publish_interval_sec: float = 0.1,
     min_frame_gap: int = DEFAULT_MIN_FRAME_GAP,
     max_loop_distance_m: float = DEFAULT_MAX_LOOP_DISTANCE_M,
     drain_sec: float = 10.0,

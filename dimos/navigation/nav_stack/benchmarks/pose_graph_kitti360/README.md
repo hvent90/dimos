@@ -11,7 +11,7 @@ runner provides two helper modules:
 | Module                       | Role                                                      |
 |------------------------------|-----------------------------------------------------------|
 | `Kitti360PlaybackModule`     | Publishes `registered_scan` + `odometry` from disk        |
-| Your pose-graph SLAM module  | Consumes those, publishes `pose_graph` + `loop_correction_delta` |
+| Your pose-graph SLAM module  | Consumes those, publishes `pose_graph` + `loop_closure_event` |
 | `PoseGraphScoringModule`     | Subscribes to the outputs, accumulates metrics            |
 
 `autoconnect` wires the three together by stream name.
@@ -24,7 +24,7 @@ class YourPoseGraphModule(Module):
     odometry: In[Odometry]
 
     pose_graph: Out[Graph3D]             # nodes (keyframes) + edges (odom & loop-closure)
-    loop_correction_delta: Out[NavPath]  # one message per loop-closure update
+    loop_closure_event: Out[GraphDelta3D]  # one message per loop-closure update
 ```
 
 Edge convention on `pose_graph`: loop-closure edges have
@@ -44,7 +44,7 @@ split is enough). Expected layout:
 ├── data_3d_raw/
 │   └── 2013_05_28_drive_<NNNN>_sync/velodyne_points/data/*.bin
 └── data_poses/
-    └── 2013_05_28_drive_<NNNN>_sync/cam0_to_world.txt
+    └── 2013_05_28_drive_<NNNN>_sync/poses.txt
 ```
 
 Sequence IDs map onto the drive numbers: `2 → drive_0002`, `4 → drive_0004`,
@@ -64,14 +64,14 @@ results = run_benchmark(
     kitti360_root=Path("~/datasets/kitti360").expanduser(),
     sequence_id=2,
     max_scans=None,         # None = full sequence (~3k frames for seq 2)
-    publish_interval_sec=0.02,
+    publish_interval_sec=0.1,
 )
 
 print(results)
 # {
 #   "true_positive": ..., "false_positive": ..., "false_negative": ...,
 #   "precision": ..., "recall": ..., "f1": ...,
-#   "detected_loop_edges": ..., "loop_correction_delta_events": ...,
+#   "detected_loop_edges": ..., "loop_closure_events": ...,
 #   "wallclock_seconds": ..., "sequence_id": 2,
 # }
 ```
@@ -97,7 +97,7 @@ set become false negatives.
 | `runner.py`              | `run_benchmark()` — builds the blueprint, polls playback, returns scores |
 | `playback.py`            | `Kitti360PlaybackModule` — streams scan + odom messages from disk        |
 | `scoring.py`             | `PoseGraphScoringModule`, `LoopMetrics` — accumulates TP/FP/FN           |
-| `kitti360_loader.py`     | `load_kitti360_sequence()` — reads velodyne `.bin` + `cam0_to_world.txt` |
+| `kitti360_loader.py`     | `load_kitti360_sequence()` — reads velodyne `.bin` + `poses.txt`         |
 | `loop_groundtruth.py`    | `compute_loop_groundtruth()` + thresholds                                |
 
 ## Tips
