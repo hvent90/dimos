@@ -14,7 +14,6 @@
 
 from __future__ import annotations
 
-import importlib
 from pathlib import Path
 import time
 from typing import Protocol, cast
@@ -568,18 +567,22 @@ class DamiaoArmAdapterBase:
     def _load_gravity_model(self) -> None:
         if not self._gravity_comp or self._gravity_model_path is None:
             return
-        pinocchio = cast("_PinocchioModule", cast("object", importlib.import_module("pinocchio")))
+        import pinocchio
 
-        self._pin_model = pinocchio.buildModelFromUrdf(self._gravity_model_path)
+        pinocchio_module = cast("_PinocchioModule", _as_object(pinocchio))
+
+        self._pin_model = pinocchio_module.buildModelFromUrdf(self._gravity_model_path)
         self._pin_data = self._pin_model.createData()
 
     def compute_gravity_torques(self, q: list[float]) -> list[float]:
         self._validate_length("q", q)
         if self._pin_model is None or self._pin_data is None:
             return [0.0] * self._dof
-        pinocchio = cast("_PinocchioModule", cast("object", importlib.import_module("pinocchio")))
+        import pinocchio
 
-        tau = pinocchio.computeGeneralizedGravity(
+        pinocchio_module = cast("_PinocchioModule", _as_object(pinocchio))
+
+        tau = pinocchio_module.computeGeneralizedGravity(
             self._pin_model,
             self._pin_data,
             np.array(q, dtype=np.float64),
