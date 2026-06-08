@@ -421,12 +421,15 @@ class DamiaoArmAdapterBase:
     def write_gravity_compensation(self, damping: float | list[float] = 0.0) -> bool:
         try:
             q, dq, _ = self.refresh_state(force=True)
-            tau = self.compute_gravity_torques(q)
-        except Exception as exc:
+        except RuntimeError:
             logger.warning(
-                f"Skipping {type(self).__name__} gravity compensation due to invalid state: {exc}"
+                "skipping damiao gravity compensation; state read failed",
+                adapter=type(self).__name__,
+                hardware_id=self._hardware_id,
+                exc_info=True,
             )
             return False
+        tau = self.compute_gravity_torques(q)
         kd = [float(damping)] * self._dof if isinstance(damping, int | float) else list(damping)
         return self.write_mit_commands(q=q, dq=dq, kp=self._zero_vector(), kd=kd, tau=tau)
 
