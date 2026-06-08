@@ -33,6 +33,8 @@ _DEFAULT_TICK_DEADLINE_US = 1_000
 _DEFAULT_STATE_CACHE_TTL_S = 0.002
 # Conventional first SocketCAN interface; used when no address is configured.
 _DEFAULT_ADDRESS = "can0"
+# Position of each control mode in declaration order, reported by read_state().
+_CONTROL_MODE_INDEX = {mode: index for index, mode in enumerate(ControlMode)}
 
 _can_motor_control: Any | None
 _damiao: Any | None
@@ -186,18 +188,6 @@ class DamiaoArmAdapterBase:
     def _zero_vector(self) -> list[float]:
         return [0.0] * self._dof
 
-    def _mit_command_rows(
-        self,
-        *,
-        q: list[float],
-        dq: list[float],
-        kp: list[float],
-        kd: list[float],
-        tau: list[float],
-    ) -> list[tuple[float, float, float, float, float]]:
-        self._validate_command_lengths(q=q, dq=dq, kp=kp, kd=kd, tau=tau)
-        return list(zip(q, dq, kp, kd, tau, strict=True))
-
     def get_info(self) -> ManipulatorInfo:
         return ManipulatorInfo(
             vendor=self._arm_spec.vendor,
@@ -334,9 +324,9 @@ class DamiaoArmAdapterBase:
         self._arm.refresh()
         self._robot.tick(self._tick_deadline_us)
         state = (
-            [float(value) for value in self._arm.positions().astype(np.float64)],
-            [float(value) for value in self._arm.velocities().astype(np.float64)],
-            [float(value) for value in self._arm.torques().astype(np.float64)],
+            self._arm.positions().astype(np.float64).tolist(),
+            self._arm.velocities().astype(np.float64).tolist(),
+            self._arm.torques().astype(np.float64).tolist(),
         )
         if any(len(values) != self._dof for values in state):
             raise RuntimeError("can_motor_control state length does not match configured DOF")
@@ -357,7 +347,7 @@ class DamiaoArmAdapterBase:
     def read_state(self) -> dict[str, int]:
         return {
             "state": 1 if self._enabled else 0,
-            "mode": list(ControlMode).index(self._control_mode),
+            "mode": _CONTROL_MODE_INDEX[self._control_mode],
         }
 
     def read_error(self) -> tuple[int, str]:
@@ -431,10 +421,9 @@ class DamiaoArmAdapterBase:
     ) -> bool:
         if self._arm is None or self._robot is None or not self._enabled:
             return False
-        rows = self._mit_command_rows(q=q, dq=dq, kp=kp, kd=kd, tau=tau)
-        self._arm.mit_control(
-            np.array([(row[2], row[3], row[0], row[1], row[4]) for row in rows], dtype=np.float64)
-        )
+        self._validate_command_lengths(q=q, dq=dq, kp=kp, kd=kd, tau=tau)
+        # MIT command columns are (kp, kd, q, dq, tau) per joint.
+        self._arm.mit_control(np.column_stack([kp, kd, q, dq, tau]).astype(np.float64))
         self._robot.tick(self._tick_deadline_us)
         self._state_cache = None
         self._last_positions = list(q)

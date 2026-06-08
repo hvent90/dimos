@@ -101,7 +101,7 @@ def test_base_adapter_info_limits_and_modes() -> None:
 def test_base_adapter_validates_command_lengths() -> None:
     adapter = DamiaoArmAdapterBase(arm_spec=_arm_spec())
     with pytest.raises(ValueError, match="q length 1 does not match dof 2"):
-        adapter._mit_command_rows(
+        adapter._validate_command_lengths(
             q=[0.0],
             dq=[0.0, 0.0],
             kp=[0.0, 0.0],
