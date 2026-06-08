@@ -38,15 +38,13 @@ from dimos.robot.agibot.x2_ultra.policy_constants import (
     X2_KP,
 )
 from dimos.simulation.engines.mujoco_sim_module import MujocoSimModule
+from dimos.utils.data import LfsPath
 from dimos.visualization.babylon_scene_viewer import BabylonSceneViewerModule
 
 _X2_ROOT = Path(__file__).resolve().parent.parent.parent
 _X2_ROBOT_MJCF_PATH = _X2_ROOT / "x2_ultra.xml"
 _X2_MESH_DIR = _X2_ROOT / "meshes"
-_DEFAULT_POLICY_ONNX = Path(
-    "/home/pim/Desktop/mjlab/logs/rsl_rl/agibot_x2_velocity_flat/"
-    "2026-05-20_12-04-00/2026-05-20_12-04-00.onnx"
-)
+_DEFAULT_POLICY_ONNX = LfsPath("mujoco_sim/agibot_x2_policy.onnx")
 
 _X2_SIM_TICK_RATE_HZ = 250.0
 _CMD_VEL_TOPIC = "/x2/cmd_vel"
@@ -68,7 +66,8 @@ _X2_SPAWN_Z_M = _env_float("DIMOS_X2_SPAWN_Z", 0.68)
 
 
 def _policy_onnx_path() -> Path:
-    return Path(os.environ.get("DIMOS_X2_POLICY_ONNX", str(_DEFAULT_POLICY_ONNX))).expanduser()
+    override = os.environ.get("DIMOS_X2_POLICY_ONNX")
+    return Path(override).expanduser() if override else _DEFAULT_POLICY_ONNX
 
 
 @lru_cache(maxsize=1)
