@@ -14,6 +14,7 @@
 
 from __future__ import annotations
 
+import time
 from unittest.mock import MagicMock
 
 import pytest
@@ -24,8 +25,6 @@ from dimos.hardware.manipulators.spec import ControlMode, ManipulatorAdapter
 
 class FakeState:
     def __init__(self, index: int) -> None:
-        import time
-
         self.q = 0.1 * index
         self.dq = 0.2 * index
         self.tau = 0.3 * index
