@@ -644,9 +644,7 @@ class ControlCoordinator(Module):
                 )
 
         # Subscribe to cartesian commands if any task type consumes PoseStamped.
-        has_cartesian_ik = any(
-            t.type in ("cartesian_ik", "teleop_ik") for t in self.config.tasks
-        )
+        has_cartesian_ik = any(t.type in ("cartesian_ik", "teleop_ik") for t in self.config.tasks)
         if has_cartesian_ik:
             try:
                 self._cartesian_command_unsub = self.cartesian_command.subscribe(

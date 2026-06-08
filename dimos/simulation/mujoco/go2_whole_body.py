@@ -188,7 +188,7 @@ class MujocoGo2WholeBody(WholeBodyAdapter):
         self._has_states = True
         logger.info(
             f"Spawn pose: base_z={float(self._mj_data.qpos[2]):.3f} "
-            f"joints={[round(float(self._mj_data.qpos[7+i]), 2) for i in range(12)]}"
+            f"joints={[round(float(self._mj_data.qpos[7 + i]), 2) for i in range(12)]}"
         )
 
         self._stop_event.clear()
