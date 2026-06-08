@@ -203,6 +203,29 @@ def test_defaults_match_openarm_ros2_hardware_presets() -> None:
     assert adapter._kd == pytest.approx([2.75, 2.5, 2.0, 2.0, 0.7, 0.6, 0.5])
 
 
+def test_side_selects_openarm_joint_limits() -> None:
+    left = OpenArmRSAdapter(side="left", use_mock_bus=True)
+    right = OpenArmRSAdapter(side="right", use_mock_bus=True)
+
+    assert left.get_limits().position_lower == pytest.approx(
+        [-3.45, -3.30, -1.50, -0.01, -1.50, -0.75, -1.50]
+    )
+    assert left.get_limits().position_upper == pytest.approx(
+        [1.35, 0.15, 1.50, 2.40, 1.50, 0.75, 1.50]
+    )
+    assert right.get_limits().position_lower == pytest.approx(
+        [-1.35, -0.15, -1.50, -0.01, -1.50, -0.75, -1.50]
+    )
+    assert right.get_limits().position_upper == pytest.approx(
+        [3.45, 3.30, 1.50, 2.40, 1.50, 0.75, 1.50]
+    )
+
+
+def test_invalid_side_is_rejected() -> None:
+    with pytest.raises(ValueError, match="side must be 'left' or 'right'"):
+        OpenArmRSAdapter(side="middle", use_mock_bus=True)
+
+
 def test_canfd_enabled_by_default_for_mock_and_socket_buses() -> None:
     mock_adapter = OpenArmRSAdapter(use_mock_bus=True)
     assert mock_adapter.connect() is True
@@ -291,6 +314,20 @@ def test_lifecycle_read_write_disable() -> None:
     assert cmd[:, 4].tolist() == pytest.approx([0.0] * 7)
     adapter.disconnect()
     assert robot.disabled_count >= 1
+
+
+def test_clear_errors_sends_current_position_hold() -> None:
+    adapter = OpenArmRSAdapter(use_mock_bus=True, gravity_comp=False)
+    assert adapter.connect() is True
+    robot = FakeRobot.last
+    assert robot is not None
+
+    assert adapter.write_clear_errors() is True
+
+    cmd = robot.arm.mit_commands[-1]
+    assert cmd[:, 2].tolist() == pytest.approx([0.0, 0.1, 0.2, 0.3, 0.4, 0.5, 0.6])
+    assert cmd[:, 3].tolist() == pytest.approx([0.0] * 7)
+    assert cmd[:, 4].tolist() == pytest.approx([0.0] * 7)
 
 
 def test_state_reads_share_one_tick() -> None:

@@ -45,8 +45,10 @@ class OpenArmRSAdapter(DamiaoArmAdapterBase):
         DamiaoMotorSpec("joint6", "DM4310", 0x06, 0x16),
         DamiaoMotorSpec("joint7", "DM4310", 0x07, 0x17),
     )
-    _DEFAULT_POSITION_LOWER: tuple[float, ...] = (-3.45, -3.30, -1.50, -0.01, -1.50, -0.75, -1.50)
-    _DEFAULT_POSITION_UPPER: tuple[float, ...] = (1.35, 0.15, 1.50, 2.40, 1.50, 0.75, 1.50)
+    _POSITION_LOWER_LEFT: tuple[float, ...] = (-3.45, -3.30, -1.50, -0.01, -1.50, -0.75, -1.50)
+    _POSITION_UPPER_LEFT: tuple[float, ...] = (1.35, 0.15, 1.50, 2.40, 1.50, 0.75, 1.50)
+    _POSITION_LOWER_RIGHT: tuple[float, ...] = (-1.35, -0.15, -1.50, -0.01, -1.50, -0.75, -1.50)
+    _POSITION_UPPER_RIGHT: tuple[float, ...] = (3.45, 3.30, 1.50, 2.40, 1.50, 0.75, 1.50)
     _DEFAULT_VELOCITY_MAX: tuple[float, ...] = (45.0, 45.0, 8.0, 8.0, 30.0, 30.0, 30.0)
     _DEFAULT_KP: tuple[float, ...] = (70.0, 70.0, 70.0, 60.0, 10.0, 10.0, 10.0)
     _DEFAULT_KD: tuple[float, ...] = (2.75, 2.5, 2.0, 2.0, 0.7, 0.6, 0.5)
@@ -62,6 +64,7 @@ class OpenArmRSAdapter(DamiaoArmAdapterBase):
         bus_name: str = "can",
         fd: bool | None = None,
         canfd: bool = True,
+        side: str = "left",
         use_mock_bus: bool = False,
         motor_specs: list[dict[str, object] | DamiaoMotorSpec] | None = None,
         position_lower: list[float] | None = None,
@@ -78,6 +81,8 @@ class OpenArmRSAdapter(DamiaoArmAdapterBase):
     ) -> None:
         if dof != len(self._DEFAULT_OPENARM_MOTORS):
             raise ValueError(f"OpenArmRSAdapter only supports 7 DOF (got {dof})")
+        if side not in ("left", "right"):
+            raise ValueError(f"side must be 'left' or 'right', got {side!r}")
         if motor_specs is not None:
             raise ValueError("openarm_rs is OpenArm-only and does not accept custom motor_specs")
         if position_lower is not None or position_upper is not None or velocity_max is not None:
@@ -89,8 +94,12 @@ class OpenArmRSAdapter(DamiaoArmAdapterBase):
             vendor="Enactic",
             model="OpenArm RS v10",
             motors=self._DEFAULT_OPENARM_MOTORS,
-            position_lower=self._DEFAULT_POSITION_LOWER,
-            position_upper=self._DEFAULT_POSITION_UPPER,
+            position_lower=self._POSITION_LOWER_LEFT
+            if side == "left"
+            else self._POSITION_LOWER_RIGHT,
+            position_upper=self._POSITION_UPPER_LEFT
+            if side == "left"
+            else self._POSITION_UPPER_RIGHT,
             velocity_max=self._DEFAULT_VELOCITY_MAX,
             kp=kp if kp is not None else self._DEFAULT_KP,
             kd=kd if kd is not None else self._DEFAULT_KD,

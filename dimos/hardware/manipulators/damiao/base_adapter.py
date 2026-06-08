@@ -14,6 +14,7 @@
 
 from __future__ import annotations
 
+import importlib
 from pathlib import Path
 import time
 from typing import Any, cast
@@ -33,8 +34,8 @@ _can_motor_control: Any | None
 _damiao: Any | None
 
 try:
-    import can_motor_control as _can_motor_control
-    from can_motor_control import damiao as _damiao
+    _can_motor_control = importlib.import_module("can_motor_control")
+    _damiao = importlib.import_module("can_motor_control.damiao")
 except ImportError as exc:
     _can_motor_control = None
     _damiao = None
@@ -487,6 +488,10 @@ class DamiaoArmAdapterBase:
             logger.error(f"{type(self).__name__} {self._hardware_id} clear errors failed: {exc}")
             return False
         self._enabled = True
+        positions = self.read_joint_positions()
+        if not self.write_joint_positions(positions):
+            logger.error(f"{type(self).__name__} {self._hardware_id} clear-error hold failed")
+            return False
         return True
 
     def _load_gravity_model(self) -> None:
