@@ -102,7 +102,17 @@ go2_tripod_real = autoconnect(
                     "inference_period": 0.02,
                     "mask_fr": False,
                     "device": "cpu",
-                    "activation_ramp_seconds": 1.5,
+                    # Hardware bring-up timing - long pauses between phases
+                    # let the operator observe each transition and abort if
+                    # something looks wrong. Tighten once the sequence is
+                    # well-understood on this specific robot.
+                    #   pre_ramp_hold: hold whatever pose at arm time (2s)
+                    #   activation_ramp: blend to policy target (3s)
+                    #   post_ramp_hold: hold at policy target (2s)
+                    #   then: live policy execution each tick
+                    "pre_ramp_hold_seconds": 2.0,
+                    "activation_ramp_seconds": 3.0,
+                    "post_ramp_hold_seconds": 2.0,
                 },
             ),
         ],

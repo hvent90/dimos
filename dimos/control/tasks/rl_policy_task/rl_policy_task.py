@@ -75,10 +75,17 @@ class RLPolicyTaskConfig:
     mask_fr: bool = False
     priority: int = 10
     device: str = "cpu"
-    # Smooth blend from the joint state at activation toward the policy's
-    # target over this many seconds. 0 = no ramp (sim). 1.5 = real hardware
-    # default - protects against a lurch when arming on a non-standing robot.
+    # Three-phase lifecycle after arming:
+    #   1. pre_ramp_hold_seconds:  hold ramp_origin (the pose at arm time)
+    #   2. activation_ramp_seconds: blend ramp_origin -> policy target
+    #   3. post_ramp_hold_seconds:  hold at the end-of-ramp target
+    #   4. forever after: emit live policy target each tick
+    # Defaults are zero (no holds, no ramp) for sim convenience. Real
+    # hardware bring-up uses non-zero values so the operator can observe
+    # each transition before moving on.
+    pre_ramp_hold_seconds: float = 0.0
     activation_ramp_seconds: float = 0.0
+    post_ramp_hold_seconds: float = 0.0
 
 
 class RLPolicyTask(BaseControlTask):
@@ -108,6 +115,8 @@ class RLPolicyTask(BaseControlTask):
         # in WIRE order. Blended with the policy's target during the ramp.
         self._activation_t: float = -1.0
         self._ramp_origin_wire: np.ndarray | None = None
+        # Phase tracking - logs each transition once.
+        self._phase_logged: int = -1
 
         # Pre-compute fully qualified joint names for our claim + outputs.
         self._prefixed_joints = [f"{config.hardware_id}/{j}" for j in GO2_JOINT_ORDER]
@@ -184,16 +193,51 @@ class RLPolicyTask(BaseControlTask):
         # Permute mjlab -> wire for hardware output.
         target_q_wire = target_q_mjlab[_MJLAB_TO_WIRE]
 
-        # Activation ramp: on the first compute() after arming, snapshot the
-        # robot's current joint pos and blend toward the policy target over
-        # `activation_ramp_seconds`. Protects against a lurch when the robot
-        # was folded / not at default pose when armed.
+        # Three-phase lifecycle after arming. On the first compute() after
+        # arm, snapshot the joint pose; then step through:
+        #   [0, pre_hold]:                    alpha = 0  (hold ramp_origin)
+        #   [pre_hold, pre_hold+ramp]:        alpha = 0..1  (blend)
+        #   [pre_hold+ramp, pre_hold+ramp+post]: alpha = 1  (hold target)
+        #   [after]:                          alpha = 1  (live policy)
+        # Each transition is logged once so the operator can follow along
+        # in the run log.
         if self._activation_t < 0.0:
             self._activation_t = state.t_now
             self._ramp_origin_wire = q_wire.copy()
-        ramp_s = self._config.activation_ramp_seconds
-        if ramp_s > 0.0 and self._ramp_origin_wire is not None:
-            alpha = min(1.0, (state.t_now - self._activation_t) / ramp_s)
+            self._phase_logged = -1  # so phase 0 logs on the next branch
+            logger.info(
+                f"RLPolicyTask {self._name}: armed - "
+                f"pre_hold={self._config.pre_ramp_hold_seconds}s, "
+                f"ramp={self._config.activation_ramp_seconds}s, "
+                f"post_hold={self._config.post_ramp_hold_seconds}s"
+            )
+
+        pre = self._config.pre_ramp_hold_seconds
+        ramp = self._config.activation_ramp_seconds
+        post = self._config.post_ramp_hold_seconds
+        t = state.t_now - self._activation_t
+
+        if t < pre:
+            phase = 0  # pre-ramp hold
+            alpha = 0.0
+        elif t < pre + ramp:
+            phase = 1  # ramping
+            alpha = (t - pre) / ramp if ramp > 0.0 else 1.0
+        elif t < pre + ramp + post:
+            phase = 2  # post-ramp hold (at policy target)
+            alpha = 1.0
+        else:
+            phase = 3  # live policy
+            alpha = 1.0
+
+        if phase != self._phase_logged:
+            phase_names = ("pre-ramp hold", "ramping", "post-ramp hold", "live policy")
+            logger.info(
+                f"RLPolicyTask {self._name}: phase {phase} ({phase_names[phase]}) at t={t:.2f}s"
+            )
+            self._phase_logged = phase
+
+        if self._ramp_origin_wire is not None and alpha < 1.0:
             target_q_wire = (1.0 - alpha) * self._ramp_origin_wire + alpha * target_q_wire
 
         # Mask FR if requested. _fr_indices is computed in wire order.
@@ -230,12 +274,14 @@ class RLPolicyTask(BaseControlTask):
             self._active = True
             self._activation_t = -1.0  # trigger fresh ramp on next compute()
             self._ramp_origin_wire = None
+            self._phase_logged = -1
 
     def stop(self) -> None:
         with self._lock:
             self._active = False
             self._activation_t = -1.0
             self._ramp_origin_wire = None
+            self._phase_logged = -1
 
     # arm/disarm are the coordinator's set_activated() hooks (coordinator.py:529).
     def arm(self) -> None:
@@ -260,7 +306,9 @@ class RLPolicyTaskParams(BaseConfig):
     inference_period: float = 0.02
     mask_fr: bool = False
     device: str = "cpu"
+    pre_ramp_hold_seconds: float = 0.0
     activation_ramp_seconds: float = 0.0
+    post_ramp_hold_seconds: float = 0.0
 
 
 def create_task(cfg: Any, hardware: Any) -> RLPolicyTask:
@@ -275,7 +323,9 @@ def create_task(cfg: Any, hardware: Any) -> RLPolicyTask:
             mask_fr=params.mask_fr,
             priority=cfg.priority,
             device=params.device,
+            pre_ramp_hold_seconds=params.pre_ramp_hold_seconds,
             activation_ramp_seconds=params.activation_ramp_seconds,
+            post_ramp_hold_seconds=params.post_ramp_hold_seconds,
         ),
     )
     # auto_start is handled by the coordinator: it calls task.start() iff

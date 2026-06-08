@@ -95,13 +95,18 @@ go2_tripod_sim = autoconnect(
                     "inference_period": 0.02,
                     "mask_fr": True,
                     "device": "cpu",
-                    # Sim spawns at the "lie" keyframe (true belly-down,
-                    # base_z=0.105, joints folded at (0, 1.5, -2.7)). Ramp
-                    # from there to the policy's standing target over 2.5s:
-                    # calf swing is ~52deg, thigh swing ~34deg, and the body
-                    # has to physically rise ~20cm. Longer ramp lets gravity
-                    # plus PD do the heavy lift without spiking torque.
+                    # Three-phase lifecycle after arm():
+                    #   pre_ramp_hold  - hold ramp_origin (the pose at arm time)
+                    #   activation_ramp - blend ramp_origin -> policy target
+                    #   post_ramp_hold - hold at end-of-ramp target
+                    #   (then live policy execution each tick)
+                    # Sim spawns at the "lie" keyframe (belly-down, base_z=0.105);
+                    # the ramp does the lie -> stand transition. Holds are short
+                    # for sim; bump up for hardware bring-up so the operator can
+                    # observe each phase.
+                    "pre_ramp_hold_seconds": 0.0,
                     "activation_ramp_seconds": 2.5,
+                    "post_ramp_hold_seconds": 0.0,
                 },
             ),
             # FR-leg teleop. Same TeleopIKTask the manipulator arms use, with
