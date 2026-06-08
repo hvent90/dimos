@@ -258,12 +258,7 @@ No other code changes are needed. The `coordinator-openarm-rs` and `openarm-rs-p
 
 ### Gain tuning (MIT kp/kd)
 
-Defaults live in the adapter implementations. The binding-backed `openarm_rs` path uses the upstream OpenArm ROS2 hardware presets from `openarm_hardware/openarm_simple_hardware.hpp`; the in-tree `openarm` adapter keeps its existing gains. OpenArm RS/OpenArm ROS2 presets are:
-
-```python
-_DEFAULT_KP = [70.0, 70.0, 70.0, 60.0, 10.0, 10.0, 10.0]
-_DEFAULT_KD = [2.75, 2.5, 2.0, 2.0, 0.7, 0.6, 0.5]
-```
+Defaults live in the adapter implementations — pointing here instead of restating the numbers so docs can't drift from code. The binding-backed `openarm_rs` path uses the upstream OpenArm ROS2 hardware presets from `openarm_hardware/openarm_simple_hardware.hpp`; see `OpenArmRSAdapter._DEFAULT_KP` / `_DEFAULT_KD` in [openarm_rs/adapter.py](/dimos/hardware/manipulators/openarm_rs/adapter.py). The in-tree `openarm` adapter keeps its own `_DEFAULT_KP` / `_DEFAULT_KD` in [openarm/adapter.py](/dimos/hardware/manipulators/openarm/adapter.py).
 
 Guidelines:
 - `kp ∈ [0, 500]` in MIT mode. Higher kp = stiffer position tracking; too high → oscillation.
