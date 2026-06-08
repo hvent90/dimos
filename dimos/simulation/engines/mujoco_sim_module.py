@@ -30,7 +30,7 @@ import math
 from pathlib import Path
 import threading
 import time
-from typing import Any
+from typing import TYPE_CHECKING, Any
 
 from pydantic import Field
 import reactivex as rx
@@ -61,6 +61,9 @@ from dimos.utils.logging_config import setup_logger
 
 logger = setup_logger()
 
+if TYPE_CHECKING:
+    import mujoco
+
 _RX180 = R.from_euler("x", 180, degrees=True)
 
 
@@ -72,9 +75,30 @@ def _default_identity_transform() -> Transform:
 
 
 class MujocoSimModuleConfig(ModuleConfig, DepthCameraConfig):
-    """Configuration for the unified MuJoCo simulation module."""
+    """Configuration for the unified MuJoCo simulation module.
+
+    Two ways to specify the model:
+
+    * ``address`` (legacy): a pre-built MJCF/MJB containing both scene
+      and robot. Loaded as-is.
+    * ``scene_xml`` + ``robot_mjcf`` (preferred): robot-agnostic scene
+      package + a separately-specified robot MJCF. The module composes
+      ``MjSpec(scene) + entities + MjSpec(robot)`` at start time, so the
+      same scene package works with any robot. ``scene_xml=None`` is
+      fine for "just the robot on a flat floor."
+    """
 
     address: str = ""
+    # Compose-at-start path.
+    scene_xml: str | None = None
+    robot_mjcf: str | None = None
+    robot_meshdir: str | None = None
+    robot_id: str = ""
+    scene_entities: list[dict[str, Any]] = Field(default_factory=list)
+    spawn_xy: tuple[float, float] = (0.0, 0.0)
+    spawn_z: float = 0.0
+    spawn_yaw: float = 0.0
+    initial_joint_positions: list[float] = Field(default_factory=list)
     headless: bool = False
     dof: int = 7
 
@@ -88,6 +112,7 @@ class MujocoSimModuleConfig(ModuleConfig, DepthCameraConfig):
     align_depth_to_color: bool = True
     enable_depth: bool = True
     enable_pointcloud: bool = False
+    render_geom_groups: tuple[int, ...] | None = None
     pointcloud_fps: float = 5.0
     camera_info_fps: float = 1.0
 
@@ -101,7 +126,7 @@ class MujocoSimModule(
     exposes joint state/commands to a ``ShmMujocoAdapter`` via shared memory.
 
     The adapter attaches to the same SHM buffers using the MJCF path as the
-    discovery key — no RPC, no globals. From ControlCoordinator's perspective
+    discovery key - no RPC, no globals. From ControlCoordinator's perspective
     the adapter is an ordinary ``ManipulatorAdapter``; SHM is its transport.
     """
 
@@ -161,28 +186,47 @@ class MujocoSimModule(
 
     @rpc
     def start(self) -> None:
-        if not self.config.address:
-            raise RuntimeError("MujocoSimModule: config.address (MJCF path) is required")
+        if not self.config.address and not self.config.robot_mjcf:
+            raise RuntimeError(
+                "MujocoSimModule: either config.robot_mjcf (preferred) "
+                "or config.address (legacy MJCF path) is required"
+            )
 
-        # SHM key — adapter derives the same key from the same MJCF path.
-        shm_key = shm_key_from_path(self.config.address)
+        # SHM key - adapter derives the same key from the same source path.
+        shm_key_source = self.config.robot_mjcf or self.config.address
+        shm_key = shm_key_from_path(shm_key_source)
         self._shm = ManipShmWriter(shm_key)
+
+        engine_kwargs: dict[str, Any] = dict(
+            headless=self.config.headless,
+        )
+        if self.config.robot_mjcf:
+            engine_kwargs["model"] = self._compose_model()
+            engine_kwargs["config_path"] = Path(self.config.robot_mjcf)
+        else:
+            engine_kwargs["config_path"] = Path(self.config.address)
 
         # Build engine with SHM hooks installed.
         self._engine = MujocoEngine(
-            config_path=Path(self.config.address),
-            headless=self.config.headless,
+            **engine_kwargs,
             cameras=[
                 CameraConfig(
                     name=self.config.camera_name,
                     width=self.config.width,
                     height=self.config.height,
                     fps=float(self.config.fps),
+                    geom_groups=self.config.render_geom_groups,
                 )
             ],
             on_before_step=self._apply_shm_commands,
             on_after_step=self._publish_shm_state,
         )
+
+        if self.config.initial_joint_positions:
+            self._engine.set_joint_positions(self.config.initial_joint_positions)
+            self._engine.write_joint_command(
+                JointState(position=self.config.initial_joint_positions)
+            )
 
         # Detect gripper (extra joint beyond dof).
         dof = self.config.dof
@@ -201,6 +245,8 @@ class MujocoSimModule(
                 ctrl_range=ctrl_range,
                 joint_range=joint_range,
             )
+
+        self._publish_shm_state(self._engine)
 
         # Start physics (sim thread spawned inside engine.connect()).
         if not self._engine.connect():
@@ -243,6 +289,69 @@ class MujocoSimModule(
             camera=self.config.camera_name,
             shm_key=shm_key,
         )
+
+    def _compose_model(self) -> mujoco.MjModel:
+        """Compose scene (optional) + entities + robot via ``MjSpec.attach``.
+
+        The cooked scene wrapper is robot-agnostic; this is where the robot
+        gets stitched in at runtime, with optional ``robot_id`` body-name
+        prefix (empty by default - single-robot scenes don't rename).
+        """
+        import mujoco
+
+        from dimos.simulation.mujoco.entity_scene import add_entities_to_spec
+
+        def _build_scene_spec() -> Any:
+            if self.config.scene_xml:
+                spec = mujoco.MjSpec.from_file(str(self.config.scene_xml))
+            else:
+                spec = mujoco.MjSpec()
+            if self.config.scene_entities:
+                add_entities_to_spec(spec, self.config.scene_entities)
+
+            # Cooked scene wrappers carry no lighting and use a far clip
+            # plane sized for whole-building rendering (zfar=10000). Keep
+            # lighting/range sane for wrist-camera perception; camera geom
+            # visibility is controlled separately by render_geom_groups.
+            spec.visual.headlight.ambient = [0.4, 0.4, 0.4]
+            spec.visual.headlight.diffuse = [0.7, 0.7, 0.7]
+            spec.visual.headlight.specular = [0.0, 0.0, 0.0]
+            spec.visual.map.znear = 0.01
+            spec.visual.map.zfar = 20.0
+            if not list(spec.worldbody.lights):
+                light = spec.worldbody.add_light()
+                light.pos = [0.0, 0.0, 5.0]
+                light.dir = [0.0, 0.0, -1.0]
+                light.type = mujoco.mjtLightType.mjLIGHT_DIRECTIONAL
+            return spec
+
+        spec_scene = _build_scene_spec()
+
+        spec_robot = mujoco.MjSpec.from_file(str(self.config.robot_mjcf))
+        if self.config.robot_meshdir:
+            spec_robot.meshdir = str(self.config.robot_meshdir)
+        # Drop robot-side keyframes: they encode qpos arrays sized for the
+        # robot's standalone test scene (apple/orange/cup), which no longer
+        # match the composed model's nq.
+        for kf in list(spec_robot.keys):
+            spec_robot.delete(kf)
+
+        spawn_xy = self.config.spawn_xy
+        spawn_z = self.config.spawn_z
+        half_yaw = self.config.spawn_yaw / 2.0
+        frame = spec_scene.worldbody.add_frame(
+            pos=[float(spawn_xy[0]), float(spawn_xy[1]), float(spawn_z)],
+            quat=[math.cos(half_yaw), 0.0, 0.0, math.sin(half_yaw)],
+        )
+        # prefix='' keeps original element names (cameras, joints, geoms).
+        # prefix=None applies a default '/' namespace which renames the
+        # wrist_camera to '/wrist_camera' and breaks perception lookups.
+        prefix = f"{self.config.robot_id}-" if self.config.robot_id else ""
+        spec_scene.attach(spec_robot, prefix=prefix, frame=frame)
+        model = spec_scene.compile()
+        model.vis.map.znear = float(spec_scene.visual.map.znear)
+        model.vis.map.zfar = float(spec_scene.visual.map.zfar)
+        return model
 
     @rpc
     def stop(self) -> None:

@@ -44,8 +44,14 @@ class _ActuatorSpec:
     tendon: str | None
 
 
-def build_joint_mappings(xml_path: Path, model: mujoco.MjModel) -> list[JointMapping]:
-    specs = _parse_actuator_specs(xml_path)
+def build_joint_mappings(xml_path: Path | None, model: mujoco.MjModel) -> list[JointMapping]:
+    """Map actuators to joints. When ``xml_path`` is None (e.g. the model was
+    composed at runtime via ``MjSpec``), fall back to enumerating actuators
+    out of the compiled model directly — same shape, just no XML parse.
+    """
+    specs: list[_ActuatorSpec] = []
+    if xml_path is not None and xml_path.suffix.lower() != ".mjb":
+        specs = _parse_actuator_specs(xml_path)
     if specs:
         return _build_joint_mappings_from_specs(specs, model)
     if int(model.nu) > 0:
