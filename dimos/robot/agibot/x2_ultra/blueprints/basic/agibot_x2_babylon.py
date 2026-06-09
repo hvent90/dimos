@@ -20,15 +20,14 @@ Streams from X2Connection autoconnect to the viewer's inputs (joint_state,
 color_image as camera, cmd_vel from viewer Drive button back to robot).
 """
 
-from pathlib import Path
-
 from dimos.core.coordination.blueprints import autoconnect
 from dimos.core.transport import JpegShmTransport
 from dimos.msgs.sensor_msgs.Image import Image
 from dimos.robot.agibot.x2_ultra.connection import X2Connection
+from dimos.utils.data import LfsPath
 from dimos.visualization.babylon_scene_viewer import BabylonSceneViewerModule
 
-_X2_MJCF_PATH = Path(__file__).resolve().parent.parent.parent / "x2_ultra.xml"
+_X2_MJCF_PATH = LfsPath("agibot_x2_ultra/x2_ultra.xml")
 
 agibot_x2_babylon = (
     autoconnect(

@@ -41,6 +41,7 @@ from dimos.msgs.sensor_msgs.JointState import JointState
 from dimos.msgs.sensor_msgs.PointCloud2 import PointCloud2
 from dimos.robot.agibot.x2_ultra._arm_ik import X2ArmIK
 from dimos.spec.perception import IMU, Camera, Lidar, Pointcloud
+from dimos.utils.data import LfsPath
 from dimos.utils.logging_config import setup_logger
 
 logger = setup_logger()
@@ -64,8 +65,8 @@ _TOPIC_JOINT_HEAD = "/aima/hal/joint/head/state"
 _TOPIC_ARM_COMMAND = "/aima/hal/joint/arm/command"
 _SVC_INPUT_SOURCE = "/aimdk_5Fmsgs/srv/SetMcInputSource"
 
-# Path to the URDF bundled in this package — used for IK.
-_X2_URDF_PATH = Path(__file__).resolve().parent / "x2_ultra.urdf"
+# Path to the URDF data package used for IK.
+_X2_URDF_PATH = LfsPath("agibot_x2_ultra/x2_ultra.urdf")
 
 # Joint name ordering per the AgiBot X2 SDK docs (Interface > Control > Joint Control).
 # Names match the X2 URDF/MJCF (sans the "_joint" suffix, which the viewer adds).
@@ -1080,9 +1081,9 @@ class X2Connection(X2ConnectionBase, Camera, Pointcloud, IMU, Lidar):
         """Send a velocity command to the robot.
 
         Maps Twist fields:
-          linear.x  → forward velocity  (±0.2–1.0 m/s or 0)
-          linear.y  → lateral velocity  (±0.2–1.0 m/s or 0)
-          angular.z → angular velocity  (±0.1–1.0 rad/s or 0)
+          linear.x  → forward velocity  (±0.2-1.0 m/s or 0)
+          linear.y  → lateral velocity  (±0.2-1.0 m/s or 0)
+          angular.z → angular velocity  (±0.1-1.0 rad/s or 0)
         """
         if self._vel_publisher is None:
             return False

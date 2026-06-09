@@ -9,7 +9,7 @@ robot is attached at runtime via `MjSpec.attach()` inside
 `MujocoSimModule.start`, so the package itself never carries the robot.
 
 ```text
-~/.cache/dimos/scene_packages/<name>/
+data/scene_packages/<name>/
 ├── scene.meta.json                manifest — all paths relative to package root
 ├── browser/
 │   ├── visual.glb                 gltfpack-optimised, static parts only
@@ -145,14 +145,14 @@ for the full reference.
 ```bash
 python -m dimos.simulation.scene_assets.cook \
     path/to/my_scene.glb \
-    --output-dir=~/.cache/dimos/scene_packages/my_scene
+    --output-dir=data/scene_packages/my_scene
 ```
 
 The cooker is **strictly robot-agnostic** — no `--robot-mjcf` flag, no
-robot bundled into the package. `--rebake` ignores caches and rebuilds
+robot bundled into the package. `--rebake` ignores existing cooked files and rebuilds
 from scratch. The cooker auto-discovers `<scene>.cook.json` next to the
-source. Content-hash cached on source bytes + sidecar JSON + alignment
-+ schema version — change any of those and a fresh cache directory is
+source. Default package names are keyed on source bytes, sidecar JSON, alignment,
+and schema version — change any of those and a fresh package directory is
 created automatically.
 
 ## Dropping in a new robot

@@ -14,8 +14,8 @@
 
 """Offline scene package cooker.
 
-This is intentionally not a DimOS runtime module.  It prepares cacheable
-files that runtime modules consume through normal config.
+This is intentionally not a DimOS runtime module. It prepares cooked scene
+packages that runtime modules consume through normal config.
 """
 
 from __future__ import annotations
@@ -43,12 +43,13 @@ from dimos.simulation.scene_assets.spec import (
 )
 from dimos.simulation.scene_assets.visual_blender import cook_plan_visual_assets
 from dimos.simulation.scene_assets.visual_glb import cook_browser_visual
+from dimos.utils.data import get_data_dir
 from dimos.utils.logging_config import setup_logger
 
 logger = setup_logger()
 
-SCENE_PACKAGE_CACHE_DIR = Path.home() / ".cache" / "dimos" / "scene_packages"
-_CACHE_KEY_LEN = 12
+SCENE_PACKAGE_DIR = get_data_dir("scene_packages")
+_PACKAGE_KEY_LEN = 12
 _COOK_VERSION = 4
 
 
@@ -91,7 +92,7 @@ def cook_scene_package(
     package_dir = (
         Path(output_dir).expanduser().resolve()
         if output_dir is not None
-        else SCENE_PACKAGE_CACHE_DIR / _cache_key(cook_spec, sidecar)
+        else SCENE_PACKAGE_DIR / _package_key(cook_spec, sidecar)
     )
     browser_dir = package_dir / "browser"
     mujoco_dir = package_dir / "mujoco"
@@ -188,7 +189,7 @@ def cook_scene_package(
     return package
 
 
-def _cache_key(
+def _package_key(
     cook_spec: SceneCookSpec,
     sidecar: SceneCookSidecar,
 ) -> str:
@@ -197,7 +198,7 @@ def _cache_key(
     h.update(str(_COOK_VERSION).encode())
     h.update(json.dumps(_cook_spec_json(cook_spec), sort_keys=True).encode())
     h.update(json.dumps(sidecar.to_json_dict(), sort_keys=True).encode())
-    return h.hexdigest()[:_CACHE_KEY_LEN]
+    return h.hexdigest()[:_PACKAGE_KEY_LEN]
 
 
 def _cook_spec_json(cook_spec: SceneCookSpec) -> dict[str, Any]:
@@ -282,4 +283,4 @@ if __name__ == "__main__":
     cli_main()
 
 
-__all__ = ["SCENE_PACKAGE_CACHE_DIR", "cook_scene_package"]
+__all__ = ["SCENE_PACKAGE_DIR", "cook_scene_package"]

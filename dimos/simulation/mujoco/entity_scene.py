@@ -17,9 +17,9 @@
 The cook step removes entity prims (chairs, props) from the static
 scene bake and writes their per-entity GLBs and metadata to the
 package's ``entities/`` directory. At runtime, ``MujocoSimModule``
-calls :func:`add_entities_to_spec` on its scene spec **before** the
-robot attach, so the cooked entities become first-class bodies in the
-composed model.
+attaches the robot first, then calls :func:`add_entities_to_spec` so
+the robot keeps the first freejoint/qpos block and cooked entities
+become first-class bodies after it in the composed model.
 
 Entities with ``kind == "dynamic"`` and positive mass receive a
 freejoint (robot can push/grasp them); anything else is welded static.
@@ -231,7 +231,7 @@ def add_entities_to_spec(
 ) -> None:
     """Append scene-package entities as bodies on ``spec.worldbody``.
 
-    Call before attaching the robot. Each ``spawn=="initial"`` entity
+    Call after attaching the robot. Each ``spawn=="initial"`` entity
     becomes one body named ``entity:<id>`` with the descriptor's geom
     shape and friction; dynamic entities also receive a freejoint named
     ``entity:<id>:free``.

@@ -21,8 +21,9 @@ from pathlib import Path
 from dimos.simulation.scene_assets.mesh_scene import SceneMeshAlignment
 from dimos.simulation.scene_assets.spec import ScenePackage, load_scene_package
 from dimos.simulation.scenes.office import get_dimos_office
+from dimos.utils.data import get_data
 
-SCENE_PACKAGE_CACHE_DIR = Path.home() / ".cache" / "dimos" / "scene_packages"
+SCENE_PACKAGE_DIR = get_data("scene_packages")
 DEFAULT_SCENE = "dimos-office"
 _DISABLED_SCENE_NAMES = {"", "none", "off", "disabled", "false", "0"}
 _ALIASES = {
@@ -93,7 +94,7 @@ def resolve_scene_package(
     if name == DEFAULT_SCENE:
         return _resolve_dimos_office()
 
-    metadata_path = SCENE_PACKAGE_CACHE_DIR / _PACKAGE_DIRS[name] / "scene.meta.json"
+    metadata_path = SCENE_PACKAGE_DIR / _PACKAGE_DIRS[name] / "scene.meta.json"
     if not metadata_path.exists():
         raise FileNotFoundError(f"scene package '{name}' is not cooked yet: {metadata_path}")
     return load_scene_package(metadata_path)
@@ -101,7 +102,7 @@ def resolve_scene_package(
 
 def _resolve_dimos_office() -> ScenePackage:
     office = get_dimos_office()
-    metadata_path = SCENE_PACKAGE_CACHE_DIR / _PACKAGE_DIRS[DEFAULT_SCENE] / "scene.meta.json"
+    metadata_path = SCENE_PACKAGE_DIR / _PACKAGE_DIRS[DEFAULT_SCENE] / "scene.meta.json"
     expected_alignment = SceneMeshAlignment(
         scale=office.scale,
         translation=office.translation,
@@ -116,15 +117,18 @@ def _resolve_dimos_office() -> ScenePackage:
 
     package = load_scene_package(metadata_path)
     if (
-        package.source_path == office.mesh_path
-        and _alignment_matches(package.alignment, expected_alignment)
+        _alignment_matches(package.alignment, expected_alignment)
         and package.visual_path is not None
         and package.browser_collision_path is not None
+        and package.mujoco_scene_path is not None
+        and package.visual_path.exists()
+        and package.browser_collision_path.exists()
+        and package.mujoco_scene_path.exists()
     ):
         return package
 
     raise ValueError(
-        "dimos-office scene package is stale or has incorrect alignment: "
+        "dimos-office scene package is stale, incomplete, or has incorrect alignment: "
         f"{metadata_path}. Recook it from the bundled office scene."
     )
 

@@ -411,32 +411,4 @@
     <accelerometer name="imu-pelvis-linear-acceleration" site="imu_in_pelvis" noise="1e-2" cutoff="157"/>
   </sensor>
 
-
-  <!-- setup scene -->
-  <statistic center="1.0 0.7 1.0" extent="0.8"/>
-  <visual>
-    <headlight diffuse="0.6 0.6 0.6" ambient="0.1 0.1 0.1" specular="0.9 0.9 0.9"/>
-    <rgba haze="0.15 0.25 0.35 1"/>
-    <global azimuth="-140" elevation="-20"/>
-  </visual>
-  <asset>
-    <texture type="skybox" builtin="flat" rgb1="0 0 0" rgb2="0 0 0" width="512" height="3072"/>
-    <texture type="2d" name="groundplane" builtin="checker" mark="edge" rgb1="0.2 0.3 0.4" rgb2="0.1 0.2 0.3" markrgb="0.8 0.8 0.8" width="300" height="300"/>
-    <material name="groundplane" texture="groundplane" texuniform="true" texrepeat="5 5" reflectance="0.2"/>
-  </asset>
-  <worldbody>
-    <light pos="1 0 3.5" dir="0 0 -1" directional="true"/>
-    <!-- group=2: distinct from robot (groups 0/1) so the lidar depth
-         render can hide robot meshes while still seeing the floor.
-         Without this the floor would be in group 0 (default), get
-         hidden along with the robot, and the costmap would mark every
-         cell as "unknown" instead of "free" → planner refuses to route. -->
-    <geom name="floor" size="0 0 0.05" type="plane" material="groundplane" group="2"/>
-    <!-- manip_table / manip_cube used to live here as hardcoded MJCF; they
-         are now authored entities in the scene sidecar (see
-         data/dimos_office_mesh/dimos_office_mesh.cook.json) so the same
-         manipulation rig spawns in pimsim Havok and MuJoCo from one
-         declarative source. Robot MJCF stays scene-free. -->
-    <include file="dimos_office_edited.xml"/>
-  </worldbody>
 </mujoco>

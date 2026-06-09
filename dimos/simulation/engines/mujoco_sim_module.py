@@ -146,6 +146,10 @@ class MujocoSimModuleConfig(ModuleConfig, DepthCameraConfig):
     enable_kinematic_base_control: bool = False
     enable_kinematic_joint_hold: bool = False
     inject_legacy_assets: bool = False
+    support_floor: bool = False
+    support_floor_z: float = 0.0
+    support_floor_group: int = 2
+    support_floor_friction: tuple[float, float, float] = (1.0, 0.05, 0.001)
     spawn_xy: tuple[float, float] | None = None
     spawn_z: float | None = None
     spawn_yaw: float | None = None
@@ -364,12 +368,23 @@ class MujocoSimModule(
             spec_scene = mujoco.MjSpec.from_file(str(self.config.scene_xml))
         else:
             spec_scene = mujoco.MjSpec()
-        if self.config.scene_entities:
-            add_entities_to_spec(spec_scene, self.config.scene_entities)
-
+        if self.config.support_floor:
+            spec_scene.worldbody.add_geom(
+                name="locomotion_support_floor",
+                type=mujoco.mjtGeom.mjGEOM_PLANE,
+                pos=[0.0, 0.0, float(self.config.support_floor_z)],
+                size=[0.0, 0.0, 0.01],
+                group=int(self.config.support_floor_group),
+                rgba=[0.0, 0.0, 0.0, 0.0],
+                friction=list(self.config.support_floor_friction),
+            )
         spec_robot = mujoco.MjSpec.from_file(str(self.config.robot_mjcf))
         if self.config.robot_meshdir:
             spec_robot.meshdir = str(self.config.robot_meshdir)
+        # Preserve the robot dynamics contract when attaching into a
+        # robot-agnostic scene. Otherwise the scene's default MuJoCo options
+        # can silently change the policy/control timing.
+        spec_scene.option.timestep = spec_robot.option.timestep
 
         spawn_xy = self.config.spawn_xy or (0.0, 0.0)
         spawn_z = self.config.spawn_z if self.config.spawn_z is not None else 0.0
@@ -378,6 +393,8 @@ class MujocoSimModule(
         )
         prefix = f"{self.config.robot_id}-" if self.config.robot_id else None
         spec_scene.attach(spec_robot, prefix=prefix, frame=frame)
+        if self.config.scene_entities:
+            add_entities_to_spec(spec_scene, self.config.scene_entities)
         return spec_scene.compile()
 
     def _resolve_entity_bodies(self) -> None:

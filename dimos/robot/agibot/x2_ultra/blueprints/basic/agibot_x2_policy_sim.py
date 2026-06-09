@@ -20,7 +20,6 @@ from functools import lru_cache
 import os
 from pathlib import Path
 from typing import Any
-import xml.etree.ElementTree as ET
 
 from dimos.control.components import HardwareComponent, HardwareType
 from dimos.control.coordinator import ControlCoordinator, TaskConfig
@@ -41,9 +40,8 @@ from dimos.simulation.engines.mujoco_sim_module import MujocoSimModule
 from dimos.utils.data import LfsPath
 from dimos.visualization.babylon_scene_viewer import BabylonSceneViewerModule
 
-_X2_ROOT = Path(__file__).resolve().parent.parent.parent
-_X2_ROBOT_MJCF_PATH = _X2_ROOT / "x2_ultra.xml"
-_X2_MESH_DIR = _X2_ROOT / "meshes"
+_X2_ROBOT_MJCF_PATH = LfsPath("agibot_x2_ultra/x2_ultra.xml")
+_X2_MESH_DIR = LfsPath("agibot_x2_ultra/meshes")
 _DEFAULT_POLICY_ONNX = LfsPath("mujoco_sim/agibot_x2_policy.onnx")
 
 _X2_SIM_TICK_RATE_HZ = 250.0
@@ -57,9 +55,11 @@ def _env_float(name: str, default: float) -> float:
     return default if raw is None or raw == "" else float(raw)
 
 
-def _env_int(name: str, default: int) -> int:
+def _env_bool(name: str, default: bool) -> bool:
     raw = os.environ.get(name)
-    return default if raw is None or raw == "" else int(raw)
+    if raw is None or raw == "":
+        return default
+    return raw.strip().lower() in {"1", "true", "yes", "on"}
 
 
 _X2_SPAWN_Z_M = _env_float("DIMOS_X2_SPAWN_Z", 0.68)
@@ -92,48 +92,11 @@ def _x2_mujoco_scene_xml() -> Path | None:
     return Path(scene_package.mujoco_scene_path)
 
 
-def _flat_world_mjcf() -> Path:
-    """Generate a cached X2 MJCF with a ground plane for MuJoCo policy sim."""
-    cache_dir = Path(os.environ.get("XDG_CACHE_HOME", Path.home() / ".cache")) / "dimos" / "x2"
-    cache_dir.mkdir(parents=True, exist_ok=True)
-    out_path = cache_dir / "x2_ultra_flat.xml"
-
-    root = ET.parse(_X2_ROBOT_MJCF_PATH).getroot()
-    compiler = root.find("compiler")
-    if compiler is None:
-        compiler = ET.Element("compiler")
-        root.insert(0, compiler)
-    compiler.set("meshdir", str(_X2_MESH_DIR.resolve()))
-
-    worldbody = root.find("worldbody")
-    if worldbody is None:
-        worldbody = ET.SubElement(root, "worldbody")
-    if worldbody.find("./geom[@name='floor']") is None:
-        floor = ET.Element(
-            "geom",
-            {
-                "name": "floor",
-                "type": "plane",
-                "size": "20 20 0.05",
-                "rgba": "0.2 0.24 0.26 1",
-                "condim": "3",
-                "friction": "0.9 0.02 0.001",
-            },
-        )
-        worldbody.insert(0, floor)
-
-    ET.ElementTree(root).write(out_path, encoding="unicode")
-    return out_path
-
-
 _scene_package = _scene_package_config()
 _x2_scene_xml = _x2_mujoco_scene_xml()
 _viewer_kwargs: dict[str, Any] = {
     "mjcf_path": str(_X2_ROBOT_MJCF_PATH),
-    "camera_name": "rgbd_head_front",
     "vehicle_height": _X2_SPAWN_Z_M,
-    "pointcloud_hz": _env_float("DIMOS_BABYLON_POINTCLOUD_HZ", 2.0),
-    "pointcloud_max_points": _env_int("DIMOS_BABYLON_POINTCLOUD_MAX_POINTS", 70000),
 }
 if _scene_package is not None and _scene_package.visual_path is not None:
     _viewer_kwargs.update(
@@ -163,6 +126,8 @@ agibot_x2_policy_sim = (
             enable_color=False,
             enable_depth=False,
             enable_pointcloud=False,
+            support_floor=_env_bool("DIMOS_MUJOCO_SUPPORT_FLOOR", True),
+            support_floor_z=_env_float("DIMOS_SCENE_SUPPORT_FLOOR_Z", 0.0),
             spawn_z=_X2_SPAWN_Z_M,
             reset_joint_positions=X2_DEFAULT_POSITIONS,
             imu_gyro_sensor_names=["body-angular-velocity"],

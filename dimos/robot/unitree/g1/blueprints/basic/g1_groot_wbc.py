@@ -221,11 +221,9 @@ def _select_backend() -> _BackendSelection:
     scene_xml: str | None = None
     if scene_package is not None and scene_package.mujoco_scene_path is not None:
         # Scene-package entities (chairs, props) become MuJoCo bodies so the
-        # robot can physically interact with them; their poses publish on
-        # /entity_state_batch (MuJoCo is the entity authority in this mode).
-        # The robot is attached to the scene at runtime via MjSpec.attach()
-        # inside MujocoSimModule.start — the cooked scene wrapper is
-        # robot-agnostic.
+        # robot can physically interact with them. The G1 locomotion support
+        # plane is added by MujocoSimModule as scene-owned geometry, not baked
+        # into the robot MJCF.
         scene_xml = str(scene_package.mujoco_scene_path)
         scene_entities = scene_package.entities
         viewer_mjcf_path = scene_package.mujoco_scene_path
@@ -261,6 +259,7 @@ def _select_backend() -> _BackendSelection:
         enable_kinematic_base_control=_env_bool("DIMOS_KINEMATIC_BASE_CONTROL", False),
         enable_kinematic_joint_hold=_env_bool("DIMOS_MUJOCO_KINEMATIC_JOINT_HOLD", False),
         inject_legacy_assets=True,
+        support_floor=_env_bool("DIMOS_MUJOCO_SUPPORT_FLOOR", True),
         spawn_xy=global_config.mujoco_start_pos_float,
         spawn_z=_env_float("DIMOS_MUJOCO_START_Z", _DEFAULT_G1_SPAWN_Z_M),
         reset_joint_positions=G1_GROOT_DEFAULT_POSITIONS,
