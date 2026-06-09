@@ -68,7 +68,7 @@ jobs:
             exit 1
           fi
 
-  compute-pin:
+  compute-ros-pin:
     # Extracts the ros-dev image digest pinned in docker/ros-dev-pin/Dockerfile
     # so the test job can reference it from its `container:` field (which is
     # evaluated at job-setup time and can't read step outputs from its own job).
@@ -91,7 +91,7 @@ jobs:
           echo "digest=$DIGEST" >> "$GITHUB_OUTPUT"
 
   test:
-    needs: [validate, compute-pin]
+    needs: [validate, compute-ros-pin]
     env:
       OPENAI_API_KEY: ${{ secrets.OPENAI_API_KEY }}
       ANTHROPIC_API_KEY: ${{ secrets.ANTHROPIC_API_KEY }}
@@ -108,7 +108,7 @@ jobs:
       # Digest pinned via docker/ros-dev-pin/Dockerfile (Dependabot-managed).
       # Mirrored in ci.yml — both workflows use the same digest so any image
       # regression surfaces in CI before it reaches the release run.
-      image: ghcr.io/dimensionalos/ros-dev@${{ needs.compute-pin.outputs.digest }}
+      image: ghcr.io/dimensionalos/ros-dev@${{ needs.compute-ros-pin.outputs.digest }}
       # Expose the host's NVIDIA driver and GPU into the container. Needs
       # nvidia-container-toolkit installed on the runner (configured by ops);
       # without it, container start fails with `could not select device driver`.
