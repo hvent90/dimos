@@ -352,7 +352,8 @@ xarm_perception_sim = autoconnect(
         # The perception module builds its own clouds from depth; nothing subscribes
         # to the sim's pointcloud port (GraspGen is unused — pick uses heuristics).
         # Disabling drops a 5Hz voxelized full-office-scene cloud (the main mem/CPU sink).
-        enable_pointcloud=False,
+        enable_pointcloud=True,
+        fps=5,
     ),
     # Match the real-hardware xarm_perception thresholds: promotion reachable in a
     # short warm-up (3 vs 6 frames), tighter dedup so neighbours don't merge, and a
@@ -372,7 +373,11 @@ xarm_perception_sim = autoconnect(
         hardware=[_xarm7_sim_cfg.to_hardware_component()],
         tasks=[_xarm7_sim_cfg.to_task_config()],
     ),
-    RerunBridgeModule.blueprint(blueprint=_xarm_perception_rerun_blueprint),
+    RerunBridgeModule.blueprint(
+        blueprint=_xarm_perception_rerun_blueprint,
+        memory_limit="5%",
+        max_hz={"world/color_image": 2.0, "world/depth_image": 2.0, "world/pointcloud": 2.0},
+    ),
 ).transports(
     {
         ("joint_state", JointState): LCMTransport("/coordinator/joint_state", JointState),

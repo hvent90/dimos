@@ -116,6 +116,22 @@ def run_health_check(timeout_s: float = 30.0) -> dict[str, Any]:
             "warnings": [f"no response from manipulation server within {timeout_s:.0f}s"],
         }
 
+    # Clear a FAULT before staging: a prior failed motion can leave the arm FAULTed,
+    # and go_home/scan can't move it until it is reset to IDLE.
+    if state == "FAULT":
+        try:
+            reset = normalize_skill_result(client.reset())
+            warnings.append(
+                "module was FAULT; reset() cleared it"
+                if reset["success"]
+                else f"module was FAULT; reset() did not succeed: {reset['message']}"
+            )
+        except Exception as exc:
+            warnings.append(f"reset() raised: {exc!r}")
+        refreshed = _probe_state(client, 5.0)
+        if refreshed is not None:
+            state = refreshed
+
     # Stage the arm before scanning (mirror BenchmarkRunner.prepare()): home to the
     # observation pose, capture it as the go_init target, then dwell. Never raises —
     # a staging failure degrades to a warning so the dict stays clean.
