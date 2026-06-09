@@ -292,20 +292,26 @@ class Go2WholeBodyConnection(Module):
 
     @rpc
     def stop(self) -> None:
-        # Graceful sit-down via sport mode BEFORE we stop the publish loop.
-        # Order matters: we need the publish loop still running so the
-        # firmware sees continuous LowCmd while we re-acquire sport mode
-        # (otherwise it may decide we're dead and disable motors itself).
-        # The actual sit motion is driven by sport mode, not us - we just
-        # release authority back to it for the duration.
-        if self.config.sit_down_on_stop:
-            self._sit_down_via_sport_mode()
-
+        # Stop publish loop FIRST, then re-acquire sport mode. Earlier we
+        # tried the reverse (keep publishing through the handoff so motors
+        # wouldn't go limp), but MotionSwitcher.SelectMode returns code
+        # 7002 ("function not registered" / refused) while low-level
+        # control is still publishing - firmware won't allow sport to
+        # take over while we're competing for the same bus. So: stop our
+        # publisher, give firmware a moment to detect the silence and
+        # release low-level lock, then SelectMode + StandDown via sport.
+        # During the silent window (~500ms) motors stay where they are
+        # under their last lowcmd's PD gains; sport StandUp/Down resumes
+        # smooth motion immediately after.
         self._stop_event.set()
         self._low_cmd_ready.clear()
         if self._publish_thread is not None and self._publish_thread.is_alive():
             self._publish_thread.join(timeout=DEFAULT_THREAD_JOIN_TIMEOUT)
             self._publish_thread = None
+
+        if self.config.sit_down_on_stop:
+            time.sleep(0.5)  # firmware detects low-level released
+            self._sit_down_via_sport_mode()
 
         # Final safe-stop lowcmd: disable every motor (mode=0x00, kp=kd=0,
         # tau=0). Without this, the motors freeze stiffly at whatever the
@@ -600,6 +606,15 @@ class Go2WholeBodyConnection(Module):
             # CheckMode result (it sometimes returns '' even when we need to
             # re-acquire). Goal is "be in mcf", not "switch from current".
             # 'mcf' = modern Go2 sport controller, 'normal' = older firmware.
+            # Pre-init SportClient BEFORE SelectMode so we can fire
+            # StandDown() immediately - otherwise sport mode's default
+            # behavior on activation is to drive to a stand pose, which
+            # makes the robot stand up briefly before sitting. Pre-init
+            # + minimal sleep lets us preempt that transient.
+            client = SportClient()
+            client.SetTimeout(_MSC_RPC_TIMEOUT_S)
+            client.Init()
+
             logger.info("Re-acquiring sport mode for graceful shutdown...")
             code, _ = msc.SelectMode("mcf")
             if code != 0:
@@ -612,25 +627,12 @@ class Go2WholeBodyConnection(Module):
                 )
                 return
 
-            # Give the firmware time to bring sport mode up. This step can be
-            # slow because we're transferring authority back to the sport
-            # controller while our publish loop is still sending low-level
-            # commands at 500 Hz.
-            time.sleep(2.0)
-            _status, result = msc.CheckMode()
-            current = result.get("name") if result else None
-            if not current:
-                logger.warning(
-                    "Sport mode did not come back after SelectMode; "
-                    "skipping StandDown(). Robot will fall through to "
-                    "safe-stop (limp from current pose)."
-                )
-                return
+            # Brief sleep - just enough for sport mode controller to wake.
+            # Longer than this and sport mode's default stand pose kicks in
+            # and the robot stands up before our StandDown() can preempt.
+            time.sleep(0.3)
 
-            logger.info(f"Sport mode '{current}' active - sending StandDown()")
-            client = SportClient()
-            client.SetTimeout(_MSC_RPC_TIMEOUT_S)
-            client.Init()
+            logger.info("Sport mode active - sending StandDown()")
             code = client.StandDown()
             if code != 0:
                 logger.warning(

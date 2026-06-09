@@ -137,16 +137,15 @@ go2_tripod_real = autoconnect(
                     "pre_ramp_hold_seconds": 2.0,
                     "activation_ramp_seconds": 3.0,
                     "post_ramp_hold_seconds": 2.0,
-                    # Per-joint per-tick delta clamp (rad). At 5Hz with
-                    # 0.15 rad/tick = 0.75 rad/s max joint speed - well
-                    # below training's ~6 rad/s peaks but plenty to walk.
-                    # Scale up as you climb the tick_rate ladder so the
-                    # effective rad/s stays in policy distribution:
-                    #   5  Hz -> 0.15 (= 0.75 rad/s) safe bring-up
-                    #   10 Hz -> 0.15 (= 1.5 rad/s)
-                    #   25 Hz -> 0.20 (= 5.0 rad/s)
-                    #   50 Hz -> 0.30 (= 15 rad/s, mostly inactive)
-                    "max_joint_delta_rad": 0.15,
+                    # DISABLED for now (0.0 = off). Earlier run showed
+                    # silently capping the command causes wind-up: the
+                    # policy stores last_action assuming full tracking,
+                    # the obs's last_actions term drifts out-of-dist,
+                    # the policy starts asking for ±2 rad deltas. Fix
+                    # later by also clamping _last_action (reconcile
+                    # with what we actually sent), but for now trust
+                    # the policy fully.
+                    "max_joint_delta_rad": 0.0,
                 },
             ),
         ],
