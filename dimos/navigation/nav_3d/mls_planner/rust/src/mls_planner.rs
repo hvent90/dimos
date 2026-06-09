@@ -37,6 +37,22 @@ pub struct Config {
     pub node_wall_buffer_m: f32,
     #[validate(range(min = 0.0))]
     pub node_step_threshold_m: f32,
+    /// Hard clearance floor: cells closer than this to a wall are impassable.
+    #[serde(default = "default_robot_radius_m")]
+    #[validate(range(min = 0.0))]
+    pub robot_radius_m: f32,
+    /// Strength of the soft wall penalty at the radius, decaying with distance.
+    #[serde(default = "default_wall_penalty_weight")]
+    #[validate(range(min = 0.0))]
+    pub wall_penalty_weight: f32,
+}
+
+fn default_robot_radius_m() -> f32 {
+    0.2
+}
+
+fn default_wall_penalty_weight() -> f32 {
+    4.0
 }
 
 /// Wall-clock cost in ms of each stage of the most recent map update.
@@ -208,6 +224,8 @@ impl Planner {
             config.voxel_size,
             config.node_spacing_m,
             config.node_wall_buffer_m,
+            config.robot_radius_m,
+            config.wall_penalty_weight,
             &mut self.graph.wall_state,
             &mut self.graph.nodes,
         );
@@ -382,6 +400,8 @@ impl Planner {
             config.voxel_size,
             config.node_spacing_m,
             config.node_wall_buffer_m,
+            config.robot_radius_m,
+            config.wall_penalty_weight,
             &mut self.graph.wall_state,
             &mut self.graph.nodes,
         );
@@ -412,6 +432,7 @@ impl Planner {
             config.robot_height,
             config.node_spacing_m,
             config.node_step_threshold_m,
+            config.node_wall_buffer_m,
         )
     }
 
@@ -427,6 +448,20 @@ impl Planner {
             }
         }
         out
+    }
+
+    /// Surface cells paired with their wall clearance, the distance to the
+    /// nearest untraversable edge. Unreached cells report +inf.
+    pub fn surface_clearance(&self) -> Vec<(VoxelKey, f32)> {
+        let dist = &self.graph.wall_state.dist;
+        self.graph
+            .cells
+            .ids()
+            .map(|id| {
+                let d = dist.get(id as usize).copied().unwrap_or(f32::INFINITY);
+                (self.graph.cells.coord(id), d)
+            })
+            .collect()
     }
 
     pub fn voxel_count(&self) -> usize {
@@ -495,6 +530,8 @@ mod region_tests {
             node_spacing_m: 1.0,
             node_wall_buffer_m: 0.3,
             node_step_threshold_m: 0.25,
+            robot_radius_m: 0.0,
+            wall_penalty_weight: 1.0,
         }
     }
 
@@ -766,5 +803,68 @@ mod region_tests {
             "stream did not reconstruct the map"
         );
         assert_plans_equivalent(&full, &region, &cfg);
+    }
+
+    /// Floor split by a wall with a narrow 1-cell gap near x=1.0 and a wide gap
+    /// near x=4.5. Start and goal straddle the narrow gap.
+    fn two_gap_world() -> Vec<(f32, f32, f32)> {
+        let vs = 0.1_f32;
+        let half = vs * 0.5;
+        let mut pts = Vec::new();
+        for ix in 0..60 {
+            for iy in 0..40 {
+                pts.push((ix as f32 * vs + half, iy as f32 * vs + half, half));
+            }
+        }
+        for ix in 0..60 {
+            if ix == 10 || (40..50).contains(&ix) {
+                continue;
+            }
+            for iz in 0..7 {
+                pts.push((
+                    ix as f32 * vs + half,
+                    20.0 * vs + half,
+                    iz as f32 * vs + half,
+                ));
+            }
+        }
+        pts
+    }
+
+    /// The hard clearance floor must make the narrow gap impassable, forcing
+    /// the longer detour through the wide gap.
+    #[test]
+    fn hard_clearance_floor_avoids_narrow_gap() {
+        let mut cfg = test_config();
+        cfg.node_spacing_m = 0.8;
+        let pts = two_gap_world();
+        let start = (1.0, 1.0, 0.05);
+        let goal = (1.0, 3.5, 0.05);
+        let max_x = |w: &[(f32, f32, f32)]| w.iter().map(|p| p.0).fold(f32::MIN, f32::max);
+
+        // No floor: the shortest route slips straight through the narrow gap.
+        cfg.robot_radius_m = 0.0;
+        let mut open = Planner::default();
+        open.update_global_map(&pts, &cfg);
+        let wp_open = open.plan(start, goal, &cfg).expect("open plan exists");
+
+        // Floor wider than the narrow gap: it is impassable, so detour wide.
+        cfg.robot_radius_m = 0.2;
+        let mut safe = Planner::default();
+        safe.update_global_map(&pts, &cfg);
+        let wp_safe = safe.plan(start, goal, &cfg).expect("safe plan exists");
+
+        assert!(max_x(&wp_open) < 2.0, "open path should use the near gap");
+        assert!(
+            max_x(&wp_safe) > 3.5,
+            "safe path should detour to the wide gap: max_x={}",
+            max_x(&wp_safe)
+        );
+        assert!(
+            path_len(&wp_safe) > path_len(&wp_open) * 1.5,
+            "safe route should be substantially longer: {} vs {}",
+            path_len(&wp_safe),
+            path_len(&wp_open)
+        );
     }
 }

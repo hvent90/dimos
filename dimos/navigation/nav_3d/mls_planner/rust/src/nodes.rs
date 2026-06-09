@@ -22,11 +22,14 @@ pub struct NodeData {
 ///
 /// Runs multi source dijkstra using edges as sources, then distribute nodes
 /// using a grid based NMS.
+#[allow(clippy::too_many_arguments)]
 pub fn place_nodes(
     cells: &mut SurfaceCells,
     voxel_size: f32,
     node_spacing_m: f32,
     node_wall_buffer_m: f32,
+    robot_radius_m: f32,
+    wall_penalty_weight: f32,
     state: &mut DijkstraState,
     out_nodes: &mut Vec<NodeData>,
 ) {
@@ -39,9 +42,10 @@ pub fn place_nodes(
     collect_wall_adjacent_cells(cells, &mut wall_seeds);
     dijkstra(cells, &wall_seeds, state, Weight::Base);
 
+    let node_floor = node_wall_buffer_m.max(robot_radius_m);
     let candidates: Vec<CellId> = cells
         .ids()
-        .filter(|&id| state.dist[id as usize] >= node_wall_buffer_m)
+        .filter(|&id| state.dist[id as usize] >= node_floor)
         .collect();
     place_from_candidates(
         cells,
@@ -53,7 +57,13 @@ pub fn place_nodes(
         out_nodes,
     );
 
-    apply_wall_safe_penalty(cells, &state.dist, node_wall_buffer_m);
+    apply_wall_safe_penalty(
+        cells,
+        &state.dist,
+        node_wall_buffer_m,
+        robot_radius_m,
+        wall_penalty_weight,
+    );
 }
 
 /// Sort candidates by descending wall distance, thin them with NMS against the
@@ -86,12 +96,15 @@ fn place_from_candidates(
 /// Regional counterpart to place_nodes: recompute the wall-distance field and
 /// node placement inside the window, keeping cached nodes outside it as NMS
 /// seeds so spacing holds across the seam.
+#[allow(clippy::too_many_arguments)]
 pub fn place_nodes_region(
     cells: &mut SurfaceCells,
     window: &AHashSet<CellId>,
     voxel_size: f32,
     node_spacing_m: f32,
     node_wall_buffer_m: f32,
+    robot_radius_m: f32,
+    wall_penalty_weight: f32,
     wall_state: &mut DijkstraState,
     nodes: &mut Vec<NodeData>,
 ) {
@@ -102,10 +115,11 @@ pub fn place_nodes_region(
     nodes.retain(|n| cells.is_live(n.cell_id) && !window.contains(&n.cell_id));
     let kept: Vec<CellId> = nodes.iter().map(|n| n.cell_id).collect();
 
+    let node_floor = node_wall_buffer_m.max(robot_radius_m);
     let candidates: Vec<CellId> = window
         .iter()
         .copied()
-        .filter(|&id| cells.is_live(id) && wall_state.dist[id as usize] >= node_wall_buffer_m)
+        .filter(|&id| cells.is_live(id) && wall_state.dist[id as usize] >= node_floor)
         .collect();
     place_from_candidates(
         cells,
@@ -117,7 +131,14 @@ pub fn place_nodes_region(
         nodes,
     );
 
-    apply_wall_safe_penalty_region(cells, &wall_state.dist, node_wall_buffer_m, window);
+    apply_wall_safe_penalty_region(
+        cells,
+        &wall_state.dist,
+        node_wall_buffer_m,
+        robot_radius_m,
+        wall_penalty_weight,
+        window,
+    );
 }
 
 /// Wall-adjacency over a cell subset, matching collect_wall_adjacent_cells.
@@ -159,6 +180,8 @@ fn apply_wall_safe_penalty_region(
     cells: &mut SurfaceCells,
     dist: &[f32],
     buffer_m: f32,
+    robot_radius_m: f32,
+    weight: f32,
     window: &AHashSet<CellId>,
 ) {
     let mut affected: AHashSet<CellId> = AHashSet::with_capacity(window.len() * 2);
@@ -169,7 +192,14 @@ fn apply_wall_safe_penalty_region(
         }
     }
     for id in affected {
-        scale_edges(cells.edges_mut(id), id, dist, buffer_m);
+        scale_edges(
+            cells.edges_mut(id),
+            id,
+            dist,
+            buffer_m,
+            robot_radius_m,
+            weight,
+        );
     }
 }
 
@@ -247,29 +277,50 @@ fn nms_grid(
 }
 
 /// Scale every edge cost by the average of its endpoint penalties, which
-/// pushes shortest paths away from walls. Unreached cells have
-/// dist == +INFINITY which collapses to penalty 1.0.
-fn apply_wall_safe_penalty(cells: &mut SurfaceCells, dist: &[f32], buffer_m: f32) {
+/// pushes shortest paths away from walls and forbids sub-radius cells.
+/// Unreached cells have dist == +INFINITY which collapses to penalty 1.0.
+fn apply_wall_safe_penalty(
+    cells: &mut SurfaceCells,
+    dist: &[f32],
+    buffer_m: f32,
+    robot_radius_m: f32,
+    weight: f32,
+) {
     let mut edge_lists: Vec<(CellId, &mut Vec<Edge>)> = cells.iter_edges_mut().collect();
     edge_lists.par_iter_mut().for_each(|(src, edges)| {
-        scale_edges(edges, *src, dist, buffer_m);
+        scale_edges(edges, *src, dist, buffer_m, robot_radius_m, weight);
     });
 }
 
 /// Rescale one cell's outgoing edges from base_cost. Idempotent, so a regional
 /// repass cannot compound the penalty.
 #[inline]
-fn scale_edges(edges: &mut [Edge], src: CellId, dist: &[f32], buffer_m: f32) {
-    let pu = penalty_of(dist[src as usize], buffer_m);
+fn scale_edges(
+    edges: &mut [Edge],
+    src: CellId,
+    dist: &[f32],
+    buffer_m: f32,
+    robot_radius_m: f32,
+    weight: f32,
+) {
+    let pu = penalty_of(dist[src as usize], buffer_m, robot_radius_m, weight);
     for edge in edges.iter_mut() {
-        let pv = penalty_of(dist[edge.dest as usize], buffer_m);
+        let pv = penalty_of(dist[edge.dest as usize], buffer_m, robot_radius_m, weight);
         edge.cost = edge.base_cost * (pu + pv) / 2.0;
     }
 }
 
+/// Cost multiplier for a cell at wall distance d. Cells closer than the robot
+/// radius are impassable. Beyond it the penalty decays smoothly from
+/// 1 + weight at the radius toward 1, with length scale buffer_m, so paths are
+/// pushed toward open space with no hard cap and no flat zone.
 #[inline]
-fn penalty_of(d: f32, buffer_m: f32) -> f32 {
-    (1.0 + (buffer_m - d) / buffer_m).max(1.0)
+fn penalty_of(d: f32, buffer_m: f32, robot_radius_m: f32, weight: f32) -> f32 {
+    if d < robot_radius_m {
+        return f32::INFINITY;
+    }
+    let scale = buffer_m.max(1e-3);
+    1.0 + weight * (-(d - robot_radius_m) / scale).exp()
 }
 
 #[cfg(test)]
@@ -302,7 +353,7 @@ mod tests {
         let mut sc = build_cells(&open_patch(0, 0, 10), 2);
         let mut state = DijkstraState::default();
         let mut nodes = Vec::new();
-        place_nodes(&mut sc, VOXEL, 1.0, 0.3, &mut state, &mut nodes);
+        place_nodes(&mut sc, VOXEL, 1.0, 0.3, 0.0, 1.0, &mut state, &mut nodes);
         assert!(!nodes.is_empty());
         for n in &nodes {
             let (ix, iy, _) = sc.coord(n.cell_id);
@@ -321,7 +372,7 @@ mod tests {
         let mut sc = build_cells(&cells_in, 2);
         let mut state = DijkstraState::default();
         let mut nodes = Vec::new();
-        place_nodes(&mut sc, VOXEL, 1.0, 0.3, &mut state, &mut nodes);
+        place_nodes(&mut sc, VOXEL, 1.0, 0.3, 0.0, 1.0, &mut state, &mut nodes);
         assert!(!nodes.is_empty());
     }
 
@@ -332,7 +383,7 @@ mod tests {
         let mut sc = build_cells(&cells_in, 2);
         let mut state = DijkstraState::default();
         let mut nodes = Vec::new();
-        place_nodes(&mut sc, VOXEL, 1.0, 0.3, &mut state, &mut nodes);
+        place_nodes(&mut sc, VOXEL, 1.0, 0.3, 0.0, 1.0, &mut state, &mut nodes);
         assert!(nodes.len() >= 2);
         for i in 0..nodes.len() {
             for j in (i + 1)..nodes.len() {
@@ -353,7 +404,7 @@ mod tests {
         let mut sc = build_cells(&cells_in, 2);
         let mut state = DijkstraState::default();
         let mut nodes = Vec::new();
-        place_nodes(&mut sc, VOXEL, 1.0, 0.3, &mut state, &mut nodes);
+        place_nodes(&mut sc, VOXEL, 1.0, 0.3, 0.0, 1.0, &mut state, &mut nodes);
         let id0 = sc.id((0, 0, 0)).unwrap();
         let outbound = sc.neighbors(id0);
         assert!(!outbound.is_empty());

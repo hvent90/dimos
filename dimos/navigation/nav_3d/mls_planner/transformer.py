@@ -97,7 +97,7 @@ class MLSPlan(Transformer[PointCloud2, Path]):
                 tags={
                     **obs.tags,
                     "voxel_map": planner.voxel_map(),
-                    "surface_map": planner.surface_map(),
+                    "surface_clearance": planner.surface_clearance_map(),
                     "nodes": planner.nodes(),
                     "node_edges": planner.node_edges(),
                     "start": start,

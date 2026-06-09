@@ -145,6 +145,18 @@ def _log_path(path: Path, entity: str) -> None:
     rr.log(entity, rr.LineStrips3D([points], colors=[[0, 255, 0]], radii=0.05))
 
 
+def _clearance_colors(clearance: np.ndarray, clamp_m: float) -> np.ndarray:
+    """Map per-cell wall clearance to a blue ramp, dark navy at low clearance
+    through light blue at high. The scale is clamped so the gradient resolves
+    near walls. Open cells with large or infinite clearance saturate light."""
+    norm = np.nan_to_num(clearance / clamp_m, nan=1.0, posinf=1.0)
+    norm = np.clip(norm, 0.0, 1.0)
+    blocked = np.array([4.0, 8.0, 48.0])
+    clear = np.array([150.0, 200.0, 255.0])
+    rgb = blocked + norm[:, None] * (clear - blocked)
+    return rgb.astype(np.uint8)
+
+
 def main(
     dataset: str = typer.Argument(..., help="Dataset .db: bare name (cwd or data/) or path"),
     out: FsPath | None = typer.Option(
@@ -161,8 +173,19 @@ def main(
     max_range: float = typer.Option(30.0, "--max-range", help="Max ray cast distance (m)"),
     ray_subsample: int = typer.Option(1, "--ray-subsample", help="Keep every Nth ray"),
     emit_every: int = typer.Option(1, "--emit-every", help="Replan every N lidar frames"),
-    robot_height: float = typer.Option(0.3, "--robot-height", help="Robot height (m)"),
+    robot_height: float = typer.Option(1.0, "--robot-height", help="Robot height (m)"),
     node_spacing: float = typer.Option(1.0, "--node-spacing", help="Graph node spacing (m)"),
+    node_wall_buffer: float = typer.Option(
+        0.3, "--node-wall-buffer", help="Min wall clearance for nodes and smoothing (m)"
+    ),
+    robot_radius: float = typer.Option(
+        0.2,
+        "--robot-radius",
+        help="Hard clearance floor; cells closer to a wall are impassable (m)",
+    ),
+    wall_penalty_weight: float = typer.Option(
+        4.0, "--wall-penalty-weight", help="Soft wall-penalty strength at the robot radius"
+    ),
     goal: tuple[float, float, float] = typer.Option(
         (0.0, 0.0, 0.0),
         "--goal",
@@ -172,6 +195,9 @@ def main(
         False, "--live", help="Also spawn the rerun viewer when --out is set"
     ),
     render_voxel: float = typer.Option(0.05, "--render-voxel", help="Rerun voxel render size (m)"),
+    clearance_clamp: float = typer.Option(
+        1.0, "--clearance-clamp", help="Max clearance (m) for the surface color scale"
+    ),
     plot_out: FsPath | None = typer.Option(
         None, "--plot-out", help="Write an SVG timing/size plot here when the run ends"
     ),
@@ -221,6 +247,9 @@ def main(
                 voxel_size=voxel_size,
                 robot_height=robot_height,
                 node_spacing_m=node_spacing,
+                node_wall_buffer_m=node_wall_buffer,
+                robot_radius_m=robot_radius,
+                wall_penalty_weight=wall_penalty_weight,
             )
         )
 
@@ -241,14 +270,18 @@ def main(
                 if voxel_map.size:
                     rr.log(
                         "world/voxel_map",
-                        rr.Points3D(voxel_map, colors=[[80, 80, 80]], radii=render_voxel / 2),
+                        rr.Points3D(voxel_map, colors=[[180, 125, 125]], radii=render_voxel / 2),
                     )
 
-                surface = obs.tags["surface_map"]
+                surface = obs.tags["surface_clearance"]
                 if surface.size:
                     rr.log(
                         "world/surface_map",
-                        rr.Points3D(surface, colors=[[120, 120, 200]], radii=render_voxel / 2),
+                        rr.Points3D(
+                            surface[:, :3],
+                            colors=_clearance_colors(surface[:, 3], clearance_clamp),
+                            radii=render_voxel / 2,
+                        ),
                     )
 
                 nodes = obs.tags["nodes"]

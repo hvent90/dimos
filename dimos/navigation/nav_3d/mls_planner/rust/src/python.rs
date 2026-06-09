@@ -21,6 +21,7 @@ pub struct MLSPlanner {
 #[pymethods]
 impl MLSPlanner {
     #[new]
+    #[allow(clippy::too_many_arguments)]
     #[pyo3(signature = (
         *,
         voxel_size,
@@ -30,6 +31,8 @@ impl MLSPlanner {
         node_spacing_m = 1.0,
         node_wall_buffer_m = 0.3,
         node_step_threshold_m = 0.25,
+        robot_radius_m = 0.2,
+        wall_penalty_weight = 4.0,
     ))]
     fn new(
         voxel_size: f32,
@@ -39,6 +42,8 @@ impl MLSPlanner {
         node_spacing_m: f32,
         node_wall_buffer_m: f32,
         node_step_threshold_m: f32,
+        robot_radius_m: f32,
+        wall_penalty_weight: f32,
     ) -> PyResult<Self> {
         let config = Config {
             world_frame: String::new(),
@@ -49,6 +54,8 @@ impl MLSPlanner {
             node_spacing_m,
             node_wall_buffer_m,
             node_step_threshold_m,
+            robot_radius_m,
+            wall_penalty_weight,
         };
         config
             .validate()
@@ -147,6 +154,28 @@ impl MLSPlanner {
         let n = positions.len() / 3;
         Array2::from_shape_vec((n, 3), positions)
             .expect("3 elements pushed per cell")
+            .into_pyarray(py)
+    }
+
+    /// Surface cells as `(M, 4)` float32 rows `[x, y, z, clearance]`, where
+    /// clearance is the distance to the nearest untraversable edge.
+    fn surface_clearance_map<'py>(&self, py: Python<'py>) -> Bound<'py, PyArray2<f32>> {
+        let voxel_size = self.config.voxel_size;
+        let cells = self.planner.surface_clearance();
+        let values: Vec<f32> = py.allow_threads(|| {
+            let mut out: Vec<f32> = Vec::with_capacity(cells.len() * 4);
+            for ((ix, iy, iz), clearance) in cells {
+                let (x, y, z) = surface_point_xyz(ix, iy, iz, voxel_size);
+                out.push(x);
+                out.push(y);
+                out.push(z);
+                out.push(clearance);
+            }
+            out
+        });
+        let n = values.len() / 4;
+        Array2::from_shape_vec((n, 4), values)
+            .expect("4 elements pushed per cell")
             .into_pyarray(py)
     }
 

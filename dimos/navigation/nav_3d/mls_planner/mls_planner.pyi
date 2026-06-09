@@ -28,6 +28,8 @@ class MLSPlanner:
         node_spacing_m: float = 1.0,
         node_wall_buffer_m: float = 0.3,
         node_step_threshold_m: float = 0.25,
+        robot_radius_m: float = 0.2,
+        wall_penalty_weight: float = 4.0,
     ) -> None: ...
     def update_global_map(self, points: NDArray[np.float32]) -> None:
         """Voxelize the map and rebuild surfaces, nodes, and edges. Shape (N, 3) float32."""
@@ -49,6 +51,14 @@ class MLSPlanner:
 
     def surface_map(self) -> NDArray[np.float32]:
         """Standable surface cells as (M, 3) float32 centers."""
+        ...
+
+    def surface_clearance_map(self) -> NDArray[np.float32]:
+        """Surface cells as (M, 4) float32 rows of [x, y, z, clearance].
+
+        Clearance is the horizontal distance to the nearest untraversable edge.
+        Unreached cells report +inf.
+        """
         ...
 
     def nodes(self) -> NDArray[np.float32]:

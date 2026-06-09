@@ -39,6 +39,8 @@ class MLSPlannerNativeConfig(NativeModuleConfig):
     node_spacing_m: float = 1.0
     node_wall_buffer_m: float = 0.3
     node_step_threshold_m: float = 0.25
+    robot_radius_m: float = 0.2
+    wall_penalty_weight: float = 4.0
 
 
 class MLSPlannerNative(NativeModule):

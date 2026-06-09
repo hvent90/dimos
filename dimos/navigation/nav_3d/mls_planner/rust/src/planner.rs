@@ -76,6 +76,7 @@ fn best_iz_in_column(
 /// Plan path from start pose to goal pose using the node graph.
 /// Returns none if either of the poses can't be snapped to surface or if
 /// there is no valid path.
+#[allow(clippy::too_many_arguments)]
 pub fn plan(
     plg: &PlannerGraph,
     start_pose: (f32, f32, f32),
@@ -84,6 +85,7 @@ pub fn plan(
     z_tolerance_m: f32,
     node_spacing_m: f32,
     node_step_threshold_m: f32,
+    node_wall_buffer_m: f32,
 ) -> Option<Vec<(f32, f32, f32)>> {
     let start_coord =
         snap_pose_to_cell(&plg.surface_lookup, start_pose, voxel_size, z_tolerance_m)?;
@@ -117,7 +119,7 @@ pub fn plan(
     let smooth_tol_cells = ((node_step_threshold_m / voxel_size).round() as i32).max(1);
 
     let cells = assemble_cells(plg, &node_seq, &lead_in, &goal_segment);
-    let cells = string_pull(plg, &cells, smooth_tol_cells);
+    let cells = string_pull(plg, &cells, smooth_tol_cells, node_wall_buffer_m);
     Some(cells_to_waypoints(
         plg, &cells, start_pose, goal_pose, voxel_size,
     ))
@@ -333,8 +335,10 @@ fn cells_to_waypoints(
 }
 
 /// Shortcut runs of cells with straight on-surface segments, keeping the
-/// farthest cell in line of sight from each anchor.
-fn string_pull(plg: &PlannerGraph, cells: &[CellId], tol_cells: i32) -> Vec<CellId> {
+/// farthest cell in line of sight from each anchor. A shortcut is only taken
+/// when it never passes closer than buffer_m to a wall, so smoothing cannot
+/// erode the wall clearance the penalized routing built in.
+fn string_pull(plg: &PlannerGraph, cells: &[CellId], tol_cells: i32, buffer_m: f32) -> Vec<CellId> {
     if cells.len() <= 2 {
         return cells.to_vec();
     }
@@ -346,7 +350,7 @@ fn string_pull(plg: &PlannerGraph, cells: &[CellId], tol_cells: i32) -> Vec<Cell
         let mut j = anchor + 1;
         while j < cells.len() {
             let coord = plg.cells.coord(cells[j]);
-            if !los_on_surface(&plg.surface_lookup, anchor_coord, coord, tol_cells) {
+            if !los_on_surface(plg, anchor_coord, coord, tol_cells, buffer_m) {
                 break;
             }
             last_ok = j;
@@ -359,13 +363,15 @@ fn string_pull(plg: &PlannerGraph, cells: &[CellId], tol_cells: i32) -> Vec<Cell
 }
 
 /// True if every column the segment crosses holds a surface cell within
-/// tol_cells of the interpolated segment height. Checks per-column proximity
-/// only, not inter-column step connectivity.
+/// tol_cells of the interpolated segment height, and that cell stays at least
+/// buffer_m from the nearest wall. Cells without a wall-distance value are
+/// treated as open, so an unpopulated field reduces to a pure on-surface test.
 fn los_on_surface(
-    surface_lookup: &SurfaceLookup,
+    plg: &PlannerGraph,
     a: VoxelKey,
     b: VoxelKey,
     tol_cells: i32,
+    buffer_m: f32,
 ) -> bool {
     let (dx, dy, dz) = (b.0 - a.0, b.1 - a.1, b.2 - a.2);
     let samples = dx.abs().max(dy.abs()) * 2;
@@ -383,14 +389,33 @@ fn los_on_surface(
         last_ix = ix;
         last_iy = iy;
         let iz_line = a.2 as f32 + t * dz as f32;
-        let Some(zs) = surface_lookup.get(&(ix, iy)) else {
+        let Some(zs) = plg.surface_lookup.get(&(ix, iy)) else {
             return false;
         };
-        if !zs
-            .iter()
-            .any(|&iz| (iz as f32 - iz_line).abs() <= tol_cells as f32)
-        {
+        // Surface cell in this column nearest the interpolated segment height.
+        let mut nearest: Option<(f32, i32)> = None;
+        for &iz in zs {
+            let d = (iz as f32 - iz_line).abs();
+            if nearest.is_none_or(|(bd, _)| d < bd) {
+                nearest = Some((d, iz));
+            }
+        }
+        let Some((d, iz)) = nearest else {
             return false;
+        };
+        if d > tol_cells as f32 {
+            return false;
+        }
+        if let Some(id) = plg.cells.id((ix, iy, iz)) {
+            let wall_dist = plg
+                .wall_state
+                .dist
+                .get(id as usize)
+                .copied()
+                .unwrap_or(f32::INFINITY);
+            if wall_dist < buffer_m {
+                return false;
+            }
         }
     }
     true
@@ -469,7 +494,7 @@ mod tests {
         start: (f32, f32, f32),
         goal: (f32, f32, f32),
     ) -> Option<Vec<(f32, f32, f32)>> {
-        plan(plg, start, goal, VOXEL, Z_TOL, 1.0, 0.25)
+        plan(plg, start, goal, VOXEL, Z_TOL, 1.0, 0.25, 0.3)
     }
 
     #[test]
@@ -574,10 +599,11 @@ mod tests {
         for pair in wp[1..wp.len() - 1].windows(2) {
             assert!(
                 los_on_surface(
-                    &plg.surface_lookup,
+                    &plg,
                     waypoint_key(&pair[0]),
                     waypoint_key(&pair[1]),
-                    tol
+                    tol,
+                    0.3
                 ),
                 "segment {:?} -> {:?} leaves the surface",
                 pair[0],
@@ -602,6 +628,33 @@ mod tests {
         assert!(
             interior <= 4,
             "path not straightened: {interior} interior points"
+        );
+    }
+
+    #[test]
+    fn string_pull_refuses_shortcut_through_sub_buffer_cell() {
+        // Straight strip: with open clearance the run collapses to its
+        // endpoints. Drop one mid cell below the buffer and the shortcut
+        // spanning it is refused, so the smoothed path retains that cell.
+        let mut plg = PlannerGraph::new();
+        build_surface_lookup(&strip(10), &mut plg.surface_lookup);
+        build_surface_cells(&mut plg.cells, &plg.surface_lookup, VOXEL, 2);
+        let path: Vec<CellId> = (0..10).map(|x| plg.cells.id((x, 0, 0)).unwrap()).collect();
+
+        plg.wall_state.dist = vec![f32::INFINITY; plg.cells.slot_capacity()];
+        let open = string_pull(&plg, &path, 1, 0.3);
+        assert_eq!(open.len(), 2, "open strip should collapse to its endpoints");
+
+        let mid = plg.cells.id((5, 0, 0)).unwrap();
+        plg.wall_state.dist[mid as usize] = 0.1;
+        let guarded = string_pull(&plg, &path, 1, 0.3);
+        assert!(
+            guarded.len() > 2,
+            "shortcut across a sub-buffer cell must be refused: {guarded:?}"
+        );
+        assert!(
+            guarded.contains(&mid),
+            "smoothed path must still traverse the low-clearance cell"
         );
     }
 
