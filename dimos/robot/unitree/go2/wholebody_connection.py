@@ -482,15 +482,31 @@ class Go2WholeBodyConnection(Module):
         msc.Init()
 
         _status, result = msc.CheckMode()
-        if not result or not result.get("name"):
-            logger.warning(
-                "stand_up_on_start requested but no sport mode active - "
-                "skipping StandUp(). Robot is in whatever pose it's in."
-            )
-            return
+        current = result.get("name") if result else None
 
-        sport_mode = result.get("name")
-        logger.info(f"Sport mode '{sport_mode}' active - sending StandUp()")
+        if not current:
+            # Sport mode wasn't active (likely a previous run released it
+            # without re-acquiring on shutdown). Bring it back so StandUp
+            # has authority to drive the motors.
+            logger.info("No sport mode active - acquiring 'normal' mode...")
+            code, _ = msc.SelectMode("normal")
+            if code != 0:
+                logger.warning(
+                    f"SelectMode('normal') returned non-zero code {code}; "
+                    f"continuing anyway but StandUp may not work."
+                )
+            # Give the firmware a beat to bring sport mode up.
+            time.sleep(1.5)
+            _status, result = msc.CheckMode()
+            current = result.get("name") if result else None
+            if not current:
+                logger.warning(
+                    "Sport mode still not active after SelectMode - "
+                    "skipping StandUp(). Robot will be in whatever pose it's in."
+                )
+                return
+
+        logger.info(f"Sport mode '{current}' active - sending StandUp()")
 
         client = SportClient()
         client.SetTimeout(_MSC_RPC_TIMEOUT_S)
