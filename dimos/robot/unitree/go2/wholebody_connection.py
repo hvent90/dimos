@@ -105,17 +105,20 @@ class Go2WholeBodyConnectionConfig(ModuleConfig):
     # robot doesn't slump under gravity while the coordinator boots / the
     # policy task is disarmed.
     #
-    # Defaults match what worked in the wholebody CLI testing:
-    #   hip=20/1  — low load, just keeps hip aligned
-    #   thigh=60/3 — supports body weight when knees are extended in stand
-    #   calf=40/2 — handles knee leverage
-    # Hip 0 = limp ("don't try to hold")
-    # Set all to 0 to fully disable startup hold.
+    # Defaults: light hold suitable for "robot just stands at whatever pose
+    # sport mode left it in". Body weight loads the thigh+calf; hip mostly
+    # idle. Errors are bounded - this is just holding a known-good pose,
+    # PD only fights gravity and small disturbances.
+    #   hip=20/1   — low load
+    #   thigh=30/1.5 — supports body weight at sport-stand
+    #   calf=40/2  — handles knee leverage; matches RL training
+    # Set all to 0 to fully disable startup hold (revert to limp until
+    # first real motor_command).
     startup_hold_kp_hip: float = 20.0
-    startup_hold_kp_thigh: float = 60.0
+    startup_hold_kp_thigh: float = 30.0
     startup_hold_kp_calf: float = 40.0
     startup_hold_kd_hip: float = 1.0
-    startup_hold_kd_thigh: float = 3.0
+    startup_hold_kd_thigh: float = 1.5
     startup_hold_kd_calf: float = 2.0
 
 
