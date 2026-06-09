@@ -88,15 +88,25 @@ class Go2WholeBodyConnectionConfig(ModuleConfig):
     release_sport_mode: bool = True
     publish_rate_hz: float = 500.0
     frame_id: str = "go2_base"
-    # PD gains used to "hold the startup pose" during the gap between sport
-    # mode release and the first real motor_command from the coordinator.
-    # After the first LowState arrives, the connection seeds _low_cmd with
-    # the current joint positions and these PD gains so the robot doesn't
-    # slump under gravity while the coordinator boots / the policy task is
-    # disarmed. Set to 0 to keep the original "limp until first command"
-    # behavior. Defaults match the training env's lighter joints.
-    startup_hold_kp: float = 20.0
-    startup_hold_kd: float = 1.0
+    # Per-joint-type PD gains used to "hold the startup pose" during the gap
+    # between sport mode release and the first real motor_command from the
+    # coordinator. After the first LowState arrives, the connection seeds
+    # _low_cmd with the current joint positions and these PD gains so the
+    # robot doesn't slump under gravity while the coordinator boots / the
+    # policy task is disarmed.
+    #
+    # Defaults match what worked in the wholebody CLI testing:
+    #   hip=20/1  — low load, just keeps hip aligned
+    #   thigh=60/3 — supports body weight when knees are extended in stand
+    #   calf=40/2 — handles knee leverage
+    # Hip 0 = limp ("don't try to hold")
+    # Set all to 0 to fully disable startup hold.
+    startup_hold_kp_hip: float = 20.0
+    startup_hold_kp_thigh: float = 60.0
+    startup_hold_kp_calf: float = 40.0
+    startup_hold_kd_hip: float = 1.0
+    startup_hold_kd_thigh: float = 3.0
+    startup_hold_kd_calf: float = 2.0
 
 
 class Go2WholeBodyConnection(Module):
@@ -195,22 +205,35 @@ class Go2WholeBodyConnection(Module):
         # real motor_command from the coordinator. Without this, motors are
         # enabled but kp=kd=0 -> no holding torque -> robot slumps under
         # gravity. Reads current joint positions from the first LowState.
-        if self.config.startup_hold_kp > 0.0:
+        #
+        # Per-joint-type gains: motor index order is FR/FL/RR/RL each as
+        # (hip, thigh, calf), so i%3 maps to joint type.
+        kp_per_type = (
+            float(self.config.startup_hold_kp_hip),
+            float(self.config.startup_hold_kp_thigh),
+            float(self.config.startup_hold_kp_calf),
+        )
+        kd_per_type = (
+            float(self.config.startup_hold_kd_hip),
+            float(self.config.startup_hold_kd_thigh),
+            float(self.config.startup_hold_kd_calf),
+        )
+        if any(k > 0.0 for k in kp_per_type):
             with self._lock:
                 assert self._low_state is not None
                 assert self._low_cmd is not None
-                kp = float(self.config.startup_hold_kp)
-                kd = float(self.config.startup_hold_kd)
                 for i in range(_NUM_MOTORS):
                     self._low_cmd.motor_cmd[i].mode = _MOTOR_MODE_ENABLE
                     self._low_cmd.motor_cmd[i].q = float(self._low_state.motor_state[i].q)
                     self._low_cmd.motor_cmd[i].dq = 0.0
-                    self._low_cmd.motor_cmd[i].kp = kp
-                    self._low_cmd.motor_cmd[i].kd = kd
+                    self._low_cmd.motor_cmd[i].kp = kp_per_type[i % 3]
+                    self._low_cmd.motor_cmd[i].kd = kd_per_type[i % 3]
                     self._low_cmd.motor_cmd[i].tau = 0.0
             logger.info(
                 f"Startup hold seeded at current joint positions "
-                f"(kp={self.config.startup_hold_kp}, kd={self.config.startup_hold_kd})"
+                f"(hip kp/kd={kp_per_type[0]}/{kd_per_type[0]}, "
+                f"thigh kp/kd={kp_per_type[1]}/{kd_per_type[1]}, "
+                f"calf kp/kd={kp_per_type[2]}/{kd_per_type[2]})"
             )
 
         logger.info("Go2WholeBodyConnection connected")
