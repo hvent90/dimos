@@ -88,6 +88,16 @@ class Go2WholeBodyConnectionConfig(ModuleConfig):
     release_sport_mode: bool = True
     publish_rate_hz: float = 500.0
     frame_id: str = "go2_base"
+    # Call SportClient.StandUp() before releasing sport mode. This brings
+    # the robot from whatever pose (lie/sit/partial-stand) to a known good
+    # standing pose using Unitree's tested onboard controller, THEN we
+    # take low-level control with the startup hold seeded at that pose.
+    # Avoids the boot-time drooping window.
+    stand_up_on_start: bool = True
+    # Seconds to wait for the StandUp motion to complete before releasing
+    # sport mode. Empirically ~3-4s. Bump if the robot is still moving
+    # when low-level takes over.
+    stand_up_settle_seconds: float = 4.0
     # Per-joint-type PD gains used to "hold the startup pose" during the gap
     # between sport mode release and the first real motor_command from the
     # coordinator. After the first LowState arrives, the connection seeds
@@ -177,6 +187,15 @@ class Go2WholeBodyConnection(Module):
         self._reset_motor_cmd_slots(_MOTOR_MODE_ENABLE)
 
         self._crc = CRC()
+
+        # Sport-mode StandUp before we release low-level control. This brings
+        # the robot from whatever pose it's in (lie/sit/partial-stand) to a
+        # stable standing pose using Unitree's tested onboard controller.
+        # Avoids the drooping window we get if we go straight to low-level.
+        # If sport mode isn't active (e.g. already released earlier), the
+        # call is logged and skipped.
+        if self.config.stand_up_on_start and self.config.release_sport_mode:
+            self._stand_up_via_sport_mode()
 
         if self.config.release_sport_mode:
             logger.info("Releasing sport mode...")
@@ -420,6 +439,57 @@ class Go2WholeBodyConnection(Module):
             self._low_cmd.motor_cmd[i].kp = 0
             self._low_cmd.motor_cmd[i].kd = 0
             self._low_cmd.motor_cmd[i].tau = 0
+
+    def _stand_up_via_sport_mode(self) -> None:
+        """Command StandUp via SportClient before releasing sport mode.
+
+        Brings the robot from whatever pose it's in (lying / sitting /
+        half-stand) to a stable standing pose using Unitree's onboard
+        sport controller. The robot is then handed off to low-level
+        control with the startup hold catching the standing pose.
+
+        No-op if no sport mode is active (i.e. someone already released
+        it before we got here). Logs but does not raise on RPC failure -
+        the operator should notice an unexpected pose at startup and
+        decide how to recover (likely Ctrl-C and try again).
+        """
+        from unitree_sdk2py.comm.motion_switcher.motion_switcher_client import (
+            MotionSwitcherClient,
+        )
+        from unitree_sdk2py.go2.sport.sport_client import SportClient
+
+        msc = MotionSwitcherClient()
+        msc.SetTimeout(_MSC_RPC_TIMEOUT_S)
+        msc.Init()
+
+        _status, result = msc.CheckMode()
+        if not result or not result.get("name"):
+            logger.warning(
+                "stand_up_on_start requested but no sport mode active - "
+                "skipping StandUp(). Robot is in whatever pose it's in."
+            )
+            return
+
+        sport_mode = result.get("name")
+        logger.info(f"Sport mode '{sport_mode}' active - sending StandUp()")
+
+        client = SportClient()
+        client.SetTimeout(_MSC_RPC_TIMEOUT_S)
+        client.Init()
+        code = client.StandUp()
+        if code != 0:
+            logger.warning(
+                f"SportClient.StandUp() returned non-zero code {code} - "
+                f"robot may not have stood up. Continuing to sport-mode release."
+            )
+        else:
+            logger.info(
+                f"StandUp() accepted; waiting {self.config.stand_up_settle_seconds:.1f}s "
+                f"for motion to settle"
+            )
+        # Block while the firmware executes the stand motion. Empirically
+        # ~3-4s is enough to lift from lie to a stable standing pose.
+        time.sleep(float(self.config.stand_up_settle_seconds))
 
     def _release_sport_mode(self) -> None:
         """Loop ReleaseMode until MotionSwitcher reports no active controller.
