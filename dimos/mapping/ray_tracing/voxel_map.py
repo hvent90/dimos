@@ -1,5 +1,4 @@
-#!/usr/bin/env python3
-# Copyright 2025-2026 Dimensional Inc.
+# Copyright 2026 Dimensional Inc.
 #
 # Licensed under the Apache License, Version 2.0 (the "License");
 # you may not use this file except in compliance with the License.
@@ -13,14 +12,16 @@
 # See the License for the specific language governing permissions and
 # limitations under the License.
 
-from dimos.core.transport import JpegLcmTransport
-from dimos.msgs.sensor_msgs.Image import Image
-from dimos.robot.unitree.go2.blueprints.smart.unitree_go2 import unitree_go2
+"""Python interface to the Rust voxel ray-tracing mapper."""
 
-_with_jpeglcm = unitree_go2.transports(
-    {
-        ("color_image", Image): JpegLcmTransport("/color_image", Image),
-    }
-)
+from __future__ import annotations
 
-__all__ = ["_with_jpeglcm"]
+try:
+    from dimos_voxel_ray_tracing import VoxelRayMapper
+except ImportError as e:
+    raise ImportError(
+        "dimos_voxel_ray_tracing is not built. Run: "
+        "uv run maturin develop --uv -m dimos/mapping/ray_tracing/rust/Cargo.toml"
+    ) from e
+
+__all__ = ["VoxelRayMapper"]

@@ -12,16 +12,16 @@
 # See the License for the specific language governing permissions and
 # limitations under the License.
 
+"""Python interface to the Rust multi-level surface path planner."""
 
-from typing import Protocol
+from __future__ import annotations
 
-from dimos.spec.utils import Spec
-from dimos.utils.logging_config import setup_logger
+try:
+    from dimos_mls_planner import MLSPlanner
+except ImportError as e:
+    raise ImportError(
+        "dimos_mls_planner is not built. Run: "
+        "uv run maturin develop --uv -m dimos/navigation/nav_3d/mls_planner/rust/Cargo.toml"
+    ) from e
 
-logger = setup_logger()
-
-
-class PatrollingModuleSpec(Spec, Protocol):
-    def start_patrol(self) -> str: ...
-    def is_patrolling(self) -> bool: ...
-    def stop_patrol(self) -> str: ...
+__all__ = ["MLSPlanner"]

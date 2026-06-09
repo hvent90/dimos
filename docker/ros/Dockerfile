@@ -10,7 +10,7 @@ RUN apt-get update && apt-get install -y locales && \
     update-locale LC_ALL=en_US.UTF-8 LANG=en_US.UTF-8
 ENV LANG=en_US.UTF-8
 
-# Set ROS distro (Jazzy = Ubuntu 24.04 + Python 3.12).
+# Set ROS distro
 ENV ROS_DISTRO=jazzy
 
 # Install basic requirements
