@@ -224,32 +224,8 @@ jobs:
       #   working-directory: docs
       #   run: npm run validate
 
-  compute-pin:
-    # Extracts the ros-dev image digest pinned in docker/ros-dev-pin/Dockerfile
-    # so downstream jobs can reference it from their `container:` field (which
-    # is evaluated at job-setup time and can't read step outputs from its own
-    # job). Consumed by `full-release-test` and `self-hosted-tests`. Mirrored
-    # in release.yml — every job using the ros-dev container reads from this
-    # same digest so a bad image rebuild fails CI before reaching release.
-    # Dependabot bumps the digest in the pin Dockerfile when :latest moves.
-    runs-on: ubuntu-latest
-    permissions:
-      contents: read
-    outputs:
-      digest: ${{ steps.read.outputs.digest }}
-    steps:
-      - uses: actions/checkout@v5
-      - id: read
-        run: |
-          DIGEST=$(grep -oE 'sha256:[a-f0-9]{64}' docker/ros-dev-pin/Dockerfile)
-          if [ -z "$DIGEST" ]; then
-            echo "::error::No sha256 digest found in docker/ros-dev-pin/Dockerfile"
-            exit 1
-          fi
-          echo "digest=$DIGEST" >> "$GITHUB_OUTPUT"
-
   full-release-test:
-    needs: compute-pin
+    needs: compute-ros-pin
     env:
       OPENAI_API_KEY: ${{ secrets.OPENAI_API_KEY }}
       ANTHROPIC_API_KEY: ${{ secrets.ANTHROPIC_API_KEY }}
@@ -266,7 +242,7 @@ jobs:
       # Digest pinned via docker/ros-dev-pin/Dockerfile (Dependabot-managed).
       # Same digest as release.yml — CI breakage from a rebuild surfaces here,
       # not at release time.
-      image: ghcr.io/dimensionalos/ros-dev@${{ needs.compute-pin.outputs.digest }}
+      image: ghcr.io/dimensionalos/ros-dev@${{ needs.compute-ros-pin.outputs.digest }}
       # Expose the host's NVIDIA driver and GPU into the container. Needs
       # nvidia-container-toolkit installed on the runner (configured by ops);
       # without it, container start fails with `could not select device driver`.
