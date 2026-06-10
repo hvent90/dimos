@@ -95,7 +95,8 @@ the call sites but the *why* lives here:
 
 ## Threads (the runtime)
 
-- **Event loop thread** (`HostedTeleopLoop`) — runs asyncio for aiortc + httpx.
+- **Event loop thread** — the base `Module`'s asyncio loop (`self._loop`), used
+  for aiortc + httpx; coroutines are scheduled onto it via `self.spawn(...)`.
   Datachannel `send()` calls **must** happen here (aiortc datachannels aren't
   thread-safe). The pong path is already on the loop (it fires from the
   channel's `message` callback); the telemetry thread uses
