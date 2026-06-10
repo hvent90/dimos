@@ -44,7 +44,6 @@ logger = setup_logger()
 
 
 class TeleopRecorderConfig(RecorderConfig):
-    
     db_path: str | Path = STATE_DIR / "teleop_recordings" / "recording_teleop.db"
     generate_report: bool = True
 
@@ -68,8 +67,11 @@ class TeleopRecorder(Recorder):
 
     @rpc
     def start(self) -> None:
-        # Append per-run timestamp to the stem so each run is its own file.
-        base = Path(self.config.db_path)
+        # Append a per-run timestamp to the stem so each run is its own file.
+        base = getattr(self, "_db_path_base", None)
+        if base is None:
+            base = Path(self.config.db_path)
+            self._db_path_base = base
         timestamp = datetime.now().strftime("%Y%m%d_%H%M%S")
         self.config.db_path = base.with_name(f"{base.stem}_{timestamp}{base.suffix}")
         # SqliteStore (sqlite3.connect) won't create the parent dir — ensure it.
