@@ -31,10 +31,18 @@ pub struct Config {
     #[validate(range(min = 0.0, max = 1.0))]
     #[serde(default = "default_graze_cos")]
     pub graze_cos: f32,
+    /// Only spare a voxel whose neighborhood was hit within this many frames.
+    /// A stale voxel clears despite its normal. Large disables it.
+    #[serde(default = "default_recency_window")]
+    pub recency_window: u32,
 }
 
 fn default_graze_cos() -> f32 {
     0.7
+}
+
+fn default_recency_window() -> u32 {
+    15
 }
 
 fn validate_health_range(cfg: &Config) -> Result<(), ValidationError> {
@@ -47,6 +55,7 @@ fn validate_health_range(cfg: &Config) -> Result<(), ValidationError> {
 #[derive(Default)]
 pub struct VoxelMap {
     pub voxels: AHashMap<VoxelKey, Voxel>,
+    frame: u32,
 }
 
 impl VoxelMap {
@@ -111,6 +120,9 @@ pub struct Voxel {
     sum: Vector3<f32>,
     m2: Matrix3<f32>,
     normal: Option<Vector3<f32>>,
+    last_hit: u32,
+    // Most recent frame any voxel in this one's neighborhood was hit.
+    recency: u32,
 }
 
 impl Default for Voxel {
@@ -121,6 +133,8 @@ impl Default for Voxel {
             sum: Vector3::zeros(),
             m2: Matrix3::zeros(),
             normal: None,
+            last_hit: 0,
+            recency: 0,
         }
     }
 }
@@ -264,8 +278,25 @@ fn pooled_normal(
     fit_normal(cov)
 }
 
-/// Refit the cached normal of every voxel whose neighborhood changed this frame.
-fn refresh_normals(
+/// Most recent frame any voxel in the neighborhood was hit.
+fn neighborhood_recency(voxels: &AHashMap<VoxelKey, Voxel>, key: VoxelKey) -> u32 {
+    let r = NORMAL_NEIGHBOR_RADIUS;
+    let mut best = 0;
+    for dx in -r..=r {
+        for dy in -r..=r {
+            for dz in -r..=r {
+                if let Some(v) = voxels.get(&(key.0 + dx, key.1 + dy, key.2 + dz)) {
+                    best = best.max(v.last_hit);
+                }
+            }
+        }
+    }
+    best
+}
+
+/// Refit the cached normal and neighborhood recency of every voxel whose
+/// neighborhood changed this frame.
+fn refresh_voxels(
     map: &mut VoxelMap,
     hits: &AHashSet<VoxelKey>,
     removed: &[VoxelKey],
@@ -282,31 +313,43 @@ fn refresh_normals(
             }
         }
     }
-    let updates: Vec<(VoxelKey, Option<Vector3<f32>>)> = dirty
+    let updates: Vec<(VoxelKey, Option<Vector3<f32>>, u32)> = dirty
         .iter()
         .filter(|k| map.voxels.contains_key(k))
-        .map(|&k| (k, pooled_normal(&map.voxels, k, voxel_size)))
+        .map(|&k| {
+            (
+                k,
+                pooled_normal(&map.voxels, k, voxel_size),
+                neighborhood_recency(&map.voxels, k),
+            )
+        })
         .collect();
-    for (k, n) in updates {
+    for (k, n, rec) in updates {
         if let Some(c) = map.voxels.get_mut(&k) {
             c.normal = n;
+            c.recency = rec;
         }
     }
 }
 
-/// Spare a clearing miss only when a grazing ray skims a planar surface.
-/// Anything without a trustworthy normal is left to the health hysteresis.
+/// Spare a clearing miss only when a grazing ray skims a planar surface whose
+/// neighborhood was hit recently. A stale voxel is left to the health hysteresis,
+/// and so is anything without a trustworthy normal.
 fn should_spare(
     voxels: &AHashMap<VoxelKey, Voxel>,
     key: VoxelKey,
     ray_unit: Vector3<f32>,
     graze_cos: f32,
+    frame: u32,
+    recency_window: u32,
 ) -> bool {
     let Some(c) = voxels.get(&key) else {
         return false;
     };
     match c.normal {
-        Some(n) => ray_unit.dot(&n).abs() < graze_cos,
+        Some(n) => {
+            frame.saturating_sub(c.recency) <= recency_window && ray_unit.dot(&n).abs() < graze_cos
+        }
         None => false,
     }
 }
@@ -390,6 +433,8 @@ pub fn update_map(
         f32::INFINITY
     };
 
+    map.frame += 1;
+    let frame = map.frame;
     let hits = live_voxels(points, cfg.voxel_size);
 
     let mut misses: AHashSet<VoxelKey> = AHashSet::new();
@@ -415,6 +460,8 @@ pub fn update_map(
             cfg.shadow_depth,
             cfg.grace_depth,
             cfg.graze_cos,
+            frame,
+            cfg.recency_window,
             origin_voxel,
             endpoint,
         );
@@ -427,6 +474,7 @@ pub fn update_map(
             ..Default::default()
         });
         c.health = (c.health + 1).min(cfg.max_health);
+        c.last_hit = frame;
     }
 
     // accumulate each return into its voxel's covariance
@@ -446,8 +494,8 @@ pub fn update_map(
         }
     }
 
-    // refresh cached normals wherever the neighborhood changed this frame
-    refresh_normals(map, &hits, &removed, cfg.voxel_size);
+    // refresh cached normals and recency wherever the neighborhood changed
+    refresh_voxels(map, &hits, &removed, cfg.voxel_size);
 
     hits
 }
@@ -473,6 +521,8 @@ fn find_misses_along_ray(
     shadow_depth: f32,
     grace_depth: f32,
     graze_cos: f32,
+    frame: u32,
+    recency_window: u32,
     origin_voxel: VoxelKey,
     endpoint: VoxelKey,
 ) {
@@ -586,7 +636,14 @@ fn find_misses_along_ray(
         }
 
         if map_voxels.contains_key(&(x, y, z))
-            && !should_spare(map_voxels, (x, y, z), ray_unit, graze_cos)
+            && !should_spare(
+                map_voxels,
+                (x, y, z),
+                ray_unit,
+                graze_cos,
+                frame,
+                recency_window,
+            )
         {
             misses.insert((x, y, z));
         }
@@ -607,6 +664,7 @@ mod tests {
             min_health: 0,
             max_health: 1,
             graze_cos: 0.5,
+            recency_window: 60,
         }
     }
 
@@ -645,6 +703,8 @@ mod tests {
             shadow_depth,
             0.0,
             0.5,
+            1,
+            60,
             origin_voxel,
             endpoint,
         );
@@ -763,6 +823,7 @@ mod tests {
             min_health: 0,
             max_health: 1,
             graze_cos: 0.5,
+            recency_window: 60,
         };
         // A real floor is a 2d plane, not a wire. Build it from accumulated
         // returns over a y band so the centerline voxels the ray walks have a
@@ -1148,6 +1209,7 @@ mod tests {
             min_health: 0,
             max_health: 1,
             graze_cos: 0.5,
+            recency_window: 60,
         };
 
         // True continuous staircase in the x-z plane (single y row): household
@@ -1240,6 +1302,7 @@ mod tests {
             min_health: 0,
             max_health: 1,
             graze_cos: 0.5,
+            recency_window: 60,
         };
 
         // Flat floor (horizontal, row 0) from the sensor out to a vertical wall.
@@ -1253,8 +1316,7 @@ mod tests {
         let lidar = sample_segments(&segments, voxel_size);
         let (mut map, all_surf) = build_surface(&lidar, voxel_size, cfg.max_health);
 
-        // Sensor above the floor. Drop this toward 0 to disable the z-slab guard
-        // (origin and floor in the same z-row) and stress the normal gate.
+        // Sensor above the floor, so grazing rays skim it on the way to the wall.
         const SENSOR_HEIGHT: f32 = 0.3;
         let origin = (half, half, floor_z + SENSOR_HEIGHT);
 
@@ -1301,7 +1363,7 @@ mod tests {
     }
 
     /// Robot just below a landing, seeing over its edge. The landing must survive:
-    /// rays hit it directly and the z-slab guard protects the grazed voxels.
+    /// rays hit it directly and the normal gate spares the grazed voxels.
     #[test]
     fn landing_grazed_from_below() {
         let voxel_size = 0.1_f32;
@@ -1315,6 +1377,7 @@ mod tests {
             min_health: 0,
             max_health: 1,
             graze_cos,
+            recency_window: 60,
         };
 
         // Staircase, then the top tread extended into a long flat landing and a
@@ -1366,8 +1429,8 @@ mod tests {
         );
 
         // When the robot can see the landing, it hits the surface directly and
-        // the grazed voxels share the hit's z-row, so the z-slab guard protects
-        // them. The landing must survive this view.
+        // grazing rays skim the planar top, so the normal gate spares those
+        // voxels. The landing must survive this view.
         let cleared: Vec<VoxelKey> = surf
             .iter()
             .copied()
@@ -1428,5 +1491,49 @@ mod tests {
             v.self_normal().is_none(),
             "a scan-line has no trustworthy normal"
         );
+    }
+
+    /// A grazing ray over a flat floor is spared while the floor is fresh, but
+    /// once it goes stale (recency_window passed without a hit) the same ray
+    /// clears it despite the normal. Only the window differs between the runs.
+    #[test]
+    fn stale_planar_voxel_loses_its_spare() {
+        let voxel_size = 0.1_f32;
+        let y_half = 0.3_f32;
+        let ds = voxel_size / 3.0;
+        let nx = (20.0 / ds).ceil() as i32;
+        let ny = (2.0 * y_half / ds).ceil() as i32;
+        let floor_z = voxel_size * 0.5;
+        let floor: Vec<(f32, f32, f32)> = (0..=nx)
+            .flat_map(|i| (0..=ny).map(move |j| (i as f32 * ds, -y_half + j as f32 * ds, floor_z)))
+            .collect();
+        let origin = (0.0_f32, 0.0_f32, 0.35_f32);
+        let ray = vec![(8.0_f32, 0.0, 0.0)];
+
+        let clipped = |recency_window| {
+            let cfg = Config {
+                voxel_size,
+                max_range: 50.0,
+                ray_subsample: 1,
+                shadow_depth: 0.2,
+                grace_depth: 0.2,
+                min_health: 0,
+                max_health: 1,
+                graze_cos: 0.5,
+                recency_window,
+            };
+            let (mut map, _) = build_surface(&floor, voxel_size, cfg.max_health);
+            let row: Vec<VoxelKey> = map
+                .voxels
+                .keys()
+                .copied()
+                .filter(|k| k.1 == 0 && k.2 == 0)
+                .collect();
+            update_map(&mut map, origin, &ray, &cfg);
+            row.iter().filter(|k| !map.voxels.contains_key(k)).count()
+        };
+
+        assert_eq!(clipped(60), 0, "a fresh floor keeps its grazing spare");
+        assert!(clipped(0) > 0, "a stale floor loses its spare and clips");
     }
 }

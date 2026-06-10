@@ -29,6 +29,7 @@ class VoxelRayMapper:
         min_health: int = -2,
         max_health: int = 1,
         graze_cos: float = 0.7,
+        recency_window: int = 15,
     ) -> None: ...
     def add_frame(
         self,

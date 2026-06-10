@@ -46,7 +46,11 @@ COLORS = {
     "naive": [90, 200, 90],
     "no_normal_gate": [235, 120, 60],
     "normal_gate": [70, 170, 235],
+    "no_recency": [200, 80, 200],
 }
+
+# A window large enough to never expire, i.e. recency gating off.
+RECENCY_OFF = 1_000_000_000
 
 
 def _attach_pose_from_odom(pair_obs: PairObs) -> Observation[PointCloud2]:
@@ -95,8 +99,9 @@ def main(
         static=True,
     )
 
-    # Naive accumulates every voxel and never clears; the other two are identical
-    # except for the normal gate (graze_cos 0 disables it, 0.7 is the default).
+    # naive accumulates every voxel and never clears. The rest are defaults except:
+    # no_normal_gate turns the normal gate off; no_recency keeps the gate but never
+    # lets a spare expire (recency off); normal_gate is the full default behavior.
     mappers = {
         "naive": VoxelRayMapper(
             voxel_size=voxel_size,
@@ -106,7 +111,10 @@ def main(
             min_health=0,
         ),
         "no_normal_gate": VoxelRayMapper(voxel_size=voxel_size, max_range=max_range, graze_cos=0.0),
-        "normal_gate": VoxelRayMapper(voxel_size=voxel_size, max_range=max_range, graze_cos=0.7),
+        "no_recency": VoxelRayMapper(
+            voxel_size=voxel_size, max_range=max_range, recency_window=RECENCY_OFF
+        ),
+        "normal_gate": VoxelRayMapper(voxel_size=voxel_size, max_range=max_range),
     }
 
     store = SqliteStore(path=str(db_path))
