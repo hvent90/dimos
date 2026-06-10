@@ -145,8 +145,8 @@ testdata.append(
 )
 
 
-from dimos.protocol.pubsub.impl.test_webrtc_transport import MockProvider
-from dimos.protocol.pubsub.impl.webrtcpubsub import WebRTCPubSub
+from dimos.protocol.pubsub.impl.webrtc.test_transport import MockProvider
+from dimos.protocol.pubsub.impl.webrtc.webrtcpubsub import WebRTCPubSub
 
 
 @contextmanager

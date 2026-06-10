@@ -35,9 +35,9 @@ except ImportError:
 from dimos.protocol.pubsub.impl.lcmpubsub import LCM, PickleLCM, Topic as LCMTopic
 from dimos.protocol.pubsub.impl.rospubsub import DimosROS, ROSTopic
 from dimos.protocol.pubsub.impl.shmpubsub import BytesSharedMemory, PickleSharedMemory
-from dimos.protocol.pubsub.impl.webrtcpubsub import (
-    WEBRTC_AVAILABLE,
-    DataChannelProvider,
+from dimos.protocol.pubsub.impl.webrtc import (
+    BrokerConfig,
+    ProviderConfig,
     WebRTCPubSub,
 )
 
@@ -334,97 +334,116 @@ if DDS_AVAILABLE:
                 return self.dds.subscribe(self.topic, lambda msg, topic: callback(msg))
 
 
-class WebRTCTransport(PubSubTransport[T]):
+M = TypeVar("M", bound=DimosMsg)
+
+
+def _wire_fingerprint(msg_type: type[DimosMsg]) -> bytes:
+    """First 8 wire bytes for a dimos msg type.
+
+    Derived by encoding a default instance because ``_get_packed_fingerprint``
+    can disagree with the wire format: e.g. ``TwistStamped`` inherits the
+    fingerprint of ``Twist`` but encodes as LCM ``TwistStamped``.
+    """
+    try:
+        return msg_type().lcm_encode()[:8]  # type: ignore[call-arg]
+    except TypeError:
+        return msg_type._get_packed_fingerprint()  # type: ignore[attr-defined,no-any-return]
+
+
+def _rebuild_webrtc_transport(
+    cls: type[WebRTCTransport[M]], topic: str, msg_type: type[M] | None, config: ProviderConfig
+) -> WebRTCTransport[M]:
+    return cls(topic, msg_type, config=config)
+
+
+class WebRTCTransport(PubSubTransport[M]):
     """Transport over WebRTC DataChannels.
 
-    Backend-agnostic: accepts any :class:`DataChannelProvider`
-    (Cloudflare, LiveKit, broker, etc).
+    Subclasses bind a backend by setting ``_config_cls``; the base class can
+    also be used directly with an explicit ``config``. Two modes:
 
-    Two modes:
+    * **Raw bytes** (``msg_type=None``): messages pass through as ``bytes``.
+    * **Typed LCM** (``msg_type=SomeMsg``): LCM-encoded on ``broadcast()``,
+      LCM-decoded + fingerprint-filtered on ``subscribe()`` — so multiple
+      transports sharing one multiplexed DataChannel each receive only
+      their own message type.
 
-    * **Raw bytes** (default, ``msg_type=None``): messages pass through
-      as raw ``bytes``. Caller is responsible for encode/decode.
-
-    * **Typed LCM** (``msg_type=SomeMsg``): messages are LCM-encoded on
-      ``broadcast()`` and LCM-decoded + fingerprint-filtered on
-      ``subscribe()``. This allows multiple transports sharing a single
-      multiplexed DataChannel to each receive only their message type.
+    The transport itself holds no connection: the picklable ``config``
+    resolves to a per-process singleton provider on first use, so transports
+    survive being pickled into module worker processes and all transports in
+    a process share one session. ``stop()`` intentionally leaves the shared
+    provider running (it is process-scoped).
     """
 
+    _config_cls: type[ProviderConfig]
     _started: bool = False
 
     def __init__(
         self,
         topic: str,
+        msg_type: type[M] | None = None,
         *,
-        msg_type: type[T] | None = None,
-        provider: DataChannelProvider | None = None,
-        **provider_kwargs: Any,
+        config: ProviderConfig | None = None,
+        **config_kwargs: Any,
     ) -> None:
         super().__init__(topic)
-        if not WEBRTC_AVAILABLE:
-            raise RuntimeError(
-                "WebRTC support requires aiortc and httpx. Install with `pip install dimos[webrtc]`."
-            )
         self._msg_type = msg_type
-        self._fingerprint: bytes | None = None
-        if msg_type is not None and hasattr(msg_type, "_get_packed_fingerprint"):
-            self._fingerprint = msg_type._get_packed_fingerprint()  # type: ignore[attr-defined]
-
-        if provider is not None:
-            self.webrtc = WebRTCPubSub(provider=provider)
-        else:
-            # Default: Cloudflare provider from env vars
-            from dimos.protocol.pubsub.impl.webrtc_providers.cloudflare import CloudflareProvider
-
-            self.webrtc = WebRTCPubSub(provider=CloudflareProvider(**provider_kwargs))
+        self._config = config or self._config_cls(**config_kwargs)
+        self._fingerprint = _wire_fingerprint(msg_type) if msg_type is not None else None
+        self._pubsub: WebRTCPubSub | None = None
 
     def __reduce__(self):  # type: ignore[no-untyped-def]
-        # Provider cannot be pickled (holds sockets/threads); on unpickle
-        # a new provider is created from env vars. Preserve msg_type so
-        # typed fingerprint filtering survives multiprocessing.
-        return (WebRTCTransport, (self.topic,), {"msg_type": self._msg_type})
+        return (_rebuild_webrtc_transport, (type(self), self.topic, self._msg_type, self._config))
 
-    def __setstate__(self, state: dict[str, Any]) -> None:
-        msg_type = state.get("msg_type")
-        self.__init__(self.topic, msg_type=msg_type)  # type: ignore[misc]
-
-    def broadcast(self, _, msg) -> None:  # type: ignore[no-untyped-def]
+    def broadcast(self, _: Out[M] | None, msg: M) -> None:
         if not self._started:
             self.start()
-        if self._msg_type is not None and hasattr(msg, "lcm_encode"):
-            data = msg.lcm_encode()
-        else:
-            data = msg
-        self.webrtc.publish(self.topic, data)
+        assert self._pubsub is not None
+        data = msg.lcm_encode() if self._msg_type is not None else msg
+        self._pubsub.publish(self.topic, data)  # type: ignore[arg-type]
 
-    def subscribe(  # type: ignore[override]
-        self, callback: Callable[[T], None], selfstream: In[T] | None = None
+    def subscribe(
+        self, callback: Callable[[M], None], selfstream: Stream[M] | None = None
     ) -> Callable[[], None]:
         if not self._started:
             self.start()
+        assert self._pubsub is not None
 
         if self._msg_type is not None and self._fingerprint is not None:
-            # Typed mode: decode LCM and filter by fingerprint
-            fp = self._fingerprint
-            msg_type = self._msg_type
+            fp, msg_type = self._fingerprint, self._msg_type
 
             def _typed_cb(data: bytes, _topic: str) -> None:
-                if len(data) >= 8 and data[:8] == fp:
-                    callback(msg_type.lcm_decode(data))  # type: ignore[attr-defined]
+                if data[:8] == fp:
+                    callback(msg_type.lcm_decode(data))  # type: ignore[arg-type]
 
-            return self.webrtc.subscribe(self.topic, _typed_cb)
-        else:
-            # Raw bytes mode
-            return self.webrtc.subscribe(self.topic, lambda msg, _topic: callback(msg))  # type: ignore[arg-type]
+            return self._pubsub.subscribe(self.topic, _typed_cb)
+        return self._pubsub.subscribe(self.topic, lambda msg, _topic: callback(msg))  # type: ignore[arg-type]
 
     def start(self) -> None:
-        self.webrtc.start()
+        if self._pubsub is None:
+            self._pubsub = WebRTCPubSub(provider=self._config.provider())
+        self._pubsub.start()
         self._started = True
 
     def stop(self) -> None:
-        self.webrtc.stop()
         self._started = False
+
+
+class CloudflareTransport(WebRTCTransport[M]):
+    """WebRTC via the hosted teleop broker + Cloudflare Realtime SFU.
+
+    Receive-only until the broker bridges robot→operator channels. Config
+    kwargs flow into :class:`BrokerConfig`; unset fields fall back to the
+    ``TELEOP_*`` env vars in the process where the transport runs.
+
+    Blueprint usage::
+
+        unitree_go2_hosted = unitree_go2_basic.transports({
+            ("cmd_vel", Twist): CloudflareTransport("cmd_unreliable", TwistStamped),
+        })
+    """
+
+    _config_cls = BrokerConfig
 
 
 class ZenohTransport(PubSubTransport[T]): ...
