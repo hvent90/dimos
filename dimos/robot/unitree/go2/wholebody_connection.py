@@ -88,49 +88,15 @@ class Go2WholeBodyConnectionConfig(ModuleConfig):
     release_sport_mode: bool = True
     publish_rate_hz: float = 500.0
     frame_id: str = "go2_base"
-    # Call SportClient.StandUp() before releasing sport mode. This brings
-    # the robot from whatever pose (lie/sit/partial-stand) to a known good
-    # standing pose using Unitree's tested onboard controller, THEN we
-    # take low-level control with the startup hold seeded at that pose.
-    # Avoids the boot-time drooping window.
     stand_up_on_start: bool = True
-    # Seconds to wait for the StandUp motion to complete before releasing
-    # sport mode. Empirically ~3-4s. Bump if the robot is still moving
-    # when low-level takes over.
     stand_up_settle_seconds: float = 4.0
-    # Per-joint-type PD gains used to "hold the startup pose" during the gap
-    # between sport mode release and the first real motor_command from the
-    # coordinator. After the first LowState arrives, the connection seeds
-    # _low_cmd with the current joint positions and these PD gains so the
-    # robot doesn't slump under gravity while the coordinator boots / the
-    # policy task is disarmed.
-    #
-    # Defaults: light hold suitable for "robot just stands at whatever pose
-    # sport mode left it in". Body weight loads the thigh+calf; hip mostly
-    # idle. Errors are bounded - this is just holding a known-good pose,
-    # PD only fights gravity and small disturbances.
-    #   hip=20/1   — low load
-    #   thigh=30/1.5 — supports body weight at sport-stand
-    #   calf=40/2  — handles knee leverage; matches RL training
-    # Set all to 0 to fully disable startup hold (revert to limp until
-    # first real motor_command).
     startup_hold_kp_hip: float = 20.0
     startup_hold_kp_thigh: float = 30.0
     startup_hold_kp_calf: float = 40.0
     startup_hold_kd_hip: float = 1.0
     startup_hold_kd_thigh: float = 1.5
     startup_hold_kd_calf: float = 2.0
-    # Graceful shutdown: on stop(), re-acquire sport mode and call
-    # SportClient.StandDown() to lie the robot down via Unitree's tested
-    # onboard controller before sending the safe-stop LowCmd. Without this
-    # the robot just goes limp and falls from wherever it was standing.
-    # Disabled by default during bring-up: the sport-mode handoff has been
-    # unreliable (transient stand-ups, mode lockouts). Operator catches
-    # the robot manually on Ctrl+C until we trust the handoff.
     sit_down_on_stop: bool = False
-    # Seconds to wait for the StandDown motion to complete before sending
-    # safe-stop. ~3-4s is typical; bump if the robot is still moving when
-    # safe-stop kicks in (motors would then disable mid-motion).
     sit_down_settle_seconds: float = 4.0
 
 
@@ -151,15 +117,9 @@ class Go2WholeBodyConnection(Module):
         self._low_cmd: LowCmd_ | None = None
         self._low_state: LowState_ | None = None
         self._crc: CRC | None = None
-        # Guards _low_cmd / _low_state across DDS, publish, and motor_command threads.
         self._lock = threading.Lock()
         self._stop_event = threading.Event()
-        # Flips True after the startup hold seed has populated _low_cmd
-        # with the boot-time pose. Until then, _on_motor_command drops
-        # incoming motor_command messages on the floor - the coordinator
-        # may start emitting before our connection finishes booting
-        # (sport-mode StandUp + release takes ~7s), and we don't want
-        # those early commands to overwrite the seed before it runs.
+        # Gate: _on_motor_command drops until startup hold seed runs.
         self._low_cmd_ready = threading.Event()
         self._publish_thread: Thread | None = None
 
@@ -210,12 +170,6 @@ class Go2WholeBodyConnection(Module):
 
         self._crc = CRC()
 
-        # Sport-mode StandUp before we release low-level control. This brings
-        # the robot from whatever pose it's in (lie/sit/partial-stand) to a
-        # stable standing pose using Unitree's tested onboard controller.
-        # Avoids the drooping window we get if we go straight to low-level.
-        # If sport mode isn't active (e.g. already released earlier), the
-        # call is logged and skipped.
         if self.config.stand_up_on_start and self.config.release_sport_mode:
             self._stand_up_via_sport_mode()
 
@@ -241,14 +195,7 @@ class Go2WholeBodyConnection(Module):
                 f"for first LowState — robot offline or wrong DDS domain?"
             )
 
-        # Seed _low_cmd to "hold the startup pose" so motors actively support
-        # the robot during the gap between sport-mode release and the first
-        # real motor_command from the coordinator. Without this, motors are
-        # enabled but kp=kd=0 -> no holding torque -> robot slumps under
-        # gravity. Reads current joint positions from the first LowState.
-        #
-        # Per-joint-type gains: motor index order is FR/FL/RR/RL each as
-        # (hip, thigh, calf), so i%3 maps to joint type.
+        # Motor index order is FR/FL/RR/RL each (hip, thigh, calf), so i%3 = joint type.
         kp_per_type = (
             float(self.config.startup_hold_kp_hip),
             float(self.config.startup_hold_kp_thigh),
@@ -277,11 +224,6 @@ class Go2WholeBodyConnection(Module):
                 f"calf kp/kd={kp_per_type[2]}/{kd_per_type[2]})"
             )
 
-        # Now safe for the coordinator's motor_command callbacks to overwrite
-        # _low_cmd. Until this flag is set, _on_motor_command drops messages
-        # so the seed-then-overwrite ordering is preserved even when the
-        # coordinator + RLPolicyTask started early in a parallel worker and
-        # were already publishing commands.
         self._low_cmd_ready.set()
 
         logger.info("Go2WholeBodyConnection connected")
@@ -295,12 +237,6 @@ class Go2WholeBodyConnection(Module):
 
     @rpc
     def stop(self) -> None:
-        # Graceful sit-down via sport mode BEFORE we stop the publish loop.
-        # Order matters: we need the publish loop still running so the
-        # firmware sees continuous LowCmd while we re-acquire sport mode
-        # (otherwise it may decide we're dead and disable motors itself).
-        # The actual sit motion is driven by sport mode, not us - we just
-        # release authority back to it for the duration.
         if self.config.sit_down_on_stop:
             self._sit_down_via_sport_mode()
 
@@ -310,10 +246,7 @@ class Go2WholeBodyConnection(Module):
             self._publish_thread.join(timeout=DEFAULT_THREAD_JOIN_TIMEOUT)
             self._publish_thread = None
 
-        # Final safe-stop lowcmd: disable every motor (mode=0x00, kp=kd=0,
-        # tau=0). Without this, the motors freeze stiffly at whatever the
-        # last commanded pose was. Best-effort: any failure is logged, not
-        # raised, so cleanup still drains the DDS endpoints.
+        # Safe-stop: disable every motor so they don't freeze stiffly at last command.
         if self._publisher is not None and self._low_cmd is not None and self._crc is not None:
             try:
                 with self._lock:
@@ -367,14 +300,7 @@ class Go2WholeBodyConnection(Module):
                     accel=accel,
                 )
 
-            # Publish the current _low_cmd to rt/lowcmd every tick. Without
-            # this, motors only receive commands when the coordinator pushes
-            # a new motor_command - during the disarmed window the firmware
-            # sees no commands, decides the master is dead, and disables
-            # motors (robot droops). The startup hold seed populates _low_cmd
-            # at boot, _on_motor_command overwrites it when the coordinator
-            # sends new targets, but BOTH need this thread to actually push
-            # the bytes onto the wire continuously.
+            # Firmware disables motors if it doesn't see continuous LowCmd at 500Hz.
             if self._publisher is not None and self._low_cmd is not None and self._crc is not None:
                 try:
                     with self._lock:
@@ -464,14 +390,10 @@ class Go2WholeBodyConnection(Module):
             return
 
         if not self._low_cmd_ready.is_set():
-            # Connection still booting (sport StandUp + ReleaseMode + seed).
-            # Drop early commands so the startup-hold seed wins the race —
-            # publish loop keeps holding the seeded pose meanwhile.
             return
 
         with self._lock:
             if self._low_cmd is None or self._crc is None or self._publisher is None:
-                # Pre-start or post-stop — drop silently.
                 return
 
             for i in range(_NUM_MOTORS):
@@ -502,18 +424,7 @@ class Go2WholeBodyConnection(Module):
             self._low_cmd.motor_cmd[i].tau = 0
 
     def _stand_up_via_sport_mode(self) -> None:
-        """Command StandUp via SportClient before releasing sport mode.
-
-        Brings the robot from whatever pose it's in (lying / sitting /
-        half-stand) to a stable standing pose using Unitree's onboard
-        sport controller. The robot is then handed off to low-level
-        control with the startup hold catching the standing pose.
-
-        No-op if no sport mode is active (i.e. someone already released
-        it before we got here). Logs but does not raise on RPC failure -
-        the operator should notice an unexpected pose at startup and
-        decide how to recover (likely Ctrl-C and try again).
-        """
+        """Command StandUp via SportClient before releasing sport mode."""
         from unitree_sdk2py.comm.motion_switcher.motion_switcher_client import (
             MotionSwitcherClient,
         )
@@ -527,25 +438,16 @@ class Go2WholeBodyConnection(Module):
         current = result.get("name") if result else None
 
         if not current:
-            # Sport mode wasn't active (likely a previous run released it
-            # without re-acquiring on shutdown). Bring it back so StandUp
-            # has authority to drive the motors.
-            logger.info("No sport mode active - acquiring 'normal' mode...")
-            # Mode name varies by firmware. 'mcf' is the modern Go2 sport
-            # controller; 'normal' was older. Try mcf first, fall back to
-            # normal. The non-zero code 7004 ("function not registered")
-            # we see sometimes during shutdown means the firmware refuses
-            # MotionSwitcher calls while low-level control is active -
-            # in that case there's nothing we can do, fall through.
+            logger.info("No sport mode active - acquiring 'mcf'/'normal'...")
+            # 'mcf' on modern Go2 firmware; 'normal' on older.
             code, _ = msc.SelectMode("mcf")
             if code != 0:
                 code, _ = msc.SelectMode("normal")
             if code != 0:
                 logger.warning(
-                    f"SelectMode('normal') returned non-zero code {code}; "
+                    f"SelectMode returned non-zero code {code}; "
                     f"continuing anyway but StandUp may not work."
                 )
-            # Give the firmware a beat to bring sport mode up.
             time.sleep(1.5)
             _status, result = msc.CheckMode()
             current = result.get("name") if result else None
@@ -572,23 +474,10 @@ class Go2WholeBodyConnection(Module):
                 f"StandUp() accepted; waiting {self.config.stand_up_settle_seconds:.1f}s "
                 f"for motion to settle"
             )
-        # Block while the firmware executes the stand motion. Empirically
-        # ~3-4s is enough to lift from lie to a stable standing pose.
         time.sleep(float(self.config.stand_up_settle_seconds))
 
     def _sit_down_via_sport_mode(self) -> None:
-        """Re-acquire sport mode and command StandDown() before safe-stop.
-
-        Mirror of `_stand_up_via_sport_mode` for shutdown: we're handing
-        authority BACK from our low-level publisher to Unitree's sport
-        controller, then calling its StandDown() to lay the robot in
-        a known-good sit pose. After this, the caller continues to the
-        safe-stop LowCmd which disables motors - the robot is already
-        on the ground, so the limp transition is gentle.
-
-        Best-effort: any RPC failure is logged but doesn't raise; the
-        caller still proceeds to safe-stop and tears down DDS.
-        """
+        """Re-acquire sport mode and command StandDown() before safe-stop."""
         from unitree_sdk2py.comm.motion_switcher.motion_switcher_client import (
             MotionSwitcherClient,
         )
@@ -599,15 +488,8 @@ class Go2WholeBodyConnection(Module):
             msc.SetTimeout(_MSC_RPC_TIMEOUT_S)
             msc.Init()
 
-            # ALWAYS issue SelectMode unconditionally - we don't trust the
-            # CheckMode result (it sometimes returns '' even when we need to
-            # re-acquire). Goal is "be in mcf", not "switch from current".
-            # 'mcf' = modern Go2 sport controller, 'normal' = older firmware.
-            # Pre-init SportClient BEFORE SelectMode so we can fire
-            # StandDown() immediately - otherwise sport mode's default
-            # behavior on activation is to drive to a stand pose, which
-            # makes the robot stand up briefly before sitting. Pre-init
-            # + minimal sleep lets us preempt that transient.
+            # Pre-init SportClient so we can fire StandDown ASAP after SelectMode,
+            # preempting sport mode's default stand-pose behavior.
             client = SportClient()
             client.SetTimeout(_MSC_RPC_TIMEOUT_S)
             client.Init()
@@ -619,14 +501,10 @@ class Go2WholeBodyConnection(Module):
             if code != 0:
                 logger.warning(
                     f"SelectMode failed (last code {code}) during shutdown; "
-                    f"cannot StandDown via sport - will fall through to "
-                    f"safe-stop (robot will go limp)."
+                    f"falling through to safe-stop (robot will go limp)."
                 )
                 return
 
-            # Brief sleep - just enough for sport mode controller to wake.
-            # Longer than this and sport mode's default stand pose kicks in
-            # and the robot stands up before our StandDown() can preempt.
             time.sleep(0.3)
 
             logger.info("Sport mode active - sending StandDown()")
@@ -641,22 +519,12 @@ class Go2WholeBodyConnection(Module):
                     f"StandDown() accepted; waiting "
                     f"{self.config.sit_down_settle_seconds:.1f}s for sit motion"
                 )
-            # Block while sport mode lays the robot down. By the end of
-            # this sleep the robot should be at the sit/lie pose.
             time.sleep(float(self.config.sit_down_settle_seconds))
         except Exception as e:
-            # Don't let shutdown failures take down the whole stop sequence.
-            # The caller will still send safe-stop LowCmd to disable motors.
             logger.warning(f"Graceful sit-down failed: {e}")
 
     def _release_sport_mode(self) -> None:
-        """Loop ReleaseMode until MotionSwitcher reports no active controller.
-
-        Bails early if the first CheckMode reports nothing active. Calling
-        ReleaseMode anyway opens a window where motor controllers are
-        mid-handoff while we're already publishing rt/lowcmd, which has
-        been observed to cause mechanical noise from the gearboxes.
-        """
+        """Loop ReleaseMode until MotionSwitcher reports no active controller."""
         from unitree_sdk2py.comm.motion_switcher.motion_switcher_client import (
             MotionSwitcherClient,
         )
