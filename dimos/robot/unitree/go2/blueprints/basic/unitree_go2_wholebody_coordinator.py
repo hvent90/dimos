@@ -38,43 +38,39 @@ _go2_joints = make_quadruped_joints("go2")
 _KP = (20.0, 60.0, 40.0) * 4
 _KD = (1.0, 3.0, 2.0) * 4
 
-unitree_go2_wholebody_coordinator = (
-    autoconnect(
-        Go2WholeBodyConnection.blueprint(
-            release_sport_mode=True,
-            network_interface=os.getenv("ROBOT_INTERFACE", ""),
-        ),
-        ControlCoordinator.blueprint(
-            tick_rate=500,
-            hardware=[
-                HardwareComponent(
-                    hardware_id="go2",
-                    hardware_type=HardwareType.WHOLE_BODY,
-                    joints=_go2_joints,
-                    adapter_type="transport_lcm",
-                    wb_config=WholeBodyConfig(kp=_KP, kd=_KD),
-                ),
-            ],
-            tasks=[
-                TaskConfig(
-                    name="servo_go2",
-                    type="servo",
-                    joint_names=_go2_joints,
-                    priority=10,
-                ),
-            ],
-        ),
-    ).transports(
-        {
-            ("motor_states", JointState): LCMTransport("/go2/motor_states", JointState),
-            ("imu", Imu): LCMTransport("/go2/imu", Imu),
-            ("motor_command", MotorCommandArray): LCMTransport(
-                "/go2/motor_command", MotorCommandArray
+unitree_go2_wholebody_coordinator = autoconnect(
+    Go2WholeBodyConnection.blueprint(
+        release_sport_mode=True,
+        network_interface=os.getenv("ROBOT_INTERFACE", ""),
+    ),
+    ControlCoordinator.blueprint(
+        tick_rate=500,
+        hardware=[
+            HardwareComponent(
+                hardware_id="go2",
+                hardware_type=HardwareType.WHOLE_BODY,
+                joints=_go2_joints,
+                adapter_type="transport_lcm",
+                wb_config=WholeBodyConfig(kp=_KP, kd=_KD),
             ),
-            ("joint_state", JointState): LCMTransport("/coordinator/joint_state", JointState),
-            ("joint_command", JointState): LCMTransport("/go2/joint_command", JointState),
-        }
-    )
+        ],
+        tasks=[
+            TaskConfig(
+                name="servo_go2",
+                type="servo",
+                joint_names=_go2_joints,
+                priority=10,
+            ),
+        ],
+    ),
+).transports(
+    {
+        ("motor_states", JointState): LCMTransport("/go2/motor_states", JointState),
+        ("imu", Imu): LCMTransport("/go2/imu", Imu),
+        ("motor_command", MotorCommandArray): LCMTransport("/go2/motor_command", MotorCommandArray),
+        ("joint_state", JointState): LCMTransport("/coordinator/joint_state", JointState),
+        ("joint_command", JointState): LCMTransport("/go2/joint_command", JointState),
+    }
 )
 
 
