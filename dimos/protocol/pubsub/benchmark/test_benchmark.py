@@ -48,17 +48,15 @@ MSG_SIZES = [
     1048576 * 10,
 ]
 
-# Knobs are env-overridable so networked transports (WebRTC over Cloudflare,
-# remote DDS, ...) can run with realistic windows without slowing local runs,
-# e.g. DIMOS_BENCH_RECEIVE_TIMEOUT_S=5 for a CF round trip.
-
 # Benchmark duration in seconds
-BENCH_DURATION = float(os.environ.get("DIMOS_BENCH_DURATION_S", "1.0"))
+BENCH_DURATION = 1.0
 
 # Max messages to send per test (prevents overwhelming slower transports)
-MAX_MESSAGES = int(os.environ.get("DIMOS_BENCH_MAX_MESSAGES", "5000"))
+MAX_MESSAGES = 5000
 
-# Max time to wait for in-flight messages after publishing stops
+# Max time to wait for in-flight messages after publishing stops. Networked
+# transports need more drain time than the local default, e.g.
+# DIMOS_BENCH_RECEIVE_TIMEOUT_S=5 for the webrtc/Cloudflare round trip.
 RECEIVE_TIMEOUT = float(os.environ.get("DIMOS_BENCH_RECEIVE_TIMEOUT_S", "1.0"))
 
 
