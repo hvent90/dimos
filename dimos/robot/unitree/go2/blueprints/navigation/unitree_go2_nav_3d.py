@@ -41,6 +41,11 @@ go2_lidar_height = 0.5
 camera_hz = 1.0
 
 
+def _render_node_edges_flat(msg: Any) -> Any:
+    """Default LineSegments3D rendering lifts edges 1.7m off the surface."""
+    return msg.to_rerun(z_offset=0.05)
+
+
 def _static_robot_body(rr: Any) -> list[Any]:
     """Go2-shaped box on fastlio's body frame, counter-rotated for the lidar pitch."""
     return [
@@ -62,8 +67,7 @@ _nav_rerun_config = {
     "visual_override": {
         **rerun_config["visual_override"],
         "world/camera_info": None,
-        # Default LineSegments3D rendering lifts edges 1.7m off the surface.
-        "world/node_edges": lambda msg: msg.to_rerun(z_offset=0.05),
+        "world/node_edges": _render_node_edges_flat,
     },
 }
 
