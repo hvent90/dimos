@@ -1,0 +1,137 @@
+{
+  "speeds": [
+    0.4,
+    0.6
+  ],
+  "points": [
+    {
+      "path": "straight_line",
+      "speed": 0.4,
+      "cte_max": 0.005575051675621082,
+      "cte_rms": 0.002738059406507829,
+      "arrived": true
+    },
+    {
+      "path": "straight_line",
+      "speed": 0.4,
+      "cte_max": 0.004581689141713028,
+      "cte_rms": 0.0020975293257827436,
+      "arrived": true
+    },
+    {
+      "path": "straight_line",
+      "speed": 0.6,
+      "cte_max": 0.013756201475682578,
+      "cte_rms": 0.0068689339952719905,
+      "arrived": true
+    },
+    {
+      "path": "straight_line",
+      "speed": 0.6,
+      "cte_max": 0.006597759905183915,
+      "cte_rms": 0.00360096804672453,
+      "arrived": true
+    },
+    {
+      "path": "single_corner",
+      "speed": 0.4,
+      "cte_max": 0.11166213523249283,
+      "cte_rms": 0.03277165326590541,
+      "arrived": true
+    },
+    {
+      "path": "single_corner",
+      "speed": 0.4,
+      "cte_max": 0.06600892539043622,
+      "cte_rms": 0.018717393227943382,
+      "arrived": true
+    },
+    {
+      "path": "single_corner",
+      "speed": 0.6,
+      "cte_max": 0.0895967123692802,
+      "cte_rms": 0.03176220781866948,
+      "arrived": true
+    },
+    {
+      "path": "single_corner",
+      "speed": 0.6,
+      "cte_max": 0.08366079364999485,
+      "cte_rms": 0.026831805342782414,
+      "arrived": true
+    },
+    {
+      "path": "square",
+      "speed": 0.4,
+      "cte_max": 0.07698276466392569,
+      "cte_rms": 0.022047593557106494,
+      "arrived": true
+    },
+    {
+      "path": "square",
+      "speed": 0.4,
+      "cte_max": 0.06404401432934587,
+      "cte_rms": 0.020036676409434562,
+      "arrived": true
+    },
+    {
+      "path": "square",
+      "speed": 0.6,
+      "cte_max": 0.13402186762549703,
+      "cte_rms": 0.04367634758457102,
+      "arrived": true
+    },
+    {
+      "path": "square",
+      "speed": 0.6,
+      "cte_max": 0.10802595294254796,
+      "cte_rms": 0.037391399236636855,
+      "arrived": true
+    },
+    {
+      "path": "circle",
+      "speed": 0.4,
+      "cte_max": 0.008637851618863905,
+      "cte_rms": 0.004428063207251705,
+      "arrived": true
+    },
+    {
+      "path": "circle",
+      "speed": 0.4,
+      "cte_max": 0.0233990942057022,
+      "cte_rms": 0.01813386873103772,
+      "arrived": true
+    },
+    {
+      "path": "circle",
+      "speed": 0.6,
+      "cte_max": 0.007867325368493671,
+      "cte_rms": 0.005030480844956302,
+      "arrived": true
+    },
+    {
+      "path": "circle",
+      "speed": 0.6,
+      "cte_max": 0.02493946905340353,
+      "cte_rms": 0.021112737345380633,
+      "arrived": true
+    }
+  ],
+  "tolerance_inversion": [
+    {
+      "tol_cm": 5.0,
+      "max_speed": null,
+      "binding_path": null
+    },
+    {
+      "tol_cm": 10.0,
+      "max_speed": 0.4,
+      "binding_path": "square"
+    },
+    {
+      "tol_cm": 15.0,
+      "max_speed": 0.6,
+      "binding_path": "circle"
+    }
+  ]
+}

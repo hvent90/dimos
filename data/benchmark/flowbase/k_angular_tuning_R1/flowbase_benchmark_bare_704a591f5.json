@@ -1,0 +1,52 @@
+{
+  "speeds": [
+    0.4
+  ],
+  "points": [
+    {
+      "path": "circle",
+      "speed": 0.4,
+      "cte_max": 0.10382752079044769,
+      "cte_rms": 0.0907001127794046,
+      "arrived": true
+    },
+    {
+      "path": "circle",
+      "speed": 0.4,
+      "cte_max": 0.10404963737154893,
+      "cte_rms": 0.09128689251985092,
+      "arrived": true
+    },
+    {
+      "path": "circle",
+      "speed": 0.4,
+      "cte_max": 0.10537363027624798,
+      "cte_rms": 0.09063401081187718,
+      "arrived": true
+    },
+    {
+      "path": "circle",
+      "speed": 0.4,
+      "cte_max": 0.10374755127514014,
+      "cte_rms": 0.09149621284803516,
+      "arrived": true
+    }
+  ],
+  "tolerance_inversion": [
+    {
+      "tol_cm": 5.0,
+      "max_speed": null,
+      "binding_path": null
+    },
+    {
+      "tol_cm": 10.0,
+      "max_speed": null,
+      "binding_path": null
+    },
+    {
+      "tol_cm": 15.0,
+      "max_speed": 0.4,
+      "binding_path": "circle"
+    }
+  ]
+}
