@@ -23,6 +23,11 @@ Channel plan (topic == DataChannel name):
     cmd_unreliable      operator → robot   commands (unordered, lossy)
     state_reliable      operator → robot   control plane (reliable)
     state_reliable_back robot → operator   telemetry (reliable) — publishable
+
+Video: the robot's session offer always carries one sendonly video track
+(the broker stores its mid/track and the operator pulls it on join). Feed
+frames with ``set_video_frame()`` — typically via ``CloudflareVideoTransport``
+bound to a blueprint's Image stream; unfed, the track simply never emits.
 The aiortc/CF quirks this inherits (MAX_BUNDLE, the id=0 throwaway channel)
 are documented in ``dimos/teleop/quest_hosted/README.md``.
 
@@ -45,12 +50,14 @@ from dataclasses import dataclass
 import os
 from typing import Any
 
+from dimos.protocol.pubsub.impl.webrtc.providers.sdp import propagate_bundle_candidates
 from dimos.protocol.pubsub.impl.webrtc.providers.spec import (
     WEBRTC_AVAILABLE,
     AsyncProviderBase,
     ProviderConfig,
     wait_connected,
 )
+from dimos.protocol.pubsub.impl.webrtc.providers.video_track import CameraVideoTrack
 from dimos.utils.logging_config import setup_logger
 
 logger = setup_logger()
@@ -130,6 +137,9 @@ class BrokerProvider(AsyncProviderBase):
         self._dcs: dict[str, RTCDataChannel] = {}
         self._dc_ids: dict[str, int | None] = {}
         self._dropped_publish_warned = False
+        # Sendonly camera track, present in the initial offer so the broker
+        # can bridge video without renegotiating the robot side.
+        self._video_track = CameraVideoTrack()
 
         # Guarded by self._lock (from the base).
         self._callbacks: dict[str, list[Callable[[bytes, str], None]]] = defaultdict(list)
@@ -150,6 +160,9 @@ class BrokerProvider(AsyncProviderBase):
                 bundlePolicy=RTCBundlePolicy.MAX_BUNDLE,
             )
         )
+        # addTrack must precede createDataChannel (CF/aiortc workaround — see
+        # the quest_hosted README).
+        self._pc.addTrack(self._video_track)
         self._pc.createDataChannel("_sctp_init", negotiated=True, id=0)
 
         offer = await self._pc.createOffer()
@@ -181,9 +194,12 @@ class BrokerProvider(AsyncProviderBase):
         data = r.json()
         self.session_id = data["session_id"]
         await self._pc.setRemoteDescription(
-            RTCSessionDescription(sdp=data["sdp_answer"], type="answer")
+            RTCSessionDescription(
+                sdp=propagate_bundle_candidates(data["sdp_answer"]), type="answer"
+            )
         )
         await wait_connected(self._pc)
+        self._video_track.arm()  # deliver frames from "now", not boot
         logger.info(
             "Broker provider connected: session=%s robot=%s",
             self.session_id,
@@ -310,6 +326,13 @@ class BrokerProvider(AsyncProviderBase):
                 return
             self._dropped_publish_warned = False
             self._loop.call_soon_threadsafe(ch.send, data)
+
+    def set_video_frame(self, img: Any) -> None:
+        """Robot → operator video: publish the latest camera frame.
+
+        Thread-safe; frames are dropped until the PC is connected and armed.
+        """
+        self._video_track.set_latest(img)
 
     def subscribe(self, topic: str, callback: Callable[[bytes, str], None]) -> Callable[[], None]:
         """Subscribers receive the bytes of the inbound channel matching

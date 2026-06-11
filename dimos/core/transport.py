@@ -38,6 +38,9 @@ from dimos.protocol.pubsub.impl.shmpubsub import BytesSharedMemory, PickleShared
 from dimos.protocol.pubsub.impl.webrtc.providers.broker import BrokerConfig
 from dimos.protocol.pubsub.impl.webrtc.providers.spec import ProviderConfig
 from dimos.protocol.pubsub.impl.webrtc.webrtcpubsub import WebRTCPubSub
+from dimos.utils.logging_config import setup_logger
+
+logger = setup_logger()
 
 if TYPE_CHECKING:
     from collections.abc import Callable
@@ -436,18 +439,59 @@ class WebRTCTransport(PubSubTransport[M]):
 class CloudflareTransport(WebRTCTransport[M]):
     """WebRTC via the hosted teleop broker + Cloudflare Realtime SFU.
 
-    Receive-only until the broker bridges robot→operator channels. Config
-    kwargs flow into :class:`BrokerConfig`; unset fields fall back to the
-    ``TELEOP_*`` env vars in the process where the transport runs.
+    Config kwargs flow into :class:`BrokerConfig`; unset fields fall back to
+    the ``TELEOP_*`` env vars in the process where the transport runs.
 
     Blueprint usage::
 
         unitree_go2_hosted = unitree_go2_basic.transports({
             ("cmd_vel", Twist): CloudflareTransport("cmd_unreliable", TwistStamped),
+            ("color_image", Image): CloudflareVideoTransport(),
         })
     """
 
     _config_cls = BrokerConfig
+
+
+def _rebuild_video_transport(config: BrokerConfig) -> CloudflareVideoTransport:
+    return CloudflareVideoTransport(config=config)
+
+
+class CloudflareVideoTransport(Transport[Any]):
+    """Robot camera → operator browser as the session's WebRTC video track.
+
+    ``broadcast()`` feeds each Image into the shared :class:`BrokerProvider`'s
+    sendonly track (same provider/PeerConnection as ``CloudflareTransport`` —
+    identical config resolves to the same per-process singleton). The operator
+    side is the teleop web client pulling the track; there is nothing to
+    ``subscribe()`` to on the robot, so local subscribers get a no-op.
+    """
+
+    def __init__(self, *, config: BrokerConfig | None = None, **config_kwargs: Any) -> None:
+        self._config = config or BrokerConfig(**config_kwargs)
+
+    def __reduce__(self):  # type: ignore[no-untyped-def]
+        return (_rebuild_video_transport, (self._config,))
+
+    def start(self) -> None:
+        pass  # provider starts lazily on first broadcast
+
+    def stop(self) -> None:
+        pass  # shared provider is process-scoped (see WebRTCTransport.stop)
+
+    def broadcast(self, _: Out[Any] | None, msg: Any) -> None:
+        provider = self._config.provider()
+        if not provider.is_connected:
+            provider.start()
+        provider.set_video_frame(msg)
+
+    def subscribe(
+        self, callback: Callable[[Any], None], selfstream: Stream[Any] | None = None
+    ) -> Callable[[], None]:
+        logger.warning(
+            "CloudflareVideoTransport is publish-only on the robot; local subscriber gets no frames"
+        )
+        return lambda: None
 
 
 class ZenohTransport(PubSubTransport[T]): ...

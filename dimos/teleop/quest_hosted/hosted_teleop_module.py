@@ -55,9 +55,9 @@ from dimos.msgs.geometry_msgs.PoseStamped import PoseStamped
 from dimos.msgs.geometry_msgs.TwistStamped import TwistStamped
 from dimos.msgs.sensor_msgs.Image import Image
 from dimos.msgs.sensor_msgs.Joy import Joy
+from dimos.protocol.pubsub.impl.webrtc.providers.sdp import propagate_bundle_candidates
+from dimos.protocol.pubsub.impl.webrtc.providers.video_track import CameraVideoTrack
 from dimos.teleop.quest.quest_types import Buttons, QuestControllerState
-from dimos.teleop.quest_hosted.sdp import propagate_bundle_candidates
-from dimos.teleop.quest_hosted.video_track import CameraVideoTrack
 from dimos.teleop.utils.stream_stats import LiveStreamStats
 from dimos.teleop.utils.teleop_transforms import webxr_to_robot
 from dimos.teleop.utils.video_stats import VideoStats
