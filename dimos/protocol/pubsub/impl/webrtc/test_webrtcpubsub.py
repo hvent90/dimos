@@ -25,14 +25,15 @@ Run with: ``pytest -m tool dimos/protocol/pubsub/impl/webrtc/test_webrtcpubsub.p
 
 from __future__ import annotations
 
-from collections.abc import Generator
+from collections.abc import Iterator
 import os
 import threading
 import time
 
 import pytest
 
-from dimos.protocol.pubsub.impl.webrtc import WEBRTC_AVAILABLE, WebRTCPubSub
+from dimos.protocol.pubsub.impl.webrtc.providers.spec import WEBRTC_AVAILABLE
+from dimos.protocol.pubsub.impl.webrtc.webrtcpubsub import WebRTCPubSub
 
 CF_CREDS_PRESENT = bool(os.environ.get("CF_TELEOP_APP_ID")) and bool(
     os.environ.get("CF_TELEOP_APP_SECRET")
@@ -45,8 +46,11 @@ skip_unless_cf = pytest.mark.skipif(
 
 
 @pytest.fixture
-def pubsub() -> Generator[WebRTCPubSub, None, None]:
-    from dimos.protocol.pubsub.impl.webrtc import CloudflareConfig, CloudflareProvider
+def pubsub() -> Iterator[WebRTCPubSub]:
+    from dimos.protocol.pubsub.impl.webrtc.providers.cloudflare import (
+        CloudflareConfig,
+        CloudflareProvider,
+    )
 
     ps = WebRTCPubSub(provider=CloudflareProvider(CloudflareConfig()))
     ps.start()

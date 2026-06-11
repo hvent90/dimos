@@ -232,3 +232,26 @@ def test_broker_provider_requires_credentials(monkeypatch: pytest.MonkeyPatch) -
         BrokerConfig(robot_id="r1")._create()
     with pytest.raises(RuntimeError, match="TELEOP_ROBOT_ID"):
         BrokerConfig(api_key="key")._create()
+
+
+# ─── subscribe_all dedup ─────────────────────────────────────────────
+
+
+def test_subscribe_all_fires_once_per_message() -> None:
+    """N subscriptions on one topic must not duplicate subscribe_all delivery."""
+    from dimos.protocol.pubsub.impl.webrtc.webrtcpubsub import WebRTCPubSub
+
+    ps = WebRTCPubSub(provider=MockProvider())
+    ps.subscribe("t", lambda data, t: None)
+    ps.subscribe("t", lambda data, t: None)
+
+    seen: list[tuple[bytes, str]] = []
+    ps.subscribe_all(lambda data, t: seen.append((data, t)))
+
+    ps.publish("t", b"x")
+    assert seen == [(b"x", "t")]
+
+    # And still exactly once per message after another topic joins.
+    ps.subscribe("u", lambda data, t: None)
+    ps.publish("u", b"y")
+    assert seen == [(b"x", "t"), (b"y", "u")]

@@ -24,6 +24,7 @@ benchmark harness in ``pubsub/benchmark`` apply directly.
 from __future__ import annotations
 
 from collections.abc import Callable
+import threading
 from typing import Any
 
 from dimos.protocol.pubsub.impl.webrtc.providers.spec import Provider
@@ -44,7 +45,10 @@ class WebRTCPubSub(AllPubSub[str, bytes]):
     def __init__(self, provider: Provider) -> None:
         self._provider = provider
         self._started = False
+        self._lock = threading.Lock()
         self._all_callbacks: list[Callable[[bytes, str], Any]] = []
+        # Topics that already have the all-callback dispatcher attached.
+        self._all_dispatch_topics: set[str] = set()
 
     @property
     def provider(self) -> Provider:
@@ -70,16 +74,30 @@ class WebRTCPubSub(AllPubSub[str, bytes]):
     def subscribe(self, topic: str, callback: Callable[[bytes, str], None]) -> Callable[[], None]:
         if not self._started:
             self.start()
+        unsubscribe = self._provider.subscribe(topic, callback)
+        self._ensure_all_dispatch(topic)
+        return unsubscribe
 
-        def _wrapped(data: bytes, t: str) -> None:
-            callback(data, t)
+    def _ensure_all_dispatch(self, topic: str) -> None:
+        """Attach the subscribe_all dispatcher to a topic exactly once.
+
+        A separate provider subscription per topic (instead of fanning out
+        inside every per-subscription wrapper) keeps all-callback delivery at
+        one call per message no matter how many subscriptions a topic has.
+        """
+        with self._lock:
+            if topic in self._all_dispatch_topics:
+                return
+            self._all_dispatch_topics.add(topic)
+
+        def _dispatch(data: bytes, t: str) -> None:
             for all_cb in list(self._all_callbacks):
                 try:
                     all_cb(data, t)
                 except Exception:
                     logger.exception("subscribe_all callback error")
 
-        return self._provider.subscribe(topic, _wrapped)
+        self._provider.subscribe(topic, _dispatch)
 
     def subscribe_all(self, callback: Callable[[bytes, str], Any]) -> Callable[[], None]:
         """Receive every message delivered to any subscribed topic."""

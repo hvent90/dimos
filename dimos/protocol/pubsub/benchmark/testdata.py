@@ -407,12 +407,12 @@ if ROS_AVAILABLE:
 # WebRTC over the live Cloudflare Realtime SFU. Needs network + credentials,
 # so it only registers when CF_TELEOP_APP_ID/SECRET are set (CI skips it).
 try:
-    from dimos.protocol.pubsub.impl.webrtc import (
-        WEBRTC_AVAILABLE,
+    from dimos.protocol.pubsub.impl.webrtc.providers.cloudflare import (
         CloudflareConfig,
         CloudflareProvider,
-        WebRTCPubSub,
     )
+    from dimos.protocol.pubsub.impl.webrtc.providers.spec import WEBRTC_AVAILABLE
+    from dimos.protocol.pubsub.impl.webrtc.webrtcpubsub import WebRTCPubSub
 except ImportError:
     WEBRTC_AVAILABLE = False
 

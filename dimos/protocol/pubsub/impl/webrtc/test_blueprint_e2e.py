@@ -36,7 +36,8 @@ from dimos.core.module import Module
 from dimos.core.stream import In, Out
 from dimos.core.transport import WebRTCTransport
 from dimos.msgs.geometry_msgs.TwistStamped import TwistStamped
-from dimos.protocol.pubsub.impl.webrtc import WEBRTC_AVAILABLE, CloudflareConfig
+from dimos.protocol.pubsub.impl.webrtc.providers.cloudflare import CloudflareConfig
+from dimos.protocol.pubsub.impl.webrtc.providers.spec import WEBRTC_AVAILABLE
 
 CF_CREDS_PRESENT = bool(os.environ.get("CF_TELEOP_APP_ID")) and bool(
     os.environ.get("CF_TELEOP_APP_SECRET")

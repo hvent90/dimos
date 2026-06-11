@@ -35,11 +35,9 @@ except ImportError:
 from dimos.protocol.pubsub.impl.lcmpubsub import LCM, PickleLCM, Topic as LCMTopic
 from dimos.protocol.pubsub.impl.rospubsub import DimosROS, ROSTopic
 from dimos.protocol.pubsub.impl.shmpubsub import BytesSharedMemory, PickleSharedMemory
-from dimos.protocol.pubsub.impl.webrtc import (
-    BrokerConfig,
-    ProviderConfig,
-    WebRTCPubSub,
-)
+from dimos.protocol.pubsub.impl.webrtc.providers.broker import BrokerConfig
+from dimos.protocol.pubsub.impl.webrtc.providers.spec import ProviderConfig
+from dimos.protocol.pubsub.impl.webrtc.webrtcpubsub import WebRTCPubSub
 
 if TYPE_CHECKING:
     from collections.abc import Callable
@@ -391,6 +389,11 @@ class WebRTCTransport(PubSubTransport[M]):
         self._config = config or self._config_cls(**config_kwargs)
         self._fingerprint = _wire_fingerprint(msg_type) if msg_type is not None else None
         self._pubsub: WebRTCPubSub | None = None
+        # Guards first-use init: concurrent subscribe()/broadcast() must not
+        # construct two WebRTCPubSub wrappers (one would silently orphan any
+        # subscribe_all state). Never pickled — __reduce__ rebuilds via the
+        # constructor.
+        self._init_lock = threading.Lock()
 
     def __reduce__(self):  # type: ignore[no-untyped-def]
         return (_rebuild_webrtc_transport, (type(self), self.topic, self._msg_type, self._config))
@@ -420,10 +423,11 @@ class WebRTCTransport(PubSubTransport[M]):
         return self._pubsub.subscribe(self.topic, lambda msg, _topic: callback(msg))  # type: ignore[arg-type]
 
     def start(self) -> None:
-        if self._pubsub is None:
-            self._pubsub = WebRTCPubSub(provider=self._config.provider())
-        self._pubsub.start()
-        self._started = True
+        with self._init_lock:
+            if self._pubsub is None:
+                self._pubsub = WebRTCPubSub(provider=self._config.provider())
+            self._pubsub.start()
+            self._started = True
 
     def stop(self) -> None:
         self._started = False
