@@ -164,33 +164,24 @@ def test_g1_construction_smoke() -> None:
 
 
 def test_viewer_cloud_functions() -> None:
-    from dimos.manipulation.reachability.viewer import (
-        canonical_cloud,
-        position_cloud,
-        score_colors,
-    )
+    from dimos.manipulation.reachability.viewer import body_point_cloud, score_colors
 
     rng = np.random.default_rng(9)
     cap = CapabilityMap(MapParams())
     positions, rotations = _random_poses(2000, rng)
     cap.record_batch(positions, rotations)
 
-    points, scores = canonical_cloud(cap, 0.0, 180.0, gamma_bin=None, min_score=1)
-    assert len(points) == len(scores) > 0
-    assert np.all(np.hypot(points[:, 0], points[:, 1]) <= cap.params.r_xy * np.sqrt(2) + 1e-9)
+    points, dexterity = body_point_cloud(cap, min_dexterity=0.0)
+    assert len(points) == len(dexterity) > 0
+    assert np.all(np.abs(points[:, :2]) <= cap.params.r_xy + 1e-9)
     assert np.all(points[:, 2] >= cap.params.z_min)
-    # Higher threshold shows fewer cells.
-    fewer, _ = canonical_cloud(cap, 0.0, 180.0, gamma_bin=None, min_score=2)
-    assert len(fewer) <= len(points)
-    # θ filter shows a subset.
-    narrow, _ = canonical_cloud(cap, 80.0, 100.0, gamma_bin=None, min_score=1)
-    assert 0 < len(narrow) < len(points)
+    assert np.all((dexterity > 0.0) & (dexterity <= 1.0))
+    # A dexterity threshold prunes cells.
+    fewer, _ = body_point_cloud(cap, min_dexterity=0.05)
+    assert len(fewer) < len(points)
 
-    ring_points, ring_scores = position_cloud(cap, min_score=1)
-    assert len(ring_points) == len(ring_scores) > 0
-
-    colors = score_colors(scores)
-    assert colors.shape == (len(scores), 3)
+    colors = score_colors(dexterity)
+    assert colors.shape == (len(dexterity), 3)
     assert colors.dtype == np.uint8
 
 
@@ -263,8 +254,9 @@ def test_arm_ik_reaches_fk_pose() -> None:
     solver = ArmIK("left")
     wxyz = np.empty(4)
     mujoco.mju_mat2Quat(wxyz, np.ascontiguousarray(rotations[0]).reshape(9))
-    joints, reached, error = solver.solve(positions[0], wxyz)
+    joints, reached, error, collided = solver.solve(positions[0], wxyz)
     assert reached, f"IK failed with error {error * 1000:.1f} mm"
+    assert not collided
     assert set(joints) == set(solver.joint_names)
 
 

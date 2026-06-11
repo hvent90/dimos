@@ -14,13 +14,11 @@
 
 """One-shot viser viewer for capability maps.
 
-The default view is the **body-frame workspace**: the arm's actual
-reachable volume in pelvis coordinates (the asymmetric blob a human
-expects — no heading quotient, no symmetry artifacts), rendered as a
-point cloud colored red→green by *dexterity* (fraction of approach
-angles reachable per cell: red = one way in, green = approach from
-anywhere), inside a translucent shell of everything reachable. An
-opaque voxel style is available for a solid volume reading.
+The view is the **body-frame workspace**: the arm's actual reachable
+volume in pelvis coordinates, rendered as a point cloud colored
+red→green by *dexterity* (fraction of approach angles reachable per
+cell: red = one way in, green = approach from anywhere). An opaque
+voxel style is available for a solid volume reading.
 
 The IK ghost poses a **rigid** kinematic model. The real G1 arms are
 compliant and sag a few cm under gravity at manipulation PD gains —
@@ -30,13 +28,11 @@ this viewer.
 Interactive extras:
 
 - **IK target gizmo** — drag a 6-DOF target around; a mink QP poses the
-  G1 URDF's arm to reach it live, and the status line reports the IK
-  result next to the map's prediction for the same pose.
+  G1 URDF's arm to reach it live (self-collision-avoiding, same
+  collision semantics as map construction), and the status line reports
+  the IK result next to the map's prediction for the same pose.
 - **Slice planes** — a vertical plane (adjustable yaw) and a horizontal
   plane (adjustable height) showing dexterity cross-sections in scene.
-- The quotient-map views from the planning side ("canonical": ψ = 0
-  gauge; "position": orientation-marginal revolved profile) remain as
-  alternate modes.
 
 CLI::
 
@@ -179,53 +175,6 @@ def _dexterity_image(cap: CapabilityMap, positions: np.ndarray, shape: tuple[int
     return image.reshape(*shape, 3)
 
 
-def canonical_cloud(
-    cap: CapabilityMap,
-    theta_lo_deg: float,
-    theta_hi_deg: float,
-    gamma_bin: int | None,
-    min_score: int,
-) -> tuple[np.ndarray, np.ndarray]:
-    """(points, scores) for the ψ=0 gauge representative of every marked cell."""
-    params = cap.params
-    t_lo = int(np.clip(theta_lo_deg / 180.0 * params.n_theta, 0, params.n_theta - 1))
-    t_hi = int(np.clip(theta_hi_deg / 180.0 * params.n_theta + 1, t_lo + 1, params.n_theta))
-    block = cap.counts[:, t_lo:t_hi]
-    scores = block[..., gamma_bin].max(axis=1) if gamma_bin is not None else block.max(axis=(1, 4))
-    iz, ix, iy = np.nonzero(scores >= min_score)
-    if len(iz) == 0:
-        return np.empty((0, 3)), np.empty(0)
-    centers = (np.arange(params.n_xy) + 0.5) * params.cell - params.r_xy
-    z_centers = (np.arange(params.n_z) + 0.5) * params.cell + params.z_min
-    points = np.stack([-centers[ix], -centers[iy], z_centers[iz]], axis=1)
-    return points, scores[iz, ix, iy].astype(float)
-
-
-def position_cloud(
-    cap: CapabilityMap, min_score: int, ring_step: int = 12
-) -> tuple[np.ndarray, np.ndarray]:
-    """Orientation-marginal radial profile revolved into rings around the axis."""
-    params = cap.params
-    radial = cap.position_scores()
-    iz, ir = np.nonzero(radial >= min_score)
-    if len(iz) == 0:
-        return np.empty((0, 3)), np.empty(0)
-    points, scores = [], []
-    z_centers = (np.arange(params.n_z) + 0.5) * params.cell + params.z_min
-    for z_idx, r_idx in zip(iz, ir, strict=True):
-        radius = (r_idx + 0.5) * params.cell
-        n_pts = max(int(2 * np.pi * radius / params.cell / 2), 1) if radius > 0 else 1
-        n_pts = min(n_pts, ring_step * 8)
-        angles = np.linspace(0, 2 * np.pi, n_pts, endpoint=False)
-        ring = np.stack(
-            [radius * np.cos(angles), radius * np.sin(angles), np.full(n_pts, z_centers[z_idx])],
-            axis=1,
-        )
-        points.append(ring)
-        scores.append(np.full(n_pts, float(radial[z_idx, r_idx])))
-    return np.concatenate(points), np.concatenate(scores)
-
-
 def score_colors(scores: np.ndarray, vmax: float | None = None) -> np.ndarray:
     """Score → red-to-green uint8 colors (red = barely reachable, green = rich)."""
     import matplotlib
@@ -240,7 +189,12 @@ def score_colors(scores: np.ndarray, vmax: float | None = None) -> np.ndarray:
 
 
 class ArmIK:
-    """mink QP IK for one arm on the construction MJCF; non-arm DOF masked."""
+    """mink QP IK for one arm on the construction MJCF; non-arm DOF masked.
+
+    Self-collision is handled the same way construction does (any contact
+    involving the arm's moving subtree): a CollisionAvoidanceLimit steers
+    the QP away from contact, and a post-hoc mj_collision check rejects
+    solutions that still penetrate."""
 
     def __init__(self, side: str) -> None:
         import mink
@@ -268,18 +222,27 @@ class ArmIK:
         self._velocity_mask = np.zeros(model.nv)
         self._velocity_mask[list(claimed)] = 1.0
         self._tasks = [self._frame]
-        self._limits = [mink.ConfigurationLimit(model)]
+        # Arm-vs-rest and arm-vs-arm avoidance pairs; mink filters welded,
+        # parent-child, and contype/conaffinity-incompatible combinations.
+        collidable = (model.geom_contype != 0) | (model.geom_conaffinity != 0)
+        arm_geoms = [int(g) for g in np.flatnonzero(self._sampler.check_geom_mask & collidable)]
+        other_geoms = [int(g) for g in np.flatnonzero(~self._sampler.check_geom_mask & collidable)]
+        self._limits = [
+            mink.ConfigurationLimit(model),
+            mink.CollisionAvoidanceLimit(model, [(arm_geoms, other_geoms), (arm_geoms, arm_geoms)]),
+        ]
         self._q_warm = self._sampler._q_base.copy()
 
     def solve(
         self, position: np.ndarray, wxyz: np.ndarray, restarts: int = 5
-    ) -> tuple[dict[str, float], bool, float]:
+    ) -> tuple[dict[str, float], bool, float, bool]:
         """Solve toward a grasp-center target; returns (arm joints by model
-        joint name, reached?, position error in m).
+        joint name, reached?, position error in m, self-colliding?).
 
         Warm-started from the previous solve so dragging feels continuous;
-        falls back to random restarts (keeping the best) when the warm
-        start stalls in a local minimum."""
+        falls back to random restarts when the warm start stalls in a local
+        minimum. Collision-free solutions are preferred over closer ones
+        that penetrate; ``reached`` requires both tolerance and no contact."""
         import mujoco
 
         mink = self._mink
@@ -292,7 +255,7 @@ class ArmIK:
             mink.SE3.from_rotation_and_translation(mink.SO3(np.asarray(wxyz)), body_position)
         )
 
-        best_q, best_error = None, np.inf
+        best_q, best_error, best_free = None, np.inf, False
         rng = np.random.default_rng(0)
         for attempt in range(1 + restarts):
             q0 = self._q_warm.copy()
@@ -313,9 +276,10 @@ class ArmIK:
                 if float(np.linalg.norm(velocity)) < 1e-4:
                     break
             error = self._position_error(self._configuration.q, position)
-            if error < best_error:
-                best_q, best_error = self._configuration.q.copy(), error
-            if best_error < 0.01:
+            free = not self._self_collides(self._configuration.q)
+            if (free, -error) > (best_free, -best_error):
+                best_q, best_error, best_free = self._configuration.q.copy(), error, free
+            if best_free and best_error < 0.01:
                 break
 
         assert best_q is not None
@@ -324,7 +288,24 @@ class ArmIK:
             name: float(best_q[adr])
             for name, adr in zip(self.joint_names, sampler.qpos_adr, strict=True)
         }
-        return joints, best_error < 0.02, best_error
+        return joints, best_free and best_error < 0.02, best_error, not best_free
+
+    def _self_collides(self, q: np.ndarray) -> bool:
+        """Construction-identical check: any penetrating contact involving
+        the arm's moving subtree."""
+        import mujoco
+
+        sampler = self._sampler
+        data, model = sampler.data, sampler.model
+        data.qpos[:] = q
+        mujoco.mj_kinematics(model, data)
+        mujoco.mj_collision(model, data)
+        if not data.ncon:
+            return False
+        geom = data.contact.geom[: data.ncon]
+        dist = data.contact.dist[: data.ncon]
+        involved = sampler.check_geom_mask[geom[:, 0]] | sampler.check_geom_mask[geom[:, 1]]
+        return bool(np.any(involved & (dist < 0.0)))
 
     def _position_error(self, q: np.ndarray, target_position: np.ndarray) -> float:
         import mujoco
@@ -374,14 +355,6 @@ def serve(maps: dict[str, CapabilityMap], port: int = 8082) -> None:
 
     with server.gui.add_folder("view"):
         side = server.gui.add_dropdown("arm", tuple(maps), initial_value=next(iter(maps)))
-        mode = server.gui.add_dropdown(
-            "mode",
-            (
-                "workspace (body frame)",
-                "canonical (approach az = +x)",
-                "position (any orientation)",
-            ),
-        )
         style = server.gui.add_dropdown("style", ("points", "voxels"), initial_value="points")
         point_size = server.gui.add_slider(
             "point size [mm]", min=5, max=60, step=1, initial_value=35
@@ -389,10 +362,6 @@ def serve(maps: dict[str, CapabilityMap], port: int = 8082) -> None:
         dexterity_pct = server.gui.add_slider(
             "min dexterity [%]", min=0, max=60, step=1, initial_value=0
         )
-        shell = server.gui.add_checkbox("show reachable shell", initial_value=True)
-        min_score = server.gui.add_slider("min score", min=1, max=60, step=1, initial_value=1)
-        theta_lo = server.gui.add_slider("θ min [deg]", min=0, max=180, step=5, initial_value=0)
-        theta_hi = server.gui.add_slider("θ max [deg]", min=0, max=180, step=5, initial_value=180)
 
     with server.gui.add_folder("slices"):
         show_yaw_slice = server.gui.add_checkbox("vertical slice", initial_value=False)
@@ -422,54 +391,28 @@ def serve(maps: dict[str, CapabilityMap], port: int = 8082) -> None:
 
     def refresh_volume(_=None) -> None:
         cap = current_map()
-        for name in ("/reachability/core", "/reachability/shell", "/reachability/points"):
+        for name in ("/reachability/core", "/reachability/points"):
             try:
                 server.scene.remove_by_name(name)
             except Exception:
                 pass
-        if mode.value.startswith("workspace"):
-            n = 0
-            if style.value == "voxels":
-                core, n = body_voxel_mesh(cap, dexterity_pct.value / 100.0)
-                if core is not None:
-                    server.scene.add_mesh_trimesh("/reachability/core", core)
-            else:
-                points, dexterity = body_point_cloud(cap, dexterity_pct.value / 100.0)
-                n = len(points)
-                if n:
-                    server.scene.add_point_cloud(
-                        "/reachability/points",
-                        points=points.astype(np.float32),
-                        colors=score_colors(dexterity, vmax=max(float(dexterity.max()), 1e-9)),
-                        point_size=point_size.value / 1000.0,
-                        point_shape="circle",
-                    )
-            if shell.value:
-                outer, _ = body_voxel_mesh(cap, 0.0)
-                if outer is not None:
-                    server.scene.add_mesh_simple(
-                        "/reachability/shell",
-                        vertices=np.asarray(outer.vertices),
-                        faces=np.asarray(outer.faces),
-                        color=(140, 200, 150),
-                        opacity=0.1,
-                    )
-            logger.info(f"workspace view: {n} cells at ≥{dexterity_pct.value}% dexterity")
+        n = 0
+        if style.value == "voxels":
+            core, n = body_voxel_mesh(cap, dexterity_pct.value / 100.0)
+            if core is not None:
+                server.scene.add_mesh_trimesh("/reachability/core", core)
         else:
-            if mode.value.startswith("position"):
-                points, scores = position_cloud(cap, int(min_score.value))
-            else:
-                points, scores = canonical_cloud(
-                    cap, theta_lo.value, theta_hi.value, None, int(min_score.value)
-                )
-            if len(points):
+            points, dexterity = body_point_cloud(cap, dexterity_pct.value / 100.0)
+            n = len(points)
+            if n:
                 server.scene.add_point_cloud(
                     "/reachability/points",
                     points=points.astype(np.float32),
-                    colors=score_colors(scores),
+                    colors=score_colors(dexterity, vmax=max(float(dexterity.max()), 1e-9)),
                     point_size=point_size.value / 1000.0,
                     point_shape="circle",
                 )
+        logger.info(f"workspace view: {n} cells at ≥{dexterity_pct.value}% dexterity")
 
     def refresh_slices(_=None) -> None:
         cap = current_map()
@@ -481,12 +424,15 @@ def serve(maps: dict[str, CapabilityMap], port: int = 8082) -> None:
             server.scene.remove_by_name("/slice/z")
         except Exception:
             pass
+        # viser's add_image uses the camera convention: image rows run along
+        # the node's local +y (row 0 at -y). The slice images are standard
+        # row-0-on-top, so flip rows to land top-of-image at +local-y.
         if show_yaw_slice.value:
             image, width, height = slice_image_yaw(cap, yaw_slice.value)
             yaw = np.deg2rad(yaw_slice.value)
             server.scene.add_image(
                 "/slice/yaw",
-                image,
+                np.ascontiguousarray(image[::-1]),
                 render_width=width,
                 render_height=height,
                 position=(0.0, 0.0, (params.z_min + params.z_max) / 2),
@@ -496,7 +442,7 @@ def serve(maps: dict[str, CapabilityMap], port: int = 8082) -> None:
             image, width, height = slice_image_height(cap, z_slice.value)
             server.scene.add_image(
                 "/slice/z",
-                image,
+                np.ascontiguousarray(image[::-1]),
                 render_width=width,
                 render_height=height,
                 position=(0.0, 0.0, float(z_slice.value)),
@@ -533,7 +479,7 @@ def serve(maps: dict[str, CapabilityMap], port: int = 8082) -> None:
             return
         position = np.asarray(gizmo.position, dtype=np.float64)
         wxyz = np.asarray(gizmo.wxyz, dtype=np.float64)
-        joints, reached, error = solver.solve(position, wxyz)
+        joints, reached, error, collided = solver.solve(position, wxyz)
 
         import mujoco
 
@@ -545,8 +491,11 @@ def serve(maps: dict[str, CapabilityMap], port: int = 8082) -> None:
         # Rigid-model kinematics: the real G1 arms are compliant and sag a
         # few cm under gravity at low PD gains — treat the posed arm as the
         # commanded pose, not where the hardware would settle.
+        verdict = "reached" if reached else "FAILED"
+        if collided:
+            verdict += ", SELF-COLLISION"
         ik_status.value = (
-            f"IK {'reached' if reached else 'FAILED'} (err {error * 1000:.0f} mm) | "
+            f"IK {verdict} (err {error * 1000:.0f} mm) | "
             f"map score {score} | dexterity {dexterity:.0%} | rigid model (no sag)"
         )
 
@@ -557,17 +506,7 @@ def serve(maps: dict[str, CapabilityMap], port: int = 8082) -> None:
                     cfg[i] = joints[name]
             viser_urdf.update_cfg(cfg)
 
-    for control in (
-        side,
-        mode,
-        style,
-        point_size,
-        dexterity_pct,
-        shell,
-        min_score,
-        theta_lo,
-        theta_hi,
-    ):
+    for control in (side, style, point_size, dexterity_pct):
         control.on_update(refresh_volume)
     for control in (side, show_yaw_slice, yaw_slice, show_z_slice, z_slice):
         control.on_update(refresh_slices)
@@ -621,9 +560,8 @@ if __name__ == "__main__":
 
 __all__ = [
     "ArmIK",
+    "body_point_cloud",
     "body_voxel_mesh",
-    "canonical_cloud",
-    "position_cloud",
     "score_colors",
     "serve",
     "slice_image_height",
