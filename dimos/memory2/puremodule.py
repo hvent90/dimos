@@ -75,11 +75,17 @@ from __future__ import annotations
 from dataclasses import dataclass
 import inspect
 import queue
+import sys
 import threading
 import time
 import types
 import typing
 from typing import TYPE_CHECKING, Any, Union, get_args, get_origin, get_type_hints
+
+if sys.version_info >= (3, 11):
+    from typing import Self
+else:
+    from typing_extensions import Self
 
 from pydantic import Field
 from reactivex.disposable import Disposable
@@ -389,7 +395,7 @@ class PureModule(Module):
     # -- offline ------------------------------------------------------------------
 
     @classmethod
-    def offline(cls, **config: Any) -> PureModule:
+    def offline(cls, **config: Any) -> Self:
         """Construct without module machinery (no event loop, RPC, or ports).
 
         Enough of an instance to run :meth:`over` — ``self.config`` works,
