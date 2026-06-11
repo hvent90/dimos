@@ -24,10 +24,11 @@ become first-class bodies after it in the composed model.
 Entities with ``kind == "dynamic"`` and positive mass receive a
 freejoint (robot can push/grasp them); anything else is welded static.
 Collision: primitive shapes (box/sphere/cylinder) use the descriptor
-extents; mesh entities use the convex hull of their cooked
-``visual.glb`` (MuJoCo collides on the hull of mesh geoms anyway, so
-this is exact for its collision model). Exact concave collision via
-convex decomposition at cook time is a follow-up.
+extents; mesh entities load the CoACD hulls cooked into the package
+(``collision_paths`` in ``scene.meta.json``, written by
+``dimos.simulation.scene_assets.entity_collision``). There is no
+runtime decomposition — a mesh entity without cooked hulls falls back
+to its AABB box with a warning to re-cook the package.
 
 A spawn-contact audit can be run on the compiled model to weld
 entities that start in deep penetration with the static scene; see
@@ -110,97 +111,32 @@ def _box_size_and_offset(entity: dict[str, Any]) -> tuple[list[float], list[floa
     return half, offset
 
 
-_COACD_MAX_HULLS = 32
-_COACD_THRESHOLD = 0.05
+def _entity_collision_hulls(entity: dict[str, Any]) -> list[Path]:
+    """Cooked collision hulls for a mesh entity, from package metadata.
 
-
-def _entity_hull_paths(entity: dict[str, Any], cache_dir: Path | None) -> list[Path]:
-    """Cached collision hulls for an entity's cooked visual mesh.
-
-    Tries CoACD multi-hull decomposition first (chair legs / seat / back
-    each get their own hull, so collisions are chair-shaped). Falls back
-    to a single convex hull if CoACD is unavailable or fails. The cooked
-    per-entity GLBs are entity-local (origin = initial_pose, world axes),
-    so hulls drop in with zero geom offset.
-
-    Hulls live in a per-user cache (``~/.cache/dimos/entity_hulls/`` by
-    default; override via ``cache_dir``) keyed on the GLB's content
-    signature. A ``.manifest`` sidecar lists the parts so partial cache
-    writes get detected and re-decomposed.
+    ``collision_paths`` is written by the cooker (CoACD decomposition of
+    the entity's visual GLB) and resolved to absolute paths by
+    ``load_scene_package``. The cooked per-entity GLBs are entity-local
+    (origin = initial_pose, world axes), so hulls drop in with zero geom
+    offset. All-or-nothing: a partially missing hull set falls back to
+    the AABB box rather than colliding with half a chair.
     """
-    visual_path = entity.get("visual_path")
-    if not isinstance(visual_path, str):
+    raw = entity.get("collision_paths")
+    if not isinstance(raw, list) or not raw:
         return []
-    glb = Path(visual_path)
-    if not glb.exists():
+    paths = [Path(item) for item in raw if isinstance(item, str) and item]
+    missing = [path for path in paths if not path.exists()]
+    if missing or not paths:
+        logger.warning(
+            "entity %s: %d/%d cooked collision hulls missing (e.g. %s); "
+            "falling back to AABB box — re-cook the scene package",
+            entity.get("id"),
+            len(missing),
+            len(paths),
+            missing[0] if missing else "<none listed>",
+        )
         return []
-
-    entity_id = str(entity.get("id", "unknown"))
-    stat = glb.stat()
-    key = hashlib.sha256(f"{glb}:{stat.st_size}:{stat.st_mtime_ns}".encode()).hexdigest()[:10]
-    hulls_root = cache_dir or (Path.home() / ".cache" / "dimos" / "entity_hulls")
-    hulls_root.mkdir(parents=True, exist_ok=True)
-    manifest = hulls_root / f"{entity_id}_{key}.manifest"
-
-    if manifest.exists():
-        paths = [
-            hulls_root / line.strip() for line in manifest.read_text().splitlines() if line.strip()
-        ]
-        if paths and all(p.exists() for p in paths):
-            return paths
-
-    try:
-        import open3d as o3d  # type: ignore[import-untyped]
-
-        mesh = o3d.io.read_triangle_mesh(str(glb))
-        if not mesh.has_vertices():
-            return []
-
-        parts: list[tuple[Any, Any]] = []
-        try:
-            import coacd  # type: ignore[import-not-found, import-untyped]
-            import numpy as np
-
-            if not getattr(_entity_hull_paths, "_coacd_silenced", False):
-                coacd.set_log_level("error")
-                _entity_hull_paths._coacd_silenced = True  # type: ignore[attr-defined]
-            verts = np.asarray(mesh.vertices, dtype=np.float64)
-            tris = np.asarray(mesh.triangles, dtype=np.int32)
-            cm = coacd.Mesh(verts, tris)
-            parts = coacd.run_coacd(
-                cm,
-                threshold=_COACD_THRESHOLD,
-                max_convex_hull=_COACD_MAX_HULLS,
-                resolution=500,
-                mcts_iterations=30,
-                mcts_nodes=10,
-            )
-        except Exception as exc:
-            logger.warning("entity %s: CoACD failed (%s); using single convex hull", entity_id, exc)
-            parts = []
-
-        out_paths: list[Path] = []
-        if parts:
-            import numpy as np
-
-            for i, (v, t) in enumerate(parts):
-                p = hulls_root / f"{entity_id}_{key}_h{i:03d}.obj"
-                hull_mesh = o3d.geometry.TriangleMesh()
-                hull_mesh.vertices = o3d.utility.Vector3dVector(np.asarray(v, dtype=np.float64))
-                hull_mesh.triangles = o3d.utility.Vector3iVector(np.asarray(t, dtype=np.int32))
-                o3d.io.write_triangle_mesh(str(p), hull_mesh, write_vertex_normals=False)
-                out_paths.append(p)
-        else:
-            hull, _ = mesh.compute_convex_hull()
-            p = hulls_root / f"{entity_id}_{key}.obj"
-            o3d.io.write_triangle_mesh(str(p), hull, write_vertex_normals=False)
-            out_paths.append(p)
-
-        manifest.write_text("\n".join(p.name for p in out_paths) + "\n")
-        return out_paths
-    except Exception as exc:
-        logger.warning("entity %s: hull from %s failed (%s); using AABB box", entity_id, glb, exc)
-        return []
+    return paths
 
 
 def _entity_friction(entity: dict[str, Any]) -> tuple[float, float, float]:
@@ -227,7 +163,6 @@ def add_entities_to_spec(
     entities: list[dict[str, Any]],
     *,
     force_static: frozenset[str] = frozenset(),
-    hull_cache_dir: Path | None = None,
 ) -> None:
     """Append scene-package entities as bodies on ``spec.worldbody``.
 
@@ -288,7 +223,13 @@ def add_entities_to_spec(
             geom_kwargs["mass"] = mass
 
         shape = descriptor.get("shape_hint", "mesh")
-        hull_paths = _entity_hull_paths(entity, hull_cache_dir) if shape == "mesh" else []
+        hull_paths = _entity_collision_hulls(entity) if shape == "mesh" else []
+        if shape == "mesh" and not hull_paths and "collision_paths" not in entity:
+            logger.warning(
+                "entity %s: mesh entity has no cooked collision hulls; using AABB box "
+                "(re-cook the scene package with dimos.simulation.scene_assets.cook)",
+                entity_id,
+            )
         if hull_paths:
             base_name = entity_body_name(entity_id)
             if dynamic:

@@ -2,41 +2,56 @@
 
 A **scene package** is a robot-agnostic, self-contained directory holding
 everything any DimOS simulator needs to load a 3D scene: visual mesh,
-collision mesh, per-object semantic table, scene-only MuJoCo wrapper, and
-a list of dynamic interactables. One source asset → one package → consumed
-by **pimsim** (browser Havok) and **MuJoCo** with the same metadata. The
-robot is attached at runtime via `MjSpec.attach()` inside
-`MujocoSimModule.start`, so the package itself never carries the robot.
+collision artifacts, per-object semantic table, a scene-only MuJoCo wrapper,
+and a list of dynamic entities. One source asset → one package → consumed by
+**pimsim** (browser Havok) and **MuJoCo** with the same metadata. The robot is
+never part of the package; the runtime attaches it via `MjSpec.attach()`
+inside `MujocoSimModule.start`.
+
+The lifecycle is three steps:
+
+1. **Author** — drop a `<scene>.cook.json` sidecar next to the source mesh.
+2. **Cook** — `python -m dimos.simulation.scene_assets.cook` bakes the package.
+3. **Compose** — at runtime the sim module loads the wrapper, attaches the
+   robot, and adds entities as first-class MuJoCo bodies.
+
+## Package layout
 
 ```text
 data/scene_packages/<name>/
-├── scene.meta.json                manifest — all paths relative to package root
+├── scene.meta.json              manifest — all paths package-relative
 ├── browser/
-│   ├── visual.glb                 gltfpack-optimised, static parts only
-│   ├── collision.glb              decimated trimesh for browser raycasts
-│   └── objects.json               per-prim semantic table (id, path, AABB)
+│   ├── visual.glb               gltfpack-optimised, static parts only
+│   ├── collision.glb            decimated trimesh — browser/lidar raycasts
+│   └── objects.json             per-prim semantic table (id, path, AABB)
 ├── entities/
-│   └── <safe_id>/visual.glb       per-entity GLB in entity-local frame
+│   └── <id>/
+│       ├── visual.glb           per-entity GLB, entity-local frame
+│       └── mujoco_collision/    CoACD convex hulls (hull_000.obj, …)
 └── mujoco/
-    └── <key>/
-        ├── wrapper.xml            scene-only MJCF (no robot include)
-        └── *.obj                  cooked scene collision meshes
+    └── <key>/                   content-hash key
+        ├── wrapper.xml          scene-only MJCF (no robot include)
+        └── *.obj                static-scene collision (per-prim hulls;
+                                 multi-hull _hNNN for "decompose" prims)
 ```
 
-Packages are content-hash keyed on source mesh + alignment + sidecar +
-schema. They do **not** depend on any specific robot; the same cooked
-package binds to any robot the runtime attaches.
+`scene.meta.json` top-level keys: `alignment`, `artifact_frames`,
+`artifacts` (paths to the items above), `entities`, `package_dir`,
+`source_path`, `stats`. Packages are content-hash keyed on source mesh +
+alignment + sidecar + schema version — change any of those and the cooker
+writes a fresh package.
 
-## Authoring a scene
+## Authoring
 
-Drop two files next to your source mesh:
+Two files next to each other:
 
 ```text
-my_scene.glb                       # the source asset (USD/GLB/OBJ/PLY)
-my_scene.cook.json                 # the cook sidecar (optional but recommended)
+my_scene.glb         # source asset (USD/GLB/OBJ/PLY)
+my_scene.cook.json   # cook sidecar — optional but recommended
 ```
 
-A minimal `cook.json`:
+Without a sidecar you still get a valid package: auto-fit static collision,
+no entities. A minimal sidecar:
 
 ```json
 {
@@ -50,25 +65,44 @@ A minimal `cook.json`:
 }
 ```
 
-Without a sidecar the cooker still works — you get an entity-free
-package with auto-fit collision.
+### Static collision overrides
 
-## Interactables
-
-Two flavours, both expressed in `interactables[]`:
-
-### Extracted from the source mesh
-
-For chairs, fridges, printers — anything already modelled in the
-source asset that you want as a dynamic body. The cooker matches
-`source_prim_paths` with `fnmatch` against USD prim paths and GLB node
-names, splits the matched prims out of the static bake, and emits a
-per-entity GLB.
+The `collision` block controls how static-scene prims are cooked (same
+schema as the legacy `<scene>.collision.json`, which is still auto-discovered
+for old scenes):
 
 ```json
 {
-  "id": "office_chair_001",
-  "source_prim_paths": ["Chair.001_*"],
+  "collision": {
+    "default": "auto",
+    "prim_overrides": {
+      "Floor":       {"type": "plane"},
+      "Wall_*":      {"type": "box"},
+      "Curtain_*":   {"type": "skip"},
+      "Stairs_*":    {"type": "decompose", "max_hulls": 16},
+      "FlatPanel_*": {"type": "hull"}
+    }
+  }
+}
+```
+
+Per-pattern `type`: `"auto"` | `"box"` | `"sphere"` | `"cylinder"` |
+`"capsule"` | `"plane"` | `"hull"` | `"mesh"` | `"decompose"` | `"skip"`.
+Full reference: `dimos/simulation/mujoco/collision_spec.py`.
+
+### Interactables (dynamic entities)
+
+Entries in `interactables[]` become entities. Two sidecar flavours:
+
+**Extracted** — already modelled in the source asset (chairs, printers).
+The cooker matches `source_prim_paths` with `fnmatch` against USD prim paths
+/ GLB node names, splits the prims out of the static bake, and emits a
+per-entity GLB plus CoACD collision hulls:
+
+```json
+{
+  "id": "office_chair_000",
+  "source_prim_paths": ["Chair_000_*"],
   "kind": "dynamic",
   "mass": 8.0,
   "physics": {"shape": "mesh"},
@@ -76,69 +110,50 @@ per-entity GLB.
 }
 ```
 
-### Synthetic
-
-For props that aren't in the source mesh — manipulation cubes, test
-markers, placed obstacles. No prim matching; geometry comes from
-`physics.shape` + `physics.extents`, pose is explicit.
+**Synthetic** — primitive props not in the source mesh (tables, test
+markers). No prim matching; geometry comes from `physics.shape` +
+`physics.extents`, pose is explicit:
 
 ```json
 {
-  "id": "manip_cube",
-  "pose": {"x": 0.0, "y": 0.75, "z": 0.69},
-  "kind": "dynamic",
-  "mass": 0.15,
-  "physics": {
-    "shape": "box",
-    "extents": [0.08, 0.08, 0.08],
-    "friction": [1.0, 0.1, 0.001]
-  },
-  "visual": {"rgba": [0.85, 0.20, 0.20, 1.0]},
-  "tags": ["manipulation"]
+  "id": "manip_table",
+  "pose": {"x": 0.0, "y": 1.0, "z": 0.63},
+  "kind": "static",
+  "mass": 0.0,
+  "physics": {"shape": "box", "extents": [0.6, 0.6, 0.04],
+              "friction": [1.0, 0.05, 0.001]},
+  "visual": {"rgba": [0.55, 0.42, 0.3, 1.0]}
 }
 ```
 
-### Field reference
+There is a third source of entities the sidecar does **not** cover:
+**scanned props** (the office `manip_cup` / `manip_bottle` / `manip_can` /
+`manip_box` / `manip_marker` / `manip_tape`). These are generated from
+photos by the SAM3D image→mesh pipeline and injected into the cooked
+package directly — per-entity `visual.glb`, `mujoco_collision/` hulls, and
+a `scene.meta.json` entry with `artifacts` provenance pointers
+(`sam3_source_image` etc.). They follow the same entity shape as cooked
+entries but are invisible to the cook sidecar. **Caveat:** because of
+this, `--rebake` of a package regenerates only sidecar-declared entities —
+re-run the injection step (or port the props into the sidecar) after a
+rebake, or the scanned props vanish.
+
+### Sidecar field reference
 
 | Field | Required | Notes |
 |---|---|---|
-| `id` | yes | Stable, used as `entity:<id>` MuJoCo body name |
-| `source_prim_paths` | one of | `fnmatch` globs against USD paths / GLB nodes — extracted entity |
+| `id` | yes | Stable; becomes the `entity:<id>` MuJoCo body name |
+| `source_prim_paths` | one of | `fnmatch` globs — extracted entity |
 | `pose` | one of | `{x, y, z, qw, qx, qy, qz}` — synthetic entity |
-| `kind` | – | `"dynamic"` (freejoint+mass), `"kinematic"` (RPC-driven), `"static"` (welded). Default `"dynamic"` |
-| `mass` | – | kg. 0 forces kinematic. Default 1.0 |
+| `kind` | – | `"dynamic"` (freejoint+mass) \| `"kinematic"` (RPC-driven) \| `"static"` (welded). Default `"dynamic"` |
+| `mass` | – | kg; 0 forces kinematic. Default 1.0 |
 | `physics.shape` | – | `"mesh"` \| `"box"` \| `"sphere"` \| `"cylinder"`. Default `"box"` |
-| `physics.extents` | for synthetic | Half-extents triple for box, `[radius]` for sphere, `[radius, half_height]` for cylinder |
+| `physics.extents` | synthetic | Half-extents triple for box, `[radius]` sphere, `[radius, half_height]` cylinder |
 | `physics.friction` | – | Scalar sliding or `[slide, torsional, rolling]`. Default `[0.3, 0.05, 0.001]` |
-| `visual.rgba` | – | `[r, g, b, a]` 0–1 — colour in both pimsim and MuJoCo |
+| `visual.rgba` | – | `[r, g, b, a]` 0–1, both simulators |
 | `remove_from_static` | – | Strip matched prims from the static bake. Default true |
-| `spawn` | – | `"initial"` (in world at boot) or `"manual"` (only via RPC). Default `"initial"` |
-| `tags` | – | Free-form labels — semantic queries |
-
-### Collision policy overrides
-
-The `collision` block under the sidecar is the same schema as the
-older `<scene>.collision.json` file. Most useful keys:
-
-```json
-{
-  "collision": {
-    "default": "auto",
-    "prim_overrides": {
-      "Floor":           {"type": "plane"},
-      "Wall_*":          {"type": "box"},
-      "Curtain_*":       {"type": "skip"},
-      "Stairs_*":        {"type": "decompose", "max_hulls": 16},
-      "FlatPanel_*":     {"type": "hull"}
-    }
-  }
-}
-```
-
-Per-pattern `type` values: `"auto"` | `"box"` | `"sphere"` |
-`"cylinder"` | `"capsule"` | `"plane"` | `"hull"` | `"mesh"` |
-`"decompose"` | `"skip"`. See `dimos/simulation/mujoco/collision_spec.py`
-for the full reference.
+| `spawn` | – | `"initial"` (in world at boot) \| `"manual"` (RPC only). Default `"initial"` |
+| `tags` | – | Free-form labels for semantic queries |
 
 ## Cooking
 
@@ -148,18 +163,66 @@ python -m dimos.simulation.scene_assets.cook \
     --output-dir=data/scene_packages/my_scene
 ```
 
-The cooker is **strictly robot-agnostic** — no `--robot-mjcf` flag, no
-robot bundled into the package. `--rebake` ignores existing cooked files and rebuilds
-from scratch. The cooker auto-discovers `<scene>.cook.json` next to the
-source. Default package names are keyed on source bytes, sidecar JSON, alignment,
-and schema version — change any of those and a fresh package directory is
-created automatically.
+The cooker auto-discovers `<scene>.cook.json` next to the source
+(`--cook-spec` overrides). Useful flags: `--rebake` (ignore cooked files,
+rebuild), `--scale` / `--translation` / `--rotation-zyx-deg` / `--no-y-up`
+(source alignment), `--visual-optimizer {gltfpack,blender,copy}` and the
+`--visual-simplify-*` family, `--no-browser-collision`, `--no-mujoco`. The
+cooker is strictly robot-agnostic — there is no robot flag and never a robot
+in the package.
 
-## Dropping in a new robot
+## Entity collision: how a mesh entity actually collides
 
-There is no "drop in a new robot" step for the cooker — every cooked
-scene package already supports every robot. The runtime composer
-attaches the robot when the sim module starts:
+For `physics.shape: "mesh"` entities, collision geometry is **cooked into
+the package** — there is no runtime decomposition and no per-machine
+cache:
+
+1. **Cook** — `dimos/simulation/scene_assets/entity_collision.py` runs
+   CoACD on each entity's `visual.glb` and writes the convex hulls to
+   `entities/<id>/mujoco_collision/hull_*.obj`, recorded per entity as
+   `collision_paths` in `scene.meta.json`. Chair legs / seat / back each
+   get their own hull, so contacts are chair-shaped, and MuJoCo's
+   convex-only narrowphase is exact on them. If CoACD fails on a mesh,
+   the cooker falls back to a single convex hull.
+2. **Runtime** — `add_entities_to_spec` (see
+   `dimos/simulation/mujoco/entity_scene.py`) loads exactly those files
+   (all-or-nothing per entity: a partially missing hull set is rejected
+   rather than colliding with half a chair).
+3. **Fallback** — a mesh entity with no cooked hulls collides as its AABB
+   box, with a warning telling you to re-cook the package.
+
+Hand-tuning is supported: edit the `hull_*.obj` files in the package and
+they are authoritative. Primitive entities (`box`/`sphere`/`cylinder`)
+take their geom directly from the descriptor extents — no meshes
+involved.
+
+## Runtime composition
+
+`MujocoSimModule._compose_model` does, in order:
+
+1. Load the cooked `wrapper.xml` into an `MjSpec`.
+2. Load the robot MJCF into its own `MjSpec` (with `meshdir` set so
+   menagerie robots find their STLs) and
+   `spec_scene.attach(spec_robot, prefix=robot_id, frame=spawn_frame)`.
+   The robot is attached **first** so it keeps the leading freejoint/qpos
+   block.
+3. `add_entities_to_spec(spec, pkg.entities)` — each `spawn=="initial"`
+   entity becomes a body named `entity:<id>`. `kind=="dynamic"` with
+   positive mass gets a freejoint `entity:<id>:free`; everything else is
+   welded. Entity geoms carry `priority=1` so their friction wins the
+   contact pair (MuJoCo's default element-wise-max rule would let the
+   μ=1.0 floor override every entity), and sit in geom group 3 so
+   depth-based lidar renders see them.
+4. `spec.compile()` → one `MjModel` with scene + robot + entities.
+5. **Spawn audit** — `spawn_penetrators(model)` finds entities that boot
+   >2 cm inside the static scene and recomposes with them welded static
+   instead of letting MuJoCo eject them.
+
+Multi-robot scenes: call `attach()` once per robot with distinct `prefix`
+values. `compose_entity_model(pkg)` is the legacy pre-compiled-`.mjb` path;
+new code should not use it.
+
+Blueprint-side wiring:
 
 ```python
 from dimos.simulation.engines.mujoco_sim_module import MujocoSimModule
@@ -168,115 +231,71 @@ from dimos.simulation.scenes.catalog import resolve_scene_package
 pkg = resolve_scene_package("dimos-office")
 
 MujocoSimModule.blueprint(
-    scene_xml=str(pkg.mujoco_scene_path),    # cooked scene-only wrapper
-    robot_mjcf="path/to/go2.xml",            # any robot MJCF
-    robot_meshdir="path/to/go2/assets",      # robot's mesh directory
-    robot_id="",                             # body-name prefix (empty for single-robot)
-    scene_entities=pkg.entities,             # chairs, props, etc.
+    scene_xml=str(pkg.mujoco_scene_path),  # cooked scene-only wrapper
+    robot_mjcf="path/to/g1.xml",           # any robot MJCF
+    robot_meshdir="path/to/g1/assets",
+    robot_id="",                           # body-name prefix ("" if single robot)
+    scene_entities=pkg.entities,
     spawn_xy=(0.0, 0.0),
-    spawn_z=0.06,
+    spawn_z=0.793,
 )
 ```
 
-At start time `MujocoSimModule._compose_model` does:
-
-1. Load the cooked scene wrapper into an `MjSpec`.
-2. Add scene-package entities as bodies on `spec.worldbody` (entities
-   with `kind="dynamic"` get a freejoint; static ones are welded).
-3. Load the robot's MJCF into a separate `MjSpec`, setting its
-   `meshdir` so menagerie robots find their STLs.
-4. `spec_scene.attach(spec_robot, prefix=robot_id, frame=spawn_frame)`.
-5. `spec_scene.compile()` → one `MjModel` with scene + robot + entities.
-
-For multi-robot scenes, call `attach()` once per robot with distinct
-`prefix` values to namespace body / joint / actuator / sensor names.
-
 ### What the robot MJCF must not have
 
-- **No scene geometry.** No floor planes, walls, furniture. The scene
-  package owns that.
-- **No manipulation rigs.** No hardcoded `manip_*` bodies or tables.
-  Author those as synthetic interactables in the scene's `cook.json`
-  instead — they then spawn into pimsim and MuJoCo from one source.
-- **No external `<include>`s outside its own directory tree.** `MjSpec`
-  resolves the robot's includes relative to its own location.
+- **No scene geometry** — floors, walls, furniture belong to the package.
+- **No manipulation rigs** — author props as interactables; they then spawn
+  into pimsim and MuJoCo from one source. (The old hardcoded `manip_*` rig
+  in `g1_gear_wbc.xml` was removed for exactly this reason.)
+- **No external `<include>`s** outside its own directory tree — `MjSpec`
+  resolves includes relative to the robot file.
 
-## Consuming a package at runtime
-
-### From a Python blueprint (MuJoCo backend)
-
-See the snippet above. The cooker hands you a `ScenePackage` whose
-`mujoco_scene_path` is a robot-free wrapper XML; everything else
-(`entities`, `objects_path`, `visual_path`, …) is robot-agnostic too.
-
-### Topics published by either simulator
+## Topics published by either simulator
 
 | Topic | Type | Producer | Notes |
 |---|---|---|---|
 | `/odom` | `PoseStamped` | sim | robot base pose |
 | `/cmd_vel` | `Twist` | controller | drive command (sim subscribes) |
 | `/coordinator/joint_state` | `JointState` | coordinator | sim writes via SHM, coordinator publishes |
-| `/entity_state_batch` | `EntityStateBatch` | physics authority | **same wire format from MuJoCo and pimsim** — consumers don't care |
-| `/lidar` | `PointCloud2` | rust `scene_lidar` | raycast over `browser/collision.glb` + dynamic entities |
+| `/entity_state_batch` | `EntityStateBatch` | physics authority | same wire format from MuJoCo and pimsim — consumers don't care |
+| `/lidar` | `PointCloud2` | rust `scene_lidar` | raycasts `browser/collision.glb` + dynamic entities |
 
-The "physics authority" is whichever sim is wired in the blueprint —
-MuJoCo for G1 whole-body, pimsim Havok for navigation-only flows. The
-*other* one mirrors the published states as kinematic bodies for
-rendering.
-
-## What a `scene.meta.json` entity entry looks like
-
-```json
-{
-  "id": "office_chair_001",
-  "tags": ["chair", "office", "movable"],
-  "source_prim_paths": ["Chair.001_*"],
-  "matched_prim_paths": ["Chair.001_Mesh.030", "Chair.001_Mesh.030_1"],
-  "visual_node_patterns": ["Chair.001"],
-  "remove_from_static": true,
-  "spawn": "initial",
-  "synthetic": false,
-  "aabb": {"min": [...], "max": [...]},
-  "initial_pose": {"x": -3.74, "y": -0.82, "z": 0.49,
-                   "qw": 1.0, "qx": 0.0, "qy": 0.0, "qz": 0.0},
-  "visual_path": "entities/office_chair_001/visual.glb",
-  "descriptor": {
-    "entity_id": "office_chair_001",
-    "kind": "dynamic",
-    "shape_hint": "mesh",
-    "extents": [],
-    "mass": 8.0,
-    "mesh_ref": "entities/office_chair_001/visual.glb"
-  },
-  "physics": {"shape": "mesh"},
-  "visual": {}
-}
-```
-
-`descriptor` is the runtime-facing subset (matches `EntityDescriptor`
-on the wire); the rest is provenance for debuggability.
+The physics authority is whichever sim the blueprint wires in — MuJoCo for
+whole-body flows, pimsim Havok for navigation-only. The other one mirrors
+published states as kinematic bodies.
 
 ## Bundled scenes
 
-| Scene name | Source | Use case |
+| Scene name | Package dir | Contents |
 |---|---|---|
-| `dimos-office` | `data/dimos_office_mesh/dimos_office_mesh.glb` | Default — office with 17 chairs, 1 printer, manip rig |
-| `street-lite` | Sketchfab street scene | Outdoor nav |
-| `lowpoly-tdm` | Sketchfab lowpoly map | Lightweight nav stress test |
-| `mall-babylon-nolights` | Generated mall | Large indoor nav |
+| `dimos-office` (default) | `dimos_office` | Office: 17 chairs, printer, manip table, 6 SAM3D-scanned props |
+| `dimos-office-splat` | `dimos_office_splat` | Office + Gaussian splat for `SplatCameraModule` |
+| `street-lite` | `street_lite` | Outdoor nav |
+| `lowpoly-tdm` | `lowpoly_tdm` | Lightweight nav stress test |
+| `mall-babylon-nolights` | `mall_babylon_nolights` | Large indoor nav |
 
-Aliases live in `dimos/simulation/scenes/catalog.py`. Add a new entry
-to `_PACKAGE_DIRS` and `_ALIASES` if you cook a new scene you want
-the rest of the stack to find by name.
+Aliases live in `dimos/simulation/scenes/catalog.py` (`office`, `street`,
+`mall`, `tdm`, …). Cooked a new scene? Add it to `_PACKAGE_DIRS` and
+`_ALIASES` so the rest of the stack finds it by name.
+
+## Open
+
+- Scanned (SAM3D) entities live only in the cooked package; the cook
+  sidecar doesn't know about them, so `--rebake` drops them (see caveat
+  above). The office sidecar also still lists a `manip_cube` the package
+  no longer has.
+- Scene-package articulation (doors, drawers) has no schema yet —
+  `joints[]` on `InteractableSpec` is the next extension.
 
 ## Reference
 
 - `dimos/simulation/scene_assets/sidecar.py` — `<scene>.cook.json` schema
 - `dimos/simulation/scene_assets/plan.py` — sidecar → resolved cook plan
-- `dimos/simulation/scene_assets/cook.py` — top-level cook entry point + CLI
+- `dimos/simulation/scene_assets/cook.py` — cook entry point + CLI
 - `dimos/simulation/scene_assets/spec.py` — `ScenePackage` dataclass + on-disk JSON shape
-- `dimos/simulation/scene_assets/browser_collision.py` — fused collision GLB + `objects.json` sidecar
-- `dimos/simulation/scene_assets/visual_blender.py` — Blender pass to extract per-entity GLBs
-- `dimos/simulation/mujoco/scene_mesh_to_mjcf.py` — MJCF wrapper + portable robot bundling
-- `dimos/simulation/mujoco/entity_scene.py` — runtime composition of entities into the cooked MJCF
-- `dimos/simulation/scenes/catalog.py` — `resolve_scene_package(name | path)` registry
+- `dimos/simulation/scene_assets/browser_collision.py` — fused collision GLB + `objects.json`
+- `dimos/simulation/scene_assets/entity_collision.py` — cook-time CoACD hulls per entity
+- `dimos/simulation/scene_assets/visual_blender.py` — Blender pass for per-entity GLBs
+- `dimos/simulation/mujoco/collision_spec.py` — static-collision policy types
+- `dimos/simulation/mujoco/entity_scene.py` — runtime entity composition + spawn audit
+- `dimos/simulation/scenes/catalog.py` — `resolve_scene_package(name | path)`

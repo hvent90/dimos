@@ -200,6 +200,7 @@ def _resolve_package_path(raw: str | None, package_dir: Path) -> Path | None:
 
 
 _ENTITY_PATH_KEYS = ("visual_path", "collision_path", "mesh_path")
+_ENTITY_PATH_LIST_KEYS = ("collision_paths",)
 
 
 def _serialize_entity_paths(
@@ -239,6 +240,11 @@ def _rewrite_entity_paths(
     for key in _ENTITY_PATH_KEYS:
         if key in entity:
             entity[key] = rewrite(entity[key])
+
+    for key in _ENTITY_PATH_LIST_KEYS:
+        value = entity.get(key)
+        if isinstance(value, list):
+            entity[key] = [rewrite(item) for item in value]
 
     artifacts = entity.get("artifacts")
     if isinstance(artifacts, dict):

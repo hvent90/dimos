@@ -71,6 +71,34 @@ def test_load_scene_package_rejects_mismatched_artifact_frames(tmp_path: Path) -
         load_scene_package(metadata_path)
 
 
+def test_entity_collision_paths_round_trip(tmp_path: Path) -> None:
+    raw = _metadata(tmp_path)
+    raw["entities"] = [
+        {
+            "id": "chair",
+            "visual_path": "entities/chair/visual.glb",
+            "collision_paths": [
+                "entities/chair/mujoco_collision/hull_000.obj",
+                "entities/chair/mujoco_collision/hull_001.obj",
+            ],
+            "descriptor": {"shape_hint": "mesh"},
+        }
+    ]
+    metadata_path = tmp_path / "scene.meta.json"
+    metadata_path.write_text(json.dumps(raw))
+
+    package = load_scene_package(metadata_path)
+
+    assert package.entities[0]["collision_paths"] == [
+        str(tmp_path / "entities/chair/mujoco_collision/hull_000.obj"),
+        str(tmp_path / "entities/chair/mujoco_collision/hull_001.obj"),
+    ]
+    assert package.to_json_dict()["entities"][0]["collision_paths"] == [
+        "entities/chair/mujoco_collision/hull_000.obj",
+        "entities/chair/mujoco_collision/hull_001.obj",
+    ]
+
+
 def test_load_scene_package_accepts_expected_artifact_frames(tmp_path: Path) -> None:
     metadata_path = tmp_path / "scene.meta.json"
     metadata_path.write_text(json.dumps(_metadata(tmp_path)))

@@ -30,6 +30,10 @@ from typing import Any
 from dimos.simulation.mujoco.collision_spec import CollisionSpec
 from dimos.simulation.mujoco.scene_mesh_to_mjcf import load_or_bake
 from dimos.simulation.scene_assets.browser_collision import cook_browser_collision
+from dimos.simulation.scene_assets.entity_collision import (
+    COLLISION_DIR_NAME,
+    cook_entity_collision_hulls,
+)
 from dimos.simulation.scene_assets.inspect import inspect_scene_asset
 from dimos.simulation.scene_assets.mesh_scene import SceneMeshAlignment
 from dimos.simulation.scene_assets.plan import build_scene_cook_plan
@@ -137,6 +141,11 @@ def cook_scene_package(
             rebake=rebake,
         )
 
+    if mujoco.enabled:
+        hull_counts = _cook_entity_collision(entities, rebake=rebake)
+        if hull_counts:
+            stats["entity_collision"] = {"hulls_per_entity": hull_counts}
+
     visual_result = cook_browser_visual(
         visual_source,
         browser_dir,
@@ -187,6 +196,41 @@ def cook_scene_package(
     package.write_metadata()
     logger.info("scene package cooked: %s", package.metadata_path)
     return package
+
+
+def _cook_entity_collision(
+    entities: list[dict[str, Any]],
+    *,
+    rebake: bool,
+) -> dict[str, int]:
+    """Decompose every mesh entity's GLB into package collision hulls.
+
+    Mutates the entity metadata in place, recording the hull files as
+    ``collision_paths`` so the runtime composer loads them from the
+    package instead of decomposing at boot. Returns hull counts by
+    entity id.
+    """
+    hull_counts: dict[str, int] = {}
+    for entity in entities:
+        if entity.get("descriptor", {}).get("shape_hint") != "mesh":
+            continue
+        visual_path = entity.get("visual_path")
+        if not visual_path or not Path(visual_path).exists():
+            logger.warning(
+                "entity %s: mesh entity has no cooked visual GLB; "
+                "no collision hulls (runtime falls back to AABB box)",
+                entity.get("id"),
+            )
+            continue
+        hull_paths = cook_entity_collision_hulls(
+            visual_path,
+            Path(visual_path).parent / COLLISION_DIR_NAME,
+            rebake=rebake,
+        )
+        if hull_paths:
+            entity["collision_paths"] = [str(path) for path in hull_paths]
+            hull_counts[str(entity.get("id"))] = len(hull_paths)
+    return hull_counts
 
 
 def _package_key(
