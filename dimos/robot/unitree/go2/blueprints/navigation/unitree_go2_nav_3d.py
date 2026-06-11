@@ -21,6 +21,7 @@ navigation. The map, paths, and robot pose all live in fastlio's world frame.
 """
 
 import os
+from typing import Any
 
 from dimos.core.coordination.blueprints import autoconnect
 from dimos.core.global_config import global_config
@@ -34,14 +35,31 @@ from dimos.robot.unitree.go2.blueprints.basic.unitree_go2_basic import rerun_con
 from dimos.robot.unitree.go2.connection import GO2Connection
 from dimos.visualization.vis_module import vis_module
 
-voxel_size = 0.05
+voxel_size = 0.1
 # Height of the head-mounted lidar above the ground while standing.
 go2_lidar_height = 0.5
 camera_hz = 1.0
 
+
+def _static_robot_body(rr: Any) -> list[Any]:
+    """Go2-shaped box on fastlio's body frame, counter-rotated for the lidar pitch."""
+    return [
+        rr.Boxes3D(half_sizes=[0.35, 0.155, 0.2], colors=[(0, 255, 127)]),
+        rr.Transform3D(
+            parent_frame="tf#/body",
+            rotation=rr.RotationAxisAngle(axis=(0, 1, 0), degrees=-45.0),
+        ),
+    ]
+
+
 _nav_rerun_config = {
     **rerun_config,
     "max_hz": {**rerun_config["max_hz"], "world/color_image": camera_hz},
+    # base_link tf comes from the go2 internal odometry, which is not the map
+    # frame. Anchor the robot box to fastlio's body frame instead and hide the
+    # camera frustum that rides base_link.
+    "static": {"world/tf/body": _static_robot_body},
+    "visual_override": {**rerun_config["visual_override"], "world/camera_info": None},
 }
 
 unitree_go2_nav_3d = autoconnect(
