@@ -66,6 +66,15 @@ from dimos.visualization.vis_module import vis_module
 
 _base_joints = make_twist_base_joints("base")
 
+# FlowBase pure-pursuit lookahead (m). The follower defaults to 0.5 m, which on
+# a 1 m-radius circle leaves a ~10 cm geometric chord offset (error ~L²/2R).
+# A benchmark lookahead sweep (2026-06-11) found 0.25 m cuts circle CTE ~4.5×
+# (10.2→2.3 cm) and corner ~2× with no regressions and no wobble up to 0.6 m/s
+# (0.15 m was tighter on the circle but regressed the square at speed). This is
+# FlowBase-specific — applied per-task below, leaving the global 0.5 m default
+# intact for the Go2 and other robots.
+_FLOWBASE_LOOKAHEAD = 0.25
+
 
 def _mock_twist_base(hw_id: str = "base") -> HardwareComponent:
     """Mock holonomic twist base (3-DOF: vx, vy, wz)."""
@@ -174,6 +183,7 @@ coordinator_flowbase_keyboard_teleop = autoconnect(
                 type="path_follower",
                 joint_names=_base_joints,
                 priority=10,
+                params={"lookahead_dist": _FLOWBASE_LOOKAHEAD},
             ),
         ],
     ),
@@ -470,6 +480,7 @@ coordinator_flowbase_precision_nav = (
                         "artifact_path": str(_FLOWBASE_ARTIFACT),
                         "speed": 0.5,  # under the measured 0.63 m/s ceiling
                         "v_max_override": 0.5,
+                        "lookahead_dist": _FLOWBASE_LOOKAHEAD,
                     },
                 ),
             ],
@@ -543,6 +554,7 @@ coordinator_flowbase_benchmark = ControlCoordinator.blueprint(
             type="path_follower",
             joint_names=_base_joints,
             priority=10,
+            params={"lookahead_dist": _FLOWBASE_LOOKAHEAD},
         ),
         # RG arm — same control law as path_follower but owns its own
         # solve_profile() recompute reacting to KeyboardTeleop's e_max stream
@@ -558,6 +570,7 @@ coordinator_flowbase_benchmark = ControlCoordinator.blueprint(
                 "artifact_path": str(_FLOWBASE_ARTIFACT),
                 "speed": 0.5,  # under the measured 0.63 m/s ceiling
                 "v_max_override": 0.5,
+                "lookahead_dist": _FLOWBASE_LOOKAHEAD,
             },
         ),
     ],
