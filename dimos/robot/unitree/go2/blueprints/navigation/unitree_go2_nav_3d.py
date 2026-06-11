@@ -59,7 +59,12 @@ _nav_rerun_config = {
     # frame. Anchor the robot box to fastlio's body frame instead and hide the
     # camera frustum that rides base_link.
     "static": {"world/tf/body": _static_robot_body},
-    "visual_override": {**rerun_config["visual_override"], "world/camera_info": None},
+    "visual_override": {
+        **rerun_config["visual_override"],
+        "world/camera_info": None,
+        # Default LineSegments3D rendering lifts edges 1.7m off the surface.
+        "world/node_edges": lambda msg: msg.to_rerun(z_offset=0.05),
+    },
 }
 
 unitree_go2_nav_3d = autoconnect(

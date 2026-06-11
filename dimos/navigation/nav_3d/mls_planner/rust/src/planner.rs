@@ -14,6 +14,11 @@ use crate::voxel::{surface_point_xyz, VoxelKey};
 /// Robot-rooted candidate search radius, in multiples of node spacing.
 const CANDIDATE_RADIUS_FACTOR: f32 = 3.0;
 
+/// How far to search horizontally when snapping a pose to the surface.
+/// A downward-pitched lidar cannot see the floor under the robot, so the
+/// nearest mapped surface can start well outside the robot footprint.
+const SNAP_SEARCH_RADIUS_M: f32 = 1.5;
+
 /// Snap a pose to the best surface cell.
 pub fn snap_pose_to_cell(
     surface_lookup: &SurfaceLookup,
@@ -30,10 +35,10 @@ pub fn snap_pose_to_cell(
         return Some(cell);
     }
 
-    const SEARCH_RADIUS: i32 = 5;
+    let search_radius = (SNAP_SEARCH_RADIUS_M / voxel_size).ceil() as i32;
     let mut best: Option<(i32, VoxelKey)> = None;
-    for dix in -SEARCH_RADIUS..=SEARCH_RADIUS {
-        for diy in -SEARCH_RADIUS..=SEARCH_RADIUS {
+    for dix in -search_radius..=search_radius {
+        for diy in -search_radius..=search_radius {
             if dix == 0 && diy == 0 {
                 continue;
             }
