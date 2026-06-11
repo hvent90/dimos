@@ -48,6 +48,7 @@ class CameraConfig:
     width: int = 640
     height: int = 480
     fps: float = 15.0
+    geom_groups: tuple[int, ...] | None = None
 
 
 @dataclass
@@ -66,6 +67,7 @@ class _CameraRendererState:
     cam_id: int
     rgb_renderer: mujoco.Renderer
     depth_renderer: mujoco.Renderer
+    scene_option: mujoco.MjvOption | None
     interval: float
     last_render_time: float = 0.0
 
@@ -81,19 +83,32 @@ class MujocoEngine(SimulationEngine):
 
     def __init__(
         self,
-        config_path: Path,
-        headless: bool,
+        config_path: Path | None = None,
+        headless: bool = True,
         cameras: list[CameraConfig] | None = None,
         on_before_step: StepHook | None = None,
         on_after_step: StepHook | None = None,
+        model: mujoco.MjModel | None = None,
     ) -> None:
-        super().__init__(config_path=config_path, headless=headless)
+        """Create an engine from a compiled model or a loadable MJCF/MJB path.
+
+        ``model`` is used for runtime scene+robot composition. ``config_path``
+        is the legacy load-from-disk path, or an identifying source path when
+        a precompiled ``model`` is supplied.
+        """
+        if model is None and config_path is None:
+            raise ValueError("MujocoEngine: either model or config_path must be provided")
+        super().__init__(config_path=config_path or Path("/dev/null"), headless=headless)
         self._on_before_step: StepHook | None = on_before_step
         self._on_after_step: StepHook | None = on_after_step
 
-        xml_path = self._resolve_xml_path(config_path)
-        self._model = mujoco.MjModel.from_xml_path(str(xml_path))
-        self._xml_path = xml_path
+        if model is not None:
+            self._model = model
+            self._xml_path = None
+        else:
+            xml_path = self._resolve_xml_path(config_path)
+            self._model = mujoco.MjModel.from_xml_path(str(xml_path))
+            self._xml_path = xml_path
 
         self._data = mujoco.MjData(self._model)
         self._joint_mappings = build_joint_mappings(self._xml_path, self._model)
@@ -152,6 +167,28 @@ class MujocoEngine(SimulationEngine):
         if mapping.actuator_id is not None:
             return float(self._data.actuator_length[mapping.actuator_id])
         return 0.0
+
+    def set_joint_positions(self, positions: list[float]) -> None:
+        """Set joint qpos directly before the simulation loop starts."""
+        if len(positions) > self._num_joints:
+            raise ValueError(
+                f"Initial position has {len(positions)} joints, expected at most {self._num_joints}"
+            )
+
+        with self._lock:
+            for i, value in enumerate(positions):
+                mapping = self._joint_mappings[i]
+                joint_value = float(value)
+                if mapping.qpos_adr is not None:
+                    self._data.qpos[mapping.qpos_adr] = joint_value
+                if mapping.dof_adr is not None:
+                    self._data.qvel[mapping.dof_adr] = 0.0
+                self._joint_position_targets[i] = joint_value
+                self._joint_velocity_targets[i] = 0.0
+                self._joint_positions[i] = joint_value
+                self._joint_velocities[i] = 0.0
+
+            mujoco.mj_forward(self._model, self._data)
 
     def _apply_control(self) -> None:
         with self._lock:
@@ -240,12 +277,21 @@ class MujocoEngine(SimulationEngine):
             rgb_renderer = mujoco.Renderer(self._model, height=cfg.height, width=cfg.width)
             depth_renderer = mujoco.Renderer(self._model, height=cfg.height, width=cfg.width)
             depth_renderer.enable_depth_rendering()
+            scene_option = None
+            if cfg.geom_groups is not None:
+                scene_option = mujoco.MjvOption()
+                scene_option.geomgroup[:] = 0
+                for group in cfg.geom_groups:
+                    if group < 0 or group >= len(scene_option.geomgroup):
+                        raise ValueError(f"Invalid MuJoCo geom group: {group}")
+                    scene_option.geomgroup[int(group)] = 1
             interval = 1.0 / cfg.fps if cfg.fps > 0 else float("inf")
             cam_renderers[cfg.name] = _CameraRendererState(
                 cfg=cfg,
                 cam_id=cam_id,
                 rgb_renderer=rgb_renderer,
                 depth_renderer=depth_renderer,
+                scene_option=scene_option,
                 interval=interval,
             )
         return cam_renderers
@@ -257,10 +303,24 @@ class MujocoEngine(SimulationEngine):
                 continue
             state.last_render_time = now
 
-            state.rgb_renderer.update_scene(self._data, camera=state.cam_id)
+            if state.scene_option is None:
+                state.rgb_renderer.update_scene(self._data, camera=state.cam_id)
+            else:
+                state.rgb_renderer.update_scene(
+                    self._data,
+                    camera=state.cam_id,
+                    scene_option=state.scene_option,
+                )
             rgb = state.rgb_renderer.render().copy()
 
-            state.depth_renderer.update_scene(self._data, camera=state.cam_id)
+            if state.scene_option is None:
+                state.depth_renderer.update_scene(self._data, camera=state.cam_id)
+            else:
+                state.depth_renderer.update_scene(
+                    self._data,
+                    camera=state.cam_id,
+                    scene_option=state.scene_option,
+                )
             depth = state.depth_renderer.render().copy()
 
             frame = CameraFrame(

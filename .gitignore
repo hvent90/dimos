@@ -89,3 +89,7 @@ recording*.db
 
 # Rerun recordings
 *.rrd
+
+# Scene packages are pulled from LFS (data/.lfs/scene_packages.tar.gz), not tracked loose
+/data/scene_packages/*
+!/data/scene_packages/README.md

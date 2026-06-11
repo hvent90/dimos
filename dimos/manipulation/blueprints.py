@@ -38,12 +38,15 @@ from dimos.core.transport import LCMTransport
 from dimos.hardware.sensors.camera.realsense.camera import RealSenseCamera
 from dimos.manipulation.manipulation_module import ManipulationModule
 from dimos.manipulation.pick_and_place_module import PickAndPlaceModule
+from dimos.manipulation.sim_presets import xarm7_mujoco_scene_preset
 from dimos.msgs.geometry_msgs.Quaternion import Quaternion
 from dimos.msgs.geometry_msgs.Transform import Transform
 from dimos.msgs.geometry_msgs.Vector3 import Vector3
 from dimos.msgs.sensor_msgs.JointState import JointState
 from dimos.perception.object_scene_registration import ObjectSceneRegistrationModule
 from dimos.robot.catalog.ufactory import xarm6 as _catalog_xarm6, xarm7 as _catalog_xarm7
+from dimos.simulation.engines.mujoco_sim_module import MujocoSimModule
+from dimos.visualization.rerun.bridge import RerunBridgeModule
 
 # Single XArm6 planner (standalone, no coordinator)
 _xarm6_planner_cfg = _catalog_xarm6(
@@ -286,30 +289,15 @@ xarm_perception_agent = autoconnect(
 # camera streams and joint state via shared memory.
 # ShmMujocoAdapter attaches to the same SHM buffers by MJCF path.
 
-from dimos.robot.catalog.ufactory import XARM7_SIM_PATH
-from dimos.simulation.engines.mujoco_sim_module import MujocoSimModule
-from dimos.visualization.rerun.bridge import RerunBridgeModule
-
+_xarm7_sim_preset = xarm7_mujoco_scene_preset()
 _xarm7_sim_cfg = _catalog_xarm7(
     name="arm",
     adapter_type="sim_mujoco",
-    address=str(XARM7_SIM_PATH),
     add_gripper=True,
     pitch=math.radians(45),
     tf_extra_links=["link7"],
-    # The MuJoCo scene mounts link_base on a 0.12m pedestal (scene.xml:
-    # link_base pos="0 0 .12"), so the Drake planner's base must sit at the same
-    # height — otherwise the planner solves IK for a base 0.12m too low and every
-    # planned pose executes ~0.12m high on the sim robot (grasps close above the
-    # object). Real hardware mounts the base at the world origin, so this is
-    # sim-only and the real xarm_perception blueprint is unaffected.
-    z_offset=0.12,
-    # Camera-over-desk observation pose (the xarm7.xml "home" keyframe). The sim
-    # boots at qpos0 (arm straight up, camera at the ceiling) and the MuJoCo engine
-    # does not load keyframes; go_home/prepare() drive the arm here and capture it
-    # as the go_init/scan pose so scan_objects() looks down at the desk.
-    home_joints=[0.0, -0.247, 0.0, 0.909, 0.0, 1.15644, 0.0],
     pre_grasp_offset=0.05,
+    **_xarm7_sim_preset.robot_config_kwargs,
 )
 
 
@@ -351,7 +339,7 @@ xarm_perception_sim = autoconnect(
         enable_viz=False,
     ),
     MujocoSimModule.blueprint(
-        address=str(XARM7_SIM_PATH),
+        **_xarm7_sim_preset.mujoco_module_kwargs,
         headless=False,
         dof=7,
         camera_name="wrist_camera",
