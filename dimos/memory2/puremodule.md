@@ -1,237 +1,130 @@
-# Pure Modules
+# Pure Modules — design notes
 
-> New here? Start with the
-> [gentle, runnable introduction](/docs/usage/pure_modules.md) — this page
-> is the reference.
+Usage, tutorial, and the exact rules live in
+[docs/usage/pure_modules.md](/docs/usage/pure_modules.md). This page
+records the *why* — the reasoning behind the design decisions and the
+plans for what isn't built yet. Read it before changing the
+implementation in [puremodule.py](puremodule.py) / [tick.py](tick.py) /
+[health.py](health.py).
 
-A `PureModule` separates a module into two declarations and one pure function:
+## Why ticks
 
-- **when it runs** — one input marked `tick()` fires the ticks;
-- **how every other input is sampled at that moment** — `latest()`,
-  `interpolate()`, `window()`;
-- **what it computes** — `step()`, a pure function of the aligned inputs
-  (and, optionally, an explicit recurrent state).
+If modules are stateless — or their state is fed externally, react/redux
+style — replay, time-travel, live migration, restarts that resume, and
+parallel execution stop being features built into each module and become
+properties of the runtime. The blocker for robotics is that "call the
+module on its inputs" is ill-posed when sensors don't share a clock: the
+declaration must say *when* the module runs (the tick) and *how* every
+other input is sampled at that moment (`latest` / `interpolate` /
+`window`). The sampler language is the smallest vocabulary we found that
+covers the real cases (pose-at-image-time, hold-with-expiry, IMU
+batching); `every(hz)` clock ticks and multi-input triggers are deferred
+until a concrete module needs them.
 
-Because `step` never touches ports, threads, or `self`-state, the same class
-runs **live** on pubsub ports and **offline** over stored memory2 streams —
-and can't tell the difference. That property is what buys replay,
-time-travel debugging, restarts that resume where they left off, migration
-across processes/machines, and parallel execution.
-
-```python skip
-from dimos.core.stream import In, Out
-from dimos.memory2.puremodule import PureModule, tick, interpolate, latest
-
-class Follower(PureModule):
-    image: In[Image] = tick()              # 30 fps -> 30 ticks/s
-    pose: In[PoseStamped] = interpolate()  # 50 Hz, slerped to frame time
-    imu: In[Imu] = latest(max_age=0.1)     # newest, None if stale
-
-    cmd_vel: Out[Twist]
-
-    def step(self, image: Image, pose: PoseStamped, imu: Imu | None) -> Twist:
-        return chase(image, pose)
-```
-
-## The alignment language
-
-Sensors don't share a clock: cameras run at 30 fps, odometry at 50 Hz, IMUs
-at 200 Hz. "Call the module with an image and *the pose at image time*"
-requires a policy, and the policy is the whole declaration:
-
-| Sampler | Value at tick time `t` | Delays the tick? |
-|---|---|---|
-| `tick()` | the observation that fired the tick | — (it *is* the tick) |
-| `latest(max_age=None)` | newest obs with `ts <= t`; missing if older than `max_age` | never |
-| `interpolate(tolerance=0.5)` | lerp/slerp between the obs bracketing `t` | live: until the next obs arrives (~one sample period) |
-| `window(seconds)` | list of obs in `(t - seconds, t]` | never |
-
-An `In` port with no sampler defaults to `latest()`. `interpolate()`
-understands numbers, `Pose`, and `PoseStamped` (position lerp + quaternion
-slerp; observation poses are interpolated too); other types degrade to
-nearest-neighbor. When no bracket exists (stream ended, tick before the
-first sample) it falls back to the nearest observation within `tolerance`.
-
-Your "at what state do we call the module" examples translate as:
-
-| Intent | Declaration |
-|---|---|
-| tick on every image, poses interpolated | `image = tick()`, `pose = interpolate()` |
-| tick on every pose, image latest-or-None | `pose = tick()`, `image = latest()`, param `image: Image \| None` |
-| tick on every image, all IMU since 100ms before | `imu = window(0.1)`, param `imu: list[Imu]` |
-
-## Binding rules
-
-`step` parameters bind to inputs **by name**; the annotation picks the shape:
-
-- `Image` → `obs.data`; `Observation[Image]` → the full observation
-  (`ts`, `pose`, `tags`);
-- `X | None` → missing becomes `None`; missing on a non-optional
-  parameter **drops the tick**;
-- `window()` inputs: `list[X]` or `list[Observation[X]]`;
-- reserved names: `ts: float` is the tick time; `state` (first parameter)
-  makes the module a Mealy machine.
-
-## Outputs
-
-- **One `Out` port** — `step` returns the value; returning `None` emits
-  nothing, so ticks double as filters.
-- **Several `Out` ports** — return `{port_name: value}`. A *partial* dict
-  is allowed (omitted ports stay quiet that tick — e.g. a command every
-  tick, an alert occasionally); unknown keys raise `TypeError`.
-- **No `Out` ports** — the return value is ignored.
-
-Where outputs land differs by mode: **live**, every dict entry publishes
-to its own port (and is appended to that port's stream in the module
-store); **offline**, `over()` yields one observation per tick — the bare
-value for single-output modules, the `{port: value}` dict for
-multi-output ones (slice one output back out with
-`.filter(lambda o: "alerts" in o.data).map_data(lambda o: o.data["alerts"])`).
-That dict-row asymmetry is a known open point — the planned alternative
-is a run handle exposing one store-backed stream per output.
-
-## Offline: develop on recorded memory
-
-Record a session (any storage-backed store), then iterate on the module in
-a notebook — no LCM, no processes, deterministic:
-
-```python skip
-from dimos.memory2.store.sqlite import SqliteStore
-
-db = SqliteStore(path="walk_2026_06_11.db")
-
-out = Follower.over(image=db.streams.image, pose=db.streams.pose,
-                    imu=db.streams.imu)
-
-out.to_list()                                  # run it
-out.map_data(lambda o: o.data.linear.x).to_list()  # poke at results
-out.save(db.stream("cmd_vel_v2")).drain()      # or persist them
-```
-
-`over()` composes with the whole stream API — replay a slice with
-`db.streams.image.after(t0).before(t1)`, downsample, quality-filter, etc.
-Called on the class, `over` needs no module machinery at all
-(`Follower.offline(some_config=...)` when the step reads `self.config`).
-Don't pass `.live()` streams to `over()` — deploy the module for that.
-
-Offline alignment is *exact*: events are merged in timestamp order, so a
-run over the same recording produces the same ticks every time.
-
-## Live: the same class on ports
-
-Deployed in a blueprint, each `In` port feeds a memory2 stream in the
-module's store and ticks run on a worker thread; outputs publish to the
-`Out` ports. The store is a `NullStore` by default — inputs behave as
-live-only streams (`.map`/`.transform`/`.live()` work; history and search
-are empty). Override `make_store()` to return a `SqliteStore` and the
-module records **every input and output** while it runs — recording is a
-deployment choice, not module code. (This is the path to subsuming
-`Recorder`: a recorder is a PureModule deployment with a storage-backed
-store and no step.)
-
-Live alignment is best-effort: observations are timestamped on arrival
-(`msg.ts` when present) and slight cross-stream jitter is tolerated;
-`interpolate()` inputs add one sample period of latency to each tick.
+One machine drives both modes: the `TickMachine` is a plain
+events-in/rows-out state machine, fed from a timestamp-ordered merge
+offline (exact, deterministic) and from an arrival-ordered queue live
+(best-effort under jitter). Keeping it free of threads and streams is
+what makes alignment unit-testable.
 
 ## Backpressure: the tick is the unit of load
 
-The system has two regimes, and the store converts between them:
+The system has two regimes, and the store converts between them. Pull
+(offline): backpressure is intrinsic — the consumer's iteration is the
+clock and nothing accumulates beyond pruned alignment buffers. Push
+(live): sensors can't be paused, so backpressure must be a declared
+drop/coalesce policy, and the tick is the right unit — secondaries are
+cheap to ingest, all the expense is `step()`. Hence the
+`BackpressureBuffer` between the alignment thread and the step thread,
+speaking the existing `buffer.py` vocabulary rather than inventing one.
 
-- **Pull (offline / stored streams)** — backpressure is intrinsic. The
-  consumer's iteration is the clock; a chained pipeline computes one tick
-  at a time and nothing accumulates beyond the (pruned) alignment buffers.
-- **Push (live ports)** — sensors can't be paused, so backpressure is a
-  declared *drop/coalesce policy*, and the natural unit is the tick:
-  secondaries are cheap to ingest, all the expense is `step()`.
-
-Live, resolved ticks flow through a `BackpressureBuffer` between the
-alignment thread and the step thread:
-
-```python skip
-class Follower(PureModule):
-    backpressure = KeepLast()    # default — controller semantics
-    # backpressure = Unbounded() # recorder/indexer semantics: never drop
-    # backpressure = Bounded(8)  # bounded queue, drops oldest
-```
-
-`KeepLast` means a slow step always processes the *freshest* tick and the
-skipped ones are counted — for a 30 fps camera and a 100 ms step,
-dropping ~2/3 of ticks is the system working as designed. Every queue in
-the path is bounded: the tick buffer by policy, alignment buffers by
-pruning, and ticks waiting for interpolation brackets by
-`max_pending_ticks` (config, default 64) so a dead `interpolate()` input
-can't accumulate ticks forever (evictions count as `drops_blocked`).
-
-One honest consequence: with drops, a live run processes a *subsample* of
-triggers, so replaying raw inputs offline (which processes all of them)
-diverges for stateful modules. Exact replay-of-a-run requires recording
-the resolved tick rows — designed next step, not built.
+The invariant to preserve when changing the live path: **every queue is
+bounded** — the tick buffer by policy, alignment buffers by pruning
+(including the dead-trigger case, 1 s arrival-jitter slack), pending
+ticks by `max_pending_ticks` (a dead `interpolate()` input must not
+accumulate ticks), and the monitor's reservoirs by fixed-size deques.
 
 ## Health: drops are metrics, not errors
 
-Per-drop warnings at sensor rate are noise. The module follows the
-mature ladder instead — count always, report continuously, log on
-transitions, alert on *contracts*:
+Under `KeepLast` a controller dropping most ticks is the system working
+as designed, so per-drop warnings are categorically wrong. The ladder:
+count always (by reason — `backpressure`, `missing_input`, `blocked` are
+three different problems: slow step, dead sensor, clock skew), report
+continuously (the `_health` stream rides the same store as the data, so
+recordings capture health next to the frames it explains), log on state
+transitions only, alert on declared contracts. The real SLO is output
+freshness and rate; drop counters are diagnosis. Contracts split
+deliberately: semantic tolerances (`max_age`, `tolerance`) belong in the
+declaration because they're algorithm truths; rates (`expected_hz`,
+`min_output_hz`) belong in deployment config because sim, replay, and
+the robot legitimately differ.
 
-- **Counters** (always): ticks resolved/stepped, drops by reason
-  (`backpressure`, `missing_input`, `blocked`), step p50/p99, per-input
-  observed Hz, age of consumed `latest()` values, output rates.
-- **`_health` stream**: an aggregated snapshot every
-  `health_interval_s` (1 s) appended to the module store — live-only on a
-  NullStore, *recorded next to the data it explains* on a SqliteStore, so
-  a post-incident notebook plots drop ratio against the very frames that
-  were dropped.
-- **Contracts** are split deliberately: semantic tolerances live in the
-  declaration (`latest(max_age=…)`, `interpolate(tolerance=…)`); *rates*
-  live in deployment config (`expected_hz={"pose": 50}`,
-  `min_output_hz=10`) because sim, replay, and the robot differ.
-- **Messages**: one warmup line after `health_warmup_s` comparing
-  observed input rates to expectations ("pose 12.1 Hz (expected 50 —
-  LOW)"); one WARN on entering `DEGRADED`/`STALLED` naming the violated
-  contracts; a throttled reminder every `unhealthy_log_every_s` while
-  unhealthy; one INFO on recovery with the outage duration. Stalls
-  (`STALLED`) distinguish "ticks queued but none stepped (step stuck?)"
-  from "inputs flowing but no ticks resolving (interpolate input dead?)"
-  and must persist `stall_after_s` before firing — a single slow step is
-  not a stall.
+## Replay fidelity under drops (planned: record tick rows)
 
-The real SLO is output freshness and rate, not drop count — alert on the
-contract, read the drop counters to diagnose *why*. Offline, `over()`
-logs a per-field drop summary, and `_strict=True` raises on the first
-drop instead (replay determinism tests should fail loudly).
+With a dropping policy, a live run processes a *subsample* of triggers,
+so replaying raw inputs offline (which processes all of them) diverges
+for stateful modules. The fix is to record the **resolved tick rows** —
+the aligned inputs actually consumed — making replay-of-a-run exact by
+construction, drops and all. This is the prerequisite for trusting
+time-travel on stateful modules and should land before production
+relies on them.
 
-## State, explicitly
+## State persistence (planned: the journal design)
 
-If a module needs recurrence (gait phase, filters, RNN hidden state),
-declare it — don't hide it in `self`:
+Today, Mealy state lives in a loop variable — initialized from
+`initial_state`, threaded by the runtime, gone when the run ends.
+Deliberately not on `self` (concurrent `over()` runs stay independent),
+deliberately not yet persisted. The plan:
 
-```python skip
-class GaitController(PureModule):
-    pose: In[PoseStamped] = tick()
-    cmd_vel: Out[Twist]
+- **Snapshots are a stream.** The runtime appends post-tick state to a
+  `_state` stream in the module store (like `_health`), on a cadence
+  policy — every tick for small states, every N seconds for big ones,
+  on-stop minimum. Store choice = persistence policy; codecs, ts
+  indexing, and replay tooling already exist.
+- **The DB is a journal, not the hot path.** The working copy stays in
+  memory; appends are write-through; reads happen only at start or seek.
+  No round-trips inside a control loop.
+- **What it buys**: resume (`start()` loads `_state.last()` under a
+  `resume` config), migration (the snapshot is a value in a file),
+  time-travel (snapshots are checkpoints, the tick log is the WAL —
+  `state = fold(step, ticks)`, seek = load snapshot ≤ T + replay),
+  counterfactual debugging (replay from a snapshot with edited inputs or
+  edited step code). `state` is a reserved input name, so
+  `over(state=snapshot, pose=db.pose.after(t0))` is collision-free.
+- **Contract on state values**: plain serializable data (dataclass /
+  LCM message / numpy — an LCM-typed state gets cross-language replay),
+  treated as immutable (`step` returns new state; serializing at append
+  time is the aliasing fix), sized for its cadence.
+- **Endgame**: keyed state (e.g. per-marker buffers) shards — the
+  runtime partitions ticks by key across processes, each owning a
+  shard. Only possible because state is a declared value the runtime
+  owns.
 
-    initial_state = GaitState(phase=0.0)
+## Multi-output offline shape (planned: run handle)
 
-    def step(self, state: GaitState, pose: PoseStamped) -> tuple[GaitState, Twist]:
-        ...
-        return new_state, twist
-```
+Offline, multi-output modules yield `{port: value}` dict rows while live
+publishes per-port — an asymmetry. The planned fix is a run handle:
+`run = M.over(..., store=...)` executes once into a store and exposes one
+stream per output (`run.detections`, `run.alerts`), independently
+re-iterable and queryable. Materializing through a store also makes
+offline structurally identical to live (both are "module + store") and is
+the substrate a future module-graph would build on. The lazy dict-row
+form stays for single-pass pipelines.
 
-The runtime threads the state through the ticks (it's `scan` over the tick
-stream). Because state is a value, snapshotting it per tick gives
-time-rewind and live migration — the snapshot stream is the designed next
-step, not yet built.
+## Deliberately deferred
 
-## Not yet designed / deliberately deferred
-
-- `every(hz)` clock triggers and multi-input triggers (`on_any`) — only
-  one `tick()` input for now.
-- State snapshot streams (time-travel, suspend/revive, migration) — the
-  Mealy form is the hook; persistence isn't wired yet.
-- A live timeout policy for `interpolate()` when its input dies (currently
-  ticks wait; on shutdown they resolve via the nearest-fallback).
-- Modules that *query* memory (semantic search) — that's an impure
-  capability and stays on `MemoryModule` for now.
-- `Annotated[In[X], sampler]` syntax — rejected for now because core
-  `Module` introspection doesn't unwrap `Annotated`; the default-value
-  syntax is canonical.
+- `every(hz)` clock triggers and multi-input triggers (`on_any`).
+- A live timeout policy for `interpolate()` when its input dies
+  (currently ticks wait until evicted; shutdown resolves via the
+  nearest-fallback).
+- Live-side input gating — offline, gating composes onto the input
+  stream (`over(color_image=imgs.transform(QualityWindow(...)))`); live
+  has no per-port hook yet (chain a gating module). Possibly
+  `tick(via=...)`.
+- Modules that *query* memory (semantic search) — impure capability,
+  stays on `MemoryModule`.
+- `Annotated[In[X], sampler]` syntax — core `Module` introspection
+  doesn't unwrap `Annotated`, so ports would silently not be created;
+  the default-value syntax is canonical.
+- `Recorder` subsumption — a recorder is a PureModule deployment with a
+  storage-backed store and no step; fold once the API is stable.

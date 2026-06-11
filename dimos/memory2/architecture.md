@@ -33,7 +33,8 @@ Supporting Systems:
 | `buffer.py`    | Backpressure buffers for live mode (KeepLast, Bounded, Unbounded) |
 | `embed.py`     | EmbedImages / EmbedText transformers                              |
 | `tick.py`      | Tick assembly — samplers (tick/latest/interpolate/window) + TickMachine |
-| `puremodule.py`| PureModule — pure `step` over aligned inputs; live ports or offline `over()` ([docs](puremodule.md)) |
+| `puremodule.py`| PureModule — pure `step` over aligned inputs; live ports or offline `over()` ([usage](/docs/usage/pure_modules.md), [design notes](puremodule.md)) |
+| `health.py`    | HealthMonitor — drop counters, contracts, `_health` stream for PureModule |
 
 ## Subpackages
 
