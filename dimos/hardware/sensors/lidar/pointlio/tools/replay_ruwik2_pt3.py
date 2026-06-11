@@ -52,7 +52,7 @@ RUNS_ROOT = Path("/home/dimos/repos/dimos6/pointlio_ruwik2_pt3_replays")
 
 _ATTEMPT_DIR_ENV = "_REPLAY_POINTLIO_RUWIK2_PT3_ATTEMPT_DIR"
 
-MAX_WALL_SEC = 480.0
+MAX_WALL_SEC = float(os.environ.get("REPLAY_MAX_WALL_SEC", "480.0"))
 
 REPLAY_MAX_SENSOR_SEC = float(os.environ.get("REPLAY_MAX_SENSOR_SEC", "60.0"))
 

@@ -22,12 +22,14 @@ mapping:
     check_satu: true
     init_map_size: 10
     space_down_sample: true
-    satu_acc: 5.5            # g (acc_norm=1.0). Just below the ruwik2 6.9g spikes.
+    satu_acc: 3.0            # g (acc_norm=1.0). hku-mars master value: accel >= 3g saturated → EKF residual zeroed, keeps velocity bounded.
     satu_gyro: 35.0
     acc_norm: 1.0           # IMU accel in g
     plane_thr: 0.1
     filter_size_surf: 0.5
     filter_size_map: 0.5
+    ivox_grid_resolution: 2.0   # iVox local-map grid (m). Matches hku-mars master avia/horizon Livox configs.
+    ivox_nearby_type: 6         # NEARBY6. Matches the hku_repro mapping_mid360.launch override (NOT the yaml default) that produced the bounded 5.028m baseline.
     cube_side_length: 1000.0
     det_range: 100.0
     fov_degree: 360.0

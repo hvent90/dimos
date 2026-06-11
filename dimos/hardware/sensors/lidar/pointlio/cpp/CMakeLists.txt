@@ -61,6 +61,9 @@ find_package(PCL 1.8 REQUIRED COMPONENTS common filters)
 # yaml-cpp (FAST-LIO config parsing — standard YAML format)
 find_package(yaml-cpp REQUIRED)
 
+# glog (iVox map backend — include/ivox/ivox3d.h needs glog)
+find_package(glog REQUIRED)
+
 # Livox SDK2 (from nix or /usr/local fallback)
 find_library(LIVOX_SDK livox_lidar_sdk_shared)
 if(NOT LIVOX_SDK)
@@ -75,7 +78,6 @@ add_executable(pointlio_native
   ${FASTLIO_DIR}/src/preprocess.cpp
   ${FASTLIO_DIR}/src/Estimator.cpp
   ${FASTLIO_DIR}/src/parameters.cpp
-  ${FASTLIO_DIR}/include/ikd-Tree/ikd_Tree.cpp
 )
 
 # Shared Livox common headers (livox_sdk_config.hpp etc.)
@@ -101,6 +103,7 @@ target_link_libraries(pointlio_native PRIVATE
   ${LIVOX_SDK}
   ${PCL_LIBRARIES}
   yaml-cpp::yaml-cpp
+  glog::glog
 )
 
 if(OpenMP_CXX_FOUND)

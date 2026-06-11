@@ -351,6 +351,14 @@ static void on_point_cloud(const uint32_t /*handle*/, const uint8_t /*dev_type*/
     uint64_t ts_ns = get_timestamp_ns(data);
     uint16_t dot_num = data->dot_num;
 
+    // Per-point intra-packet time offset, matching livox_ros_driver2
+    // (pub_handler.cpp: point_interval = time_interval*100/dot_num ns;
+    //  offset_time = base + i*point_interval). Without this, every point in a
+    // packet collapses to one timestamp and per-point deskew is lost — fatal
+    // during aggressive motion. time_interval unit is 0.1us, so *100 → ns.
+    const uint64_t point_interval_ns =
+        dot_num > 0 ? static_cast<uint64_t>(data->time_interval) * 100 / dot_num : 0;
+
     if (!g_replay_mode.load()) {
         mark_first_packet(ts_ns);
     }
@@ -385,7 +393,7 @@ static void on_point_cloud(const uint32_t /*handle*/, const uint8_t /*dev_type*/
             cp.reflectivity = pts[i].reflectivity;
             cp.tag = pts[i].tag;
             cp.line = 0;  // Mid-360: non-repetitive, single "line"
-            cp.offset_time = static_cast<uli>(ts_ns - g_frame_start_ns);
+            cp.offset_time = static_cast<uli>((ts_ns - g_frame_start_ns) + i * point_interval_ns);
             g_accumulated_points.push_back(cp);
         }
     } else if (data->data_type == DATA_TYPE_CARTESIAN_LOW) {
@@ -398,7 +406,7 @@ static void on_point_cloud(const uint32_t /*handle*/, const uint8_t /*dev_type*/
             cp.reflectivity = pts[i].reflectivity;
             cp.tag = pts[i].tag;
             cp.line = 0;
-            cp.offset_time = static_cast<uli>(ts_ns - g_frame_start_ns);
+            cp.offset_time = static_cast<uli>((ts_ns - g_frame_start_ns) + i * point_interval_ns);
             g_accumulated_points.push_back(cp);
         }
     }
@@ -591,7 +599,12 @@ int main(int argc, char** argv) {
     // on_point_cloud / on_imu_data callbacks directly. publish_*() uses
     // the pcap timestamps as the clock so outputs match the original run.
     std::string replay_pcap = mod.arg("replay_pcap", "");
-    g_replay_mode.store(!replay_pcap.empty());
+    // Alternative replay source: a flat binary of driver CustomMsg/Imu frames
+    // dumped from a ROS bag (tools/dump_bag_frames.py). Feeds the port the EXACT
+    // driver output the ROS reference consumes, bypassing UDP->CustomMsg
+    // reconstruction — isolates port faithfulness from reconstruction fidelity.
+    std::string replay_bagframes = mod.arg("replay_bagframes", "");
+    g_replay_mode.store(!replay_pcap.empty() || !replay_bagframes.empty());
 
     // Drop pcap packets with pcap_ts < this value. Used in replay to mimic
     // the SDK warmup discard that the live run experienced — so the
@@ -885,6 +898,106 @@ int main(int argc, char** argv) {
     if (g_replay_mode.load()) {
         if (debug) printf("[fastlio2] REPLAY mode, pcap=%s\n", replay_pcap.c_str());
         replay_thread = std::thread([&]() {
+            if (!replay_bagframes.empty()) {
+                // Bag-frame replay: read driver CustomMsg/Imu records from the
+                // flat dump and feed them straight into the port, serialized
+                // with the EKF (feed -> run_main_iter) on this one thread. No
+                // UDP reconstruction, no accumulator. Deterministic by design.
+                std::ifstream bf(replay_bagframes, std::ios::binary);
+                if (!bf) {
+                    fprintf(stderr, "[bagframes] cannot open %s\n", replay_bagframes.c_str());
+                    g_running.store(false);
+                    return;
+                }
+                auto advance_clock = [](uint64_t ts_ns) {
+                    uint64_t expected = 0;
+                    g_first_packet_clock_ns.compare_exchange_strong(expected, ts_ns);
+                    uint64_t cur = g_virtual_clock_ns.load();
+                    while (cur < ts_ns &&
+                           !g_virtual_clock_ns.compare_exchange_weak(cur, ts_ns)) {}
+                };
+                auto step = [&]() {
+                    auto now_opt = virtual_now();
+                    if (now_opt.has_value()) run_main_iter(*now_opt);
+                };
+                size_t n_imu = 0, n_lid = 0;
+                uint8_t type = 0;
+                while (g_running.load() && bf.read(reinterpret_cast<char*>(&type), 1)) {
+                    if (type == 0) {
+                        double rec[7];
+                        if (!bf.read(reinterpret_cast<char*>(rec), sizeof(rec))) break;
+                        auto imu_msg = boost::make_shared<custom_messages::Imu>();
+                        imu_msg->header.seq = 0;
+                        imu_msg->header.stamp = custom_messages::Time().fromSec(rec[0]);
+                        imu_msg->header.frame_id = "livox_frame";
+                        imu_msg->orientation.x = 0.0;
+                        imu_msg->orientation.y = 0.0;
+                        imu_msg->orientation.z = 0.0;
+                        imu_msg->orientation.w = 1.0;
+                        imu_msg->linear_acceleration.x = rec[1];
+                        imu_msg->linear_acceleration.y = rec[2];
+                        imu_msg->linear_acceleration.z = rec[3];
+                        imu_msg->angular_velocity.x = rec[4];
+                        imu_msg->angular_velocity.y = rec[5];
+                        imu_msg->angular_velocity.z = rec[6];
+                        for (int j = 0; j < 9; ++j) {
+                            imu_msg->orientation_covariance[j] = 0.0;
+                            imu_msg->angular_velocity_covariance[j] = 0.0;
+                            imu_msg->linear_acceleration_covariance[j] = 0.0;
+                        }
+                        advance_clock(static_cast<uint64_t>(rec[0] * 1e9));
+                        g_fastlio->feed_imu(imu_msg);
+                        step();
+                        ++n_imu;
+                    } else if (type == 1) {
+                        double stamp_sec = 0.0;
+                        uint64_t timebase = 0;
+                        uint32_t point_num = 0;
+                        if (!bf.read(reinterpret_cast<char*>(&stamp_sec), 8)) break;
+                        if (!bf.read(reinterpret_cast<char*>(&timebase), 8)) break;
+                        if (!bf.read(reinterpret_cast<char*>(&point_num), 4)) break;
+                        auto lidar_msg = boost::make_shared<custom_messages::CustomMsg>();
+                        lidar_msg->header.seq = 0;
+                        lidar_msg->header.stamp = custom_messages::Time().fromSec(stamp_sec);
+                        lidar_msg->header.frame_id = "livox_frame";
+                        lidar_msg->timebase = timebase;
+                        lidar_msg->lidar_id = 0;
+                        for (int j = 0; j < 3; ++j) lidar_msg->rsvd[j] = 0;
+                        lidar_msg->point_num = point_num;
+                        lidar_msg->points.resize(point_num);
+                        for (uint32_t i = 0; i < point_num; ++i) {
+                            uint32_t off = 0;
+                            float xyz[3] = {0, 0, 0};
+                            uint8_t meta[3] = {0, 0, 0};
+                            if (!bf.read(reinterpret_cast<char*>(&off), 4) ||
+                                !bf.read(reinterpret_cast<char*>(xyz), 12) ||
+                                !bf.read(reinterpret_cast<char*>(meta), 3)) {
+                                g_running.store(false);
+                                break;
+                            }
+                            custom_messages::CustomPoint& cp = lidar_msg->points[i];
+                            cp.offset_time = off;
+                            cp.x = static_cast<double>(xyz[0]);
+                            cp.y = static_cast<double>(xyz[1]);
+                            cp.z = static_cast<double>(xyz[2]);
+                            cp.reflectivity = meta[0];
+                            cp.tag = meta[1];
+                            cp.line = meta[2];
+                        }
+                        advance_clock(static_cast<uint64_t>(stamp_sec * 1e9));
+                        g_fastlio->feed_lidar(lidar_msg);
+                        step();
+                        ++n_lid;
+                    } else {
+                        fprintf(stderr, "[bagframes] bad record type %u\n", type);
+                        break;
+                    }
+                }
+                printf("[bagframes] done: imu=%zu lidar=%zu\n", n_imu, n_lid);
+                std::this_thread::sleep_for(std::chrono::milliseconds(500));
+                g_running.store(false);
+                return;
+            }
             pcap_replay::Replayer rep;
             rep.path = replay_pcap;
             rep.host_point_port = static_cast<uint16_t>(ports.host_point_data);
@@ -904,15 +1017,27 @@ int main(int argc, char** argv) {
                 }
                 g_virtual_clock_ns.store(pcap_ts_ns);
             };
-            // No rep.on_iter — the main thread drives run_main_iter in
-            // replay mode now, same as in live. This decouples packet
-            // ingestion from per-iter filter_cloud cost and lets replay
-            // run at the same wall throughput as live.
             rep.running = &g_running;
-            // Pace the replay feeder at live wall-clock rate. sleep_until
-            // throttles the feeder so packets land in the accumulator at
-            // the same wall cadence as the SDK delivers in live mode.
-            rep.realtime = true;
+            if (g_deterministic_clock.load() && !replay_dual_thread) {
+                // Deterministic serial replay: the feeder thread drives the
+                // EKF synchronously after each packet (on_iter) with no
+                // wall-clock pacing. Feed+process are strictly serialized, so
+                // the run is reproducible and matches the reference Point-LIO's
+                // single-executor semantics. The two-thread realtime path
+                // (else branch) leaves which IMU samples are present at scan
+                // composition up to wall-clock scheduling — that interleaving
+                // race makes even clean data diverge nondeterministically.
+                rep.realtime = false;
+                rep.on_iter = [&]() {
+                    auto now_opt = virtual_now();
+                    if (now_opt.has_value()) run_main_iter(*now_opt);
+                };
+            } else {
+                // Live-throughput path: feeder paced at wall-clock rate, the
+                // main thread drives run_main_iter. Used for wall-clock replay
+                // and dual-thread live-race reproduction.
+                rep.realtime = true;
+            }
             rep.skip_until_ns = replay_skip_until_ns;
             rep.dual_thread = replay_dual_thread;
             rep.run();
@@ -934,7 +1059,20 @@ int main(int argc, char** argv) {
         if (debug) printf("[fastlio2] SDK started, waiting for device...\n");
     }
 
+    // Bag-frame replay always drives run_main_iter from the feeder thread
+    // (step() after each feed), so the main thread must stay out of the EKF
+    // regardless of the deterministic_clock flag — otherwise both threads
+    // co-drive run_main_iter and race on the shared measurement cloud.
+    const bool serial_replay =
+        g_replay_mode.load() && !replay_dual_thread &&
+        (g_deterministic_clock.load() || !replay_bagframes.empty());
     while (g_running.load()) {
+        if (serial_replay) {
+            // The feeder thread's on_iter drives run_main_iter; the main
+            // thread only services LCM and waits for the feeder to finish.
+            lcm.handleTimeout(10);
+            continue;
+        }
         auto loop_start = std::chrono::high_resolution_clock::now();
         auto now_opt = virtual_now();
         if (!now_opt.has_value()) {
