@@ -66,8 +66,8 @@ teleop_hosted_go2 = autoconnect(
 # way. Video is the one piece still on HostedTeleopModule (deprecated) until
 # BrokerProvider grows media-track support.
 #
-# Run:  TELEOP_API_KEY=dtk_live_... TELEOP_ROBOT_ID=<owner_email:robot> \
-#       dimos run teleop-hosted-go2-transport
+# Run:  TELEOP_API_KEY=dtk_live_... dimos run teleop-hosted-go2-transport
+#       (robot identity is derived from the key; TELEOP_ROBOT_ID optional)
 # then connect from https://teleop.dimensionalos.com (keyboard view).
 teleop_hosted_go2_transport = unitree_go2_basic.transports(
     {("cmd_vel", Twist): CloudflareTransport("cmd_unreliable", TwistStamped)}

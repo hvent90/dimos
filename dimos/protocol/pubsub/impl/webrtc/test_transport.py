@@ -230,8 +230,8 @@ def test_broker_provider_requires_credentials(monkeypatch: pytest.MonkeyPatch) -
 
     with pytest.raises(RuntimeError, match="TELEOP_API_KEY"):
         BrokerConfig(robot_id="r1")._create()
-    with pytest.raises(RuntimeError, match="TELEOP_ROBOT_ID"):
-        BrokerConfig(api_key="key")._create()
+    # robot_id is optional — the broker derives it from the API key.
+    assert BrokerConfig(api_key="key")._create() is not None
 
 
 # ─── subscribe_all dedup ─────────────────────────────────────────────

@@ -28,8 +28,10 @@ are documented in ``dimos/teleop/quest_hosted/README.md``.
 
 Env vars (fallback when config fields are unset):
     TELEOP_BROKER_URL — default https://teleop.dimensionalos.com
-    TELEOP_API_KEY    — robot API key (dtk_live_*)
-    TELEOP_ROBOT_ID   — robot identifier
+    TELEOP_API_KEY    — robot API key (dtk_live_*); the broker derives the
+                        robot identity from it
+    TELEOP_ROBOT_ID   — optional robot identifier override (must match the
+                        key's namespaced robot id when set)
     TELEOP_ROBOT_NAME — human-readable robot name
 """
 
@@ -113,9 +115,10 @@ class BrokerProvider(AsyncProviderBase):
         self._robot_id = config.robot_id or os.environ.get("TELEOP_ROBOT_ID", "")
         self._robot_name = config.robot_name or os.environ.get("TELEOP_ROBOT_NAME", "robot")
         if not self._api_key:
-            raise RuntimeError("TELEOP_API_KEY or BrokerConfig.api_key required")
-        if not self._robot_id:
-            raise RuntimeError("TELEOP_ROBOT_ID or BrokerConfig.robot_id required")
+            raise RuntimeError(
+                "TELEOP_API_KEY or BrokerConfig.api_key required "
+                "(create one in the teleop dashboard: New Key)"
+            )
         self._config = config
 
         self._http: httpx.AsyncClient | None = None
@@ -166,7 +169,9 @@ class BrokerProvider(AsyncProviderBase):
             f"{self._broker_url}/api/v1/sessions",
             headers=self._headers,
             json={
-                "robot_id": self._robot_id,
+                # robot_id is optional — the broker derives it from the API
+                # key; sending it only adds a consistency check.
+                **({"robot_id": self._robot_id} if self._robot_id else {}),
                 "robot_name": self._robot_name,
                 "sdp_offer": self._pc.localDescription.sdp,
             },
@@ -180,7 +185,9 @@ class BrokerProvider(AsyncProviderBase):
         )
         await wait_connected(self._pc)
         logger.info(
-            "Broker provider connected: session=%s robot=%s", self.session_id, self._robot_id
+            "Broker provider connected: session=%s robot=%s",
+            self.session_id,
+            self._robot_id or "(derived from API key)",
         )
         self._hb_task = asyncio.get_running_loop().create_task(self._heartbeat_loop())
 
