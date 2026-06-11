@@ -513,6 +513,10 @@ coordinator_flowbase_precision_nav = (
             # NavRecord: skip recording the heavy voxel global_map (remap to an
             # unbound name) — only path + odometry + cmd_vel are needed for CTE.
             (NavRecord, "global_map", "global_map_pgo"),
+            # The planner emits goal_reached as dimos_lcm.Bool but NavRecord's
+            # port is dimos.msgs.Bool — remap to an unbound name to avoid the
+            # type conflict (not needed for scoring).
+            (NavRecord, "goal_reached", "goal_reached_unused"),
         ]
     )
     .transports(
