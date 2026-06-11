@@ -43,7 +43,7 @@ PairObs = Observation[tuple[Observation[PointCloud2], Observation[Odometry]]]
 COLORS = {
     "naive": [90, 200, 90],
     "no_normal_gate": [235, 120, 60],
-    "normal_gate": [70, 170, 235],
+    "defaults": [70, 170, 235],
     "no_recency": [200, 80, 200],
 }
 
@@ -51,7 +51,7 @@ COLORS = {
 RECENCY_OFF = 1_000_000_000
 
 # Variants whose normal gate is active, so their normals are worth drawing.
-NORMAL_VARIANTS = {"normal_gate", "no_recency"}
+NORMAL_VARIANTS = {"defaults", "no_recency"}
 
 
 def _height_colors(centers: np.ndarray, base: list[int]) -> np.ndarray:
@@ -117,23 +117,35 @@ def main(
     # normal gate off. no_recency keeps the gate but never expires a spare.
     # normal_gate is the full default behavior.
     mappers = {
-        "naive": VoxelRayMapper(
-            voxel_size=voxel_size,
-            max_range=max_range,
-            shadow_depth=0.0,
-            grace_depth=max_range,
-            min_health=0,
-        ),
-        "no_normal_gate": VoxelRayMapper(voxel_size=voxel_size, max_range=max_range, graze_cos=0.0),
-        "no_recency": VoxelRayMapper(
-            voxel_size=voxel_size, max_range=max_range, recency_window=RECENCY_OFF
-        ),
-        "normal_gate": VoxelRayMapper(voxel_size=voxel_size, max_range=max_range),
+        # "naive": VoxelRayMapper(
+        #     voxel_size=voxel_size,
+        #     max_range=max_range,
+        #     shadow_depth=0.0,
+        #     grace_depth=max_range,
+        #     min_health=0,
+        # ),
+        # "no_normal_gate": VoxelRayMapper(voxel_size=voxel_size, max_range=max_range, graze_cos=0.0),
+        # "no_recency": VoxelRayMapper(
+        #     voxel_size=voxel_size, max_range=max_range, recency_window=RECENCY_OFF
+        # ),
+        "defaults": VoxelRayMapper(voxel_size=voxel_size, max_range=max_range),
     }
 
     store = SqliteStore(path=str(db_path))
     with store:
-        lidar = store.stream(lidar_stream, PointCloud2).order_by("ts")
+        # giradelli stairs
+        # lidar = store.stream(lidar_stream, PointCloud2).order_by("ts").from_time(215)
+
+        # yerba buena people sidewalk
+        # lidar = store.stream(lidar_stream, PointCloud2).order_by("ts").from_time(359)
+
+        # yerba entering park
+        lidar = store.stream(lidar_stream, PointCloud2).order_by("ts").from_time(784)
+
+        # yerba buena down stairs
+        # fast lio is absolutely busted here
+        # lidar = store.stream(lidar_stream, PointCloud2).order_by("ts").from_time(1096)
+
         odom = store.stream(odom_stream, Odometry).order_by("ts")
         pose_tagged = lidar.align(odom, tolerance=align_tol).transform(
             FnTransformer(_attach_pose_from_odom)
@@ -184,7 +196,10 @@ def main(
                 rr.log(
                     f"world/maps/{name}/normals",
                     rr.Arrows3D(
-                        origins=origins, vectors=vectors * normal_scale, colors=[COLORS[name]]
+                        origins=origins,
+                        vectors=vectors * normal_scale,
+                        colors=[COLORS[name]],
+                        radii=0.005,
                     ),
                 )
             if raw:
