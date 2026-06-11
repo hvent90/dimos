@@ -58,11 +58,17 @@ teleop_hosted_go2 = autoconnect(
 ).global_config(n_workers=8, viewer="none")
 
 
-# Transport-only variant: the operator's TwistStamped lands directly on the
-# go2 cmd_vel stream — no teleop module at all, just a transport swap on the
-# base blueprint. Commands arrive as the browser sends them (normalized
-# [-1, 1], no speed rescaling) and video/telemetry are not carried yet, so
-# this is the minimal composability demo, not a teleop_hosted_go2 replacement.
+# Hosted teleop as a pure transport swap — no teleop module wrapper. The
+# browser's keyboard/VR view sends LCM TwistStamped on cmd_unreliable; the
+# transport decodes it straight onto the go2 cmd_vel stream (commands arrive
+# as sent: normalized [-1, 1], no speed rescaling). Robot → operator
+# telemetry can ride CloudflareTransport("state_reliable_back", ...) the same
+# way. Video is the one piece still on HostedTeleopModule (deprecated) until
+# BrokerProvider grows media-track support.
+#
+# Run:  TELEOP_API_KEY=dtk_live_... TELEOP_ROBOT_ID=<owner_email:robot> \
+#       dimos run teleop-hosted-go2-transport
+# then connect from https://teleop.dimensionalos.com (keyboard view).
 teleop_hosted_go2_transport = unitree_go2_basic.transports(
     {("cmd_vel", Twist): CloudflareTransport("cmd_unreliable", TwistStamped)}
 ).global_config(viewer="none")
