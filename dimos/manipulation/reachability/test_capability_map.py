@@ -254,7 +254,12 @@ def test_arm_ik_reaches_fk_pose() -> None:
     solver = ArmIK("left")
     wxyz = np.empty(4)
     mujoco.mju_mat2Quat(wxyz, np.ascontiguousarray(rotations[0]).reshape(9))
-    joints, reached, error, collided = solver.solve(positions[0], wxyz)
+    guesses: list[float] = []
+    joints, reached, error, collided = solver.solve(
+        positions[0], wxyz, on_step=lambda j, e, a: guesses.append(e)
+    )
     assert reached, f"IK failed with error {error * 1000:.1f} mm"
     assert not collided
     assert set(joints) == set(solver.joint_names)
+    # The search streamed intermediate guesses, ending near the solution.
+    assert guesses and guesses[-1] <= guesses[0]

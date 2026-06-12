@@ -44,6 +44,7 @@ CLI::
 from __future__ import annotations
 
 import argparse
+from collections.abc import Callable
 from pathlib import Path
 import time
 from typing import Any
@@ -234,7 +235,11 @@ class ArmIK:
         self._q_warm = self._sampler._q_base.copy()
 
     def solve(
-        self, position: np.ndarray, wxyz: np.ndarray, restarts: int = 5
+        self,
+        position: np.ndarray,
+        wxyz: np.ndarray,
+        restarts: int = 5,
+        on_step: Callable[[dict[str, float], float, int], None] | None = None,
     ) -> tuple[dict[str, float], bool, float, bool]:
         """Solve toward a grasp-center target; returns (arm joints by model
         joint name, reached?, position error in m, self-colliding?).
@@ -242,7 +247,11 @@ class ArmIK:
         Warm-started from the previous solve so dragging feels continuous;
         falls back to random restarts when the warm start stalls in a local
         minimum. Collision-free solutions are preferred over closer ones
-        that penetrate; ``reached`` requires both tolerance and no contact."""
+        that penetrate; ``reached`` requires both tolerance and no contact.
+
+        ``on_step(joints, error_m, attempt)`` is called every few descent
+        iterations with the solver's *current* (possibly wrong) guess, so a
+        caller can animate the search instead of blocking silently."""
         import mujoco
 
         mink = self._mink
@@ -265,7 +274,7 @@ class ArmIK:
             # The task error decays ~×(1 − gain·dt) per iteration; 300 steps
             # at dt=0.05 reduce it by ~2e-7. Stopping at 60 left ~5% of the
             # initial error (tens of mm) and looked like an IK failure.
-            for _ in range(300):
+            for iteration in range(300):
                 velocity = (
                     mink.solve_ik(
                         self._configuration, self._tasks, 0.05, "daqp", limits=self._limits
@@ -273,6 +282,9 @@ class ArmIK:
                     * self._velocity_mask
                 )
                 self._configuration.integrate_inplace(velocity, 0.05)
+                if on_step is not None and iteration % 12 == 0:
+                    q_now = self._configuration.q
+                    on_step(self._joints_of(q_now), self._position_error(q_now, position), attempt)
                 if float(np.linalg.norm(velocity)) < 1e-4:
                     break
             error = self._position_error(self._configuration.q, position)
@@ -284,11 +296,18 @@ class ArmIK:
 
         assert best_q is not None
         self._q_warm = best_q.copy()
-        joints = {
-            name: float(best_q[adr])
-            for name, adr in zip(self.joint_names, sampler.qpos_adr, strict=True)
+        return (
+            self._joints_of(best_q),
+            best_free and best_error < 0.02,
+            best_error,
+            not best_free,
+        )
+
+    def _joints_of(self, q: np.ndarray) -> dict[str, float]:
+        return {
+            name: float(q[adr])
+            for name, adr in zip(self.joint_names, self._sampler.qpos_adr, strict=True)
         }
-        return joints, best_free and best_error < 0.02, best_error, not best_free
 
     def _self_collides(self, q: np.ndarray) -> bool:
         """Construction-identical check: any penetrating contact involving
@@ -479,7 +498,23 @@ def serve(maps: dict[str, CapabilityMap], port: int = 8082) -> None:
             return
         position = np.asarray(gizmo.position, dtype=np.float64)
         wxyz = np.asarray(gizmo.wxyz, dtype=np.float64)
-        joints, reached, error, collided = solver.solve(position, wxyz)
+
+        def pose_ghost(joints: dict[str, float]) -> None:
+            if viser_urdf is None or not urdf_joint_names:
+                return
+            cfg = np.zeros(len(urdf_joint_names))
+            for i, name in enumerate(urdf_joint_names):
+                if name in joints:
+                    cfg[i] = joints[name]
+            viser_urdf.update_cfg(cfg)
+
+        def show_guess(joints: dict[str, float], error: float, attempt: int) -> None:
+            # Stream the solver's current (possibly wrong) guess so the
+            # search is visible instead of a silent pause.
+            pose_ghost(joints)
+            ik_status.value = f"solving... attempt {attempt + 1} | err {error * 1000:.0f} mm"
+
+        joints, reached, error, collided = solver.solve(position, wxyz, on_step=show_guess)
 
         import mujoco
 
@@ -498,13 +533,7 @@ def serve(maps: dict[str, CapabilityMap], port: int = 8082) -> None:
             f"IK {verdict} (err {error * 1000:.0f} mm) | "
             f"map score {score} | dexterity {dexterity:.0%} | rigid model (no sag)"
         )
-
-        if viser_urdf is not None and urdf_joint_names:
-            cfg = np.zeros(len(urdf_joint_names))
-            for i, name in enumerate(urdf_joint_names):
-                if name in joints:
-                    cfg[i] = joints[name]
-            viser_urdf.update_cfg(cfg)
+        pose_ghost(joints)
 
     for control in (side, style, point_size, dexterity_pct):
         control.on_update(refresh_volume)
