@@ -397,7 +397,7 @@ def serve(maps: dict[str, CapabilityMap], port: int = 8082) -> None:
         side = server.gui.add_dropdown("arm", tuple(maps), initial_value=next(iter(maps)))
         style = server.gui.add_dropdown("style", ("points", "voxels"), initial_value="points")
         point_size = server.gui.add_slider(
-            "point size [mm]", min=5, max=60, step=1, initial_value=35
+            "point size [mm]", min=0, max=60, step=1, initial_value=5
         )
         dexterity_pct = server.gui.add_slider(
             "min dexterity [%]", min=0, max=60, step=1, initial_value=0
@@ -444,7 +444,7 @@ def serve(maps: dict[str, CapabilityMap], port: int = 8082) -> None:
         else:
             points, dexterity = body_point_cloud(cap, dexterity_pct.value / 100.0)
             n = len(points)
-            if n:
+            if n and point_size.value > 0:
                 server.scene.add_point_cloud(
                     "/reachability/points",
                     points=points.astype(np.float32),
