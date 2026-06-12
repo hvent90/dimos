@@ -194,7 +194,6 @@ def enrich_row(raw: dict[str, Any], *, now_monotonic: float | None = None) -> di
         "channel": channel,
         "name": name,
         "type_name": type_name or "",
-        "untyped": False,
         "group": topic_group(channel, type_name),
         "renderability": renderability,
         "selectable": selectable,
@@ -630,14 +629,11 @@ button:disabled { cursor: not-allowed; opacity: 0.45; }
 .vc-topicname { display: flex; flex-direction: column; gap: 1px; min-width: 0; }
 .tn-channel { font-family: var(--mono); font-size: 11.5px; font-weight: 500; color: var(--text); white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
 .tn-type { font-family: var(--mono); font-size: 9.5px; color: var(--faint); white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
-.tn-untyped { font-style: italic; }
-
 /* ── Badges ─────────────────────────────────────── */
 .vc-badge { display: inline-flex; align-items: center; font-size: 9px; font-weight: 600; letter-spacing: 0.06em; text-transform: uppercase; padding: 2px 6px; border-radius: 3px; border: 1px solid transparent; white-space: nowrap; }
 .b-native { color: var(--accent); border-color: color-mix(in oklab, var(--accent) 45%, transparent); background: color-mix(in oklab, var(--accent) 10%, transparent); }
 .b-converter { color: color-mix(in oklab, var(--accent) 70%, var(--text)); border-color: color-mix(in oklab, var(--accent) 28%, var(--line)); background: transparent; }
 .b-unsupported { color: var(--faint); border-color: var(--line); }
-.b-unknown { color: var(--faint); border: 1px dashed var(--line); }
 .b-logging { color: var(--bg0); background: var(--accent); border-color: var(--accent); }
 
 .vc-state { display: inline-flex; align-items: center; gap: 5px; font-family: var(--mono); font-size: 10px; color: var(--dim); }

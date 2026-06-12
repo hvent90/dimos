@@ -167,16 +167,6 @@ class LcmTopicCatalog:
             if entry is not None:
                 entry.last_error = message
 
-    def decode(self, topic: Topic, data: bytes) -> DimosMsg | None:
-        if topic.lcm_type is None:
-            self.record_error(topic, "unknown message type")
-            return None
-        try:
-            return topic.lcm_type.lcm_decode(data)
-        except Exception as exc:
-            self.record_error(topic, exc)
-            return None
-
     def snapshot(
         self,
         *,

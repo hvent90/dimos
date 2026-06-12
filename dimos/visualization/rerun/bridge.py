@@ -380,21 +380,6 @@ class RerunBridgeModule(Module):
         return sorted(self._applied_topics)
 
     @rpc
-    def clear_staged_topics(self) -> list[str]:
-        """Clear staged topics without changing applied/logging topics."""
-
-        self._staged_topics = set()
-        return []
-
-    @rpc
-    def set_applied_topics(self, topics: list[str]) -> list[str]:
-        """Set selector-managed logging topics directly."""
-
-        self._applied_topics = set(topics)
-        self._staged_topics = set(topics)
-        return sorted(self._applied_topics)
-
-    @rpc
     def start(self) -> None:
         super().start()
 

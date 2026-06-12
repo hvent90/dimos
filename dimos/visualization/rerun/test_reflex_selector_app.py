@@ -207,7 +207,6 @@ def test_enrich_row_disables_non_renderable_topics() -> None:
     row = enrich_row(raw, now_monotonic=1.0)
 
     assert row["group"] == "Other"
-    assert row["untyped"] is False
     assert row["selectable"] is False
     assert row["row_class"] == "vc-row is-disabled"
     assert row["badge_label"] == "unsupported"

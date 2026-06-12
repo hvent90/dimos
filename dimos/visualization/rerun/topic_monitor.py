@@ -62,7 +62,6 @@ class MonitorPorts:
 @dataclass(frozen=True)
 class RunContext:
     entry: RunEntry | None
-    bus_only: bool
     requested: str | None = None
 
     @property
@@ -78,16 +77,6 @@ class TopicMonitorUrls:
     rerun_viewer: str
     selector_api: str
     rerun_connect: str
-
-
-def _port_is_available(host: str, port: int) -> bool:
-    with socket.socket(socket.AF_INET, socket.SOCK_STREAM) as sock:
-        sock.setsockopt(socket.SOL_SOCKET, socket.SO_REUSEADDR, 1)
-        try:
-            sock.bind((host, port))
-        except OSError:
-            return False
-        return True
 
 
 def _block_is_available(host: str, ports: list[int]) -> bool:
@@ -150,11 +139,11 @@ def resolve_run_context(run: str | None = None) -> RunContext:
     """
 
     if run is None or run == "latest":
-        return RunContext(entry=get_most_recent(alive_only=True), bus_only=False, requested=run)
+        return RunContext(entry=get_most_recent(alive_only=True), requested=run)
 
     for entry in list_runs(alive_only=True):
         if entry.run_id == run:
-            return RunContext(entry=entry, bus_only=False, requested=run)
+            return RunContext(entry=entry, requested=run)
     raise ValueError(f"No active DimOS run found with run id {run!r}")
 
 
