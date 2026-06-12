@@ -23,6 +23,7 @@ import open3d.core as o3c  # type: ignore[import-untyped]
 from dimos.mapping.ray_tracing.voxel_map import VoxelRayMapper, local_bounds
 from dimos.memory2.transform import Transformer
 from dimos.msgs.sensor_msgs.PointCloud2 import PointCloud2
+from dimos.utils.logging_config import setup_logger
 
 if TYPE_CHECKING:
     from collections.abc import Iterator
@@ -30,6 +31,8 @@ if TYPE_CHECKING:
     from numpy.typing import NDArray
 
     from dimos.memory2.type.observation import Observation
+
+logger = setup_logger()
 
 
 class RayTraceMap(Transformer[PointCloud2, PointCloud2]):
@@ -109,6 +112,7 @@ class RayTraceMap(Transformer[PointCloud2, PointCloud2]):
 
         for obs in upstream:
             if obs.pose_tuple is None:
+                logger.debug("RayTraceMap: obs %s has no pose; skipping", obs.id)
                 continue
             x, y, z, *_ = obs.pose_tuple
             pts = obs.data.points_f32()

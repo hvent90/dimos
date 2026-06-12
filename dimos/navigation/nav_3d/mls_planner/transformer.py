@@ -22,6 +22,7 @@ from dimos.msgs.geometry_msgs.PoseStamped import PoseStamped
 from dimos.msgs.nav_msgs.Path import Path
 from dimos.msgs.sensor_msgs.PointCloud2 import PointCloud2
 from dimos.navigation.nav_3d.mls_planner.mls_planner import MLSPlanner
+from dimos.utils.logging_config import setup_logger
 
 if TYPE_CHECKING:
     from collections.abc import Iterator
@@ -30,6 +31,8 @@ if TYPE_CHECKING:
     from numpy.typing import NDArray
 
     from dimos.memory2.type.observation import Observation
+
+logger = setup_logger()
 
 
 class MLSPlan(Transformer[PointCloud2, Path]):
@@ -73,6 +76,7 @@ class MLSPlan(Transformer[PointCloud2, Path]):
         )
         for obs in upstream:
             if obs.pose_tuple is None:
+                logger.debug("MLSPlan: obs %s has no pose; skipping", obs.id)
                 continue
             x, y, z, *_ = obs.pose_tuple
             start = (float(x), float(y), float(z) - self.robot_height)

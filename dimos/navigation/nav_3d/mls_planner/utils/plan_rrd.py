@@ -12,7 +12,7 @@
 # See the License for the specific language governing permissions and
 # limitations under the License.
 
-"""Dev replay util: run a lidar+odometry .db through RayTraceMap and MLSPlan into rerun."""
+"""Replay a lidar+odometry .db through RayTraceMap and MLSPlan into rerun."""
 
 from __future__ import annotations
 
