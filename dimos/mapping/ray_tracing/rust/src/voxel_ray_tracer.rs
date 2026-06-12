@@ -2,7 +2,9 @@
 // SPDX-License-Identifier: Apache-2.0
 
 use ahash::{AHashMap, AHashSet};
+use arrayvec::ArrayVec;
 use nalgebra::{Matrix3, Vector3};
+use rayon::prelude::*;
 use serde::Deserialize;
 use validator::{Validate, ValidationError};
 
@@ -87,7 +89,7 @@ impl VoxelMap {
             .voxels
             .keys()
             .copied()
-            .map(|k| (k, pooled_normal(&self.voxels, k, voxel_size)))
+            .map(|k| (k, pooled_normal_and_recency(&self.voxels, k, voxel_size).0))
             .collect();
         for (k, n) in updates {
             self.voxels.get_mut(&k).unwrap().normal = n;
@@ -97,6 +99,7 @@ impl VoxelMap {
 
 const NORMAL_MIN_POINTS: u32 = 3;
 const NORMAL_NEIGHBOR_RADIUS: i32 = 1;
+const NEIGHBORHOOD_CAP: usize = (2 * NORMAL_NEIGHBOR_RADIUS as usize + 1).pow(3);
 const NORMAL_REWEIGHT_ITERS: u32 = 3;
 /// Neighbor weight falloff with plane distance, as a fraction of voxel size.
 const NORMAL_PLANE_SIGMA_FRAC: f32 = 0.5;
@@ -192,15 +195,17 @@ struct Neighbor {
     centroid: Vector3<f32>,
 }
 
-/// Find voxel's normal from its neighborhood.
-fn pooled_normal(
+/// Find voxel's normal and the most recent frame any voxel in its
+/// neighborhood was hit, from one scan of the neighborhood.
+fn pooled_normal_and_recency(
     voxels: &AHashMap<VoxelKey, Voxel>,
     key: VoxelKey,
     voxel_size: f32,
-) -> Option<Vector3<f32>> {
+) -> (Option<Vector3<f32>>, u32) {
     let r = NORMAL_NEIGHBOR_RADIUS;
-    let mut nbs: Vec<Neighbor> = Vec::new();
+    let mut nbs: ArrayVec<Neighbor, NEIGHBORHOOD_CAP> = ArrayVec::new();
     let mut n_raw: u32 = 0;
+    let mut recency = 0;
     for dx in -r..=r {
         for dy in -r..=r {
             for dz in -r..=r {
@@ -208,6 +213,7 @@ fn pooled_normal(
                 let Some(v) = voxels.get(&nk) else {
                     continue;
                 };
+                recency = recency.max(v.last_hit);
                 if v.num_pts == 0 {
                     continue;
                 }
@@ -228,12 +234,12 @@ fn pooled_normal(
         }
     }
     if n_raw < NORMAL_MIN_POINTS {
-        return None;
+        return (None, recency);
     }
 
     let sigma = NORMAL_PLANE_SIGMA_FRAC * voxel_size;
     let two_sig2 = 2.0 * sigma * sigma;
-    let mut weights = vec![1.0_f32; nbs.len()];
+    let mut weights = [1.0_f32; NEIGHBORHOOD_CAP];
     let mut cov = Matrix3::zeros();
     for _ in 0..NORMAL_REWEIGHT_ITERS {
         let (mut wn, mut s, mut t) = (0.0_f32, Vector3::zeros(), Matrix3::zeros());
@@ -264,25 +270,9 @@ fn pooled_normal(
     // get rid of planes if we had to discard too many points to get a plane
     let kept: f32 = nbs.iter().zip(&weights).map(|(nb, &w)| w * nb.n).sum();
     if kept < NORMAL_MIN_SUPPORT * n_raw as f32 {
-        return None;
+        return (None, recency);
     }
-    fit_normal(cov)
-}
-
-/// Most recent frame any voxel in the neighborhood was hit.
-fn neighborhood_recency(voxels: &AHashMap<VoxelKey, Voxel>, key: VoxelKey) -> u32 {
-    let r = NORMAL_NEIGHBOR_RADIUS;
-    let mut best = 0;
-    for dx in -r..=r {
-        for dy in -r..=r {
-            for dz in -r..=r {
-                if let Some(v) = voxels.get(&(key.0 + dx, key.1 + dy, key.2 + dz)) {
-                    best = best.max(v.last_hit);
-                }
-            }
-        }
-    }
-    best
+    (fit_normal(cov), recency)
 }
 
 /// Refit the cached normal and neighborhood recency of every voxel whose
@@ -305,14 +295,11 @@ fn refresh_voxels(
         }
     }
     let updates: Vec<(VoxelKey, Option<Vector3<f32>>, u32)> = dirty
-        .iter()
+        .par_iter()
         .filter(|k| map.voxels.contains_key(k))
         .map(|&k| {
-            (
-                k,
-                pooled_normal(&map.voxels, k, voxel_size),
-                neighborhood_recency(&map.voxels, k),
-            )
+            let (normal, recency) = pooled_normal_and_recency(&map.voxels, k, voxel_size);
+            (k, normal, recency)
         })
         .collect();
     for (k, n, rec) in updates {
@@ -326,16 +313,12 @@ fn refresh_voxels(
 /// Spare a clearing miss only when a grazing ray skims a recently hit planar
 /// surface. Stale or voxels with no normal are left to the health checks.
 fn should_spare(
-    voxels: &AHashMap<VoxelKey, Voxel>,
-    key: VoxelKey,
+    c: &Voxel,
     ray_unit: Vector3<f32>,
     graze_cos: f32,
     frame: u32,
     recency_window: u32,
 ) -> bool {
-    let Some(c) = voxels.get(&key) else {
-        return false;
-    };
     match c.normal {
         Some(n) => {
             frame.saturating_sub(c.recency) <= recency_window && ray_unit.dot(&n).abs() < graze_cos
@@ -427,35 +410,46 @@ pub fn update_map(
     let frame = map.frame;
     let hits = live_voxels(points, cfg.voxel_size);
 
-    let mut misses: AHashSet<VoxelKey> = AHashSet::new();
     let origin_voxel = world_to_voxel(origin.0, origin.1, origin.2, inv);
     let step = cfg.ray_subsample as usize;
-    for (i, &p) in points.iter().enumerate() {
-        if i % step != 0 {
-            continue;
-        }
-        let dx = p.0 - origin.0;
-        let dy = p.1 - origin.1;
-        let dz = p.2 - origin.2;
-        if dx * dx + dy * dy + dz * dz > max_range_sq {
-            continue;
-        }
-        let endpoint = world_to_voxel(p.0, p.1, p.2, inv);
-        find_misses_along_ray(
-            &mut misses,
-            &map.voxels,
-            origin,
-            p,
-            cfg.voxel_size,
-            cfg.shadow_depth,
-            cfg.grace_depth,
-            cfg.graze_cos,
-            frame,
-            cfg.recency_window,
-            origin_voxel,
-            endpoint,
-        );
-    }
+    let voxels = &map.voxels;
+    let misses: AHashSet<VoxelKey> = points
+        .par_iter()
+        .enumerate()
+        .fold(AHashSet::new, |mut misses, (i, &p)| {
+            if i % step != 0 {
+                return misses;
+            }
+            let dx = p.0 - origin.0;
+            let dy = p.1 - origin.1;
+            let dz = p.2 - origin.2;
+            if dx * dx + dy * dy + dz * dz > max_range_sq {
+                return misses;
+            }
+            let endpoint = world_to_voxel(p.0, p.1, p.2, inv);
+            find_misses_along_ray(
+                &mut misses,
+                voxels,
+                origin,
+                p,
+                cfg.voxel_size,
+                cfg.shadow_depth,
+                cfg.grace_depth,
+                cfg.graze_cos,
+                frame,
+                cfg.recency_window,
+                origin_voxel,
+                endpoint,
+            );
+            misses
+        })
+        .reduce(AHashSet::new, |mut a, mut b| {
+            if a.len() < b.len() {
+                std::mem::swap(&mut a, &mut b);
+            }
+            a.extend(b);
+            a
+        });
 
     // add new hits
     for v in &hits {
@@ -623,17 +617,10 @@ fn find_misses_along_ray(
             continue;
         }
 
-        if map_voxels.contains_key(&(x, y, z))
-            && !should_spare(
-                map_voxels,
-                (x, y, z),
-                ray_unit,
-                graze_cos,
-                frame,
-                recency_window,
-            )
-        {
-            misses.insert((x, y, z));
+        if let Some(c) = map_voxels.get(&(x, y, z)) {
+            if !should_spare(c, ray_unit, graze_cos, frame, recency_window) {
+                misses.insert((x, y, z));
+            }
         }
     }
 }
