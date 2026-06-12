@@ -40,11 +40,6 @@ voxel_size = 0.1
 go2_lidar_height = 0.5
 
 
-def _render_node_edges_flat(msg: Any) -> Any:
-    """Default LineSegments3D rendering lifts edges 1.7m off the surface."""
-    return msg.to_rerun(z_offset=0.05)
-
-
 def _static_robot_body(rr: Any) -> list[Any]:
     """Go2-shaped box on fastlio's body frame, counter-rotated for the lidar pitch."""
     return [
@@ -63,6 +58,7 @@ _nav_rerun_config = {
         "world/global_map": 1.0,
         "world/local_map": 1.0,
     },
+    "memory_limit": "1GB",
     # base_link tf comes from the go2 internal odometry, which is not the map
     # frame. Anchor the robot box to fastlio's body frame instead and hide the
     # camera frustum that rides base_link.
@@ -72,7 +68,9 @@ _nav_rerun_config = {
         "world/camera_info": None,
         "world/color_image": None,
         "world/lidar": None,
-        "world/node_edges": _render_node_edges_flat,
+        "world/surface_map": None,
+        "world/nodes": None,
+        "world/node_edges": None,
     },
 }
 
