@@ -46,6 +46,7 @@ from __future__ import annotations
 import argparse
 from collections.abc import Callable
 from pathlib import Path
+import threading
 import time
 from typing import Any
 
@@ -233,13 +234,17 @@ class ArmIK:
             mink.CollisionAvoidanceLimit(model, [(arm_geoms, other_geoms), (arm_geoms, arm_geoms)]),
         ]
         self._q_warm = self._sampler._q_base.copy()
+        # Persistent across solves: a failed solve retried with the same
+        # seed would re-attempt the exact same restart configurations and
+        # fail identically forever.
+        self._rng = np.random.default_rng(0)
 
     def solve(
         self,
         position: np.ndarray,
         wxyz: np.ndarray,
         restarts: int = 5,
-        on_step: Callable[[dict[str, float], float, int], None] | None = None,
+        on_step: Callable[[dict[str, float], float, int], bool | None] | None = None,
     ) -> tuple[dict[str, float], bool, float, bool]:
         """Solve toward a grasp-center target; returns (arm joints by model
         joint name, reached?, position error in m, self-colliding?).
@@ -251,7 +256,10 @@ class ArmIK:
 
         ``on_step(joints, error_m, attempt)`` is called every few descent
         iterations with the solver's *current* (possibly wrong) guess, so a
-        caller can animate the search instead of blocking silently."""
+        caller can animate the search instead of blocking silently. If the
+        callback returns a truthy value the search aborts early (the target
+        is stale — a newer one is waiting) and the best result so far is
+        returned."""
         import mujoco
 
         mink = self._mink
@@ -265,11 +273,15 @@ class ArmIK:
         )
 
         best_q, best_error, best_free = None, np.inf, False
-        rng = np.random.default_rng(0)
+        aborted = False
         for attempt in range(1 + restarts):
             q0 = self._q_warm.copy()
-            if attempt > 0:
-                q0[sampler.qpos_adr] = rng.uniform(sampler.lower, sampler.upper)
+            if attempt == 1:
+                # The home pose: a deterministic, collision-free recovery
+                # basin in case the warm start is stuck somewhere bad.
+                q0 = sampler._q_base.copy()
+            elif attempt > 1:
+                q0[sampler.qpos_adr] = self._rng.uniform(sampler.lower, sampler.upper)
             self._configuration.update(q0)
             # The task error decays ~×(1 − gain·dt) per iteration; 300 steps
             # at dt=0.05 reduce it by ~2e-7. Stopping at 60 left ~5% of the
@@ -284,18 +296,27 @@ class ArmIK:
                 self._configuration.integrate_inplace(velocity, 0.05)
                 if on_step is not None and iteration % 12 == 0:
                     q_now = self._configuration.q
-                    on_step(self._joints_of(q_now), self._position_error(q_now, position), attempt)
+                    aborted = bool(
+                        on_step(
+                            self._joints_of(q_now), self._position_error(q_now, position), attempt
+                        )
+                    )
+                    if aborted:
+                        break
                 if float(np.linalg.norm(velocity)) < 1e-4:
                     break
             error = self._position_error(self._configuration.q, position)
             free = not self._self_collides(self._configuration.q)
             if (free, -error) > (best_free, -best_error):
                 best_q, best_error, best_free = self._configuration.q.copy(), error, free
-            if best_free and best_error < 0.01:
+            if aborted or (best_free and best_error < 0.01):
                 break
 
         assert best_q is not None
-        self._q_warm = best_q.copy()
+        # Only a collision-free result may seed the next warm start: warming
+        # from a colliding/stuck configuration poisons every following solve.
+        if best_free:
+            self._q_warm = best_q.copy()
         return (
             self._joints_of(best_q),
             best_free and best_error < 0.02,
@@ -468,6 +489,12 @@ def serve(maps: dict[str, CapabilityMap], port: int = 8082) -> None:
                 wxyz=(1.0, 0.0, 0.0, 0.0),
             )
 
+    # IK runs on its own worker so drag events never queue behind a slow
+    # search: each event just pokes the worker, which always solves for the
+    # gizmo's *current* pose (latest wins), aborts a search mid-descent
+    # when the target moved, and retries a failed solve on its own.
+    ik_wakeup = threading.Event()
+
     def refresh_ik(_=None) -> None:
         nonlocal gizmo
         if not ik_enabled.value:
@@ -479,12 +506,22 @@ def serve(maps: dict[str, CapabilityMap], port: int = 8082) -> None:
             gizmo = server.scene.add_transform_controls(
                 "/ik_target", scale=0.18, position=(0.35, 0.2, 1.05)
             )
-            gizmo.on_update(solve_ik)
-        solve_ik()
+            gizmo.on_update(lambda _: ik_wakeup.set())
+        ik_wakeup.set()
 
-    def solve_ik(_=None) -> None:
-        if gizmo is None:
+    def pose_ghost(joints: dict[str, float]) -> None:
+        if viser_urdf is None or not urdf_joint_names:
             return
+        cfg = np.zeros(len(urdf_joint_names))
+        for i, name in enumerate(urdf_joint_names):
+            if name in joints:
+                cfg[i] = joints[name]
+        viser_urdf.update_cfg(cfg)
+
+    def solve_current_pose() -> bool:
+        """One solve at the gizmo's current pose; False if it failed."""
+        if gizmo is None:
+            return True
         cap = current_map()
         if cap.side not in solvers:
             try:
@@ -495,26 +532,21 @@ def serve(maps: dict[str, CapabilityMap], port: int = 8082) -> None:
         solver = solvers[cap.side]
         if solver is None:
             ik_status.value = "IK unavailable (pip install 'dimos[ik]')"
-            return
+            return True
         position = np.asarray(gizmo.position, dtype=np.float64)
         wxyz = np.asarray(gizmo.wxyz, dtype=np.float64)
 
-        def pose_ghost(joints: dict[str, float]) -> None:
-            if viser_urdf is None or not urdf_joint_names:
-                return
-            cfg = np.zeros(len(urdf_joint_names))
-            for i, name in enumerate(urdf_joint_names):
-                if name in joints:
-                    cfg[i] = joints[name]
-            viser_urdf.update_cfg(cfg)
-
-        def show_guess(joints: dict[str, float], error: float, attempt: int) -> None:
+        def show_guess(joints: dict[str, float], error: float, attempt: int) -> bool:
             # Stream the solver's current (possibly wrong) guess so the
-            # search is visible instead of a silent pause.
+            # search is visible instead of a silent pause; abort when the
+            # gizmo has moved on (a fresh wakeup is pending).
             pose_ghost(joints)
             ik_status.value = f"solving... attempt {attempt + 1} | err {error * 1000:.0f} mm"
+            return ik_wakeup.is_set()
 
         joints, reached, error, collided = solver.solve(position, wxyz, on_step=show_guess)
+        if ik_wakeup.is_set():
+            return True  # stale result; the worker re-solves immediately
 
         import mujoco
 
@@ -534,13 +566,31 @@ def serve(maps: dict[str, CapabilityMap], port: int = 8082) -> None:
             f"map score {score} | dexterity {dexterity:.0%} | rigid model (no sag)"
         )
         pose_ghost(joints)
+        return reached
+
+    def ik_worker() -> None:
+        while True:
+            ik_wakeup.wait()
+            ik_wakeup.clear()
+            try:
+                solved = solve_current_pose()
+                # A failed solve retries with fresh random restarts (the
+                # solver's RNG advances) unless a new drag superseded it.
+                for _ in range(2):
+                    if solved or ik_wakeup.is_set() or gizmo is None:
+                        break
+                    solved = solve_current_pose()
+            except Exception as e:
+                logger.warning(f"IK solve failed: {e}")
+
+    threading.Thread(target=ik_worker, daemon=True, name="ik-worker").start()
 
     for control in (side, style, point_size, dexterity_pct):
         control.on_update(refresh_volume)
     for control in (side, show_yaw_slice, yaw_slice, show_z_slice, z_slice):
         control.on_update(refresh_slices)
     ik_enabled.on_update(refresh_ik)
-    side.on_update(lambda _: solve_ik())
+    side.on_update(lambda _: ik_wakeup.set())
 
     refresh_volume()
     refresh_slices()
