@@ -387,9 +387,8 @@ fn cells_to_waypoints(
 }
 
 /// Shortcut runs of cells with straight on-surface segments, keeping the
-/// farthest cell in line of sight from each anchor. A shortcut is only taken
-/// when it never passes closer than buffer_m to a wall, so smoothing cannot
-/// erode the wall clearance the penalized routing built in.
+/// farthest cell in line of sight from each anchor. Shortcuts never pass
+/// still account for the wall buffer, so even the new path should be safe.
 fn string_pull(plg: &PlannerGraph, cells: &[CellId], tol_cells: i32, buffer_m: f32) -> Vec<CellId> {
     if cells.len() <= 2 {
         return cells.to_vec();
@@ -414,10 +413,8 @@ fn string_pull(plg: &PlannerGraph, cells: &[CellId], tol_cells: i32, buffer_m: f
     out
 }
 
-/// True if every column the segment crosses holds a surface cell within
-/// tol_cells of the interpolated segment height, and that cell stays at least
-/// buffer_m from the nearest wall. Cells without a wall-distance value are
-/// treated as open, so an unpopulated field reduces to a pure on-surface test.
+/// True if every column the segment crosses has a surface cell near the
+/// segment height that is at least buffer_m from the nearest wall.
 fn los_on_surface(
     plg: &PlannerGraph,
     a: VoxelKey,

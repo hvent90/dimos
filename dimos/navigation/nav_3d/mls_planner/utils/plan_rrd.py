@@ -17,7 +17,6 @@
 from __future__ import annotations
 
 from pathlib import Path as FsPath
-from typing import Any
 
 import numpy as np
 from numpy.typing import NDArray
@@ -38,7 +37,7 @@ from dimos.utils.data import resolve_named_path
 
 TIMELINE = "ts"
 
-TIMING_KEYS = ["voxelize_ms", "surfaces_ms", "graph_ms", "plan_ms", "total_ms"]
+TIMING_KEYS = ["update_ms", "plan_ms", "total_ms"]
 SIZE_KEYS = ["voxels", "surface_cells", "nodes", "edges"]
 
 
@@ -59,9 +58,11 @@ def _print_summary(streams: dict[str, dict[str, Stream[float]]]) -> None:
             print(f"  {kind}/{key:<14} {mean:9.2f} {p50:9.2f} {p95:9.2f} {peak:9.2f}")
 
 
-def _attach_pose_from_odom(pair_obs: Observation[Any]) -> Observation[PointCloud2]:
-    lidar_obs: Observation[PointCloud2] = pair_obs.data[0]
-    odom_obs: Observation[Odometry] = pair_obs.data[1]
+PairObs = Observation[tuple[Observation[PointCloud2], Observation[Odometry]]]
+
+
+def _attach_pose_from_odom(pair_obs: PairObs) -> Observation[PointCloud2]:
+    lidar_obs, odom_obs = pair_obs.data
     odom = odom_obs.data
     pose_tuple = (
         float(odom.position.x),

@@ -35,9 +35,13 @@ pub struct Config {
     /// Only spare a voxel whose neighborhood was hit within this many frames.
     /// A stale voxel can be cleared, even if it's a grazing hit. Large disables it.
     pub recency_window: u32,
-    /// Integrate every frame, publish maps every Nth frame.
-    #[validate(range(min = 1))]
+    /// Integrate every frame, publish the local map and region bounds every
+    /// Nth frame. Zero disables them.
+    #[validate(range(min = 0))]
     pub emit_every: u32,
+    /// Publish the global map every Nth frame. Zero disables it.
+    #[validate(range(min = 0))]
+    pub global_emit_every: u32,
     /// Size the local region to this percentile of batch point distances,
     /// so a stray far hit cannot inflate the region the planner recomputes.
     #[validate(range(min = 0.0, max = 100.0))]
@@ -687,6 +691,7 @@ mod tests {
             graze_cos: 0.5,
             recency_window: 60,
             emit_every: 1,
+            global_emit_every: 1,
             region_percentile: 95.0,
         }
     }
@@ -875,6 +880,7 @@ mod tests {
             graze_cos: 0.5,
             recency_window: 60,
             emit_every: 1,
+            global_emit_every: 1,
             region_percentile: 95.0,
         };
         // Build the floor over a y band so it is a 2d plane, not a wire.
@@ -1029,6 +1035,7 @@ mod tests {
             graze_cos: 0.5,
             recency_window: 60,
             emit_every: 1,
+            global_emit_every: 1,
             region_percentile: 95.0,
         };
 
@@ -1102,6 +1109,7 @@ mod tests {
             graze_cos: 0.5,
             recency_window: 60,
             emit_every: 1,
+            global_emit_every: 1,
             region_percentile: 95.0,
         };
 
@@ -1163,6 +1171,7 @@ mod tests {
             graze_cos,
             recency_window: 60,
             emit_every: 1,
+            global_emit_every: 1,
             region_percentile: 95.0,
         };
 
@@ -1293,6 +1302,7 @@ mod tests {
                 graze_cos: 0.5,
                 recency_window,
                 emit_every: 1,
+                global_emit_every: 1,
                 region_percentile: 95.0,
             };
             let (mut map, _) = build_surface(&floor, voxel_size, cfg.max_health);

@@ -57,6 +57,40 @@ def test_flat_floor_yields_populated_path_and_planned_true() -> None:
 
     assert out.tags["planned"] is True
     assert len(out.data.poses) >= 2
+    assert out.tags["voxels"] > 0
+    assert out.tags["voxel_map"].shape == (out.tags["voxels"], 3)
+    assert out.tags["surface_clearance"].shape[1] == 4
+    assert set(out.tags["timings"]) == {"update_ms", "plan_ms", "total_ms"}
+
+
+def test_poseless_obs_is_skipped() -> None:
+    points = _flat_floor()
+    poseless = Observation(
+        id=1,
+        ts=0.0,
+        pose=None,
+        tags={"region_bounds": (0.0, 0.0, 5.0, -1.0, 2.0)},
+        _data=PointCloud2.from_numpy(points),
+    )
+    posed = _obs(points, pose=(-2.0, -2.0, 1.0), region_bounds=(0.0, 0.0, 5.0, -1.0, 2.0))
+
+    results = list(
+        MLSPlan(goal=(2.0, 2.0, 0.0), voxel_size=0.2, robot_height=1.0)(iter([poseless, posed]))
+    )
+
+    assert len(results) == 1
+
+
+def test_missing_region_bounds_raises() -> None:
+    obs = Observation(
+        id=0,
+        ts=0.0,
+        pose=(0.0, 0.0, 0.0),
+        _data=PointCloud2.from_numpy(np.zeros((1, 3), dtype=np.float32)),
+    )
+
+    with pytest.raises(ValueError, match="local map slices"):
+        list(MLSPlan(goal=(1.0, 1.0, 0.0))(iter([obs])))
 
 
 def test_start_z_is_dropped_by_robot_height() -> None:
@@ -72,7 +106,7 @@ def test_start_z_is_dropped_by_robot_height() -> None:
 
 
 def test_no_route_yields_empty_path_with_planned_false() -> None:
-    # Random points form no traversable surface, so plan() returns None.
+    # Random points form no traversable surface, so planning fails.
     rng = np.random.default_rng(0)
     obs = _obs(
         rng.random((50, 3)).astype(np.float32),

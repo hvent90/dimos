@@ -5,7 +5,6 @@ use numpy::ndarray::Array2;
 use numpy::{IntoPyArray, PyArray2, PyReadonlyArray2, PyUntypedArrayMethods};
 use pyo3::exceptions::PyValueError;
 use pyo3::prelude::*;
-use pyo3::types::PyDict;
 use validator::Validate;
 
 use crate::edges::edges_to_segments;
@@ -261,16 +260,6 @@ impl MLSPlanner {
         Array2::from_shape_vec((n, 3), positions)
             .expect("3 elements pushed per voxel")
             .into_pyarray(py)
-    }
-
-    /// Per-substep wall-clock cost (ms) of the most recent map update.
-    fn last_timings<'py>(&self, py: Python<'py>) -> PyResult<Bound<'py, PyDict>> {
-        let t = self.planner.last_timings();
-        let d = PyDict::new(py);
-        d.set_item("voxelize_ms", t.voxelize_ms)?;
-        d.set_item("surfaces_ms", t.surfaces_ms)?;
-        d.set_item("graph_ms", t.graph_ms)?;
-        Ok(d)
     }
 
     fn clear(&mut self) {

@@ -3,8 +3,6 @@
 
 //! Config and the owned-state Planner that builds and queries the MLS graph.
 
-use std::time::Instant;
-
 use ahash::AHashSet;
 use rayon::prelude::*;
 use serde::Deserialize;
@@ -55,14 +53,6 @@ fn default_wall_penalty_weight() -> f32 {
     4.0
 }
 
-/// Wall-clock cost in ms of each stage of the most recent map update.
-#[derive(Default, Clone, Copy)]
-pub struct RebuildTimings {
-    pub voxelize_ms: f64,
-    pub surfaces_ms: f64,
-    pub graph_ms: f64,
-}
-
 /// Cylindrical region the planner re-derives from a local map slice.
 pub struct RegionBounds {
     pub origin_x: f32,
@@ -100,7 +90,6 @@ pub struct Planner {
     graph: PlannerGraph,
     voxel_map: AHashSet<VoxelKey>,
     by_col: ColumnIz,
-    last_timings: RebuildTimings,
 }
 
 impl Planner {
@@ -108,14 +97,11 @@ impl Planner {
         let voxel_size = config.voxel_size;
         let clearance = (config.robot_height / voxel_size).ceil() as i32;
 
-        let t_voxelize = Instant::now();
         self.voxel_map.clear();
         for &p in points {
             self.voxel_map.insert(voxelize(p, voxel_size));
         }
-        let voxelize_ms = ms(t_voxelize.elapsed());
 
-        let t_surfaces = Instant::now();
         let mut surface: Vec<VoxelKey> = Vec::new();
         extract_surfaces(
             &self.voxel_map,
@@ -126,19 +112,12 @@ impl Planner {
             &mut surface,
         );
         build_surface_lookup(&surface, &mut self.graph.surface_lookup);
-        let surfaces_ms = ms(t_surfaces.elapsed());
 
-        let graph_ms = self.rebuild_graph(config);
-
-        self.last_timings = RebuildTimings {
-            voxelize_ms,
-            surfaces_ms,
-            graph_ms,
-        };
+        self.rebuild_graph(config);
     }
 
-    /// Re-derive the planner from a local map slice, recomputing only where
-    /// voxels changed and reusing everything else.
+    /// Update planner artifacts within a local region instead of recomputing
+    /// the entire planner on the entire map.
     pub fn update_region(
         &mut self,
         local_points: &[(f32, f32, f32)],
@@ -149,21 +128,13 @@ impl Planner {
         let clearance = (config.robot_height / voxel_size).ceil() as i32;
         let pad = (config.surface_dilation_passes + config.surface_erosion_passes) as i32;
 
-        let t_voxelize = Instant::now();
         let changed = self.replace_region_voxels(local_points, bounds, voxel_size);
-        let voxelize_ms = ms(t_voxelize.elapsed());
 
         // No voxel changed, so surfaces and the graph are untouched.
         let Some((bx0, bx1, by0, by1)) = changed else {
-            self.last_timings = RebuildTimings {
-                voxelize_ms,
-                surfaces_ms: 0.0,
-                graph_ms: 0.0,
-            };
             return;
         };
 
-        let t_surfaces = Instant::now();
         // A changed voxel column shifts surfaces only within pad of it, so the
         // write-back box is the changed-column bbox grown by pad.
         let write = (bx0 - pad, bx1 + pad, by0 - pad, by1 + pad);
@@ -175,17 +146,8 @@ impl Planner {
             write,
         );
         let (added, removed) = self.replace_surface_region(write, &new_cells);
-        let surfaces_ms = ms(t_surfaces.elapsed());
 
-        let t_graph = Instant::now();
         self.rebuild_region_graph(added, removed, config);
-        let graph_ms = ms(t_graph.elapsed());
-
-        self.last_timings = RebuildTimings {
-            voxelize_ms,
-            surfaces_ms,
-            graph_ms,
-        };
     }
 
     /// Patch cells for the changed surface, then re-place nodes and edges over
@@ -288,9 +250,9 @@ impl Planner {
         bb.bounds()
     }
 
-    /// Replace the surface_lookup entries for columns in the write box with the
-    /// freshly extracted cells. Returns the added and removed surface cells so
-    /// the graph can be patched surgically.
+    /// Replace the surface_lookup entries for columns in the write box with
+    /// the freshly extracted cells. Returns the added and removed cells so
+    /// only the affected parts of the graph get patched.
     fn replace_surface_region(
         &mut self,
         write: (i32, i32, i32, i32),
@@ -309,15 +271,17 @@ impl Planner {
         }
         let new: AHashSet<VoxelKey> = new_cells.iter().copied().collect();
 
+        let mut touched: AHashSet<(i32, i32)> = AHashSet::new();
         for &(ix, iy, iz) in new_cells {
             self.graph
                 .surface_lookup
                 .entry((ix, iy))
                 .or_default()
                 .push(iz);
+            touched.insert((ix, iy));
         }
-        for &(ix, iy, _) in new_cells {
-            if let Some(zs) = self.graph.surface_lookup.get_mut(&(ix, iy)) {
+        for col in touched {
+            if let Some(zs) = self.graph.surface_lookup.get_mut(&col) {
                 zs.sort_unstable();
                 zs.dedup();
             }
@@ -329,12 +293,10 @@ impl Planner {
     }
 
     /// Rebuild all cells from surface_lookup, then nodes and edges.
-    /// Returns graph_ms.
-    fn rebuild_graph(&mut self, config: &Config) -> f64 {
+    fn rebuild_graph(&mut self, config: &Config) {
         let voxel_size = config.voxel_size;
         let step = (config.node_step_threshold_m / voxel_size).floor() as i32;
 
-        let t_graph = Instant::now();
         build_surface_cells(
             &mut self.graph.cells,
             &self.graph.surface_lookup,
@@ -342,7 +304,6 @@ impl Planner {
             step,
         );
         self.rebuild_nodes(config);
-        ms(t_graph.elapsed())
     }
 
     /// Live cells within the changed-cell bbox grown by the node-graph margin,
@@ -392,7 +353,7 @@ impl Planner {
         ids.into_iter().collect()
     }
 
-    /// Place nodes and build node edges from the current cells (full rebuild).
+    /// Full rebuild of nodes and node edges from the current cells.
     fn rebuild_nodes(&mut self, config: &Config) {
         place_nodes(
             &mut self.graph.cells,
@@ -458,14 +419,6 @@ impl Planner {
     pub fn voxel_keys(&self) -> impl Iterator<Item = VoxelKey> + '_ {
         self.voxel_map.iter().copied()
     }
-
-    pub fn last_timings(&self) -> RebuildTimings {
-        self.last_timings
-    }
-}
-
-fn ms(d: std::time::Duration) -> f64 {
-    d.as_secs_f64() * 1000.0
 }
 
 /// Running inclusive xy bounding box of changed columns.
@@ -615,8 +568,8 @@ mod region_tests {
             .filter(|&p| !bounds.contains_voxel(voxelize(p, cfg.voxel_size), cfg.voxel_size))
             .collect();
 
-        // Seed the cylinder with a stack of junk voxels not present in `all`,
-        // so update_region must clear them (and the surface they induce).
+        // Seed the cylinder with a stack of junk voxels not present in the
+        // world, so update_region must clear them and the surface they induce.
         let mut seeded = outside.clone();
         for iz in 3..8 {
             seeded.push((2.05, 2.05, iz as f32 * cfg.voxel_size + 0.05));

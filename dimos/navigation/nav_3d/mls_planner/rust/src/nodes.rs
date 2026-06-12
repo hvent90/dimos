@@ -397,6 +397,33 @@ mod tests {
     }
 
     #[test]
+    fn wall_penalty_weight_scales_edge_costs() {
+        // On a 1-wide strip every cell is wall-adjacent, so the penalty
+        // multiplier is exactly 1 + weight and edge cost is base times it.
+        let cells_in: Vec<VoxelKey> = (0..10).map(|ix| (ix, 0, 0)).collect();
+        let cost_with = |weight: f32| {
+            let mut sc = build_cells(&cells_in, 2);
+            let mut state = DijkstraState::default();
+            let mut nodes = Vec::new();
+            place_nodes(
+                &mut sc, VOXEL, 1.0, 0.3, 0.0, weight, &mut state, &mut nodes,
+            );
+            let id = sc.id((5, 0, 0)).unwrap();
+            sc.neighbors(id)[0].cost
+        };
+        let unweighted = cost_with(0.0);
+        assert!(
+            (unweighted - VOXEL).abs() < 1e-5,
+            "zero weight must leave the geometric cost, got {unweighted}"
+        );
+        assert!(
+            (cost_with(4.0) - 5.0 * VOXEL).abs() < 1e-5,
+            "weight 4 at the wall must scale cost by 5"
+        );
+        assert!(cost_with(4.0) > cost_with(1.0));
+    }
+
+    #[test]
     fn wall_cells_scale_outbound_cost() {
         let cells_in: Vec<VoxelKey> = (0..10).map(|ix| (ix, 0, 0)).collect();
         let mut sc = build_cells(&cells_in, 2);

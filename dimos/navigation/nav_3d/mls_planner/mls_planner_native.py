@@ -46,8 +46,8 @@ class MLSPlannerNativeConfig(NativeModuleConfig):
 class MLSPlannerNative(NativeModule):
     """Rust-backed MLS planner.
 
-    Feed either global_map (full rebuild per message) or the local_map plus
-    region_bounds pair from RayTracingVoxelMap (incremental region updates).
+    Feed either global_map, which rebuilds fully per message, or the local_map
+    plus region_bounds pair from RayTracingVoxelMap for incremental updates.
     """
 
     config: MLSPlannerNativeConfig

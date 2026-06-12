@@ -83,14 +83,18 @@ class MLSPlan(Transformer[PointCloud2, Path]):
                     "MLSPlan consumes local map slices; construct RayTraceMap(emit_local=True)"
                 )
             ox, oy, radius, z_min, z_max = bounds
+            t_update = time.perf_counter()
             planner.update_region(obs.data.points_f32(), (ox, oy), radius, z_min, z_max)
             t_plan = time.perf_counter()
             waypoints = planner.plan(start, self.goal)
-            plan_ms = (time.perf_counter() - t_plan) * 1000
+            t_done = time.perf_counter()
             path = self._path_from_waypoints(waypoints, obs.ts)
 
-            timings = {**planner.last_timings(), "plan_ms": plan_ms}
-            timings["total_ms"] = sum(timings.values())
+            timings = {
+                "update_ms": (t_plan - t_update) * 1000,
+                "plan_ms": (t_done - t_plan) * 1000,
+                "total_ms": (t_done - t_update) * 1000,
+            }
 
             yield obs.derive(
                 data=path,

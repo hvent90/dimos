@@ -85,13 +85,6 @@ class MLSPlanner:
         """Accumulated occupied voxel centers as (N, 3) float32, for visualization."""
         ...
 
-    def last_timings(self) -> dict[str, float]:
-        """Per-substep wall-clock ms of the last update_global_map.
-
-        Keys are voxelize_ms, surfaces_ms, and graph_ms.
-        """
-        ...
-
     def clear(self) -> None:
         """Drop the graph and buffered state."""
         ...

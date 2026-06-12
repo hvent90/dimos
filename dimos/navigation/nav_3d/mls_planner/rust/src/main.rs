@@ -1,7 +1,7 @@
 // Copyright 2026 Dimensional Inc.
 // SPDX-License-Identifier: Apache-2.0
 
-use std::time::{Duration, Instant, SystemTime, UNIX_EPOCH};
+use std::time::{Duration, SystemTime, UNIX_EPOCH};
 
 use dimos_mls_planner::edges::{edges_to_segments, PlannerGraph};
 use dimos_mls_planner::mls_planner::{Config, Planner, RegionBounds};
@@ -19,7 +19,7 @@ struct MlsPlanner {
     global_map: Input<PointCloud2>,
 
     // Incremental path: a local map slice paired by stamp with the region
-    // bounds it covers (see the ray tracer's region_bounds output).
+    // bounds it covers, published by the ray tracer alongside local_map.
     #[input(decode = PointCloud2::decode, handler = on_local_map)]
     local_map: Input<PointCloud2>,
 
@@ -70,9 +70,7 @@ impl MlsPlanner {
             return;
         }
 
-        let t = Instant::now();
         self.planner.update_global_map(&points, &self.config);
-        let rebuild_ms = ms(t.elapsed());
 
         self.publish_graph().await;
 
@@ -82,7 +80,6 @@ impl MlsPlanner {
             surface_cells = self.planner.surface().count(),
             nodes = self.planner.graph().nodes.len(),
             edges = self.planner.graph().node_edges.len(),
-            rebuild_ms,
             "global_map processed",
         );
     }
@@ -128,9 +125,7 @@ impl MlsPlanner {
             z_max: bounds_msg.pose.orientation.z as f32,
         };
 
-        let t = Instant::now();
         self.planner.update_region(&points, &bounds, &self.config);
-        let update_ms = ms(t.elapsed());
 
         self.publish_graph().await;
 
@@ -138,7 +133,6 @@ impl MlsPlanner {
             local_points = points.len(),
             voxels = self.planner.voxel_count(),
             nodes = self.planner.graph().nodes.len(),
-            update_ms,
             "local region processed",
         );
     }
@@ -167,6 +161,7 @@ impl MlsPlanner {
         self.latest_start = Some((p.x as f32, p.y as f32, p.z as f32));
         // Drop any previous plan so the visualizer doesn't show a stale path
         // rooted at the old start.
+        info!("canceling any active path, start pose changed");
         publish_path(&self.path, &empty_path(&self.config.world_frame, now())).await;
     }
 
@@ -179,7 +174,6 @@ impl MlsPlanner {
         let p = &msg.pose.position;
         let goal = (p.x as f32, p.y as f32, p.z as f32);
 
-        let t_plan = Instant::now();
         let waypoints = match self.planner.plan(start, goal, &self.config) {
             Some(wp) => wp,
             None => {
@@ -188,17 +182,11 @@ impl MlsPlanner {
                 return;
             }
         };
-        let plan_ms = ms(t_plan.elapsed());
-
         let stamp = now();
         let path_msg = build_path_from_waypoints(&waypoints, &self.config.world_frame, stamp);
-        info!(waypoints = waypoints.len(), plan_ms, "path planned");
+        info!(waypoints = waypoints.len(), "path planned");
         publish_path(&self.path, &path_msg).await;
     }
-}
-
-fn ms(d: Duration) -> f64 {
-    d.as_secs_f64() * 1000.0
 }
 
 fn same_stamp(a: &Time, b: &Time) -> bool {
