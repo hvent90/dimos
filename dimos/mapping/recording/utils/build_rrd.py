@@ -116,15 +116,41 @@ def _log_frames(store, stream, entity, stride, voxel, base):
     print(f"   rrd: {entity} <- {stream} ({n} frames, stride {stride}, voxel {voxel}m)")
 
 
+# Compact the running map once this many uncompacted points accumulate. Bounds
+# peak memory to ~(final map + this) instead of every frame's full-res points.
+_MAP_COMPACT_THRESHOLD = 5_000_000
+
+
 def _log_map(store, stream, entity, voxel, base):
     if stream not in store.list_streams():
         return
-    chunks = [
-        c for c in (obs.data.points_f32() for obs in store.stream(stream, PointCloud2)) if len(c)
-    ]
-    if not chunks:
+    running: np.ndarray | None = None
+    pending: list[np.ndarray] = []
+    pending_count = 0
+
+    def compact(parts: list[np.ndarray]) -> np.ndarray | None:
+        if running is not None:
+            parts = [running, *parts]
+        if not parts:
+            return running
+        merged = np.concatenate(parts)
+        return _down(merged, voxel) if voxel > 0 else merged
+
+    for obs in store.stream(stream, PointCloud2):
+        cloud = obs.data.points_f32()
+        if len(cloud) == 0:
+            continue
+        # Per-frame downsample collapses each dense cloud to its voxel footprint,
+        # so we never hold all frames' raw points at once.
+        pending.append(_down(cloud, voxel) if voxel > 0 else cloud)
+        pending_count += len(pending[-1])
+        if pending_count >= _MAP_COMPACT_THRESHOLD:
+            running = compact(pending)
+            pending, pending_count = [], 0
+
+    pts = compact(pending)
+    if pts is None or len(pts) == 0:
         return
-    pts = _down(np.concatenate(chunks), voxel)
     rr.log(entity, rr.Points3D(pts, colors=_shaded(pts, base)), static=True)
     print(f"   rrd: {entity} <- {stream} ({len(pts):,} pts, voxel {voxel}m)")
 

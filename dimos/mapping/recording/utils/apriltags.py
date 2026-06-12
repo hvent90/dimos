@@ -133,8 +133,9 @@ def detect_apriltags(
     medoid representative per cluster. Returns that list of representatives."""
     detector = make_detector(dictionary)
     raw_detections: list[dict] = []
-    images = store.stream(image_stream, Image).to_list()
-    for image_obs in images:
+    image_count = 0
+    for image_obs in store.stream(image_stream, Image):
+        image_count += 1
         image = image_obs.data
         bgr = image.numpy() if hasattr(image, "numpy") else np.asarray(image.data)
         all_corners, marker_ids, _ = detector.detectMarkers(bgr)
@@ -197,6 +198,6 @@ def detect_apriltags(
     found_ids = sorted({detection["marker_id"] for detection in detections})
     print(
         f"   april_tags: {len(raw_detections)} raw -> {len(kept)} in-spec "
-        f"-> {len(detections)} clusters, markers {found_ids} (over {len(images)} images)"
+        f"-> {len(detections)} clusters, markers {found_ids} (over {image_count} images)"
     )
     return detections

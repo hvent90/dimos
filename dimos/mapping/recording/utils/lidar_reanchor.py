@@ -48,7 +48,7 @@ def _load_poses(db_path: str, stream: str):
     ).fetchall()
     conn.close()
     if not rows:
-        raise SystemExit(f"no populated poses in stream '{stream}'")
+        raise ValueError(f"no populated poses in stream '{stream}'")
     return np.array([r[0] for r in rows]), np.array([r[1:8] for r in rows], dtype=np.float64)
 
 
@@ -87,7 +87,7 @@ def reanchor_stream(
     odom_M = [None] * len(odom_ts)
     gt_M = [None] * len(gt_ts)
 
-    src = store.stream(lidar_stream, PointCloud2).to_list()
+    src = store.stream(lidar_stream, PointCloud2)
     if out_stream in store.list_streams():
         store.delete_stream(out_stream)
     out = store.stream(out_stream, PointCloud2)
