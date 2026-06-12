@@ -16,6 +16,6 @@
 
 from __future__ import annotations
 
-from dimos_voxel_ray_tracing import VoxelRayMapper
+from dimos_voxel_ray_tracing import VoxelRayMapper, local_bounds
 
-__all__ = ["VoxelRayMapper"]
+__all__ = ["VoxelRayMapper", "local_bounds"]
