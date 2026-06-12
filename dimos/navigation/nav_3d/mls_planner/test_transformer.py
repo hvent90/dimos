@@ -15,6 +15,7 @@
 from __future__ import annotations
 
 import numpy as np
+from numpy.typing import NDArray
 import pytest
 
 pytest.importorskip("dimos_mls_planner")
@@ -25,7 +26,7 @@ from dimos.navigation.nav_3d.mls_planner.transformer import MLSPlan
 
 
 def _obs(
-    points: np.ndarray,
+    points: NDArray[np.float32],
     pose: tuple[float, float, float],
     region_bounds: tuple[float, float, float, float, float],
 ) -> Observation[PointCloud2]:
@@ -36,6 +37,26 @@ def _obs(
         tags={"region_bounds": region_bounds},
         _data=PointCloud2.from_numpy(points),
     )
+
+
+def _flat_floor(half_extent: float = 3.0, spacing: float = 0.1) -> NDArray[np.float32]:
+    coords = np.arange(-half_extent, half_extent, spacing, dtype=np.float32)
+    xs, ys = np.meshgrid(coords, coords)
+    zs = np.zeros_like(xs)
+    return np.stack([xs.ravel(), ys.ravel(), zs.ravel()], axis=1)
+
+
+def test_flat_floor_yields_populated_path_and_planned_true() -> None:
+    obs = _obs(
+        _flat_floor(),
+        pose=(-2.0, -2.0, 1.0),
+        region_bounds=(0.0, 0.0, 5.0, -1.0, 2.0),
+    )
+
+    [out] = list(MLSPlan(goal=(2.0, 2.0, 0.0), voxel_size=0.2, robot_height=1.0)(iter([obs])))
+
+    assert out.tags["planned"] is True
+    assert len(out.data.poses) >= 2
 
 
 def test_start_z_is_dropped_by_robot_height() -> None:

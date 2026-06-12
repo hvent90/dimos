@@ -63,8 +63,7 @@ pub struct RebuildTimings {
     pub graph_ms: f64,
 }
 
-/// Cylindrical region the planner re-derives from a local map slice. The xy
-/// test mirrors the ray tracer so the slice is an exact replacement.
+/// Cylindrical region the planner re-derives from a local map slice.
 pub struct RegionBounds {
     pub origin_x: f32,
     pub origin_y: f32,
@@ -424,30 +423,18 @@ impl Planner {
         if self.graph.nodes.is_empty() {
             return None;
         }
-        planner::plan(
-            &self.graph,
-            start,
-            goal,
-            config.voxel_size,
-            config.robot_height,
-            config.node_spacing_m,
-            config.node_step_threshold_m,
-            config.node_wall_buffer_m,
-        )
+        planner::plan(&self.graph, start, goal, config)
     }
 
     pub fn graph(&self) -> &PlannerGraph {
         &self.graph
     }
 
-    pub fn surface(&self) -> Vec<VoxelKey> {
-        let mut out: Vec<VoxelKey> = Vec::new();
-        for (&(ix, iy), zs) in &self.graph.surface_lookup {
-            for &iz in zs {
-                out.push((ix, iy, iz));
-            }
-        }
-        out
+    pub fn surface(&self) -> impl Iterator<Item = VoxelKey> + '_ {
+        self.graph
+            .surface_lookup
+            .iter()
+            .flat_map(|(&(ix, iy), zs)| zs.iter().map(move |&iz| (ix, iy, iz)))
     }
 
     /// Surface cells paired with their wall clearance, the distance to the
@@ -559,7 +546,7 @@ mod region_tests {
     }
 
     fn surface_set(p: &Planner) -> BTreeSet<VoxelKey> {
-        p.surface().into_iter().collect()
+        p.surface().collect()
     }
 
     fn voxel_set(p: &Planner) -> BTreeSet<VoxelKey> {

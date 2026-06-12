@@ -310,10 +310,8 @@ fn scale_edges(
     }
 }
 
-/// Cost multiplier for a cell at wall distance d. Cells closer than the robot
-/// radius are impassable. Beyond it the penalty decays smoothly from
-/// 1 + weight at the radius toward 1, with length scale buffer_m, so paths are
-/// pushed toward open space with no hard cap and no flat zone.
+/// Cost multiplier at wall distance d. Infinite inside the robot radius,
+/// then decays from 1 + weight toward 1 with length scale buffer_m.
 #[inline]
 fn penalty_of(d: f32, buffer_m: f32, robot_radius_m: f32, weight: f32) -> f32 {
     if d < robot_radius_m {

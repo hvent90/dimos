@@ -9,6 +9,7 @@ use ahash::{AHashMap, AHashSet};
 use crate::adjacency::{CellId, SurfaceCells, SurfaceLookup};
 use crate::dijkstra::walk_preds;
 use crate::edges::{NodeEdgeIdx, NodeId, PlannerGraph, NO_NODE};
+use crate::mls_planner::Config;
 use crate::voxel::{surface_point_xyz, VoxelKey};
 
 /// Robot-rooted candidate search radius, in multiples of node spacing.
@@ -76,17 +77,14 @@ fn best_iz_in_column(
 /// Plan path from start pose to goal pose using the node graph.
 /// Returns none if either of the poses can't be snapped to surface or if
 /// there is no valid path.
-#[allow(clippy::too_many_arguments)]
 pub fn plan(
     plg: &PlannerGraph,
     start_pose: (f32, f32, f32),
     goal_pose: (f32, f32, f32),
-    voxel_size: f32,
-    z_tolerance_m: f32,
-    node_spacing_m: f32,
-    node_step_threshold_m: f32,
-    node_wall_buffer_m: f32,
+    config: &Config,
 ) -> Option<Vec<(f32, f32, f32)>> {
+    let voxel_size = config.voxel_size;
+    let z_tolerance_m = config.robot_height;
     let start_coord =
         snap_pose_to_cell(&plg.surface_lookup, start_pose, voxel_size, z_tolerance_m)?;
     let goal_coord = snap_pose_to_cell(&plg.surface_lookup, goal_pose, voxel_size, z_tolerance_m)?;
@@ -104,7 +102,7 @@ pub fn plan(
     // Rooted at the goal so one pass covers every node's cost-to-go.
     let (cost_to_go, pred_to_goal) = node_dijkstra(plg, goal_node);
 
-    let radius = (node_spacing_m * CANDIDATE_RADIUS_FACTOR).max(voxel_size);
+    let radius = (config.node_spacing_m * CANDIDATE_RADIUS_FACTOR).max(voxel_size);
     let (lead_in, node_seq) = select_entry(
         plg,
         start_cell,
@@ -116,10 +114,10 @@ pub fn plan(
     )?;
 
     // Shortcut height tolerance in cells, tied to the traversable step.
-    let smooth_tol_cells = ((node_step_threshold_m / voxel_size).round() as i32).max(1);
+    let smooth_tol_cells = ((config.node_step_threshold_m / voxel_size).round() as i32).max(1);
 
     let cells = assemble_cells(plg, &node_seq, &lead_in, &goal_segment);
-    let cells = string_pull(plg, &cells, smooth_tol_cells, node_wall_buffer_m);
+    let cells = string_pull(plg, &cells, smooth_tol_cells, config.node_wall_buffer_m);
     Some(cells_to_waypoints(
         plg, &cells, start_pose, goal_pose, voxel_size,
     ))
@@ -494,7 +492,19 @@ mod tests {
         start: (f32, f32, f32),
         goal: (f32, f32, f32),
     ) -> Option<Vec<(f32, f32, f32)>> {
-        plan(plg, start, goal, VOXEL, Z_TOL, 1.0, 0.25, 0.3)
+        let config = Config {
+            world_frame: "world".into(),
+            voxel_size: VOXEL,
+            robot_height: Z_TOL,
+            surface_dilation_passes: 0,
+            surface_erosion_passes: 0,
+            node_spacing_m: 1.0,
+            node_wall_buffer_m: 0.3,
+            node_step_threshold_m: 0.25,
+            robot_radius_m: 0.2,
+            wall_penalty_weight: 4.0,
+        };
+        plan(plg, start, goal, &config)
     }
 
     #[test]

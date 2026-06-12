@@ -11,6 +11,7 @@ use validator::Validate;
 use crate::edges::edges_to_segments;
 use crate::mls_planner::{Config, Planner, RegionBounds};
 use crate::voxel::surface_point_xyz;
+use crate::voxel::VoxelKey;
 
 #[pyclass]
 pub struct MLSPlanner {
@@ -140,7 +141,7 @@ impl MLSPlanner {
 
     fn surface_map<'py>(&self, py: Python<'py>) -> Bound<'py, PyArray2<f32>> {
         let voxel_size = self.config.voxel_size;
-        let surface = self.planner.surface();
+        let surface: Vec<VoxelKey> = self.planner.surface().collect();
         let positions: Vec<f32> = py.allow_threads(|| {
             let mut out: Vec<f32> = Vec::with_capacity(surface.len() * 3);
             for (ix, iy, iz) in surface {
@@ -157,7 +158,7 @@ impl MLSPlanner {
             .into_pyarray(py)
     }
 
-    /// Surface cells as `(M, 4)` float32 rows `[x, y, z, clearance]`, where
+    /// Surface cells as (M, 4) float32 rows of x, y, z, clearance, where
     /// clearance is the distance to the nearest untraversable edge.
     fn surface_clearance_map<'py>(&self, py: Python<'py>) -> Bound<'py, PyArray2<f32>> {
         let voxel_size = self.config.voxel_size;
@@ -281,7 +282,7 @@ impl MLSPlanner {
         format!(
             "MLSPlanner(voxel_size={}, surface_cells={}, nodes={}, edges={})",
             self.config.voxel_size,
-            self.planner.surface().len(),
+            self.planner.surface().count(),
             graph.nodes.len(),
             graph.node_edges.len(),
         )

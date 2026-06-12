@@ -79,7 +79,7 @@ impl MlsPlanner {
         debug!(
             global_map_points = points.len(),
             voxels = self.planner.voxel_count(),
-            surface_cells = self.planner.surface().len(),
+            surface_cells = self.planner.surface().count(),
             nodes = self.planner.graph().nodes.len(),
             edges = self.planner.graph().node_edges.len(),
             rebuild_ms,
@@ -151,8 +151,7 @@ impl MlsPlanner {
         let surface_points: Vec<(f32, f32, f32)> = self
             .planner
             .surface()
-            .iter()
-            .map(|&(ix, iy, iz)| surface_point_xyz(ix, iy, iz, voxel_size))
+            .map(|(ix, iy, iz)| surface_point_xyz(ix, iy, iz, voxel_size))
             .collect();
         publish_cloud(&self.surface_map, &surface_points, frame, now()).await;
 

@@ -81,7 +81,9 @@ class RayTraceMap(Transformer[PointCloud2, PointCloud2]):
         )
         points = points[np.isfinite(points).all(axis=1)]
         if points.size == 0:
-            rx, ry, rz, *_ = last_obs.pose_tuple
+            pose = last_obs.pose_tuple
+            assert pose is not None, "poseless obs are skipped upstream"
+            rx, ry, rz = pose[:3]
             return rx, ry, 0.0, rz, rz
 
         origins = np.asarray(batch_origins, dtype=np.float64)
