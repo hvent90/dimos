@@ -92,6 +92,7 @@ class _Window:
     missing: dict[str, int] = field(default_factory=dict)  # drops by field
     blocked: int = 0  # ticks evicted while waiting for interpolation brackets
     outputs: dict[str, int] = field(default_factory=dict)
+    latencies_s: list[float] = field(default_factory=list)  # trigger ts -> publish
 
 
 class HealthMonitor:
@@ -108,6 +109,10 @@ class HealthMonitor:
         *,
         expected_hz: dict[str, float] | None = None,
         min_output_hz: float | None = None,
+        max_drop_ratio: float | None = None,
+        max_tick_latency_s: float | None = None,
+        max_missing_ratio: float = 0.5,
+        ratio_min_samples: int = 10,
         interval_s: float = 1.0,
         warmup_s: float = 5.0,
         unhealthy_log_every_s: float = 10.0,
@@ -121,6 +126,13 @@ class HealthMonitor:
         self.name = name
         self.expected_hz = dict(expected_hz or {})
         self.min_output_hz = min_output_hz
+        self.max_drop_ratio = max_drop_ratio
+        self.max_tick_latency_s = max_tick_latency_s
+        self.max_missing_ratio = max_missing_ratio
+        # Ratio contracts are vacuous on tiny windows (3 drops of 4 ticks =
+        # 75%) and at zero traffic — they only evaluate at this many samples.
+        # Absolute contracts (min_output_hz, expected_hz) remain the liveness floor.
+        self.ratio_min_samples = ratio_min_samples
         self.interval_s = interval_s
         self.warmup_s = warmup_s
         self.unhealthy_log_every_s = unhealthy_log_every_s
@@ -143,6 +155,7 @@ class HealthMonitor:
         self._win = _Window()
         self._total_inputs: dict[str, int] = {}
         self._step_ms: deque[float] = deque(maxlen=256)
+        self._latency_ms: deque[float] = deque(maxlen=256)
         self._ages: dict[str, deque[float]] = {}
         self._buffer_len: Callable[[], int] = lambda: 0
         self._pending_len: Callable[[], int] = lambda: 0
@@ -180,12 +193,25 @@ class HealthMonitor:
             with self._lock:
                 self._win.blocked += n
 
-    def on_step(self, duration_s: float, ages: dict[str, float], emitted: bool) -> None:
+    def on_step(
+        self,
+        duration_s: float,
+        ages: dict[str, float],
+        emitted: bool,
+        latency_s: float | None = None,
+    ) -> None:
+        """One step completed. ``latency_s`` is end-to-end tick latency —
+        trigger timestamp to outputs published — covering queue wait,
+        alignment wait, buffer wait, and the step itself."""
         with self._lock:
             self._win.stepped += 1
             if emitted:
                 self._win.emitted += 1
             self._step_ms.append(duration_s * 1000.0)
+            if latency_s is not None:
+                self._latency_ms.append(latency_s * 1000.0)
+                if len(self._win.latencies_s) < 4096:
+                    self._win.latencies_s.append(latency_s)
             for name, age in ages.items():
                 self._ages.setdefault(name, deque(maxlen=256)).append(age)
 
@@ -235,6 +261,8 @@ class HealthMonitor:
             "emitted_hz": win.emitted / dt,
             "step_p50_ms": _percentile(list(self._step_ms), 0.50),
             "step_p99_ms": _percentile(list(self._step_ms), 0.99),
+            "tick_latency_p50_ms": _percentile(list(self._latency_ms), 0.50),
+            "tick_latency_p99_ms": _percentile(list(self._latency_ms), 0.99),
             "buffer_len": float(self._buffer_len()),
             "pending_len": float(self._pending_len()),
         }
@@ -256,8 +284,23 @@ class HealthMonitor:
             emitted_hz = win.emitted / dt
             if emitted_hz < self.min_output_hz:
                 v.append(f"output {emitted_hz:.1f} Hz < contract {self.min_output_hz:g} Hz")
+        if self.max_drop_ratio is not None and win.queued >= self.ratio_min_samples:
+            dropped = max(0, win.queued - win.stepped - self._buffer_len())
+            ratio = dropped / win.queued
+            if ratio > self.max_drop_ratio:
+                v.append(
+                    f"backpressure drop ratio {ratio:.0%} > contract {self.max_drop_ratio:.0%} "
+                    f"(step not keeping up)"
+                )
+        if self.max_tick_latency_s is not None and len(win.latencies_s) >= self.ratio_min_samples:
+            p99 = _percentile(win.latencies_s, 0.99)
+            if p99 > self.max_tick_latency_s:
+                v.append(
+                    f"tick latency p99 {p99 * 1000:.0f} ms > contract "
+                    f"{self.max_tick_latency_s * 1000:.0f} ms"
+                )
         for name, n in win.missing.items():
-            if win.resolved and n / win.resolved > 0.5:
+            if win.resolved >= self.ratio_min_samples and n / win.resolved > self.max_missing_ratio:
                 v.append(f"input '{name}' missing on {n}/{win.resolved} ticks (stale or dead?)")
         return v
 

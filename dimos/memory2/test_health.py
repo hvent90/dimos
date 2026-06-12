@@ -210,6 +210,66 @@ def test_blocked_drops_metric() -> None:
     assert h.metrics["drops_blocked_hz"] == 7.0
 
 
+# -- ratio & latency contracts ---------------------------------------------------
+
+
+def test_drop_ratio_contract() -> None:
+    clock = Clock()
+    m, _ = make(clock, max_drop_ratio=0.5)
+    for _ in range(20):
+        m.on_resolved()
+        m.on_queued()
+    for _ in range(5):  # 15 of 20 skipped -> 75% > 50% contract
+        m.on_step(0.01, {}, emitted=True)
+    h = report(m, clock)
+    assert h.state == DEGRADED
+    assert any("drop ratio 75% > contract 50%" in v for v in h.violations)
+
+    for _ in range(20):  # keeping up again
+        m.on_resolved()
+        m.on_queued()
+        m.on_step(0.01, {}, emitted=True)
+    assert report(m, clock).state == OK
+
+
+def test_ratio_contracts_need_min_samples() -> None:
+    """Tiny windows and zero traffic must not trip ratio contracts."""
+    clock = Clock()
+    m, _ = make(clock, max_drop_ratio=0.1, max_tick_latency_s=0.1)
+
+    assert report(m, clock).state == OK  # zero traffic: vacuous, stays OK
+
+    for _ in range(4):  # 3 of 4 dropped = 75%, but below ratio_min_samples=10
+        m.on_queued()
+    m.on_step(0.01, {}, emitted=True, latency_s=5.0)  # 1 latency sample, ditto
+    assert report(m, clock).state == OK
+
+
+def test_tick_latency_contract_and_metric() -> None:
+    clock = Clock()
+    m, _ = make(clock, max_tick_latency_s=0.5)
+    for _ in range(12):
+        m.on_step(0.01, {}, emitted=True, latency_s=1.2)
+    h = report(m, clock)
+    assert h.state == DEGRADED
+    assert any("tick latency p99 1200 ms > contract 500 ms" in v for v in h.violations)
+    assert h.metrics["tick_latency_p99_ms"] == 1200.0
+
+    for _ in range(12):
+        m.on_step(0.01, {}, emitted=True, latency_s=0.02)
+    assert report(m, clock).state == OK
+
+
+def test_missing_ratio_is_configurable() -> None:
+    clock = Clock()
+    m, _ = make(clock, max_missing_ratio=0.9)
+    for _ in range(10):
+        m.on_resolved()
+    for _ in range(8):  # 80% missing, under the 90% contract
+        m.on_missing(["imu"])
+    assert report(m, clock).state == OK
+
+
 # -- contract messages (log lines) ---------------------------------------------------
 
 

@@ -40,13 +40,23 @@ and parallelism.
   ``window()`` inputs take ``list[X]`` or ``list[Observation[X]]``;
 - ``X | None`` means a missing value is passed as ``None``; a missing
   value for a non-optional parameter *drops the tick*;
-- reserved names: ``ts: float`` receives the tick time; declaring
-  ``state`` makes the module a Mealy machine — ``step(self, state, ...)``
-  must return ``(new_state, output)`` and the initial state comes from
-  the ``initial_state`` attribute.
+- reserved names: ``ts: float`` receives the tick time; ``out`` receives
+  a per-tick output writer; declaring ``state`` (first parameter) makes
+  the module a Mealy machine with the initial value from the
+  ``initial_state`` attribute.
 
 Outputs: with one ``Out`` port, return the value (or ``None`` to emit
-nothing); with several, return ``{port_name: value}``.
+nothing). With several, declare ``out`` and assign — set = emit, skip =
+quiet, unknown ports raise at the assignment::
+
+    def step(self, pose: Pose, out: Outputs) -> None:
+        out.cmd_vel = drive(pose)
+        if blocked:
+            out.alerts = "obstacle"
+
+With ``out`` declared, stateless steps return ``None`` and stateful steps
+return just ``new_state`` (no tuple). Returning ``{port_name: value}``
+instead of using the writer is also accepted.
 
 **Live** (``module.start()``): each ``In`` port feeds a memory2 stream in
 the module's store — a :class:`~dimos.memory2.store.null.NullStore` by
@@ -120,7 +130,7 @@ if TYPE_CHECKING:
 
 logger = setup_logger()
 
-__all__ = ["PureModule", "interpolate", "latest", "tick", "window"]
+__all__ = ["Outputs", "PureModule", "interpolate", "latest", "tick", "window"]
 
 _STOP = object()
 
@@ -141,6 +151,36 @@ class _Plan:
     outs: dict[str, type]
     params: tuple[_Param, ...]
     stateful: bool
+    uses_out: bool  # step declares the reserved `out` writer parameter
+
+
+class Outputs:
+    """Per-tick output writer — assignment emits; skipping a port stays quiet.
+
+    Handed to ``step`` as the reserved ``out`` parameter. Fresh per tick
+    and collected right after the call, so the step stays referentially
+    pure — this is the return value, passed inside-out. Unknown ports
+    raise at the assignment line; reassignment last-wins.
+    """
+
+    __slots__ = ("_allowed", "_values")
+
+    def __init__(self, allowed: frozenset[str]) -> None:
+        object.__setattr__(self, "_allowed", allowed)
+        object.__setattr__(self, "_values", {})
+
+    def __setattr__(self, name: str, value: Any) -> None:
+        if name not in self._allowed:
+            raise AttributeError(
+                f"unknown output {name!r} — declared Out ports: {sorted(self._allowed)}"
+            )
+        self._values[name] = value
+
+    def __getattr__(self, name: str) -> Any:
+        try:
+            return self._values[name]
+        except KeyError:
+            raise AttributeError(name) from None
 
 
 def _unwrap_optional(ann: Any) -> tuple[Any, bool]:
@@ -189,7 +229,26 @@ class PureModuleConfig(ModuleConfig):
     continuously (violation below 50% of expected)."""
 
     min_output_hz: float | None = None
-    """Contract: rate of ticks that emit at least one output."""
+    """Contract: rate of ticks that emit at least one output. Absolute —
+    the liveness floor that ratio contracts can't provide."""
+
+    max_drop_ratio: float | None = None
+    """Contract: fraction of viable ticks skipped by backpressure.
+    Scale-free "the step keeps up" — independent of deployment rates."""
+
+    max_tick_latency_s: float | None = None
+    """Contract: p99 end-to-end latency, trigger arrival to outputs
+    published. Meaningful under every backpressure policy (under
+    ``Unbounded`` queue growth shows up here first)."""
+
+    max_missing_ratio: float = Field(0.5, gt=0.0, le=1.0)
+    """Per-input staleness contract: fraction of resolved ticks where the
+    input was missing before it's flagged."""
+
+    ratio_min_samples: int = Field(10, ge=1)
+    """Ratio contracts only evaluate on windows with at least this many
+    samples — tiny windows make ratios noise, zero traffic makes them
+    vacuously pass."""
 
     health_interval_s: float = 1.0
     health_warmup_s: float = 5.0
@@ -260,8 +319,10 @@ class PureModule(Module):
                 continue
             origin = get_origin(ann)
             if origin is In:
-                if name in ("ts", "state"):
-                    raise TypeError(f"{cls.__name__}.{name}: 'ts' and 'state' are reserved names")
+                if name in ("ts", "state", "out"):
+                    raise TypeError(
+                        f"{cls.__name__}.{name}: 'ts', 'state' and 'out' are reserved names"
+                    )
                 ins[name] = (get_args(ann) or (object,))[0]
                 sampler = inspect.getattr_static(cls, name, None)
                 if isinstance(sampler, Tick):
@@ -292,6 +353,7 @@ class PureModule(Module):
 
         params: list[_Param] = []
         stateful = False
+        uses_out = False
         names = [n for n in sig.parameters if n != "self"]
         for name in names:
             if name == "state":
@@ -302,10 +364,13 @@ class PureModule(Module):
             if name == "ts":
                 params.append(_Param("ts", "ts", optional=False, wants_obs=False))
                 continue
+            if name == "out":
+                uses_out = True
+                continue
             if name not in ins:
                 raise TypeError(
                     f"{cls.__name__}.step parameter {name!r} doesn't match an input — "
-                    f"declared inputs: {sorted(ins)} (reserved: ts, state)"
+                    f"declared inputs: {sorted(ins)} (reserved: ts, state, out)"
                 )
             ann, optional = _unwrap_optional(step_hints.get(name, Any))
             if isinstance(samplers.get(name), Window):
@@ -323,6 +388,7 @@ class PureModule(Module):
             outs=outs,
             params=tuple(params),
             stateful=stateful,
+            uses_out=uses_out,
         )
 
     # -- binding & dispatch -----------------------------------------------------
@@ -365,6 +431,20 @@ class PureModule(Module):
         self, plan: _Plan, state: Any, kwargs: dict[str, Any]
     ) -> tuple[Any, dict[str, Any]]:
         """Run step; returns (new_state, {out_name: value})."""
+        if plan.uses_out:
+            writer = Outputs(frozenset(plan.outs))
+            if plan.stateful:
+                # With the writer, the return value is just the new state.
+                state = self.step(state, out=writer, **kwargs)
+            else:
+                ret = self.step(out=writer, **kwargs)
+                if ret is not None:
+                    raise TypeError(
+                        f"{type(self).__name__}.step declares 'out' so outputs are "
+                        f"set on it — return None, got {type(ret).__name__}"
+                    )
+            return state, dict(writer._values)
+
         if plan.stateful:
             result = self.step(state, **kwargs)
             if not (isinstance(result, tuple) and len(result) == 2):
@@ -515,6 +595,10 @@ class PureModule(Module):
             str(self),
             expected_hz=cfg.expected_hz,
             min_output_hz=cfg.min_output_hz,
+            max_drop_ratio=cfg.max_drop_ratio,
+            max_tick_latency_s=cfg.max_tick_latency_s,
+            max_missing_ratio=cfg.max_missing_ratio,
+            ratio_min_samples=cfg.ratio_min_samples,
             interval_s=cfg.health_interval_s,
             warmup_s=cfg.health_warmup_s,
             unhealthy_log_every_s=cfg.unhealthy_log_every_s,
@@ -589,7 +673,7 @@ class PureModule(Module):
                 except Exception:
                     logger.exception("%s.step failed for tick ts=%s", self, tobs.ts)
                     continue
-                monitor.on_step(time.perf_counter() - t0, ages, emitted=bool(outs))
+                duration = time.perf_counter() - t0
                 for out_name, value in outs.items():
                     monitor.on_output(out_name)
                     try:
@@ -597,6 +681,14 @@ class PureModule(Module):
                         self._out_streams[out_name].append(value, ts=tobs.ts)
                     except Exception:
                         logger.exception("%s: publishing %s failed", self, out_name)
+                # Live observation ts is arrival wall-clock, so this spans the
+                # whole path: queue wait + alignment + buffer wait + step + publish.
+                monitor.on_step(
+                    duration,
+                    ages,
+                    emitted=bool(outs),
+                    latency_s=max(0.0, time.time() - tobs.ts),
+                )
                 monitor.maybe_report()
 
         self._threads = [

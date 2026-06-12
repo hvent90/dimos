@@ -24,7 +24,7 @@ from typing import TYPE_CHECKING, Annotated, Any
 import pytest
 
 from dimos.core.stream import In, Out
-from dimos.memory2.puremodule import PureModule, interpolate, latest, tick, window
+from dimos.memory2.puremodule import Outputs, PureModule, interpolate, latest, tick, window
 from dimos.memory2.store.memory import MemoryStore
 from dimos.memory2.tick import Interpolate, Latest, TickMachine, Window
 from dimos.memory2.type.observation import Observation
@@ -244,6 +244,98 @@ def test_multi_out_returns_dict_rows(store: MemoryStore) -> None:
         {"doubled": 2, "parity": "odd"},
         {"doubled": 4, "parity": "even"},
     ]
+
+
+class WriterNav(PureModule):
+    camera: In[int] = tick()
+
+    cmd: Out[str]
+    alerts: Out[str]
+
+    def step(self, camera: int, out: Outputs) -> None:
+        out.cmd = f"go {camera}"
+        if camera % 2 == 0:
+            out.alerts = f"even {camera}"
+
+
+def test_out_writer_partial_emission(store: MemoryStore) -> None:
+    camera = fill(store.stream("camera", int), [(0.1, 1), (0.2, 2)])
+
+    out = WriterNav.over(camera=camera).to_list()
+    assert [o.data for o in out] == [
+        {"cmd": "go 1"},
+        {"cmd": "go 2", "alerts": "even 2"},
+    ]
+
+
+def test_out_writer_rejects_unknown_port(store: MemoryStore) -> None:
+    class Typo(PureModule):
+        camera: In[int] = tick()
+        cmd: Out[str]
+
+        def step(self, camera: int, out: Outputs) -> None:
+            out.cmdd = "oops"
+
+    camera = fill(store.stream("camera", int), [(0.1, 1)])
+    with pytest.raises(AttributeError, match=r"unknown output 'cmdd'.*\['cmd'\]"):
+        Typo.over(camera=camera).to_list()
+
+
+def test_out_writer_stateful_returns_bare_state(store: MemoryStore) -> None:
+    class Counter(PureModule):
+        camera: In[int] = tick()
+        count: Out[int]
+
+        initial_state = 0
+
+        def step(self, state: int, camera: int, out: Outputs) -> int:
+            out.count = state
+            return state + 1  # no tuple — the writer carries the outputs
+
+    camera = fill(store.stream("camera", int), [(i / 10, i) for i in range(4)])
+    out = Counter.over(camera=camera).to_list()
+    assert [o.data for o in out] == [0, 1, 2, 3]
+
+
+def test_out_writer_forbids_returning_values(store: MemoryStore) -> None:
+    class Confused(PureModule):
+        camera: In[int] = tick()
+        cmd: Out[str]
+
+        def step(self, camera: int, out: Outputs) -> str:
+            out.cmd = "go"
+            return "also go"
+
+    camera = fill(store.stream("camera", int), [(0.1, 1)])
+    with pytest.raises(TypeError, match="declares 'out'"):
+        Confused.over(camera=camera).to_list()
+
+
+def test_out_writer_last_write_wins(store: MemoryStore) -> None:
+    class Rewrites(PureModule):
+        camera: In[int] = tick()
+        cmd: Out[str]
+
+        def step(self, camera: int, out: Outputs) -> None:
+            out.cmd = "draft"
+            out.cmd = "final"
+
+    camera = fill(store.stream("camera", int), [(0.1, 1)])
+    (o,) = Rewrites.over(camera=camera).to_list()
+    assert o.data == "final"
+
+
+def test_input_named_out_is_an_error() -> None:
+    class BadPort(PureModule):
+        camera: In[int] = tick()
+        out: In[float]
+        cmd: Out[int]
+
+        def step(self, camera: int) -> int:
+            return camera
+
+    with pytest.raises(TypeError, match="reserved names"):
+        BadPort._plan()
 
 
 class WantsObs(PureModule):
@@ -556,6 +648,7 @@ def test_live_backpressure_unbounded_processes_everything() -> None:
         assert _await(lambda: len(outs) == 6)
         assert outs == [1, 2, 3, 4, 5, 6]  # every tick, in order
         assert len(module._tick_buffer) == 0  # drained, not accumulating
+        assert _await(lambda: len(module.health_monitor._latency_ms) == 6)  # e2e latency measured
     finally:
         gates.unblock()
         unsub()

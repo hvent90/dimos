@@ -59,6 +59,52 @@ declaration because they're algorithm truths; rates (`expected_hz`,
 `min_output_hz`) belong in deployment config because sim, replay, and
 the robot legitimately differ.
 
+### Contracts on inputs vs outputs
+
+Both exist, with different roles:
+
+- **Output contracts are promises** — the module's SLO to its consumers
+  ("commands at ≥ 10 Hz from fresh data"). These are what paging should
+  key on: their violation means *I am failing whoever depends on me*.
+- **Input expectations are assumptions** — dependencies on upstream the
+  module cannot fix, only attribute ("pose at 12 Hz, expected 50"). They
+  exist for the warmup check and for *blame*: when the output contract
+  breaks, input expectations turn "too slow" into "because pose is
+  starved", distinguishing slow-step / starved-trigger / dead-interpolate
+  causes.
+
+In a module graph, B's input expectation on A's output duplicates A's
+output contract — input expectations really earn their keep at the
+*edges*, where the producer (a sensor driver) has no health of its own
+and the first consumer hosts its contract. The graph-era resolution is
+to attach rate contracts to *streams* (declared once, checked at the
+producer when possible, at the first consumer otherwise); per-module
+`expected_hz` is the pragmatic stand-in until then.
+
+### Absolute vs ratio vs latency contracts
+
+Absolute rates (`min_output_hz`, `expected_hz`) bake the deployment's
+sensor rates into the contract; ratio contracts (`max_drop_ratio`,
+`max_missing_ratio`) are scale-free — "the step keeps up, with headroom"
+survives a camera swap unchanged. But ratios are vacuous at zero traffic
+(a dead camera produces zero drops) and noisy on tiny windows, so they
+only evaluate above `ratio_min_samples` and the absolute contracts remain
+the liveness floor — both kinds, different jobs.
+
+Queue *depth* was considered and rejected as a contract: `KeepLast` depth
+is 0/1 by construction, `Bounded(n)` at depth n just means drops (already
+counted), and for `Unbounded` the fear isn't depth but *growth* — whose
+felt consequence is latency. Hence `max_tick_latency_s` instead: p99 of
+trigger-arrival → outputs-published, meaningful under every policy,
+subsuming depth (which stays an exported gauge for diagnosis).
+
+Two known refinements deferred until needed: the health *state* should
+arguably be driven by output contracts only (inputs below expectation
+while outputs still meet contract is "at risk", not degraded — today
+both trip `DEGRADED`); and `min_output_hz` should become per-port
+(`{"cmd": 10}`) once real multi-output modules exist — partial emission
+makes a single number wrong for deliberately sparse ports like alerts.
+
 ## Replay fidelity under drops (planned: record tick rows)
 
 With a dropping policy, a live run processes a *subsample* of triggers,
@@ -99,6 +145,37 @@ deliberately not yet persisted. The plan:
   runtime partitions ticks by key across processes, each owning a
   shard. Only possible because state is a declared value the runtime
   owns.
+
+## Output declaration (agreed direction: writer now, bundles later)
+
+Single-output modules keep the flat root declaration and bare return —
+that's the dominant case and it stays terse. Multi-output modules use a
+per-tick **writer**: a reserved `out` parameter on `step`; assignment
+emits (`out.cmd = ...`), skipping a port means staying quiet, unknown
+ports raise at the assignment line, last write wins. With `out` declared,
+stateless steps return `None` and stateful steps return just `new_state`
+— dissolving the old `(state, dict)` tuple. The raw `{port: value}` dict
+return remains accepted as the low-level equivalent. `out` joins
+`ts`/`state` as reserved input names. The writer stays referentially
+pure: fresh per tick, collected immediately — the return value passed
+inside-out.
+
+The typed future is **bundles**: a nested `class Out(Bundle)` is both the
+port declaration (ports synthesized from its annotations) and the
+writer's static type (`out.cmd = 5` becomes a mypy error). Inputs get the
+same treatment (`class In(Bundle)` with samplers as field defaults —
+which is the original InputState idea), with mixed binding allowed: spread
+inputs by name for small modules, take the whole bundle for big ones. The
+key compatibility rule: **today's flat syntax is an anonymous bundle** —
+flat declarations compile to implicit `In`/`Out` bundles at plan time, so
+nothing migrates and structural wiring works on every existing module.
+Bundles then subsume `dimos/spec/` Protocols as real, connectable,
+type-checked interfaces (`bp.connect(cam.o, nav.i)` matched by name+type;
+interface inheritance like `DepthCameraOut(CameraOut)`), which is the
+blueprint-rethink track. Note: the class-level-`None` port attribute
+dance in `Module.__init_subclass__` cites Dask actor proxies — dimos no
+longer uses Dask, so that constraint is gone and the real serialization
+surface for any port rework is `RemoteIn`/`RemoteOut` over LCM.
 
 ## Multi-output offline shape (planned: run handle)
 

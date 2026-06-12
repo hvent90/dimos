@@ -236,22 +236,24 @@ time-rewind mechanical.
 
 ## Multiple outputs
 
-Declare several `Out` ports and return a dict keyed by port name. Emitting
-a **subset** is allowed — each port fires independently, so a module can
-publish a command every tick and an alert only sometimes:
+Declare several `Out` ports and ask for the **output writer** — the
+reserved `out` parameter. Assignment emits; skipping a port keeps it
+quiet that tick, so a module can publish a command every tick and an
+alert only sometimes:
 
 ```python session=pure ansi=false
+from dimos.memory2.puremodule import Outputs
+
 class Navigator(PureModule):
     pose: In[Pose] = tick()
 
     cmd: Out[str]
     alerts: Out[str]
 
-    def step(self, pose: Pose, ts: float) -> dict:
-        outs = {"cmd": f"forward x={pose.position.x:.2f}"}
+    def step(self, pose: Pose, ts: float, out: Outputs) -> None:
+        out.cmd = f"forward x={pose.position.x:.2f}"
         if pose.position.x > 1.8:
-            outs["alerts"] = f"approaching boundary at t={ts:.2f}"
-        return outs
+            out.alerts = f"approaching boundary at t={ts:.2f}"
 
 rows = Navigator.over(pose=pose).to_list()
 fired = [r for r in rows if "alerts" in r.data]
@@ -263,10 +265,13 @@ print(f"{len(rows)} ticks; alerts on {len(fired)}; last: {rows[-1].data}")
 ```
 
 The rules: one `Out` port → return the bare value (`None` emits nothing);
-several → return `{port: value}` (missing keys stay quiet, unknown keys
-raise). Deployed live, each entry publishes to its own port. Offline,
-`over()` yields one observation per tick whose data is the dict — slice a
-single output back out with a map:
+several → assign on `out` (an undeclared port raises at that line;
+reassignment last-wins; with `out` declared, stateless steps return
+`None` and stateful steps return just the new state — no tuple).
+Returning a `{port: value}` dict instead of the writer is also accepted.
+Deployed live, each emission publishes to its own port. Offline, `over()`
+yields one observation per tick whose data is the `{port: value}` dict —
+slice a single output back out with a map:
 
 ```python session=pure ansi=false
 boundary_alerts = Navigator.over(pose=pose) \
@@ -345,47 +350,52 @@ Two deployment choices matter:
 
 ## Contracts, not log spam
 
-Health is judged against declared contracts — input rates, output rate —
-and reported as state transitions, not per-drop warnings. You never build
-a monitor yourself: when a module starts, it constructs one from its own
-config (`min_output_hz`, `expected_hz`, ...) and feeds it from the tick
-loop; it lives at `module.health_monitor` and its snapshots land in the
-`_health` stream. But since it's plain bookkeeping with an injectable
-clock, we can hand-feed a detached one right here and watch the exact
-messages a deployed `Follower` would produce — the first argument is just
-the module name stamped on them:
+Your module contains **zero health code** — health is judged against
+contracts you declare at deployment, and reported as state transitions,
+never per-drop warnings. You already wrote one contract without noticing:
+`latest(max_age=0.1)` *is* the statement "data older than 100 ms is
+unacceptable". The other contracts are rates, and they're two numbers in
+the module config — deployment-side, because the robot, sim, and replay
+legitimately differ:
 
-```python session=pure ansi=false
-from dimos.memory2.health import HealthMonitor
-
-# what Follower's start() builds internally, driven by hand:
-t = 0.0
-monitor = HealthMonitor("follower", min_output_hz=10.0, warmup_s=0.0,
-                        interval_s=1.0, clock=lambda: t)
-
-for _ in range(3):  # a bad second: step emitted only 3 outputs vs the 10 Hz contract
-    monitor.on_step(duration_s=0.12, ages={}, emitted=True)
-t += 1.0
-health = monitor.maybe_report()
-print(health.state, "-", health.violations[0])
-
-for _ in range(15):  # a good second
-    monitor.on_step(duration_s=0.05, ages={}, emitted=True)
-t += 1.0
-print(monitor.maybe_report().state)
+```python skip
+module = Follower(
+    expected_hz={"frame": 30},   # "the camera should arrive at 30 Hz"
+    min_output_hz=10.0,          # "I must emit commands at >= 10 Hz"
+)
+module.start()
 ```
 
-```results
-DEGRADED - output 3.0 Hz < contract 10 Hz
-OK
+From here everything is observed, not coded. Suppose the camera delivers
+5 Hz instead of 30, then recovers — this is the module's complete log
+output (captured from a real run):
+
+```
+--- camera misbehaving: 5 Hz instead of 30 ---
+[inf] Follower warmup: frame 5.7 Hz (expected 30 — LOW)
+[war] Follower DEGRADED: input 'frame' at 5.7 Hz, expected 30 Hz; output 4.7 Hz < contract 10 Hz
+[war] Follower still DEGRADED (2s): input 'frame' at 5.0 Hz, expected 30 Hz; ...
+--- camera recovers to 30 Hz ---
+[inf] Follower OK: recovered after 4s
 ```
 
-Deployed, those same snapshots append to a `_health` stream in the module
-store every second (drop rates by reason, step p50/p99, input staleness),
-transitions log once with the violated contract, and a recording captures
-the health stream *next to the data it explains* — so a post-incident
-notebook can plot the drop ratio against the very frames that were
-dropped.
+The interaction model: one **warmup** line shortly after start compares
+every declared rate to reality (this alone catches miswired or
+misconfigured sensors); one WARN on entering `DEGRADED`/`STALLED` naming
+exactly the violated contracts; a throttled reminder while it persists;
+one INFO with the outage duration on recovery. And the part that makes it
+livable: a healthy module skipping two thirds of its frames under
+`KeepLast` backpressure logs **nothing** — expected drops are counters,
+not warnings.
+
+When logs aren't enough, the same information is queryable:
+`module.health_monitor.state` gives the current `OK`/`DEGRADED`/`STALLED`
+in process, and a `_health` stream in the module store receives an
+aggregated metrics snapshot every second (drop rates by reason, step
+p50/p99, input staleness, observed Hz) — subscribe to it live, or deploy
+with a `SqliteStore` and the health history is recorded *next to the data
+it explains*, so a post-incident notebook can plot the drop ratio against
+the very frames that were dropped.
 
 ---
 
@@ -440,9 +450,12 @@ inputs add one sample period of latency to each tick.
 
 - **One `Out` port** — `step` returns the value; returning `None` emits
   nothing, so ticks double as filters.
-- **Several `Out` ports** — return `{port_name: value}`. A *partial* dict
-  is allowed (omitted ports stay quiet that tick); unknown keys raise
-  `TypeError`.
+- **Several `Out` ports** — declare the reserved `out` parameter and
+  assign (`out.cmd = ...`): set = emit, skip = quiet, undeclared ports
+  raise at the assignment line, reassignment last-wins. With `out`,
+  stateless steps return `None`; stateful steps return just the new
+  state. Returning a partial `{port_name: value}` dict is the accepted
+  low-level equivalent (unknown keys raise `TypeError`).
 - **No `Out` ports** — the return value is ignored.
 
 Live, every dict entry publishes to its own port (and is appended to that
@@ -485,18 +498,33 @@ buffers by pruning, and ticks waiting for interpolation brackets by
 can't accumulate ticks forever (evictions count as `drops_blocked`).
 
 Health: counters always (ticks resolved/stepped, drops by reason, step
-p50/p99, per-input Hz, ages of consumed `latest()` values, output rates);
-a `_health` stream snapshot every `health_interval_s`; one warmup line
-comparing observed input rates to `expected_hz`; transition-logged
-`DEGRADED`/`STALLED` with the violated contracts, throttled reminders
-every `unhealthy_log_every_s`, recovery logged with duration. Stalls must
-persist `stall_after_s` and distinguish "ticks queued but none stepped
-(step stuck?)" from "inputs flowing but no ticks resolving (interpolate
-input dead?)". Contracts split deliberately: semantic tolerances live in
-the declaration (`max_age`, `tolerance`); *rates* live in deployment
-config (`expected_hz`, `min_output_hz`) because sim, replay, and the
-robot differ. The real SLO is output freshness and rate — alert on the
-contract, read drop counters to diagnose why.
+p50/p99, end-to-end tick latency p50/p99, per-input Hz, ages of consumed
+`latest()` values, output rates); a `_health` stream snapshot every
+`health_interval_s`; one warmup line comparing observed input rates to
+`expected_hz`; transition-logged `DEGRADED`/`STALLED` with the violated
+contracts, throttled reminders every `unhealthy_log_every_s`, recovery
+logged with duration. Stalls must persist `stall_after_s` and distinguish
+"ticks queued but none stepped (step stuck?)" from "inputs flowing but no
+ticks resolving (interpolate input dead?)".
+
+The contracts:
+
+| Config | Contract | Kind |
+|---|---|---|
+| `expected_hz={"pose": 50}` | input arrives at its declared rate | absolute (liveness) |
+| `min_output_hz=10` | ticks emit outputs at this rate | absolute (liveness) |
+| `max_drop_ratio=0.8` | step keeps up: ≤ this fraction of viable ticks skipped by backpressure | ratio (scale-free) |
+| `max_missing_ratio=0.5` | per input: ≤ this fraction of ticks with the input missing | ratio (scale-free) |
+| `max_tick_latency_s=0.2` | p99 trigger-arrival → outputs-published; covers queue growth under any policy | latency |
+
+Ratio and latency contracts only evaluate on windows with at least
+`ratio_min_samples` samples — tiny windows make ratios noise, and at zero
+traffic they'd pass vacuously, which is why the absolute contracts remain
+the liveness floor. Contracts split deliberately: semantic tolerances
+live in the declaration (`max_age`, `tolerance`); rates and ratios live
+in deployment config because sim, replay, and the robot differ. The real
+SLO is output freshness and rate — alert on the contract, read drop
+counters to diagnose why.
 
 ## Where next
 
