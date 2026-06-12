@@ -50,6 +50,9 @@ class RayTracingVoxelMapConfig(NativeModuleConfig):
     recency_window: int = 15
     # Integrate every frame, publish maps every Nth frame.
     emit_every: int = 1
+    # Size the local region to this percentile of batch point distances,
+    # so a stray far hit cannot inflate the region the planner recomputes.
+    region_percentile: float = 95.0
 
 
 class RayTracingVoxelMap(NativeModule, mapping.GlobalPointcloud):

@@ -20,7 +20,7 @@ import numpy as np
 import open3d as o3d  # type: ignore[import-untyped]
 import open3d.core as o3c  # type: ignore[import-untyped]
 
-from dimos.mapping.ray_tracing.voxel_map import VoxelRayMapper
+from dimos.mapping.ray_tracing.voxel_map import VoxelRayMapper, local_bounds
 from dimos.memory2.transform import Transformer
 from dimos.msgs.sensor_msgs.PointCloud2 import PointCloud2
 
@@ -62,30 +62,18 @@ class RayTraceMap(Transformer[PointCloud2, PointCloud2]):
     ) -> tuple[float, float, float, float, float]:
         """Robot-centered cylinder sized to a percentile of the observed points.
 
-        An empty or all-nonfinite frame yields a zero-radius region at the robot.
+        An empty batch yields a zero-radius region at the robot.
         """
-        margin = self._mapper_kwargs.get("shadow_depth", 0.2) + self.voxel_size
-        points = (
-            np.concatenate(batch_points, axis=0)
-            if batch_points
-            else np.empty((0, 3), dtype=np.float32)
-        )
-        points = points[np.isfinite(points).all(axis=1)]
-        if points.size == 0:
+        if not batch_origins:
             pose = last_obs.pose_tuple
             assert pose is not None, "poseless obs are skipped upstream"
             rx, ry, rz = pose[:3]
             return rx, ry, 0.0, rz, rz
 
-        origins = np.asarray(batch_origins, dtype=np.float64)
-        cx = float(origins[:, 0].mean())
-        cy = float(origins[:, 1].mean())
-        dist = np.hypot(points[:, 0] - cx, points[:, 1] - cy)
-        radius = float(np.percentile(dist, self.region_percentile)) + margin
-        lo_pct = 100.0 - self.region_percentile
-        z_min = float(np.percentile(points[:, 2], lo_pct)) - margin
-        z_max = float(np.percentile(points[:, 2], self.region_percentile)) + margin
-        return cx, cy, radius, z_min, z_max
+        points = np.concatenate(batch_points, axis=0)
+        origins = np.asarray(batch_origins, dtype=np.float32)
+        margin = self._mapper_kwargs.get("shadow_depth", 0.2) + self.voxel_size
+        return local_bounds(points, origins, self.region_percentile, margin)
 
     def _make_obs(
         self,
