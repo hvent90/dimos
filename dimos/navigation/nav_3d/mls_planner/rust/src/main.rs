@@ -4,19 +4,27 @@
 use std::time::{Duration, Instant, SystemTime, UNIX_EPOCH};
 
 use dimos_mls_planner::edges::{edges_to_segments, PlannerGraph};
-use dimos_mls_planner::mls_planner::{Config, Planner};
+use dimos_mls_planner::mls_planner::{Config, Planner, RegionBounds};
 use dimos_mls_planner::voxel::surface_point_xyz;
 use dimos_module::{error_throttled, run, warn_throttled, Input, LcmTransport, Module, Output};
 use lcm_msgs::geometry_msgs::{Point, Pose, PoseStamped, Quaternion};
 use lcm_msgs::nav_msgs::Path;
 use lcm_msgs::sensor_msgs::{PointCloud2, PointField};
 use lcm_msgs::std_msgs::{Header, Time};
-use tracing::info;
+use tracing::{debug, info};
 
 #[derive(Module)]
 struct MlsPlanner {
     #[input(decode = PointCloud2::decode, handler = on_global_map)]
     global_map: Input<PointCloud2>,
+
+    // Incremental path: a local map slice paired by stamp with the region
+    // bounds it covers (see the ray tracer's region_bounds output).
+    #[input(decode = PointCloud2::decode, handler = on_local_map)]
+    local_map: Input<PointCloud2>,
+
+    #[input(decode = PoseStamped::decode, handler = on_region_bounds)]
+    region_bounds: Input<PoseStamped>,
 
     #[input(decode = PoseStamped::decode, handler = on_start_pose)]
     start_pose: Input<PoseStamped>,
@@ -41,6 +49,8 @@ struct MlsPlanner {
 
     planner: Planner,
     latest_start: Option<(f32, f32, f32)>,
+    pending_local: Option<PointCloud2>,
+    pending_bounds: Option<PoseStamped>,
 }
 
 impl MlsPlanner {
@@ -64,6 +74,76 @@ impl MlsPlanner {
         self.planner.update_global_map(&points, &self.config);
         let rebuild_ms = ms(t.elapsed());
 
+        self.publish_graph().await;
+
+        debug!(
+            global_map_points = points.len(),
+            voxels = self.planner.voxel_count(),
+            surface_cells = self.planner.surface().len(),
+            nodes = self.planner.graph().nodes.len(),
+            edges = self.planner.graph().node_edges.len(),
+            rebuild_ms,
+            "global_map processed",
+        );
+    }
+
+    async fn on_local_map(&mut self, msg: PointCloud2) {
+        self.pending_local = Some(msg);
+        self.try_region_update().await;
+    }
+
+    async fn on_region_bounds(&mut self, msg: PoseStamped) {
+        self.pending_bounds = Some(msg);
+        self.try_region_update().await;
+    }
+
+    /// Run the incremental update once a local map and its bounds with
+    /// matching stamps are both in hand.
+    async fn try_region_update(&mut self) {
+        let (Some(bounds_msg), Some(cloud)) = (&self.pending_bounds, &self.pending_local) else {
+            return;
+        };
+        if !same_stamp(&bounds_msg.header.stamp, &cloud.header.stamp) {
+            return;
+        }
+        let bounds_msg = self.pending_bounds.take().expect("checked above");
+        let cloud = self.pending_local.take().expect("checked above");
+
+        let points = match extract_xyz(&cloud) {
+            Ok(p) => p,
+            Err(e) => {
+                warn_throttled!(
+                    Duration::from_secs(1),
+                    error = %e,
+                    "Failed to extract local map points, dropped a region update.",
+                );
+                return;
+            }
+        };
+        let bounds = RegionBounds {
+            origin_x: bounds_msg.pose.position.x as f32,
+            origin_y: bounds_msg.pose.position.y as f32,
+            radius: bounds_msg.pose.orientation.x as f32,
+            z_min: bounds_msg.pose.orientation.y as f32,
+            z_max: bounds_msg.pose.orientation.z as f32,
+        };
+
+        let t = Instant::now();
+        self.planner.update_region(&points, &bounds, &self.config);
+        let update_ms = ms(t.elapsed());
+
+        self.publish_graph().await;
+
+        debug!(
+            local_points = points.len(),
+            voxels = self.planner.voxel_count(),
+            nodes = self.planner.graph().nodes.len(),
+            update_ms,
+            "local region processed",
+        );
+    }
+
+    async fn publish_graph(&self) {
         let voxel_size = self.config.voxel_size;
         let frame = &self.config.world_frame;
         let graph = self.planner.graph();
@@ -81,16 +161,6 @@ impl MlsPlanner {
 
         let edges_path = build_segments_path(graph, voxel_size, frame, now());
         publish_path(&self.node_edges, &edges_path).await;
-
-        info!(
-            global_map_points = points.len(),
-            voxels = self.planner.voxel_count(),
-            surface_cells = self.planner.surface().len(),
-            nodes = graph.nodes.len(),
-            edges = graph.node_edges.len(),
-            rebuild_ms,
-            "global_map processed",
-        );
     }
 
     async fn on_start_pose(&mut self, msg: PoseStamped) {
@@ -130,6 +200,10 @@ impl MlsPlanner {
 
 fn ms(d: Duration) -> f64 {
     d.as_secs_f64() * 1000.0
+}
+
+fn same_stamp(a: &Time, b: &Time) -> bool {
+    a.sec == b.sec && a.nsec == b.nsec
 }
 
 async fn publish_cloud(

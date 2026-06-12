@@ -19,6 +19,7 @@ from typing import TYPE_CHECKING
 
 from dimos.core.native_module import NativeModule, NativeModuleConfig
 from dimos.core.stream import In, Out
+from dimos.msgs.geometry_msgs.PoseStamped import PoseStamped
 from dimos.msgs.nav_msgs.Odometry import Odometry
 from dimos.msgs.sensor_msgs.PointCloud2 import PointCloud2
 from dimos.spec import mapping
@@ -47,10 +48,17 @@ class RayTracingVoxelMapConfig(NativeModuleConfig):
     graze_cos: float = 0.7
     # Only spare a voxel whose neighborhood was hit within this many frames.
     recency_window: int = 15
+    # Integrate every frame, publish maps every Nth frame.
+    emit_every: int = 1
 
 
 class RayTracingVoxelMap(NativeModule, mapping.GlobalPointcloud):
-    """Rust voxel-map module with raycast clearing of dynamic objects."""
+    """Rust voxel-map module with raycast clearing of dynamic objects.
+
+    region_bounds describes the cylinder local_map covers, packed into a
+    PoseStamped. Position holds the center, orientation holds
+    (radius, z_min, z_max, 0). It shares the local_map stamp.
+    """
 
     config: RayTracingVoxelMapConfig
 
@@ -58,6 +66,7 @@ class RayTracingVoxelMap(NativeModule, mapping.GlobalPointcloud):
     odometry: In[Odometry]
     global_map: Out[PointCloud2]
     local_map: Out[PointCloud2]
+    region_bounds: Out[PoseStamped]
 
 
 # Verify protocol port compliance (mypy will flag missing ports)

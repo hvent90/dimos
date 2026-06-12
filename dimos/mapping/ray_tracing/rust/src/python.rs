@@ -54,6 +54,7 @@ impl VoxelRayMapper {
             max_health,
             graze_cos,
             recency_window,
+            emit_every: 1,
         };
         config
             .validate()

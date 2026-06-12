@@ -33,6 +33,9 @@ pub struct Config {
     /// Only spare a voxel whose neighborhood was hit within this many frames.
     /// A stale voxel can be cleared, even if it's a grazing hit. Large disables it.
     pub recency_window: u32,
+    /// Integrate every frame, publish maps every Nth frame.
+    #[validate(range(min = 1))]
+    pub emit_every: u32,
 }
 
 fn validate_health_range(cfg: &Config) -> Result<(), ValidationError> {
@@ -650,6 +653,7 @@ mod tests {
             max_health: 1,
             graze_cos: 0.5,
             recency_window: 60,
+            emit_every: 1,
         }
     }
 
@@ -809,6 +813,7 @@ mod tests {
             max_health: 1,
             graze_cos: 0.5,
             recency_window: 60,
+            emit_every: 1,
         };
         // Build the floor over a y band so it is a 2d plane, not a wire.
         let max_x = 25.0_f32;
@@ -961,6 +966,7 @@ mod tests {
             max_health: 1,
             graze_cos: 0.5,
             recency_window: 60,
+            emit_every: 1,
         };
 
         // Staircase
@@ -1032,6 +1038,7 @@ mod tests {
             max_health: 1,
             graze_cos: 0.5,
             recency_window: 60,
+            emit_every: 1,
         };
 
         // Flat floor from the sensor out to a vertical wall.
@@ -1091,6 +1098,7 @@ mod tests {
             max_health: 1,
             graze_cos,
             recency_window: 60,
+            emit_every: 1,
         };
 
         // Staircase topped by a flat landing and a back wall.
@@ -1219,6 +1227,7 @@ mod tests {
                 max_health: 1,
                 graze_cos: 0.5,
                 recency_window,
+                emit_every: 1,
             };
             let (mut map, _) = build_surface(&floor, voxel_size, cfg.max_health);
             let row: Vec<VoxelKey> = map

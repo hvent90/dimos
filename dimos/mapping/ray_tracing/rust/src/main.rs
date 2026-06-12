@@ -8,6 +8,7 @@ use dimos_module::{error_throttled, run, warn_throttled, Input, LcmTransport, Mo
 use dimos_voxel_ray_tracing::voxel_ray_tracer::{
     iter_global_points, update_map, Config, LocalBounds, VoxelKey, VoxelMap,
 };
+use lcm_msgs::geometry_msgs::{Point, Pose, PoseStamped, Quaternion};
 use lcm_msgs::nav_msgs::Odometry;
 use lcm_msgs::sensor_msgs::{PointCloud2, PointField};
 use lcm_msgs::std_msgs::{Header, Time};
@@ -26,11 +27,19 @@ struct RayTracingVoxelMap {
     #[output(encode = PointCloud2::encode)]
     local_map: Output<PointCloud2>,
 
+    // Region the local_map covers, packed into a PoseStamped: position holds
+    // the cylinder center, orientation holds (radius, z_min, z_max, 0).
+    // Stamped identically to local_map so consumers can pair them.
+    #[output(encode = PoseStamped::encode)]
+    region_bounds: Output<PoseStamped>,
+
     #[config]
     config: Config,
 
     map: VoxelMap,
     last_origin: Option<(f32, f32, f32)>,
+    frame_count: u32,
+    batch_bbox: Option<([f32; 3], [f32; 3])>,
 }
 
 impl RayTracingVoxelMap {
@@ -67,27 +76,82 @@ impl RayTracingVoxelMap {
 
         let live = update_map(&mut self.map, origin, &points, &self.config);
 
+        // Grow the batch bbox over this frame's live voxels and the origin,
+        // so the emitted region covers everything touched since the last emit.
         let half = voxel_size * 0.5;
-        let mut z_min = f32::INFINITY;
-        let mut z_max = f32::NEG_INFINITY;
-        let mut r_xy_max_sq = 0.0_f32;
+        let (mut lo, mut hi) = self
+            .batch_bbox
+            .unwrap_or(([f32::INFINITY; 3], [f32::NEG_INFINITY; 3]));
+        let mut grow = |x: f32, y: f32, z: f32| {
+            lo[0] = lo[0].min(x);
+            lo[1] = lo[1].min(y);
+            lo[2] = lo[2].min(z);
+            hi[0] = hi[0].max(x);
+            hi[1] = hi[1].max(y);
+            hi[2] = hi[2].max(z);
+        };
+        grow(origin.0, origin.1, origin.2);
         for &(kx, ky, kz) in &live {
-            let cx = kx as f32 * voxel_size + half;
-            let cy = ky as f32 * voxel_size + half;
-            let cz = kz as f32 * voxel_size + half;
-            z_min = z_min.min(cz);
-            z_max = z_max.max(cz);
-            let dx = cx - origin.0;
-            let dy = cy - origin.1;
-            r_xy_max_sq = r_xy_max_sq.max(dx * dx + dy * dy);
+            grow(
+                kx as f32 * voxel_size + half,
+                ky as f32 * voxel_size + half,
+                kz as f32 * voxel_size + half,
+            );
         }
+        self.batch_bbox = Some((lo, hi));
+
+        self.frame_count += 1;
+        if !self.frame_count.is_multiple_of(self.config.emit_every) {
+            return;
+        }
+        let Some((lo, hi)) = self.batch_bbox.take() else {
+            return;
+        };
+
+        // Cylinder enclosing the batch bbox plus the clearing margin.
+        let margin = self.config.shadow_depth + voxel_size;
+        let cx = (lo[0] + hi[0]) * 0.5;
+        let cy = (lo[1] + hi[1]) * 0.5;
+        let rx = (hi[0] - lo[0]) * 0.5 + margin;
+        let ry = (hi[1] - lo[1]) * 0.5 + margin;
+        let radius = (rx * rx + ry * ry).sqrt();
+        let z_min = lo[2] - margin;
+        let z_max = hi[2] + margin;
         let cylinder = LocalBounds {
-            origin_x: origin.0,
-            origin_y: origin.1,
-            r_xy_max_sq,
+            origin_x: cx,
+            origin_y: cy,
+            r_xy_max_sq: radius * radius,
             z_min,
             z_max,
         };
+
+        let bounds_msg = PoseStamped {
+            header: Header {
+                seq: 0,
+                stamp: msg.header.stamp.clone(),
+                frame_id: msg.header.frame_id.clone(),
+            },
+            pose: Pose {
+                position: Point {
+                    x: cx as f64,
+                    y: cy as f64,
+                    z: 0.0,
+                },
+                orientation: Quaternion {
+                    x: radius as f64,
+                    y: z_min as f64,
+                    z: z_max as f64,
+                    w: 0.0,
+                },
+            },
+        };
+        if let Err(e) = self.region_bounds.publish(&bounds_msg).await {
+            error_throttled!(
+                Duration::from_secs(1),
+                error = %e,
+                "Region bounds failed to publish",
+            );
+        }
 
         let (global_cloud, local_cloud) = build_pointclouds(
             &self.map,
