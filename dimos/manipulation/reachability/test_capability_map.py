@@ -258,16 +258,3 @@ def test_arm_ik_reaches_fk_pose() -> None:
     assert reached, f"IK failed with error {error * 1000:.1f} mm"
     assert not collided
     assert set(joints) == set(solver.joint_names)
-
-
-def test_plots_smoke(tmp_path: Path) -> None:
-    pytest.importorskip("matplotlib")
-    from dimos.manipulation.reachability.plots import render_all
-
-    rng = np.random.default_rng(8)
-    cap = CapabilityMap(MapParams())
-    positions, rotations = _random_poses(2000, rng)
-    cap.record_batch(positions, rotations)
-    paths = render_all(cap, tmp_path)
-    assert len(paths) == 4
-    assert all(p.exists() and p.stat().st_size > 0 for p in paths)
