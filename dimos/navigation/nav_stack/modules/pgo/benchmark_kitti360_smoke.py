@@ -111,7 +111,15 @@ def main() -> None:
     try:
         playback = coordinator.get_instance(Kitti360PlaybackModule)
         counter = coordinator.get_instance(TopicCounterModule)
-        while not playback.is_finished():
+        # A poll RPC starved by the scan flood means "still running", not
+        # "abort" (macOS loopback especially) — same handling as runner.py.
+        while True:
+            try:
+                if playback.is_finished():
+                    break
+            except TimeoutError:
+                print("playback poll RPC timed out under load; retrying")
+                continue
             time.sleep(args.poll_interval_sec)
         playback_error = playback.playback_error()
         if playback_error is not None:

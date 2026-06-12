@@ -54,6 +54,12 @@ def main() -> None:
         help=f"Output directory for the JSON files (default: {OUTPUT_DIR})",
     )
     parser.add_argument(
+        "--publish-interval-sec",
+        type=float,
+        default=DEFAULT_PUBLISH_INTERVAL_SEC,
+        help="seconds between scans; macOS loopback drops packets at the 0.1 default",
+    )
+    parser.add_argument(
         "--sequences",
         type=int,
         nargs="+",
@@ -71,7 +77,7 @@ def main() -> None:
             module_kwargs=DEFAULT_PGO_KWARGS,
             kitti360_root=args.kitti360_root,
             sequence_id=sequence_id,
-            publish_interval_sec=DEFAULT_PUBLISH_INTERVAL_SEC,
+            publish_interval_sec=args.publish_interval_sec,
         )
         output_path.write_text(json.dumps(results, indent=2))
         print(json.dumps(results, indent=2))

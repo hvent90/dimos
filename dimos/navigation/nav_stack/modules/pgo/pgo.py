@@ -44,7 +44,10 @@ logger = setup_logger()
 class PGOConfig(NativeModuleConfig):
     cwd: str | None = str(Path(__file__).resolve().parent / "cpp")
     executable: str = "result/bin/pgo"
-    build_command: str | None = "nix build .#default --no-write-lock-file"
+    # path:$PWD (not bare `.`) so nix snapshots the working directory directly —
+    # the git-based flake ref can serve a stale tree and silently rebuild an
+    # old binary that ignores newer CLI topics (pose_graph, corrected_tf).
+    build_command: str | None = 'nix build "path:$PWD#default" --no-write-lock-file'
 
     # Frame names
     world_frame: str = FRAME_MAP

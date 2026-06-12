@@ -116,9 +116,18 @@ def run_benchmark(
         playback = coordinator.get_instance(Kitti360PlaybackModule)
         scoring = coordinator.get_instance(PoseGraphScoringModule)
 
-        # Wait for the playback module to finish publishing all scans.
-        while not playback.is_finished():
-            published = playback.frames_published()
+        # Wait for the playback module to finish publishing all scans. The
+        # poll RPCs share the LCM bus with the scan flood and can starve
+        # (macOS loopback especially) — a lost reply means "still running",
+        # not "abort the benchmark"; RPC recovers once playback quiets down.
+        while True:
+            try:
+                if playback.is_finished():
+                    break
+                published = playback.frames_published()
+            except TimeoutError:
+                logger.warning("playback poll RPC timed out under load; retrying")
+                continue
             logger.info(
                 f"  playback {published}/{len(frame_ids)} "
                 f"({published / max(len(frame_ids), 1) * 100:.0f}%)"

@@ -37,12 +37,18 @@ DEFAULT_PUBLISH_INTERVAL_SEC = 0.1
 # for the script that consumes this when re-generating regression JSONs.
 DEFAULT_PGO_KWARGS: dict[str, object] = {
     "scan_context_match_threshold": 0.4,
-    # ICP fitness on KITTI urban submaps has a 5-50 m² noise floor;
-    # the 0.15 default rejects nearly all true loops. Trust scan-context.
-    "loop_score_thresh": 10000.0,
+    # ICP fitness on KITTI urban submaps has a 5-50 m² noise floor for TRUE
+    # loops; the 0.15 default rejects nearly all of them. 50.0 sits at the top
+    # of that floor: true revisits pass, egregious misalignments are rejected
+    # (a fully-open gate accepts bad matches that corrupt good trajectories).
+    "loop_score_thresh": 50.0,
     "loop_search_radius": 1.0,
     "loop_candidate_max_distance_m": 10.0,
     "loop_time_thresh": 50.0,
+    # No closure cooldown: the benchmark scores per-query recall, and on a
+    # fast platform even a small cooldown suppresses every keyframe for tens
+    # of metres after each accepted loop (a 2.0s trial capped seq02 at TP=16).
+    # Cooldowns are a deploy-side anti-spam knob, not a benchmark one.
     "min_loop_detect_duration": 0.0,
     "key_pose_delta_trans": 0.5,
     # CMU's 0.1m + half=5 overflows PCL VoxelGrid int32 on KITTI.
