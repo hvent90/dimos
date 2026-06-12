@@ -313,7 +313,7 @@ fn build_global_cloud(
     make_cloud(data, n, frame_id, stamp)
 }
 
-/// Healthy voxels from global map inside the cylinder plus this frame's live voxels.
+/// Healthy voxels and this frame's live voxels, all inside the cylinder.
 fn build_local_cloud(
     map: &VoxelMap,
     live: &AHashSet<VoxelKey>,
@@ -330,7 +330,9 @@ fn build_local_cloud(
         }
     }
     for (x, y, z) in unhealthy_live_centers(map, live, voxel_size) {
-        write_point(&mut data, &mut n, x, y, z);
+        if cylinder.contains(x, y, z) {
+            write_point(&mut data, &mut n, x, y, z);
+        }
     }
     make_cloud(data, n, frame_id, stamp)
 }
@@ -426,20 +428,23 @@ mod tests {
     }
 
     #[test]
-    fn local_map_always_includes_live_voxels() {
+    fn live_voxels_follow_the_cylinder_in_local_map() {
         let map = VoxelMap::default();
         let mut live: AHashSet<VoxelKey> = AHashSet::new();
+        live.insert((1, 0, 0));
         live.insert((10, 10, 10));
         let cylinder = LocalBounds {
             origin_x: 0.0,
             origin_y: 0.0,
-            r_xy_max_sq: 0.0,
+            r_xy_max_sq: 4.0,
             z_min: 0.0,
-            z_max: 0.0,
+            z_max: 1.0,
         };
         let global = build_global_cloud(&map, &live, 1.0, "world", Time::default());
         let local = build_local_cloud(&map, &live, 1.0, &cylinder, "world", Time::default());
+        assert!(cloud_points(&global).contains(&voxel_center(1, 0, 0)));
         assert!(cloud_points(&global).contains(&voxel_center(10, 10, 10)));
-        assert!(cloud_points(&local).contains(&voxel_center(10, 10, 10)));
+        assert!(cloud_points(&local).contains(&voxel_center(1, 0, 0)));
+        assert!(!cloud_points(&local).contains(&voxel_center(10, 10, 10)));
     }
 }

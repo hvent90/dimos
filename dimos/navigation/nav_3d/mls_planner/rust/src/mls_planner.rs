@@ -200,9 +200,9 @@ impl Planner {
         );
     }
 
-    /// Replace the cylinder's voxels with the local map points and keep the
-    /// per-column index in sync. Returns the column bbox of changed voxels, or
-    /// None if nothing changed. Bounded by the cylinder, never the whole map.
+    /// Replace the cylinder's voxels with the local map points, ignoring
+    /// points outside it. Returns the column bbox of changed voxels, or None
+    /// if nothing changed.
     fn replace_region_voxels(
         &mut self,
         local_points: &[(f32, f32, f32)],
@@ -242,6 +242,9 @@ impl Planner {
             remove_from_by_col(&mut self.by_col, k);
         }
         for &k in &new_set {
+            if !bounds.contains_voxel(k, voxel_size) {
+                continue;
+            }
             if self.voxel_map.insert(k) {
                 bb.add(k.0, k.1);
                 add_to_by_col(&mut self.by_col, k);
@@ -591,6 +594,28 @@ mod region_tests {
             node_edge_pairs(&full),
             "node edge mismatch"
         );
+    }
+
+    /// A point outside the region bounds must not enter the planner's voxel
+    /// map, where it could never be cleared and would inflate the rebuild box.
+    #[test]
+    fn region_update_ignores_points_outside_bounds() {
+        let cfg = test_config();
+        let bounds = RegionBounds {
+            origin_x: 2.0,
+            origin_y: 2.0,
+            radius: 1.0,
+            z_min: -1.0,
+            z_max: 2.0,
+        };
+        let inside = (2.05, 2.05, 0.05);
+        let outside = (10.05, 10.05, 0.05);
+
+        let mut p = Planner::default();
+        p.update_region(&[inside, outside], &bounds, &cfg);
+
+        assert!(p.voxel_map.contains(&voxelize(inside, cfg.voxel_size)));
+        assert!(!p.voxel_map.contains(&voxelize(outside, cfg.voxel_size)));
     }
 
     /// Floor 8m x 8m with a wall at x=4m that only a gap at y in [3.5, 4.5]
