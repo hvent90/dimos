@@ -38,7 +38,6 @@ from dimos.visualization.vis_module import vis_module
 voxel_size = 0.1
 # Height of the head-mounted lidar above the ground while standing.
 go2_lidar_height = 0.5
-camera_hz = 1.0
 
 
 def _render_node_edges_flat(msg: Any) -> Any:
@@ -59,7 +58,11 @@ def _static_robot_body(rr: Any) -> list[Any]:
 
 _nav_rerun_config = {
     **rerun_config,
-    "max_hz": {**rerun_config["max_hz"], "world/color_image": camera_hz},
+    "max_hz": {
+        **rerun_config["max_hz"],
+        "world/global_map": 1.0,
+        "world/local_map": 1.0,
+    },
     # base_link tf comes from the go2 internal odometry, which is not the map
     # frame. Anchor the robot box to fastlio's body frame instead and hide the
     # camera frustum that rides base_link.
@@ -67,6 +70,8 @@ _nav_rerun_config = {
     "visual_override": {
         **rerun_config["visual_override"],
         "world/camera_info": None,
+        "world/color_image": None,
+        "world/lidar": None,
         "world/node_edges": _render_node_edges_flat,
     },
 }
@@ -91,7 +96,7 @@ unitree_go2_nav_3d = autoconnect(
         robot_height=go2_lidar_height,
     ),
     GoalRelay.blueprint(),
-    BasicPathFollower.blueprint(),
+    BasicPathFollower.blueprint(lookahead_m=1.2, heading_gain=0.8, max_angular=0.6),
     MovementManager.blueprint(),
 ).global_config(n_workers=10, robot_model="unitree_go2")
 
