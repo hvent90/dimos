@@ -22,7 +22,6 @@ from reactivex import interval
 
 from dimos.core.coordination.blueprints import autoconnect
 from dimos.core.core import rpc
-from dimos.core.global_config import global_config
 from dimos.core.module import Module
 from dimos.core.stream import Out
 from dimos.msgs.geometry_msgs.PointStamped import PointStamped
@@ -30,8 +29,6 @@ from dimos.msgs.geometry_msgs.Twist import Twist
 from dimos.msgs.sensor_msgs.Image import Image, ImageFormat
 from dimos.msgs.visualization_msgs.EntityMarkers import EntityMarkers, Marker
 from dimos.utils.logging_config import setup_logger
-from dimos.visualization.rerun.constants import RERUN_WEB_VIEWER_PORT
-from dimos.visualization.vis_module import vis_module_with_selector
 
 logger = setup_logger()
 
@@ -116,16 +113,4 @@ class DemoRerunTopicSelectorPublisher(Module):
 
 demo_rerun_topic_selector = autoconnect(
     DemoRerunTopicSelectorPublisher.blueprint(),
-    vis_module_with_selector(
-        viewer_backend=global_config.viewer,
-        rerun_config={
-            "rerun_open": "none",
-            "rerun_web": True,
-            "web_port": RERUN_WEB_VIEWER_PORT,
-        },
-        selector_config={
-            "title": "DimOS Visual Console",
-            "rerun_web_url": f"http://localhost:{RERUN_WEB_VIEWER_PORT}",
-        },
-    ),
 )

@@ -122,7 +122,7 @@ class LcmTopicCatalog:
     def observe(
         self,
         topic: Topic,
-        data: bytes,
+        data: bytes | int,
         *,
         renderability: Renderability,
         render_reason: str,
@@ -154,8 +154,9 @@ class LcmTopicCatalog:
                 entry.render_reason = render_reason
                 entry.last_seen_monotonic = timestamp
 
+            size_bytes = len(data) if isinstance(data, bytes) else data
             entry.message_count += 1
-            entry.history.append((timestamp, len(data)))
+            entry.history.append((timestamp, max(size_bytes, 0)))
             self._drop_old_history(entry, timestamp)
 
     def record_error(self, topic: str | Topic, error: BaseException | str) -> None:

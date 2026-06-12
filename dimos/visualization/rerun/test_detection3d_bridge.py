@@ -83,27 +83,23 @@ def test_detection3darray_bridge_attaches_topic_entity_to_message_frame() -> Non
 
 class _SelectorRenderableMsg:
     msg_name = "test.SelectorRenderableMsg"
-    decode_count = 0
-
-    @classmethod
-    def lcm_decode(cls, _: bytes) -> "_SelectorRenderableMsg":
-        cls.decode_count += 1
-        return cls()
+    to_rerun_count = 0
 
     def to_rerun(self) -> Any:
+        type(self).to_rerun_count += 1
         return rr.TextDocument("selected")
 
 
-def test_selector_managed_bridge_observes_all_but_logs_only_applied_topics() -> None:
+def test_selector_managed_bridge_catalogs_decoded_but_logs_only_applied_topics() -> None:
     bridge = RerunBridgeModule(selector_enabled=True)
     bridge._min_intervals = {}
     topic = LcmTopic("/selector/topic", _SelectorRenderableMsg)  # type: ignore[arg-type]
-    _SelectorRenderableMsg.decode_count = 0
+    _SelectorRenderableMsg.to_rerun_count = 0
 
     try:
         with patch("dimos.visualization.rerun.bridge.rr.log") as mock_log:
-            bridge._on_lcm_data(b"first", topic)
-            assert _SelectorRenderableMsg.decode_count == 0
+            bridge._on_message(_SelectorRenderableMsg(), topic)
+            assert _SelectorRenderableMsg.to_rerun_count == 0
             assert mock_log.call_count == 0
 
             [entry] = bridge.get_topic_catalog()
@@ -115,9 +111,9 @@ def test_selector_managed_bridge_observes_all_but_logs_only_applied_topics() -> 
 
             bridge.stage_topics(["/selector/topic"])
             bridge.apply_staged_topics()
-            bridge._on_lcm_data(b"second", topic)
+            bridge._on_message(_SelectorRenderableMsg(), topic)
 
-            assert _SelectorRenderableMsg.decode_count == 1
+            assert _SelectorRenderableMsg.to_rerun_count == 1
             assert mock_log.call_count == 1
             [updated] = bridge.get_topic_catalog()
             assert updated["selected"] is True

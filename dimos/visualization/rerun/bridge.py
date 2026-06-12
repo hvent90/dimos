@@ -16,7 +16,7 @@
 
 from __future__ import annotations
 
-from collections.abc import Callable
+from collections.abc import Callable, Sized
 from dataclasses import field
 import signal
 import socket
@@ -291,8 +291,20 @@ class RerunBridgeModule(Module):
 
         entity_path: str = self._get_entity_path(topic)
 
-        if self.config.selector_enabled and not is_selected_topic(topic, self._applied_topics):
-            return
+        if self.config.selector_enabled:
+            renderability, render_reason = classify_lcm_topic_renderability(
+                topic,
+                entity_path=entity_path,
+                visual_override=self.config.visual_override,
+            )
+            self._catalog.observe(
+                topic,
+                self._message_size_bytes(msg),
+                renderability=renderability,
+                render_reason=render_reason,
+            )
+            if not is_selected_topic(topic, self._applied_topics):
+                return
 
         # Throttle entities with a max_hz limit
         if entity_path in self._min_intervals:
@@ -331,30 +343,18 @@ class RerunBridgeModule(Module):
                     rr.log(entity_path, rr.Transform3D(parent_frame=f"tf#/{frame_id}"))
                     self._frame_attached[entity_path] = frame_id
 
-    def _on_lcm_data(self, data: bytes, topic: Any) -> None:
-        """Observe raw LCM data, then decode/log only applied selector topics."""
+    @staticmethod
+    def _message_size_bytes(msg: Any) -> int:
+        """Best-effort encoded size for decoded selector catalog statistics."""
 
-        entity_path = self._get_entity_path(topic)
-        renderability, render_reason = classify_lcm_topic_renderability(
-            topic,
-            entity_path=entity_path,
-            visual_override=self.config.visual_override,
-        )
-        self._catalog.observe(
-            topic,
-            data,
-            renderability=renderability,
-            render_reason=render_reason,
-        )
-
-        if not is_selected_topic(topic, self._applied_topics):
-            return
-
-        msg = self._catalog.decode(topic, data)
-        if msg is None:
-            return
-
-        self._on_message(msg, topic)
+        encode = getattr(msg, "lcm_encode", None)
+        if not callable(encode):
+            return 0
+        try:
+            encoded = cast("Sized", encode())
+            return len(encoded)
+        except Exception:
+            return 0
 
     @rpc
     def get_topic_catalog(self) -> list[dict[str, Any]]:
@@ -490,10 +490,7 @@ class RerunBridgeModule(Module):
             logger.info(f"bridge listening on {pubsub.__class__.__name__}")
             if hasattr(pubsub, "start"):
                 pubsub.start()
-            if self.config.selector_enabled and hasattr(pubsub, "subscribe_all_encoded"):
-                unsub = pubsub.subscribe_all_encoded(self._on_lcm_data)
-            else:
-                unsub = pubsub.subscribe_all(self._on_message)
+            unsub = pubsub.subscribe_all(self._on_message)
             self.register_disposable(Disposable(unsub))
 
         for pubsub in self.config.pubsubs:

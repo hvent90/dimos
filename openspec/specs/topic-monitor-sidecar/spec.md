@@ -63,15 +63,16 @@ The system SHALL allocate an isolated set of available local ports for monitor-o
 - **THEN** the monitor starts without trying to open a browser
 - **AND** the CLI output includes the selector URL.
 
-### Requirement: Discover all visible LCM topics
-The topic monitor SHALL discover all visible live LCM topics by default and let users narrow, inspect, and select topics from the interactive UI rather than requiring CLI include/exclude configuration.
+### Requirement: Discover decodable DimOS LCM topics
+The topic monitor SHALL discover live decodable DimOS LCM topics by default and let users narrow, inspect, and select topics from the interactive UI rather than requiring CLI include/exclude configuration.
 
 #### Scenario: Mixed topic traffic is present
-- **GIVEN** live LCM traffic includes typed, untyped, renderable, unsupported, and internal topics
+- **GIVEN** live LCM traffic includes decodable typed DimOS topics, unsupported DimOS message types, and undecodable non-DimOS topics
 - **WHEN** the user opens the topic monitor UI
-- **THEN** the catalog displays the visible topics with live/idle, renderability, rate, and bandwidth information where available
+- **THEN** the catalog displays decodable DimOS topics with live/idle, renderability, rate, and bandwidth information where available
 - **AND** renderable typed topics can be staged for selected-only logging
-- **AND** unsupported or unknown topics remain visible but are not selectable for rendering.
+- **AND** unsupported decoded topics remain visible but are not selectable for rendering
+- **AND** undecodable topics are ignored.
 
 ### Requirement: Visualization dependency handling
 The topic monitor SHALL require the visualization dependency extra and fail clearly when required visualization/runtime dependencies are unavailable.
@@ -94,5 +95,5 @@ The topic monitor SHALL render generic typed LCM topics with native Rerun conver
 #### Scenario: Topic requires blueprint-specific visual override
 - **GIVEN** a topic would require blueprint-specific visual override or static scene configuration to render
 - **WHEN** the topic is visible in the monitor catalog without native conversion support
-- **THEN** the monitor marks it unsupported or unknown according to available type information
+- **THEN** the monitor marks it unsupported according to available type information
 - **AND** the monitor does not require the user to provide Python visual configuration in v1.

@@ -91,7 +91,7 @@ def test_row_counts_and_status_text_describe_catalog_state() -> None:
     assert status_text(rows, live_count=live_count, renderable_count=renderable_count) == (
         "LCM 2 channels · 1 live · 1 renderable"
     )
-    assert "No live LCM data" in status_text([], live_count=0, renderable_count=0)
+    assert "No decodable LCM data" in status_text([], live_count=0, renderable_count=0)
     assert "no observed topic has a Rerun converter" in status_text(
         [{"type_name": "A"}], live_count=1, renderable_count=0
     )
@@ -123,7 +123,7 @@ def test_topic_group_assigns_design_groups() -> None:
     assert topic_group("/cmd_vel", "geometry_msgs.Twist") == "Control"
     assert topic_group("/odom", "nav_msgs.Odometry") == "Robot state"
     assert topic_group("/agent_log", "str") == "Text / logs"
-    assert topic_group("GO2_LOW_STATE", None) == "Untyped"
+    assert topic_group("GO2_LOW_STATE", None) == "Other"
 
 
 def test_is_heavy_uses_bandwidth_and_bulky_types() -> None:
@@ -136,7 +136,7 @@ def test_render_badge_maps_renderability_to_badge() -> None:
     assert render_badge("renderable", "native to_rerun()") == ("native", "renderable")
     assert render_badge("renderable", "visual converter") == ("converter", "converter")
     assert render_badge("unsupported", "no Rerun converter") == ("unsupported", "unsupported")
-    assert render_badge("unknown", "unknown message type") == ("unknown", "unknown type")
+    assert render_badge("unknown", "unknown message type") == ("unsupported", "unsupported")
 
 
 def test_formatters_match_design_copy() -> None:
@@ -186,13 +186,13 @@ def test_enrich_row_precomputes_display_fields() -> None:
     assert row["state_title"] == "last seen now"
 
 
-def test_enrich_row_disables_unknown_topics() -> None:
+def test_enrich_row_disables_non_renderable_topics() -> None:
     raw = {
         "channel": "GO2_LOW_STATE",
         "name": "GO2_LOW_STATE",
         "type_name": None,
-        "renderability": "unknown",
-        "render_reason": "unknown message type",
+        "renderability": "unsupported",
+        "render_reason": "no Rerun converter",
         "live": False,
         "selected": False,
         "logging": False,
@@ -206,12 +206,12 @@ def test_enrich_row_disables_unknown_topics() -> None:
 
     row = enrich_row(raw, now_monotonic=1.0)
 
-    assert row["group"] == "Untyped"
-    assert row["untyped"] is True
+    assert row["group"] == "Other"
+    assert row["untyped"] is False
     assert row["selectable"] is False
     assert row["row_class"] == "vc-row is-disabled"
-    assert row["badge_label"] == "unknown type"
-    assert row["row_title"] == "unknown message type"
+    assert row["badge_label"] == "unsupported"
+    assert row["row_title"] == "no Rerun converter"
     assert row["rate_text"] == "—"
 
 

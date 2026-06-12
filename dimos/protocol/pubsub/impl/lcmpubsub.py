@@ -94,18 +94,6 @@ class LCMPubSubBase(LCMService, AllPubSub[Topic, Any]):
     def subscribe_all(self, callback: Callable[[bytes, Topic], Any]) -> Callable[[], None]:
         return self.subscribe(Topic(re.compile(".*")), callback)
 
-    def subscribe_all_encoded(self, callback: Callable[[bytes, Topic], Any]) -> Callable[[], None]:
-        """Subscribe to every LCM channel without applying encoder/decoder mixins.
-
-        ``LCM.subscribe_all`` normally routes through ``self.subscribe`` and, for
-        the typed ``LCM`` class, decodes payloads before invoking callbacks. The
-        selector UI needs to observe untyped or undecodable channels too, and it
-        needs to avoid decoding unselected high-bandwidth topics. This raw path
-        keeps discovery separate from typed message delivery.
-        """
-
-        return LCMPubSubBase.subscribe(self, Topic(re.compile(".*")), callback)
-
     def subscribe(
         self, topic: Topic, callback: Callable[[bytes, Topic], None]
     ) -> Callable[[], None]:

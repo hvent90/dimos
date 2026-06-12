@@ -1,19 +1,19 @@
 # rerun-topic-selection Specification
 
 ## Purpose
-Specify how DimOS Rerun topic selection catalogs live LCM traffic, stages topic choices, and logs only applied topics through either the dedicated selector demo or the attach-style topic monitor sidecar.
+Specify how DimOS Rerun topic selection catalogs live decodable LCM traffic, stages topic choices, and logs only applied topics through the attach-style topic monitor sidecar.
 ## Requirements
 ### Requirement: Current-session staged topic selection
-The system SHALL let users stage renderable LCM topic choices in the Reflex selector UI and explicitly apply them before those topics are logged to Rerun during a selector-enabled visualization session.
+The system SHALL let users stage renderable LCM topic choices in the Reflex selector UI and explicitly apply them before those topics are logged to Rerun during a topic monitor session.
 
 #### Scenario: User stages and applies a renderable topic
-- **GIVEN** selector-enabled visualization is running and a renderable LCM topic is visible in the Reflex catalog UI
+- **GIVEN** topic monitoring is running and a renderable LCM topic is visible in the Reflex catalog UI
 - **WHEN** the user stages the topic and applies the selection
 - **THEN** subsequent messages for that topic are logged to Rerun
 - **AND** the embedded Rerun viewer can display the selected topic data.
 
 #### Scenario: Staged topic does not log before apply
-- **GIVEN** selector-enabled visualization is running and a renderable LCM topic is visible in the Reflex catalog UI
+- **GIVEN** topic monitoring is running and a renderable LCM topic is visible in the Reflex catalog UI
 - **WHEN** the user stages the topic but does not apply the selection
 - **THEN** subsequent messages for that topic are not logged merely because the staged state changed
 - **AND** the UI indicates that the staged selection differs from the applied/logging selection.
@@ -28,16 +28,16 @@ The system SHALL let users stage renderable LCM topic choices in the Reflex sele
 The system SHALL avoid converting or logging unselected topics in managed-selection mode regardless of whether the selector frontend is implemented with Reflex.
 
 #### Scenario: High-bandwidth topic remains unselected
-- **GIVEN** selector-enabled visualization is running and a high-bandwidth renderable LCM topic is flowing
+- **GIVEN** topic monitoring is running and a high-bandwidth renderable LCM topic is flowing
 - **WHEN** the topic is not in the applied selection
 - **THEN** the topic is not converted to Rerun data by the selector-managed path
 - **AND** the topic is not logged to Rerun merely because it is renderable.
 
 #### Scenario: Unsupported topic cannot be selected for rendering
-- **GIVEN** an observed LCM topic is marked unsupported or unknown in the catalog
+- **GIVEN** an observed decodable LCM topic is marked unsupported in the catalog
 - **WHEN** the user reviews available topics in the Reflex selector UI
 - **THEN** the UI does not present it as a renderable topic selection
-- **AND** the UI gives a short reason such as unknown message type or no Rerun converter.
+- **AND** the UI gives a short reason such as no Rerun converter.
 
 ### Requirement: Compatibility with existing visualization behavior
 The system SHALL preserve existing automatic Rerun visualization behavior for normal blueprints and SHALL make attach-style topic monitoring available through `dimos topic monitor` rather than requiring ordinary blueprints to embed selector-specific visualization wiring.
@@ -57,36 +57,36 @@ The system SHALL preserve existing automatic Rerun visualization behavior for no
 #### Scenario: Dedicated selector demo is used
 - **GIVEN** a user wants a self-contained selector smoke test or demonstration
 - **WHEN** the user runs the dedicated selector demo blueprint
-- **THEN** the demo remains available as a hardware-free way to exercise topic cataloging, staging, applying, clearing, and embedded Rerun viewing
+- **THEN** the demo remains available as a hardware-free way to publish decodable sample LCM topics for topic monitor smoke testing
 - **AND** ordinary production blueprints are not required to use selector-specific visualization wiring.
 
 ### Requirement: Embedded Rerun viewer feedback
 The system SHALL present topic selection and Rerun viewer availability in one Reflex web workflow.
 
 #### Scenario: Rerun viewer is available
-- **GIVEN** selector-enabled visualization is running and the Rerun web viewer endpoint is reachable
+- **GIVEN** topic monitoring is running and the Rerun web viewer endpoint is reachable
 - **WHEN** the user opens the Reflex selector web app
 - **THEN** the page shows the LCM topic catalog and an embedded Rerun viewer area
 - **AND** applied renderable topics are reflected in the viewer as data is logged
 - **AND** the page shows which topics are currently applied/logging.
 
 #### Scenario: Rerun viewer is unavailable
-- **GIVEN** selector-enabled visualization is running but the Rerun web viewer endpoint is unavailable
+- **GIVEN** topic monitoring is running but the Rerun web viewer endpoint is unavailable
 - **WHEN** the user opens the Reflex selector web app
 - **THEN** the page still shows the LCM topic catalog when topic data is available
 - **AND** the page shows an actionable connection hint for the Rerun viewer instead of failing silently.
 
 ### Requirement: Reflex selector runtime availability
-The system SHALL provide a Reflex selector runtime that can be started and stopped with selector-enabled visualization without requiring real robot hardware.
+The system SHALL provide a Reflex selector runtime that can be started and stopped with topic monitoring without requiring real robot hardware.
 
 #### Scenario: Demo selector starts on a PC
-- **GIVEN** the hardware-free selector demo blueprint is run with selector-enabled visualization
+- **GIVEN** the hardware-free demo publisher is running and `dimos topic monitor` starts
 - **WHEN** the Reflex selector runtime starts
 - **THEN** the selector web app is reachable from the documented browser URL
 - **AND** the embedded Rerun viewer uses a connected `url=rerun%2Bhttp...%2Fproxy` source URL rather than a bare viewer shell.
 
 #### Scenario: Selector startup fails
-- **GIVEN** selector-enabled visualization is configured but the Reflex runtime cannot start
+- **GIVEN** topic monitoring is configured but the Reflex runtime cannot start
 - **WHEN** the user opens or inspects the selector workflow
 - **THEN** the failure is visible through logs or UI-accessible diagnostics
 - **AND** robot command, skill, and MCP behavior remains unaffected.

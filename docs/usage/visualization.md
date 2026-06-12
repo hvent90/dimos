@@ -103,10 +103,11 @@ By default the command allocates an isolated set of local ports instead of reusi
 For a hardware-free demo on a laptop or desktop, run the built-in synthetic publisher:
 
 ```bash
-uv run dimos --viewer rerun run demo-rerun-topic-selector
+uv run dimos run demo-rerun-topic-selector --daemon
+uv run dimos topic monitor
 ```
 
-This demo remains a self-contained hardware-free smoke test for the selector UI. It uses fixed local demo ports and serves the Rerun web viewer for the embedded right pane without opening a native Rerun window. For ordinary robot, simulation, or replay workflows, prefer running the normal stack and then starting `dimos topic monitor`.
+This demo remains a self-contained hardware-free smoke test for the selector UI. It publishes synthetic typed LCM topics only; `dimos topic monitor` attaches as the independent visualization sidecar. For ordinary robot, simulation, or replay workflows, run the normal stack and then start `dimos topic monitor`.
 
 The monitor provides a Reflex visual console next to the Rerun web viewer. It starts local services for the selector frontend, selector API, Reflex backend websocket/API, Rerun gRPC source, and Rerun web viewer. The exact ports are printed by the CLI because they are allocated per monitor instance.
 
@@ -114,7 +115,7 @@ The selector API is local to the monitor process and forwards UI actions to the 
 
 - a header bar with LCM traffic and Rerun connectivity status chips
 - a fixed-width catalog rail with search, `renderable`/`live`/`heavy`/`selected` filter chips, and a `visible/total` counter
-- a grouped topic table (Perception, Robot state, Navigation, Control, Text / logs, Untyped) with per-row render badges (`renderable`, `converter`, `unsupported`, `unknown type`), rate, bandwidth (heavy topics highlighted in amber), and live/idle status; unsupported and untyped rows are visible but disabled
+- a grouped topic table (Perception, Robot state, Navigation, Control, Text / logs, Other) with per-row render badges (`renderable`, `converter`, `unsupported`), rate, bandwidth (heavy topics highlighted in amber), and live/idle status; unsupported decoded topics are visible but disabled
 - current-session staging controls; checking a topic only stages it, and applied topics carry a `LOGGING` badge
 - a bottom selection tray showing staged/logging counts, the staged bandwidth estimate, a heavy-topic warning, and explicit **Clear** / **Apply selection** actions
 - an embedded Rerun viewer panel with a connection toolbar (**Reconnect**, **Open in tab**), an unreachable-viewer error card, and a bridge footer listing the logged topics as entity chips
@@ -127,23 +128,22 @@ uv sync --extra visualization
 
 ### Selected-only logging
 
-In selector mode, topics are cataloged first. A renderable topic is not decoded, converted, or logged merely because it is visible or staged. Subsequent messages are logged only after the staged selection is applied. Clearing the staged selection and applying that empty selection stops selector-managed logging for those topics.
+In selector mode, decoded DimOS topics are cataloged first. A renderable topic is not converted to Rerun data or logged merely because it is visible or staged. Subsequent messages are logged only after the staged selection is applied. Clearing the staged selection and applying that empty selection stops selector-managed logging for those topics.
 
-This is useful for high-bandwidth streams such as images, maps, and point clouds: browsing the catalog does not automatically pay the Rerun conversion/logging cost.
+This is useful for high-bandwidth streams such as images, maps, and point clouds: browsing the catalog does not automatically pay the Rerun conversion/logging cost. The monitor still subscribes through DimOS' normal decoded LCM path, so non-decodable/non-DimOS LCM traffic is ignored rather than displayed.
 
 ### Unsupported and degraded states
 
-The selector catalog is LCM-only in this first version. It discovers live LCM channels, including typed channels such as `/camera/color#sensor_msgs.Image`, and shows untyped or undecodable LCM traffic instead of hiding it.
+The selector catalog is LCM-only in this first version. It discovers live decodable DimOS LCM channels, such as `/camera/color#sensor_msgs.Image`. Untyped, undecodable, or non-DimOS LCM traffic is ignored.
 
 Topic states include:
 
 - **renderable**: the decoded message has `to_rerun()` support or matches a configured `visual_override` converter
 - **unsupported**: the message type is known but has no Rerun converter, or a visual override suppresses it
-- **unknown**: the channel is untyped or cannot be resolved to a message type
 - **live/idle**: traffic freshness based on the catalog freshness window
 - **logging**: the topic is in the applied selector-managed logging set
 
-The page also calls out common degraded states: no LCM data yet (pulsing empty state), no search/filter matches, only untyped topics (amber notice), an unreachable selector API, and an unreachable Rerun viewer (error card with retry). If the embedded viewer is blank, use **Open in tab** or verify that the embedded Rerun URL includes an encoded `url=rerun%2Bhttp...%2Fproxy` query parameter that points at the bridge gRPC proxy.
+The page also calls out common degraded states: no decodable LCM data yet (pulsing empty state), no search/filter matches, an unreachable selector API, and an unreachable Rerun viewer (error card with retry). If the embedded viewer is blank, use **Open in tab** or verify that the embedded Rerun URL includes an encoded `url=rerun%2Bhttp...%2Fproxy` query parameter that points at the bridge gRPC proxy.
 
 ### v1 scope
 

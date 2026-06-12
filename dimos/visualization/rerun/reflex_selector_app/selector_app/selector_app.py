@@ -55,7 +55,6 @@ GROUP_ORDER = [
     "Control",
     "Text / logs",
     "Other",
-    "Untyped",
 ]
 
 HEAVY_BANDWIDTH_BPS = 50_000.0
@@ -95,8 +94,6 @@ TEXT_KEYWORDS = ("log", "text", "str", "diagnostic", "thought", "status")
 def topic_group(channel: str, type_name: str | None) -> str:
     """Assign a catalog row to a fixed display group (best-effort keywords)."""
 
-    if type_name is None:
-        return "Untyped"
     haystack = f"{channel} {type_name}".lower()
     if any(keyword in haystack for keyword in PERCEPTION_KEYWORDS):
         return "Perception"
@@ -129,7 +126,7 @@ def render_badge(renderability: str | None, render_reason: str | None) -> tuple[
         return "native", "renderable"
     if renderability == "unsupported":
         return "unsupported", "unsupported"
-    return "unknown", "unknown type"
+    return "unsupported", "unsupported"
 
 
 def fmt_hz(hz: float | None) -> str:
@@ -197,7 +194,7 @@ def enrich_row(raw: dict[str, Any], *, now_monotonic: float | None = None) -> di
         "channel": channel,
         "name": name,
         "type_name": type_name or "",
-        "untyped": type_name is None,
+        "untyped": False,
         "group": topic_group(channel, type_name),
         "renderability": renderability,
         "selectable": selectable,
@@ -291,11 +288,9 @@ def status_text(rows: list[dict[str, Any]], *, live_count: int, renderable_count
     """Return degraded/normal selector status copy for catalog rows."""
 
     if not rows:
-        return "No live LCM data observed yet. Start a stack that publishes LCM topics."
+        return "No decodable LCM data observed yet. Start a stack that publishes typed DimOS LCM topics."
     if renderable_count == 0:
         return "LCM traffic is visible, but no observed topic has a Rerun converter yet."
-    if all(row.get("type_name") is None for row in rows):
-        return "Only untyped LCM topics observed; add typed channels or decoders to render them."
     return f"LCM {len(rows)} channels · {live_count} live · {renderable_count} renderable"
 
 
@@ -423,10 +418,6 @@ class SelectorState(rx.State):
             if row.get("selected") and row.get("heavy")
         ]
         return ", ".join(names)
-
-    @rx.var
-    def untyped_only(self) -> bool:
-        return bool(self.catalog_rows) and all(row.get("untyped") for row in self.catalog_rows)
 
     @rx.var
     def lcm_chip_text(self) -> str:
@@ -814,11 +805,7 @@ def topic_row(row: rx.Var[dict[str, Any]]) -> rx.Component:
         rx.el.span(
             rx.el.div(
                 rx.el.span(row["name"], class_name="tn-channel"),
-                rx.cond(
-                    row["untyped"],
-                    rx.el.span("no type suffix", class_name="tn-type tn-untyped"),
-                    rx.el.span(row["type_name"], class_name="tn-type"),
-                ),
+                rx.el.span(row["type_name"], class_name="tn-type"),
                 class_name="vc-topicname",
                 title=row["name_title"].to(str),
             ),
@@ -867,16 +854,6 @@ def empty_state(title: Any, body: Any) -> rx.Component:
     )
 
 
-def untyped_notice() -> rx.Component:
-    return rx.el.div(
-        rx.el.strong("Only untyped channels observed. "),
-        "None include a ",
-        rx.el.span("#pkg.Msg", class_name="mono"),
-        " suffix, so nothing is renderable. Register a decoder or check publisher channel naming.",
-        class_name="vc-notice",
-    )
-
-
 def catalog_rail() -> rx.Component:
     return rx.el.aside(
         rail_controls(),
@@ -886,7 +863,6 @@ def catalog_rail() -> rx.Component:
                 rx.cond(
                     SelectorState.has_visible,
                     rx.fragment(
-                        rx.cond(SelectorState.untyped_only, untyped_notice(), rx.fragment()),
                         table_head(),
                         rx.foreach(SelectorState.display_rows, display_item),
                     ),
