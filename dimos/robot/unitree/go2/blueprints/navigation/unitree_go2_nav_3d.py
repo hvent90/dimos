@@ -40,6 +40,11 @@ voxel_size = 0.1
 go2_lidar_height = 0.5
 
 
+def _render_global_map(msg: Any) -> Any:
+    # don't use a min z height because why would we want that
+    return msg.to_rerun()
+
+
 def _static_robot_body(rr: Any) -> list[Any]:
     """Go2-shaped box on fastlio's body frame, counter-rotated for the lidar pitch."""
     return [
@@ -65,6 +70,7 @@ _nav_rerun_config = {
     "static": {"world/tf/body": _static_robot_body},
     "visual_override": {
         **rerun_config["visual_override"],
+        "world/global_map": _render_global_map,
         "world/camera_info": None,
         "world/color_image": None,
         "world/lidar": None,
