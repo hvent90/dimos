@@ -58,6 +58,22 @@ class RobotModelConfig(ModuleConfig):
     joint_names: list[str]
     end_effector_link: str
     base_link: str = "base_link"
+    # Mesh directory for MJCF models whose <compiler meshdir> is unset or
+    # relative (e.g. the G1 MJCF keeps its STLs in data/g1_urdf/meshes).
+    # Same role as MujocoSimModule's robot_meshdir. Ignored for URDF.
+    model_meshdir: Path | None = None
+    # When True (default), the base_link is welded to the world at base_pose.
+    # When False, the base is left as a floating body whose live pose is set
+    # via WorldSpec.set_floating_base_pose() before each plan — for legged
+    # robots whose base pose comes from /odom. Honored by the MuJoCo
+    # backend; DrakeWorld currently always welds.
+    weld_base: bool = True
+    # Offset (x, y, z in meters, in the end-effector body's local frame)
+    # from end_effector_link's origin to the actual TCP / grasp center.
+    # If non-zero, IK and FK target this offset point rather than the link
+    # origin — useful when the model's wrist link sits behind the palm.
+    # Honored by the MuJoCo backend; DrakeWorld targets the link origin.
+    grasp_offset_xyz: tuple[float, float, float] = (0.0, 0.0, 0.0)
     package_paths: dict[str, Path] = Field(default_factory=dict)
     joint_limits_lower: list[float] | None = None
     joint_limits_upper: list[float] | None = None

@@ -69,7 +69,11 @@ from dimos.utils.data import LfsPath
 # str()/open(); using ``get_data(...)`` at import time would block the
 # whole CLI on a multi-GB download every time the module is imported.
 _GROOT_MODEL_DIR = LfsPath("groot")
+# Robot-only model: joint mappings, planning, and control all read this.
 _MJCF_PATH = LfsPath("mujoco_sim/g1_gear_wbc.xml")
+# Sim world: the robot file plus ground/office via <include>. Manipulable
+# props come from scene packages, not the MJCF.
+_MJCF_SCENE_PATH = LfsPath("mujoco_sim/g1_gear_wbc_scene.xml")
 
 _adapter_address: str | Path
 
@@ -108,7 +112,7 @@ if global_config.simulation == "mujoco":
 
     # Sim backend: MuJoCo engine via SHM.
     _backend = MujocoSimModule.blueprint(
-        address=_MJCF_PATH,
+        address=_MJCF_SCENE_PATH,
         headless=True,
         dof=29,
         enable_color=False,
