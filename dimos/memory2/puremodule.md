@@ -160,22 +160,62 @@ return remains accepted as the low-level equivalent. `out` joins
 pure: fresh per tick, collected immediately — the return value passed
 inside-out.
 
-The typed future is **bundles**: a nested `class Out(Bundle)` is both the
-port declaration (ports synthesized from its annotations) and the
-writer's static type (`out.cmd = 5` becomes a mypy error). Inputs get the
-same treatment (`class In(Bundle)` with samplers as field defaults —
-which is the original InputState idea), with mixed binding allowed: spread
-inputs by name for small modules, take the whole bundle for big ones. The
-key compatibility rule: **today's flat syntax is an anonymous bundle** —
-flat declarations compile to implicit `In`/`Out` bundles at plan time, so
-nothing migrates and structural wiring works on every existing module.
-Bundles then subsume `dimos/spec/` Protocols as real, connectable,
-type-checked interfaces (`bp.connect(cam.o, nav.i)` matched by name+type;
-interface inheritance like `DepthCameraOut(CameraOut)`), which is the
-blueprint-rethink track. Note: the class-level-`None` port attribute
-dance in `Module.__init_subclass__` cites Dask actor proxies — dimos no
-longer uses Dask, so that constraint is gone and the real serialization
-surface for any port rework is `RemoteIn`/`RemoteOut` over LCM.
+The typed next step is **nested I/O bundles** (agreed design, not built):
+
+```python skip
+class Navigator(PureModule):
+    class In:
+        pose: PoseStamped = tick()
+        image: Image | None = latest()    # optionality lives on the field now
+        imu: list[Imu] = window(0.1)
+
+    class Out:
+        cmd_vel: Twist
+        alerts: str
+
+    def step(self, i: In, out: Out) -> None:
+        out.cmd_vel = drive(i.pose, i.imu)
+        if i.image is not None and blocked(i.image):
+            out.alerts = "obstacle"
+```
+
+One declaration per port doing three jobs: port synthesis,
+static typing, and the plan's I/O table. The mechanics and rules:
+
+- **No core changes**: `PureModule.__init_subclass__` injects
+  `name: In[T]` / `name: Out[T]` entries into `cls.__annotations__`
+  *before* chaining to `Module.__init_subclass__`, so the existing port
+  machinery creates real ports and blueprint/LCM wiring is unchanged at
+  runtime.
+- **Static typing lands where the code is**: `out: Out` makes every
+  assignment mypy-checked against the nested class; `i: In` types every
+  read. The runtime objects stay the validated writer / a per-tick row
+  object — the annotations do the static work.
+- **Nested XOR flat, per direction**: a nested class named `In`/`Out`
+  shadows the imported port types for any flat declaration written below
+  it — so a module uses one form per direction, validated at plan time.
+  Flat stays canonical for simple modules.
+- **Binding detected by annotation**: a single step param annotated with
+  the nested `In` class receives the whole bundle (with `i.ts` reserved);
+  otherwise params spread by name as today — both supported, fields are
+  names either way.
+- **In-bundle unifications**: optionality, `Observation[X]` access, and
+  window list types all move onto the field annotation — today they're
+  split between the port declaration and the step signature.
+- **Tick-row synergy**: the `In` bundle instance *is* the resolved tick
+  row — recording tick rows (replay fidelity) becomes serializing these,
+  and a recorded tick replays as a direct `step(i, out)` call.
+- **Trade-off, stated**: synthesized ports aren't statically visible to
+  *external* code (`module.cmd_vel` is runtime-only for mypy); modules
+  whose ports are hand-wired in typed code keep the flat form.
+- Declaration reuse via inheritance (`class In(CameraFeed)`) works
+  without touching wiring; full structural connect
+  (`bp.connect(cam.o, nav.i)`) and subsuming `dimos/spec/` Protocols
+  remain the separate blueprint-rethink track. Note: the
+  class-level-`None` port attribute dance in `Module.__init_subclass__`
+  cites Dask actor proxies — dimos no longer uses Dask, so that
+  constraint is gone and the real serialization surface for any port
+  rework is `RemoteIn`/`RemoteOut` over LCM.
 
 ## Multi-output offline shape (planned: run handle)
 

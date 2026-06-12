@@ -284,8 +284,11 @@ print(boundary_alerts.last().data)
 approaching boundary at t=2.00
 ```
 
-(That dict-row shape is a known asymmetry with the live per-port streams —
-a run handle with one stream per output is on the design table.)
+Each projected stream is lazy, so iterating two outputs separately runs
+the module twice — the same recompute-on-reiterate semantics as any
+memory2 transform stream. To run once and consume many times, use the
+stream API's own materialization: `.save()` the row stream into a store,
+then project from the stored rows.
 
 ## Modules compose like streams
 
@@ -362,6 +365,8 @@ legitimately differ:
 module = Follower(
     expected_hz={"frame": 30},   # "the camera should arrive at 30 Hz"
     min_output_hz=10.0,          # "I must emit commands at >= 10 Hz"
+    max_drop_ratio=0.5,          # "skip at most half my frames" (scale-free)
+    max_tick_latency_s=0.1,      # "commands come from <= 100ms-old frames"
 )
 module.start()
 ```
@@ -376,6 +381,19 @@ output (captured from a real run):
 [war] Follower DEGRADED: input 'frame' at 5.7 Hz, expected 30 Hz; output 4.7 Hz < contract 10 Hz
 [war] Follower still DEGRADED (2s): input 'frame' at 5.0 Hz, expected 30 Hz; ...
 --- camera recovers to 30 Hz ---
+[inf] Follower OK: recovered after 4s
+```
+
+A different failure: the step gets heavy. It still clears the absolute
+10 Hz output contract — that's the trap with absolute rates — but the
+scale-free contracts catch it (also a real captured run):
+
+```
+--- healthy: 30 Hz camera, fast step ---
+[inf] Follower warmup: frame 29.2 Hz (expected 30)
+--- step gets slow (80 ms): keeps the 10 Hz output contract, but... ---
+[war] Follower DEGRADED: backpressure drop ratio 53% > contract 50% (step not keeping up); tick latency p99 112 ms > contract 100 ms
+--- step recovers ---
 [inf] Follower OK: recovered after 4s
 ```
 
