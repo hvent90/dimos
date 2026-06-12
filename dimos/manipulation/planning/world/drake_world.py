@@ -193,11 +193,20 @@ class DrakeWorld(WorldSpec, VisualizationSpec):
         # Obstacle source for dynamic obstacles
         self._obstacle_source_id: Any = None
 
-    def add_robot(self, config: RobotModelConfig) -> WorldRobotID:
+    def add_robot(
+        self,
+        config: RobotModelConfig,
+        share_model_with: WorldRobotID | None = None,
+    ) -> WorldRobotID:
         """Add a robot to the world. Returns robot_id.
 
         Same model_path + base_pose reuses the model instance (e.g. two arms in one URDF).
         """
+        if share_model_with is not None:
+            raise NotImplementedError(
+                "DrakeWorld does not support shared-model registration; "
+                "use the mujoco backend for dual arms on one robot file"
+            )
         if self._finalized:
             raise RuntimeError("Cannot add robot after world is finalized")
 

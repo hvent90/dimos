@@ -73,10 +73,22 @@ class WorldMonitor:
 
     # Robot Management
 
-    def add_robot(self, config: RobotModelConfig) -> WorldRobotID:
-        """Add a robot. Returns robot_id."""
+    def add_robot(
+        self,
+        config: RobotModelConfig,
+        share_model_with: WorldRobotID | None = None,
+    ) -> WorldRobotID:
+        """Add a robot. Returns robot_id.
+
+        ``share_model_with`` (optional) registers a second view onto an
+        already-loaded model — for dual-arm setups where both arms live in
+        one robot file (mujoco backend).
+        """
         with self._lock:
-            robot_id = self._world.add_robot(config)
+            if share_model_with is not None:
+                robot_id = self._world.add_robot(config, share_model_with=share_model_with)
+            else:
+                robot_id = self._world.add_robot(config)
             self._robot_joints[robot_id] = config.joint_names
             logger.info(f"Added robot '{config.name}' as '{robot_id}'")
             return robot_id
@@ -206,6 +218,26 @@ class WorldMonitor:
             import traceback
 
             logger.error(traceback.format_exc())
+
+    def on_entity_state_batch(self, msg: Any) -> None:
+        """Push scene-entity poses into the planning world.
+
+        Accepts a pimsim ``EntityStateBatch`` (``entries`` of
+        ``(EntityDescriptor, Pose)``) — the same authority-agnostic wire
+        format the simulators and the rust lidar consume, so planning sees
+        live entity poses whether MuJoCo, Havok, or (eventually) perception
+        owns physics. No-op on backends without entity support (Drake).
+        """
+        sync = getattr(self._world, "sync_entity_poses", None)
+        if sync is None:
+            return
+        try:
+            poses = {descriptor.entity_id: pose for descriptor, pose in getattr(msg, "entries", [])}
+        except (TypeError, ValueError, AttributeError) as e:
+            logger.warning(f"[WorldMonitor] Bad entity state batch: {e}")
+            return
+        if poses:
+            sync(poses)
 
     def on_collision_object(self, msg: CollisionObjectMessage) -> None:
         """Handle collision object message."""

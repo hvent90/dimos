@@ -59,8 +59,17 @@ class WorldSpec(Protocol):
     """
 
     # Robot Management
-    def add_robot(self, config: RobotModelConfig) -> WorldRobotID:
-        """Add a robot to the world. Returns unique robot ID."""
+    def add_robot(
+        self,
+        config: RobotModelConfig,
+        share_model_with: WorldRobotID | None = None,
+    ) -> WorldRobotID:
+        """Add a robot to the world. Returns unique robot ID.
+
+        ``share_model_with`` registers a second view onto an already-loaded
+        model (dual arms in one robot file). Optional capability: backends
+        without shared-model support raise NotImplementedError when set.
+        """
         ...
 
     def get_robot_ids(self) -> list[WorldRobotID]:

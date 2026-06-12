@@ -38,6 +38,7 @@ from dimos.constants import DEFAULT_THREAD_JOIN_TIMEOUT
 from dimos.core.core import rpc
 from dimos.core.module import Module, ModuleConfig
 from dimos.core.stream import In
+from dimos.experimental.pimsim.entity import EntityStateBatch
 from dimos.manipulation.planning.factory import create_kinematics, create_planner
 from dimos.manipulation.planning.monitor.world_monitor import WorldMonitor
 from dimos.manipulation.planning.spec.config import RobotModelConfig
@@ -92,6 +93,14 @@ class ManipulationModuleConfig(ModuleConfig):
     enable_viz: bool = False
     planner_name: str = "rrt_connect"  # "rrt_connect"
     kinematics_name: str = "jacobian"  # "jacobian" or "drake_optimization"
+    # Planning world backend: "drake" or "mujoco". The mujoco backend plans
+    # against the same robot MJCF + cooked scene packages the simulator uses
+    # (use the catalog's backend="mujoco" robot configs with it).
+    world_backend: str = "drake"
+    # Cooked scene package to plan in (mujoco backend): catalog name
+    # ("dimos-office"), package dir, or scene.meta.json path. Scene entities
+    # become collision bodies whose poses track /entity_state_batch.
+    scene_package: str | None = None
     # Floor plane Z height (meters). When set, a box obstacle is added at startup
     # to prevent the planner from routing trajectories below this height.
     # Set to None to disable.
@@ -111,6 +120,8 @@ class ManipulationModule(Module):
 
     # Input: Joint state from coordinator (for world sync)
     joint_state: In[JointState]
+    # Input: Scene-entity poses from the physics authority (mujoco backend)
+    entity_states: In[EntityStateBatch]
 
     def __init__(self, **kwargs: Any) -> None:
         super().__init__(**kwargs)
@@ -157,6 +168,14 @@ class ManipulationModule(Module):
             self.joint_state.subscribe(self._on_joint_state)
             logger.info("Subscribed to joint_state port")
 
+        # Subscribe to entity states (scene objects, mujoco backend)
+        if self.entity_states is not None:
+            try:
+                self.entity_states.subscribe(self._on_entity_states)
+                logger.info("Subscribed to entity_states port")
+            except Exception as e:
+                logger.debug(f"entity_states not wired: {e}")
+
         logger.info("ManipulationModule started")
 
     def _initialize_planning(self) -> None:
@@ -165,7 +184,14 @@ class ManipulationModule(Module):
             logger.warning("No robots configured, planning disabled")
             return
 
-        self._world_monitor = WorldMonitor(enable_viz=self.config.enable_viz)
+        world_kwargs: dict[str, Any] = {}
+        if self.config.world_backend == "mujoco" and self.config.scene_package:
+            world_kwargs["scene_package"] = self.config.scene_package
+        self._world_monitor = WorldMonitor(
+            backend=self.config.world_backend,
+            enable_viz=self.config.enable_viz,
+            **world_kwargs,
+        )
 
         for robot_config in self.config.robots:
             robot_id = self._world_monitor.add_robot(robot_config)
@@ -298,6 +324,11 @@ class ManipulationModule(Module):
             import traceback
 
             logger.error(traceback.format_exc())
+
+    def _on_entity_states(self, msg: EntityStateBatch) -> None:
+        """Forward scene-entity poses to the planning world (mujoco backend)."""
+        if self._world_monitor is not None:
+            self._world_monitor.on_entity_state_batch(msg)
 
     def _tf_publish_loop(self) -> None:
         """Publish TF transforms at 10Hz for EE and extra links."""
