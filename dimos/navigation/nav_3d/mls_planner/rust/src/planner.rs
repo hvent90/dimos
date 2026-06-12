@@ -19,41 +19,48 @@ const CANDIDATE_RADIUS_FACTOR: f32 = 3.0;
 /// nearest mapped surface can start well outside the robot footprint.
 const SNAP_SEARCH_RADIUS_M: f32 = 1.5;
 
-/// Snap a pose to the best surface cell.
+/// How many nearby snap candidates to try when connecting the start.
+const MAX_SNAP_ATTEMPTS: usize = 64;
+
+/// Surface cells near the pose, nearest first in xy.
+/// The nearest cell can sit on a small fragment disconnected from the main
+/// surface, so callers that need connectivity should try candidates in order.
+pub fn snap_candidates(
+    surface_lookup: &SurfaceLookup,
+    pose: (f32, f32, f32),
+    voxel_size: f32,
+    tolerance_m: f32,
+) -> Vec<VoxelKey> {
+    let ix = (pose.0 / voxel_size).floor() as i32;
+    let iy = (pose.1 / voxel_size).floor() as i32;
+    let target_iz = (pose.2 / voxel_size).floor() as i32 - 1;
+    let tol_cells = (tolerance_m / voxel_size).ceil() as i32;
+    let search_radius = (SNAP_SEARCH_RADIUS_M / voxel_size).ceil() as i32;
+
+    let mut found: Vec<(i32, VoxelKey)> = Vec::new();
+    for dix in -search_radius..=search_radius {
+        for diy in -search_radius..=search_radius {
+            if let Some(cell) =
+                best_iz_in_column(surface_lookup, ix + dix, iy + diy, target_iz, tol_cells)
+            {
+                found.push((dix * dix + diy * diy, cell));
+            }
+        }
+    }
+    found.sort_by_key(|&(d2, _)| d2);
+    found.into_iter().map(|(_, c)| c).collect()
+}
+
+/// Snap a pose to the nearest surface cell.
 pub fn snap_pose_to_cell(
     surface_lookup: &SurfaceLookup,
     pose: (f32, f32, f32),
     voxel_size: f32,
     tolerance_m: f32,
 ) -> Option<VoxelKey> {
-    let ix = (pose.0 / voxel_size).floor() as i32;
-    let iy = (pose.1 / voxel_size).floor() as i32;
-    let target_iz = (pose.2 / voxel_size).floor() as i32 - 1;
-    let tol_cells = (tolerance_m / voxel_size).ceil() as i32;
-
-    if let Some(cell) = best_iz_in_column(surface_lookup, ix, iy, target_iz, tol_cells) {
-        return Some(cell);
-    }
-
-    let search_radius = (SNAP_SEARCH_RADIUS_M / voxel_size).ceil() as i32;
-    let mut best: Option<(i32, VoxelKey)> = None;
-    for dix in -search_radius..=search_radius {
-        for diy in -search_radius..=search_radius {
-            if dix == 0 && diy == 0 {
-                continue;
-            }
-            let Some(cell) =
-                best_iz_in_column(surface_lookup, ix + dix, iy + diy, target_iz, tol_cells)
-            else {
-                continue;
-            };
-            let d2 = dix * dix + diy * diy;
-            if best.is_none_or(|(bd, _)| d2 < bd) {
-                best = Some((d2, cell));
-            }
-        }
-    }
-    best.map(|(_, c)| c)
+    snap_candidates(surface_lookup, pose, voxel_size, tolerance_m)
+        .into_iter()
+        .next()
 }
 
 fn best_iz_in_column(
@@ -92,15 +99,15 @@ pub fn plan(
     node_step_threshold_m: f32,
     node_wall_buffer_m: f32,
 ) -> Option<Vec<(f32, f32, f32)>> {
-    let Some(start_coord) =
-        snap_pose_to_cell(&plg.surface_lookup, start_pose, voxel_size, z_tolerance_m)
-    else {
+    let start_candidates =
+        snap_candidates(&plg.surface_lookup, start_pose, voxel_size, z_tolerance_m);
+    if start_candidates.is_empty() {
         tracing::warn!(
             ?start_pose,
             "plan failed: start does not snap to any surface cell"
         );
         return None;
-    };
+    }
     let Some(goal_coord) =
         snap_pose_to_cell(&plg.surface_lookup, goal_pose, voxel_size, z_tolerance_m)
     else {
@@ -108,10 +115,6 @@ pub fn plan(
             ?goal_pose,
             "plan failed: goal does not snap to any surface cell"
         );
-        return None;
-    };
-    let Some(start_cell) = plg.cells.id(start_coord) else {
-        tracing::warn!(?start_coord, "plan failed: start cell is not in the graph");
         return None;
     };
     let Some(goal_cell) = plg.cells.id(goal_coord) else {
@@ -138,20 +141,30 @@ pub fn plan(
     let (cost_to_go, pred_to_goal) = node_dijkstra(plg, goal_node);
 
     let radius = (node_spacing_m * CANDIDATE_RADIUS_FACTOR).max(voxel_size);
-    let Some((lead_in, node_seq)) = select_entry(
-        plg,
-        start_cell,
-        goal_node,
-        &cost_to_go,
-        &pred_to_goal,
-        &node_cells,
-        radius,
-    ) else {
+    let mut entry: Option<(Vec<CellId>, Vec<NodeId>)> = None;
+    for &candidate in start_candidates.iter().take(MAX_SNAP_ATTEMPTS) {
+        let Some(start_cell) = plg.cells.id(candidate) else {
+            continue;
+        };
+        entry = select_entry(
+            plg,
+            start_cell,
+            goal_node,
+            &cost_to_go,
+            &pred_to_goal,
+            &node_cells,
+            radius,
+        );
+        if entry.is_some() {
+            break;
+        }
+    }
+    let Some((lead_in, node_seq)) = entry else {
         tracing::warn!(
-            ?start_coord,
+            candidates = start_candidates.len().min(MAX_SNAP_ATTEMPTS),
             reachable_nodes = cost_to_go.len(),
             total_nodes = plg.nodes.len(),
-            "plan failed: no entry node connects the start to the goal component",
+            "plan failed: no start candidate connects to the goal component",
         );
         return None;
     };
@@ -572,10 +585,12 @@ mod tests {
 
     #[test]
     fn plan_returns_none_if_disconnected() {
+        // The gap must exceed SNAP_SEARCH_RADIUS_M so no start candidate
+        // can relocate onto the goal island.
         let mut cells: Vec<VoxelKey> = (0..5).map(|x| (x, 0, 0)).collect();
-        cells.extend((10..15).map(|x| (x, 0, 0)));
-        let plg = graph_with_nodes(&cells, &[(2, 0, 0), (12, 0, 0)]);
-        let result = plan_simple(&plg, (0.25, 0.0, 0.1), (1.25, 0.0, 0.1));
+        cells.extend((30..35).map(|x| (x, 0, 0)));
+        let plg = graph_with_nodes(&cells, &[(2, 0, 0), (32, 0, 0)]);
+        let result = plan_simple(&plg, (0.25, 0.0, 0.1), (3.25, 0.0, 0.1));
         assert!(result.is_none());
     }
 
