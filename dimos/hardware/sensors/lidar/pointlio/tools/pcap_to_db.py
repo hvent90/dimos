@@ -55,7 +55,7 @@ Usage (from the dimos6 venv)::
     PCAP=$(python -c "from dimos.utils.data import get_data; \
         print(get_data('ruwik2_part3') / 'ruwik2_part3.pcap')")
     python -m dimos.hardware.sensors.lidar.pointlio.tools.pcap_to_db --pcap "$PCAP"
-    # -> writes ruwik2_part3.pcap.db next to the sample with pointlio_odometry
+    # -> writes ruwik2_part3.db next to the sample with pointlio_odometry
     #    + pointlio_lidar.
 
     # Or append into an existing recording db for comparison:
