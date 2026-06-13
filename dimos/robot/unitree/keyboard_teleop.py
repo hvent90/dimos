@@ -15,6 +15,7 @@
 
 import os
 import threading
+import time
 from typing import Any
 
 import pygame
@@ -25,6 +26,7 @@ from dimos.core.module import Module
 from dimos.core.stream import Out
 from dimos.msgs.geometry_msgs.Twist import Twist
 from dimos.msgs.geometry_msgs.Vector3 import Vector3
+from dimos.robot.unitree.go2.connection_spec import GO2ConnectionSpec
 from dimos.utils.logging_config import setup_logger
 
 logger = setup_logger()
@@ -36,6 +38,10 @@ DEFAULT_LINEAR_SPEED: float = 0.5  # m/s
 DEFAULT_ANGULAR_SPEED: float = 0.8  # rad/s
 DEFAULT_BOOST_MULTIPLIER: float = 2.0
 DEFAULT_SLOW_MULTIPLIER: float = 0.5
+# Seconds to let the robot physically rise (StandUp) before BalanceStand —
+# matches GO2Connection's startup sequence. BalanceStand sent too early from a
+# lie down is ignored, leaving WASD dead even after the robot is standing.
+_WAKE_RISE_DELAY_SEC: float = 3.0
 
 _WINDOW_WIDTH = 500
 _WINDOW_HEIGHT = 400
@@ -50,6 +56,8 @@ class KeyboardTeleop(Module):
     """Pygame-based keyboard control. Outputs Twist on cmd_vel."""
 
     cmd_vel: Out[Twist]
+
+    _go2: GO2ConnectionSpec | None = None
 
     _stop_event: threading.Event
     _keys_held: set[int] | None = None
@@ -79,6 +87,10 @@ class KeyboardTeleop(Module):
         # (e.g. the SI / benchmark tools) instead of flooding zeros.
         self.publish_only_when_active = publish_only_when_active
         self._was_active = False
+        # Go2 ignores WIRELESS_CONTROLLER velocity while lying down; track it
+        # so the next movement key can wake the robot back into BalanceStand.
+        self._laid_down = False
+        self._waking = False
 
     @rpc
     def start(self) -> None:
@@ -104,6 +116,39 @@ class KeyboardTeleop(Module):
         self._thread.join(DEFAULT_THREAD_JOIN_TIMEOUT)
 
         super().stop()
+
+    def _lie_down(self) -> None:
+        if self._go2 is None:
+            logger.warning("lie down ignored: no Go2 connection wired into teleop")
+            return
+        try:
+            self._go2.liedown()
+            self._laid_down = True
+        except Exception as error:
+            logger.error(f"lie down command failed: {error}")
+
+    def _wake(self) -> None:
+        if self._go2 is None:
+            logger.warning("stand up ignored: no Go2 connection wired into teleop")
+            return
+        if self._waking:
+            return
+        self._waking = True
+        # Clear immediately so auto-wake-on-WASD doesn't retrigger mid-sequence.
+        self._laid_down = False
+        threading.Thread(target=self._wake_sequence, daemon=True).start()
+
+    def _wake_sequence(self) -> None:
+        # StandUp, let it rise, then BalanceStand to re-enable WIRELESS_CONTROLLER
+        # velocity. Runs off the pygame loop so the UI stays responsive.
+        try:
+            self._go2.standup()  # type: ignore[union-attr]
+            time.sleep(_WAKE_RISE_DELAY_SEC)
+            self._go2.balance_stand()  # type: ignore[union-attr]
+        except Exception as error:
+            logger.error(f"stand up command failed: {error}")
+        finally:
+            self._waking = False
 
     def _pygame_loop(self) -> None:
         if self._keys_held is None:
@@ -133,6 +178,10 @@ class KeyboardTeleop(Module):
                     elif event.key == pygame.K_ESCAPE:
                         # ESC quits
                         self._stop_event.set()
+                    elif event.key == pygame.K_z:
+                        self._lie_down()
+                    elif event.key == pygame.K_x:
+                        self._wake()
 
                 elif event.type == pygame.KEYUP:
                     self._keys_held.discard(event.key)
@@ -170,6 +219,10 @@ class KeyboardTeleop(Module):
             twist.linear.x *= speed_multiplier
             twist.linear.y *= speed_multiplier
             twist.angular.z *= speed_multiplier
+
+            commanding_motion = twist.linear.x != 0 or twist.linear.y != 0 or twist.angular.z != 0
+            if commanding_motion and self._laid_down:
+                self._wake()
 
             if self.publish_only_when_active:
                 active = twist.linear.x != 0 or twist.linear.y != 0 or twist.angular.z != 0
@@ -232,6 +285,7 @@ class KeyboardTeleop(Module):
         help_texts = [
             "WS: Move | AD: Turn | QE: Strafe",
             "Shift: Boost | Ctrl: Slow",
+            "Z: Lie Down | X: Stand Up",
             "Space: E-Stop | ESC: Quit",
         ]
         for text in help_texts:
