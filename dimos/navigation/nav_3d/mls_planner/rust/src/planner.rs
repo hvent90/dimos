@@ -171,7 +171,8 @@ pub fn plan(
     let smooth_tol_cells = ((config.node_step_threshold_m / voxel_size).round() as i32).max(1);
 
     let cells = assemble_cells(plg, &node_seq, &lead_in, &goal_segment);
-    let cells = string_pull(plg, &cells, smooth_tol_cells, config.node_wall_buffer_m);
+    let pull_buffer = config.node_wall_buffer_m.max(config.robot_radius_m);
+    let cells = string_pull(plg, &cells, smooth_tol_cells, pull_buffer);
     Some(cells_to_waypoints(
         plg, &cells, start_pose, goal_pose, voxel_size,
     ))
@@ -387,8 +388,7 @@ fn cells_to_waypoints(
 }
 
 /// Shortcut runs of cells with straight on-surface segments, keeping the
-/// farthest cell in line of sight from each anchor. Shortcuts never pass
-/// still account for the wall buffer, so even the new path should be safe.
+/// farthest cell in line of sight from each anchor.
 fn string_pull(plg: &PlannerGraph, cells: &[CellId], tol_cells: i32, buffer_m: f32) -> Vec<CellId> {
     if cells.len() <= 2 {
         return cells.to_vec();

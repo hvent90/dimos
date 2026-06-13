@@ -93,9 +93,8 @@ fn place_from_candidates(
     }
 }
 
-/// Regional counterpart to place_nodes: recompute the wall-distance field and
-/// node placement inside the window, keeping cached nodes outside it as NMS
-/// seeds so spacing holds across the seam.
+/// Regional counterpart to place_nodes: replace nodes inside the window,
+/// keeping cached outside nodes as NMS seeds.
 #[allow(clippy::too_many_arguments)]
 pub fn place_nodes_region(
     cells: &mut SurfaceCells,

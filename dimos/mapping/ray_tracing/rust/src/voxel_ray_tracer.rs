@@ -42,8 +42,7 @@ pub struct Config {
     /// Publish the global map every Nth frame. Zero disables it.
     #[validate(range(min = 0))]
     pub global_emit_every: u32,
-    /// Size the local region to this percentile of batch point distances,
-    /// so a stray far hit cannot inflate the region the planner recomputes.
+    /// Size the local region to this percentile of batch point distances.
     #[validate(range(min = 0.0, max = 100.0))]
     pub region_percentile: f32,
 }
@@ -356,8 +355,8 @@ impl LocalBounds {
 
 /// The local region a batch of frames observed, as (cx, cy, radius, z_min,
 /// z_max). A cylinder centered on the mean origin, sized to a percentile of
-/// the point distances so a stray far hit cannot inflate it. Points must be
-/// finite. An empty batch yields a zero-radius region at the mean origin.
+/// the point distances. Points must be finite. An empty batch yields a
+/// zero-radius region at the mean origin.
 pub fn batch_local_bounds(
     points: &[(f32, f32, f32)],
     origins: &[(f32, f32, f32)],

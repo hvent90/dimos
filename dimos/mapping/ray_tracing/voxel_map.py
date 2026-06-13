@@ -24,4 +24,7 @@ except ImportError as e:
         "uv run maturin develop --uv -m dimos/mapping/ray_tracing/rust/Cargo.toml"
     ) from e
 
-__all__ = ["VoxelRayMapper", "local_bounds"]
+# Matches the VoxelRayMapper shadow_depth default in rust/src/python.rs.
+DEFAULT_SHADOW_DEPTH = 0.2
+
+__all__ = ["DEFAULT_SHADOW_DEPTH", "VoxelRayMapper", "local_bounds"]

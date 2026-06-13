@@ -15,6 +15,8 @@
 import numpy as np
 from numpy.typing import NDArray
 
+DEFAULT_SHADOW_DEPTH: float
+
 class VoxelRayMapper:
     """Voxel map with raycast clearing of dynamic objects."""
 
@@ -83,4 +85,4 @@ def local_bounds(
     """
     ...
 
-__all__ = ["VoxelRayMapper", "local_bounds"]
+__all__ = ["DEFAULT_SHADOW_DEPTH", "VoxelRayMapper", "local_bounds"]

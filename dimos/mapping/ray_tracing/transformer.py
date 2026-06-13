@@ -20,7 +20,11 @@ import numpy as np
 import open3d as o3d  # type: ignore[import-untyped]
 import open3d.core as o3c  # type: ignore[import-untyped]
 
-from dimos.mapping.ray_tracing.voxel_map import VoxelRayMapper, local_bounds
+from dimos.mapping.ray_tracing.voxel_map import (
+    DEFAULT_SHADOW_DEPTH,
+    VoxelRayMapper,
+    local_bounds,
+)
 from dimos.memory2.transform import Transformer
 from dimos.msgs.sensor_msgs.PointCloud2 import PointCloud2
 from dimos.utils.logging_config import setup_logger
@@ -75,7 +79,7 @@ class RayTraceMap(Transformer[PointCloud2, PointCloud2]):
 
         points = np.concatenate(batch_points, axis=0)
         origins = np.asarray(batch_origins, dtype=np.float32)
-        margin = self._mapper_kwargs.get("shadow_depth", 0.2) + self.voxel_size
+        margin = self._mapper_kwargs.get("shadow_depth", DEFAULT_SHADOW_DEPTH) + self.voxel_size
         return local_bounds(points, origins, self.region_percentile, margin)
 
     def _make_obs(

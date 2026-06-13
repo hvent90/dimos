@@ -135,8 +135,7 @@ impl Planner {
             return;
         };
 
-        // A changed voxel column shifts surfaces only within pad of it, so the
-        // write-back box is the changed-column bbox grown by pad.
+        // Surfaces can shift only within pad of a changed column.
         let write = (bx0 - pad, bx1 + pad, by0 - pad, by1 + pad);
         let new_cells = extract_surfaces_region(
             &self.by_col,

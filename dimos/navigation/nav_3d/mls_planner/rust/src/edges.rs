@@ -96,9 +96,8 @@ fn rebuild_node_adj(edges: &[NodeEdge], out_adj: &mut AHashMap<NodeId, Vec<NodeE
     }
 }
 
-/// Regional counterpart to build_node_edges: recompute the Voronoi only inside
-/// the window, keep cached edges whose boundary is outside it, and rescan the
-/// window for fresh crossings.
+/// Regional counterpart to build_node_edges: rescan the window for crossings,
+/// keeping cached edges outside it.
 pub fn build_node_edges_region(
     cells: &SurfaceCells,
     nodes: &[NodeData],

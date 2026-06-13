@@ -32,7 +32,7 @@ impl DijkstraState {
         self.heap.clear();
     }
 
-    /// Grow the vecs to hold `n` slots without disturbing existing labels.
+    /// Grow the vecs to hold n slots without disturbing existing labels.
     /// New slots default to unreached.
     fn ensure_capacity(&mut self, n: usize) {
         if self.dist.len() < n {
@@ -101,9 +101,9 @@ pub fn dijkstra(
     }
 }
 
-/// Bounded multi-source dijkstra that re-labels only cells in `window`, seeding
-/// the wavefront from in-window sources and the cached frontier just outside it.
-/// Correct while the window margin exceeds the reach of the change.
+/// Bounded multi-source dijkstra that re-labels only cells in the window,
+/// seeding the wavefront from in-window sources and the cached frontier just
+/// outside it.
 pub fn dijkstra_region(
     cells: &SurfaceCells,
     sources: &[CellId],
@@ -201,7 +201,7 @@ impl PartialOrd for Scored {
 impl Ord for Scored {
     fn cmp(&self, other: &Self) -> Ordering {
         // Min-distance pops first. Coordinate tie-break keeps the result
-        // independent of CellId assignment, so incremental matches full rebuild.
+        // independent of CellId assignment.
         other.0.total_cmp(&self.0).then(other.1.cmp(&self.1))
     }
 }

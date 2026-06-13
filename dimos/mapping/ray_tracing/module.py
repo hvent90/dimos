@@ -53,17 +53,16 @@ class RayTracingVoxelMapConfig(NativeModuleConfig):
     emit_every: int = 1
     # Publish the global map every Nth frame. Zero disables it.
     global_emit_every: int = 1
-    # Size the local region to this percentile of batch point distances,
-    # so a stray far hit cannot inflate the region the planner recomputes.
+    # Size the local region to this percentile of batch point distances.
     region_percentile: float = 95.0
 
 
 class RayTracingVoxelMap(NativeModule, mapping.GlobalPointcloud):
     """Rust voxel-map module with raycast clearing of dynamic objects.
 
-    region_bounds describes the cylinder local_map covers, packed into a
-    PoseStamped. Position holds the center. Orientation holds radius, z_min,
-    z_max, and zero. It shares the local_map stamp.
+    region_bounds packs the cylinder local_map covers into a PoseStamped.
+    Position is the center, orientation is (radius, z_min, z_max, 0), and
+    the stamp matches local_map.
     """
 
     config: RayTracingVoxelMapConfig

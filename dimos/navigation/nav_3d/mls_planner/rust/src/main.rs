@@ -18,8 +18,7 @@ struct MlsPlanner {
     #[input(decode = PointCloud2::decode, handler = on_global_map)]
     global_map: Input<PointCloud2>,
 
-    // Incremental path: a local map slice paired by stamp with the region
-    // bounds it covers, published by the ray tracer alongside local_map.
+    // A local map slice paired by stamp with region_bounds.
     #[input(decode = PointCloud2::decode, handler = on_local_map)]
     local_map: Input<PointCloud2>,
 
@@ -97,14 +96,11 @@ impl MlsPlanner {
     /// Run the incremental update once a local map and its bounds with
     /// matching stamps are both in hand.
     async fn try_region_update(&mut self) {
-        let (Some(bounds_msg), Some(cloud)) = (&self.pending_bounds, &self.pending_local) else {
+        let Some((bounds_msg, cloud)) =
+            take_matched_pair(&mut self.pending_bounds, &mut self.pending_local)
+        else {
             return;
         };
-        if !same_stamp(&bounds_msg.header.stamp, &cloud.header.stamp) {
-            return;
-        }
-        let bounds_msg = self.pending_bounds.take().expect("checked above");
-        let cloud = self.pending_local.take().expect("checked above");
 
         let points = match extract_xyz(&cloud) {
             Ok(p) => p,
@@ -191,6 +187,21 @@ impl MlsPlanner {
 
 fn same_stamp(a: &Time, b: &Time) -> bool {
     a.sec == b.sec && a.nsec == b.nsec
+}
+
+/// Take the buffered pair once the bounds and local map stamps match,
+/// leaving both buffered otherwise.
+fn take_matched_pair(
+    bounds: &mut Option<PoseStamped>,
+    local: &mut Option<PointCloud2>,
+) -> Option<(PoseStamped, PointCloud2)> {
+    let (Some(b), Some(c)) = (bounds.as_ref(), local.as_ref()) else {
+        return None;
+    };
+    if !same_stamp(&b.header.stamp, &c.header.stamp) {
+        return None;
+    }
+    Some((bounds.take()?, local.take()?))
 }
 
 async fn publish_cloud(
@@ -396,4 +407,56 @@ async fn main() {
         .await
         .expect("failed to create LCM transport");
     run::<MlsPlanner, _>(transport).await;
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    fn bounds_at(sec: i32) -> PoseStamped {
+        let mut msg = PoseStamped::default();
+        msg.header.stamp.sec = sec;
+        msg
+    }
+
+    fn cloud_at(sec: i32) -> PointCloud2 {
+        let mut msg = PointCloud2::default();
+        msg.header.stamp.sec = sec;
+        msg
+    }
+
+    #[test]
+    fn missing_either_side_pairs_nothing() {
+        let mut bounds = Some(bounds_at(1));
+        let mut local = None;
+        assert!(take_matched_pair(&mut bounds, &mut local).is_none());
+        assert!(bounds.is_some());
+    }
+
+    #[test]
+    fn mismatched_stamps_stay_buffered() {
+        let mut bounds = Some(bounds_at(1));
+        let mut local = Some(cloud_at(2));
+        assert!(take_matched_pair(&mut bounds, &mut local).is_none());
+        assert!(bounds.is_some());
+        assert!(local.is_some());
+    }
+
+    #[test]
+    fn matched_stamps_take_both() {
+        let mut bounds = Some(bounds_at(1));
+        let mut local = Some(cloud_at(1));
+        assert!(take_matched_pair(&mut bounds, &mut local).is_some());
+        assert!(bounds.is_none());
+        assert!(local.is_none());
+    }
+
+    #[test]
+    fn fresh_bounds_pairs_with_buffered_cloud() {
+        let mut bounds = Some(bounds_at(1));
+        let mut local = Some(cloud_at(2));
+        assert!(take_matched_pair(&mut bounds, &mut local).is_none());
+        bounds = Some(bounds_at(2));
+        assert!(take_matched_pair(&mut bounds, &mut local).is_some());
+    }
 }
