@@ -79,7 +79,7 @@ _POLL_SEC = 1.0
 _STAGNANT_SEC = 6.0
 
 
-class RecConfig(ModuleConfig):
+class _RecConfig(ModuleConfig):
     """Configures the recorder with the target db and timing conversion."""
 
     db_path: str = ""
@@ -89,10 +89,10 @@ class RecConfig(ModuleConfig):
     time_offset: float = float("nan")
 
 
-class Rec(Module):
+class _Rec(Module):
     """Append FAST-LIO odometry + lidar into an existing SQLite db with ts conversion."""
 
-    config: RecConfig
+    config: _RecConfig
     fastlio_odometry: In[Odometry]
     fastlio_lidar: In[PointCloud2]
     _offset: float | None = None
@@ -260,7 +260,7 @@ def _run(args: argparse.Namespace) -> int:
     )
     blueprint = autoconnect(
         fastlio,
-        Rec.blueprint(
+        _Rec.blueprint(
             db_path=str(db_path),
             ref_start_ts=ref_start_ts,
             time_offset=time_offset,
