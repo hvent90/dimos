@@ -137,6 +137,23 @@ class FastLio2Config(NativeModuleConfig):
     # Resolved in __post_init__, passed as --config_path to the binary
     config_path: str | None = None
 
+    # Offline replay. When set, the C++ binary skips SDK init and feeds
+    # packets from this pcap into the same callbacks the SDK would, with
+    # publish timestamps driven by the pcap clock.
+    replay_pcap: Path | None = None
+    # Replay-only: drop pcap records with pcap_ts < this. Used to mimic the
+    # SDK warmup window from the paired live run.
+    replay_skip_until_ns: int | None = None
+    # Live-only: file path where the C++ binary writes the wall_ns of the
+    # first SDK callback, so a later replay can align its first packet.
+    first_packet_marker: Path | None = None
+    # Drive scan boundaries + publish ts off the sensor packet timestamp in
+    # both live and replay so they produce bit-for-bit identical outputs.
+    # Side effect: published header.stamp is sensor-boot seconds, not unix
+    # wall time. Off by default; only the deterministic record/replay path
+    # flips it on (real-time replay leaves it False).
+    deterministic_clock: bool = False
+
     # init_pose is computed from mount; config is resolved to config_path
     init_pose: list[float] = [0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 1.0]
     cli_exclude: frozenset[str] = frozenset({"config", "mount"})
@@ -169,7 +186,8 @@ class FastLio2(NativeModule, perception.Lidar, perception.Odometry, mapping.Glob
 
     @rpc
     def start(self) -> None:
-        self._validate_network()
+        if self.config.replay_pcap is None:
+            self._validate_network()
         super().start()
         self.register_disposable(
             Disposable(self.odometry.transport.subscribe(self._on_odom_for_tf, self.odometry))
