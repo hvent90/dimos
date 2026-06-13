@@ -186,7 +186,6 @@ def _run(args: argparse.Namespace) -> int:
 
     fastlio_kwargs: dict[str, object] = dict(
         frame_id="world",
-        map_freq=-1,
         odom_freq=args.odom_freq,
         replay_pcap=pcap_path,
         deterministic_clock=False,

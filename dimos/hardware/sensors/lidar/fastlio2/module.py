@@ -62,7 +62,7 @@ from dimos.msgs.geometry_msgs.Vector3 import Vector3
 from dimos.msgs.nav_msgs.Odometry import Odometry
 from dimos.msgs.sensor_msgs.PointCloud2 import PointCloud2
 from dimos.navigation.nav_stack.frames import FRAME_BODY, FRAME_ODOM
-from dimos.spec import mapping, perception
+from dimos.spec import perception
 from dimos.utils.generic import get_local_ips
 from dimos.utils.logging_config import setup_logger
 
@@ -101,11 +101,6 @@ class FastLio2Config(NativeModuleConfig):
     voxel_size: float = 0.1
     sor_mean_k: int = 50
     sor_stddev: float = 1.0
-
-    # Global voxel map (disabled when map_freq <= 0)
-    map_freq: float = 0.0
-    map_voxel_size: float = 0.1
-    map_max_range: float = 100.0
 
     # FAST-LIO YAML config (relative to config/ dir, or absolute path)
     # C++ binary reads YAML directly via yaml-cpp
@@ -170,12 +165,11 @@ class FastLio2Config(NativeModuleConfig):
         ]
 
 
-class FastLio2(NativeModule, perception.Lidar, perception.Odometry, mapping.GlobalPointcloud):
+class FastLio2(NativeModule, perception.Lidar, perception.Odometry):
     config: FastLio2Config
 
     lidar: Out[PointCloud2]
     odometry: Out[Odometry]
-    global_map: Out[PointCloud2]
 
     @rpc
     def start(self) -> None:
