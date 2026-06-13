@@ -16,6 +16,7 @@ const STUN_ONLY = [{ urls: 'stun:stun.cloudflare.com:3478' }];
 // in 'checking'); cap them so the operator gets an error instead.
 const CONNECT_TIMEOUT_MS = 20000;
 const CHANNEL_OPEN_TIMEOUT_MS = 10000;
+const GATHER_TIMEOUT_MS = 10000;
 
 function timeout(ms, label) {
     return new Promise((_, reject) =>
@@ -32,6 +33,11 @@ export async function setupWebRTC(sessionId) {
         const turn = await api('GET', '/sessions/turn-credentials');
         if (turn.ice_servers?.length) iceServers = turn.ice_servers;
     } catch (err) {
+        // api() already logged out + navigated to auth — don't continue setup.
+        if (err.message === 'Unauthorized' ||
+            err.message === 'Session expired — log in again') {
+            throw err;
+        }
         console.warn('[turn] credential fetch failed — STUN only:', err);
     }
     state.pc = new RTCPeerConnection({ iceServers });
@@ -64,13 +70,17 @@ export async function setupWebRTC(sessionId) {
     const offer = await pc.createOffer();
     await pc.setLocalDescription(offer);
 
-    // Non-trickle ICE.
-    await new Promise(resolve => {
-        if (pc.iceGatheringState === 'complete') return resolve();
-        pc.onicegatheringstatechange = () => {
-            if (pc.iceGatheringState === 'complete') resolve();
-        };
-    });
+    // Non-trickle ICE; cap the wait so a stalled gather can't hang forever —
+    // proceed with whatever candidates we have.
+    await Promise.race([
+        new Promise(resolve => {
+            if (pc.iceGatheringState === 'complete') return resolve();
+            pc.onicegatheringstatechange = () => {
+                if (pc.iceGatheringState === 'complete') resolve();
+            };
+        }),
+        new Promise(resolve => setTimeout(resolve, GATHER_TIMEOUT_MS)),
+    ]);
 
     const data = await api('POST', `/sessions/${sessionId}/join`, {
         role: 'operator',

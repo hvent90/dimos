@@ -202,7 +202,9 @@ async def create_session(
         session_id=session.id,
         cf_session_id=cf_result["cf_session_id"],
         sdp_answer=cf_result["sdp_answer"],
-        ice_servers=await _mint_ice_servers(),
+        # Static STUN: clients fetch minted TURN from /turn-credentials and
+        # never read this field. Minting here would be a wasted CF round-trip.
+        ice_servers=ICE_SERVERS,
     )
 
 
@@ -324,7 +326,7 @@ async def join_session(
         cf_session_id=operator_cf_id,
         sdp_answer=cf_result["sdp_answer"],
         robot_cf_session_id=session.cf_session_id,
-        ice_servers=await _mint_ice_servers(),
+        ice_servers=ICE_SERVERS,  # see create_session
         role=body.role,
     )
 
