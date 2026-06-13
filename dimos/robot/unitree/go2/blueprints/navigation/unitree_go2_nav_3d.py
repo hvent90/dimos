@@ -61,7 +61,7 @@ _nav_rerun_config = {
     "max_hz": {
         **rerun_config["max_hz"],
         "world/global_map": 1.0,
-        "world/local_map": 1.0,
+        "world/local_map": 0,
     },
     "memory_limit": "1GB",
     # base_link tf comes from the go2 internal odometry, which is not the map
@@ -102,7 +102,7 @@ unitree_go2_nav_3d = autoconnect(
         robot_height=go2_lidar_height,
     ).remappings([(MLSPlannerNative, "global_map", "global_map_unused")]),
     GoalRelay.blueprint(),
-    BasicPathFollower.blueprint(lookahead_m=1.2, heading_gain=0.8, max_angular=0.6),
+    BasicPathFollower.blueprint(lookahead_m=0.5, heading_gain=0.8, max_angular=0.6),
     MovementManager.blueprint(),
 ).global_config(n_workers=10, robot_model="unitree_go2")
 

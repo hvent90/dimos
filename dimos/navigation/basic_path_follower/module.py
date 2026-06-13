@@ -151,10 +151,39 @@ class BasicPathFollower(Module):
             stop_event.wait(max(0.0, period - elapsed))
 
     def _lookahead_point(self, waypoints: np.ndarray, position: np.ndarray) -> np.ndarray:
-        closest = int(np.argmin(np.linalg.norm(waypoints - position, axis=1)))
-        travelled = 0.0
-        for i in range(closest + 1, len(waypoints)):
-            travelled += float(np.linalg.norm(waypoints[i] - waypoints[i - 1]))
-            if travelled >= self.config.lookahead_m:
-                return np.asarray(waypoints[i])
+        if len(waypoints) == 1:
+            return np.asarray(waypoints[0])
+
+        # Project onto the path, then march lookahead_m along it and interpolate.
+        # Returning an actual waypoint would let the target jump to a distant
+        # vertex and cut the corner.
+        seg_idx, start = self._project_onto_path(waypoints, position)
+        remaining = self.config.lookahead_m
+        for i in range(seg_idx, len(waypoints) - 1):
+            end = waypoints[i + 1]
+            seg = end - start
+            seg_len = float(np.linalg.norm(seg))
+            if seg_len >= remaining:
+                return np.asarray(start + (remaining / seg_len) * seg)
+            remaining -= seg_len
+            start = end
         return np.asarray(waypoints[-1])
+
+    def _project_onto_path(
+        self, waypoints: np.ndarray, position: np.ndarray
+    ) -> tuple[int, np.ndarray]:
+        best_idx = 0
+        best_point = np.asarray(waypoints[0])
+        best_dist = math.inf
+        for i in range(len(waypoints) - 1):
+            a = waypoints[i]
+            ab = waypoints[i + 1] - a
+            denom = float(np.dot(ab, ab))
+            t = 0.0 if denom == 0 else float(np.clip(np.dot(position - a, ab) / denom, 0.0, 1.0))
+            proj = a + t * ab
+            dist = float(np.linalg.norm(position - proj))
+            if dist < best_dist:
+                best_dist = dist
+                best_idx = i
+                best_point = proj
+        return best_idx, best_point
