@@ -407,7 +407,6 @@ def _sim_support_blueprints() -> tuple[Blueprint, ...]:
 
     from dimos.mapping.costmapper import CostMapper
     from dimos.mapping.ray_tracing.module import RayTracingVoxelMap
-    from dimos.mapping.static_costmap import StaticCostmapModule
     from dimos.mapping.voxels import VoxelGridMapper
     from dimos.navigation.odometry_bridge import PoseStampedToOdometry
     from dimos.navigation.replanning_a_star.module import ReplanningAStarPlanner
@@ -492,7 +491,7 @@ def _sim_support_blueprints() -> tuple[Blueprint, ...]:
         )
 
     if lidar_disabled or scene_package is None:
-        mapping_stack: tuple[Blueprint, ...] = (StaticCostmapModule.blueprint(),)
+        mapping_stack: tuple[Blueprint, ...] = ()
     elif map_backend in {"voxel", "python"}:
         mapping_stack = (
             VoxelGridMapper.blueprint(voxel_size=global_map_voxel_size).transports(

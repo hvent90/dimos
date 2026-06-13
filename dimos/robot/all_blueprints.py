@@ -238,7 +238,6 @@ all_modules = {
     "spatial-memory": "dimos.perception.spatial_perception.SpatialMemory",
     "speak-skill": "dimos.agents.skills.speak_skill.SpeakSkill",
     "splat-camera-module": "dimos.visualization.viser.splat_camera.SplatCameraModule",
-    "static-costmap-module": "dimos.mapping.static_costmap.StaticCostmapModule",
     "tare-planner": "dimos.navigation.nav_stack.modules.tare_planner.tare_planner.TarePlanner",
     "tcp-jpeg-camera-module": "dimos.hardware.sensors.camera.tcp_jpeg.TcpJpegCameraModule",
     "teleop-recorder": "dimos.teleop.utils.recorder.TeleopRecorder",
