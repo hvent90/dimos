@@ -141,7 +141,10 @@ class _Rec(Module):
         return max(raw_ts + self._offset, last_ts + _EPS)
 
     async def handle_pointlio_odometry(self, v: Odometry) -> None:
-        raw_ts = getattr(v, "ts", None) or time.time()
+        # `is not None`, not `or`: a real sensor ts of 0.0 must not fall back to
+        # wall time (would misclassify the stream's clock in _resolve_offset).
+        raw_ts_raw = getattr(v, "ts", None)
+        raw_ts = raw_ts_raw if raw_ts_raw is not None else time.time()
         ts = self._aligned_ts(raw_ts, self._last_odom_ts)
         self._last_odom_ts = ts
         pose = getattr(v, "pose", None)
@@ -150,7 +153,8 @@ class _Rec(Module):
         self._odom_count += 1
 
     async def handle_pointlio_lidar(self, v: PointCloud2) -> None:
-        raw_ts = getattr(v, "ts", None) or time.time()
+        raw_ts_raw = getattr(v, "ts", None)
+        raw_ts = raw_ts_raw if raw_ts_raw is not None else time.time()
         ts = self._aligned_ts(raw_ts, self._last_lidar_ts)
         self._last_lidar_ts = ts
         self._ls.append(v, ts=ts)

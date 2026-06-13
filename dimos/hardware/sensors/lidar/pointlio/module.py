@@ -12,14 +12,14 @@
 # See the License for the specific language governing permissions and
 # limitations under the License.
 
-"""Python NativeModule wrapper for the FAST-LIO2 + Livox Mid-360 binary.
+"""Python NativeModule wrapper for the Point-LIO + Livox Mid-360 binary.
 
-Binds Livox SDK2 directly into FAST-LIO-NON-ROS for real-time LiDAR SLAM.
+Binds Livox SDK2 directly into Point-LIO for real-time LiDAR SLAM.
 Outputs registered (world-frame) point clouds and odometry with covariance.
 
 Usage::
 
-    from dimos.hardware.sensors.lidar.fastlio2.module import PointLio
+    from dimos.hardware.sensors.lidar.pointlio.module import PointLio
     from dimos.core.coordination.blueprints import autoconnect
 
     from dimos.core.coordination.module_coordinator import ModuleCoordinator
