@@ -54,7 +54,8 @@ class BasicPathFollower(Module):
 
     Consumes world-frame paths and odometry. Publishes nav_cmd_vel until the
     last waypoint is within goal tolerance, then publishes goal_reached.
-    An empty path or a stop_movement message cancels the current path.
+    A stop_movement message cancels the current path. Empty paths are ignored
+    so continuous replanning does not stutter the follower.
     """
 
     config: BasicPathFollowerConfig
@@ -97,9 +98,14 @@ class BasicPathFollower(Module):
             self._current_odom = msg.to_pose_stamped()
 
     def _on_path(self, path: Path) -> None:
+        # The planner clears its plan with an empty path on every start-pose
+        # change and on a failed replan. Under continuous replanning that is not
+        # a stop, so keep the last path. Stops arrive via stop_movement.
+        if len(path.poses) == 0:
+            return
         waypoints = np.array([[p.position.x, p.position.y] for p in path.poses])
         with self._lock:
-            self._waypoints = waypoints if len(waypoints) else None
+            self._waypoints = waypoints
 
     def _on_stop(self, msg: Bool) -> None:
         if msg.data:
