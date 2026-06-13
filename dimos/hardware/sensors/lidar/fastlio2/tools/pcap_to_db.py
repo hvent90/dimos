@@ -12,15 +12,19 @@
 # See the License for the specific language governing permissions and
 # limitations under the License.
 
-"""Run FAST-LIO over a .pcap and append its outputs into an existing .db.
+"""Run FAST-LIO over a .pcap and write its outputs into a .db.
 
-Given a Livox Mid-360 pcap capture and a memory2 SQLite database, this streams
-the pcap through the FastLio2 native module and writes two streams into the
-database, both time-aligned onto the db's existing clock:
+Given a Livox Mid-360 pcap capture, this streams the pcap through the FastLio2
+native module and writes two streams into a memory2 SQLite database:
 
 * ``fastlio_odometry`` -- the IESKF pose at the native odom rate (~30 Hz).
 * ``fastlio_lidar`` -- the registered (deskewed, odom-frame) point cloud at the
   native pointcloud rate (~10 Hz).
+
+The ``--db`` is optional. With no existing db the tool builds one **from
+scratch** (omit ``--db`` and it defaults to ``<pcap>.db`` next to the pcap).
+With an existing db the two streams are appended and time-aligned onto the db's
+clock, so FAST-LIO output can be compared against whatever it already holds.
 
 This mirrors the Point-LIO ``pcap_to_db.py`` tool, with one deliberate
 difference: FAST-LIO is *not* bit-deterministic (OpenMP reduction order), so the
@@ -50,6 +54,13 @@ Pass ``--time-offset`` to override the auto choice.
 Usage (from the dimos5 venv)::
 
     source .venv/bin/activate
+
+    # Build a fresh db from scratch (no existing db needed); defaults to
+    # <pcap>.db next to the pcap.
+    python -m dimos.hardware.sensors.lidar.fastlio2.tools.pcap_to_db \
+        --pcap /path/to/capture.pcap
+
+    # Or append into an existing recording db for comparison.
     python -m dimos.hardware.sensors.lidar.fastlio2.tools.pcap_to_db \
         --pcap /path/to/capture.pcap --db /path/to/memory.db
 """
@@ -195,13 +206,18 @@ def _table_stats(db_path: Path, table: str) -> tuple[int, float, float]:
 
 def _run(args: argparse.Namespace) -> int:
     pcap_path = Path(args.pcap).expanduser().resolve()
-    db_path = Path(args.db).expanduser().resolve()
     if not pcap_path.exists():
         print(f"[pcap_to_db] missing pcap: {pcap_path}", file=sys.stderr)
         return 2
     if args.max_sensor_sec < 0:
         print("[pcap_to_db] --max-sensor-sec must be >= 0", file=sys.stderr)
         return 2
+    # --db is optional: with no existing db, build one from scratch. When
+    # omitted the output defaults to <pcap>.db next to the pcap, so a fresh
+    # db can be generated with just --pcap.
+    db_path = Path(args.db).expanduser().resolve() if args.db else pcap_path.with_suffix(".db")
+    db_existed = db_path.exists()
+    db_path.parent.mkdir(parents=True, exist_ok=True)
 
     from dimos.core.coordination.blueprints import autoconnect
     from dimos.core.coordination.module_coordinator import ModuleCoordinator
@@ -237,6 +253,7 @@ def _run(args: argparse.Namespace) -> int:
         offset_desc = f"auto: db wall-clock (R0={ref_start_ts:.2f})"
     print(
         f"[pcap_to_db] pcap={pcap_path.name} db={db_path.name} "
+        f"({'append' if db_existed else 'new'}) "
         f"odom_freq={args.odom_freq}Hz offset={offset_desc}",
         flush=True,
     )
@@ -312,7 +329,13 @@ def _run(args: argparse.Namespace) -> int:
 def main(argv: list[str]) -> int:
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument("--pcap", required=True, help="Livox Mid-360 pcap capture")
-    parser.add_argument("--db", required=True, help="target memory2 SQLite db (appended to)")
+    parser.add_argument(
+        "--db",
+        default=None,
+        help="target memory2 SQLite db. If it exists, fastlio streams are appended/aligned "
+        "onto its clock; if it doesn't, a fresh db is built from scratch. "
+        "Omit to default to <pcap>.db next to the pcap.",
+    )
     parser.add_argument(
         "--odom-freq",
         type=float,
