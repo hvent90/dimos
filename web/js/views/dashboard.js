@@ -48,7 +48,6 @@ export async function renderDashboard(c) {
                     <code id="new-key-value" class="key-reveal flex-1 px-3 py-2 bg-bg-950 rounded text-green-300 text-sm"></code>
                     <button id="copyKeyBtn" class="px-3 py-2 bg-[#2a2a2a] hover:bg-[#3a3a3a] rounded text-sm text-white transition-colors">Copy</button>
                 </div>
-                <p class="text-gray-500 text-xs mt-2">Use it as <code>broker_api_key</code> when starting <code>HostedTeleopModule</code>.</p>
             </div>
 
             <div id="keys-list" class="space-y-2">
