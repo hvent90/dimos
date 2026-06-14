@@ -194,6 +194,7 @@ def r1pro_bimanual(
     *,
     adapter_type: str = "mock",
     address: str | None = None,
+    add_gripper: bool = False,
     **overrides: Any,
 ) -> RobotConfig:
     """R1 Pro dual-arm RobotConfig for bimanual planning.
@@ -229,6 +230,16 @@ def r1pro_bimanual(
         "max_velocity": 0.5,
         "max_acceleration": 1.0,
     }
+    if add_gripper:
+        # Single (left) gripper for now: the MuJoCo sim drives the first gripper
+        # actuator (left, at index dof). The right gripper needs the per-side
+        # SHM/adapter extension (follow-on). Finger range is [0 closed, 0.05 open].
+        defaults["gripper"] = GripperConfig(
+            type="r1pro",
+            joints=["left_gripper"],
+            open_position=0.05,
+            close_position=0.0,
+        )
     defaults.update(overrides)
     return RobotConfig(**defaults)
 
