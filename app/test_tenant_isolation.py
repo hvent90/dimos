@@ -77,7 +77,7 @@ with TestClient(app) as c:
                 headers={"Authorization": "Bearer alice"})
     check("alice cannot join bob's session (404)", rj.status_code == 404)
 
-    check("admin sees all robots", names("admin@x:admin") == {"r1", "r2", "r3"})
+    check("no admin bypass — third party sees nothing", names("carol") == set())
 
     create("alice", "r1")  # reconnect same robot_id
     check("reconnect dedups (no duplicate r1)", sorted(names("alice")) == ["r1", "r2"])

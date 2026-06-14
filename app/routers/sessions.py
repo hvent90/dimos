@@ -258,8 +258,8 @@ async def delete_session(
 
 
 def _owns(session: TeleopSession, user: dict) -> bool:
-    """Operator may touch only their own robots (admin sees all)."""
-    return user.get("role") == "admin" or session.owner_id == user["sub"]
+    """Operator may touch only their own robots."""
+    return session.owner_id == user["sub"]
 
 
 @router.get("", response_model=list[SessionInfo])
@@ -268,9 +268,10 @@ async def list_sessions(
     db: AsyncSession = Depends(get_db),
 ):
     """List available robots (active sessions) the caller owns."""
-    q = select(TeleopSession).where(TeleopSession.state.in_(["idle", "active"]))
-    if user.get("role") != "admin":
-        q = q.where(TeleopSession.owner_id == user["sub"])
+    q = select(TeleopSession).where(
+        TeleopSession.state.in_(["idle", "active"]),
+        TeleopSession.owner_id == user["sub"],
+    )
     result = await db.execute(q)
     sessions = result.scalars().all()
     return [
