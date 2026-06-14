@@ -286,7 +286,7 @@ fn build_local_cloud(
 
     // live voxels that aren't already healthy
     for &(kx, ky, kz) in live {
-        if matches!(map.voxels.get(&(kx, ky, kz)), Some(h) if *h > 0) {
+        if matches!(map.voxels.get(&(kx, ky, kz)), Some(c) if c.health > 0) {
             continue;
         }
         let x = kx as f32 * voxel_size + half;
@@ -336,6 +336,7 @@ async fn main() {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use dimos_voxel_ray_tracing::voxel_ray_tracer::Voxel;
 
     fn cloud_points(c: &PointCloud2) -> AHashSet<(u32, u32, u32)> {
         let mut out = AHashSet::new();
@@ -370,7 +371,7 @@ mod tests {
     #[test]
     fn local_map_includes_voxel_inside_cylinder() {
         let mut map = VoxelMap::default();
-        map.voxels.insert((0, 0, 0), 1);
+        map.voxels.insert((0, 0, 0), Voxel::with_health(1));
         let live: AHashSet<VoxelKey> = AHashSet::new();
         let cylinder = LocalBounds {
             origin_x: 0.0,
@@ -386,7 +387,7 @@ mod tests {
     #[test]
     fn local_map_excludes_voxel_outside_radius() {
         let mut map = VoxelMap::default();
-        map.voxels.insert((5, 0, 0), 1);
+        map.voxels.insert((5, 0, 0), Voxel::with_health(1));
         let live: AHashSet<VoxelKey> = AHashSet::new();
         let cylinder = LocalBounds {
             origin_x: 0.0,
@@ -405,7 +406,7 @@ mod tests {
     #[test]
     fn local_map_excludes_voxel_outside_z_range() {
         let mut map = VoxelMap::default();
-        map.voxels.insert((0, 0, 5), 1);
+        map.voxels.insert((0, 0, 5), Voxel::with_health(1));
         let live: AHashSet<VoxelKey> = AHashSet::new();
         let cylinder = LocalBounds {
             origin_x: 0.0,

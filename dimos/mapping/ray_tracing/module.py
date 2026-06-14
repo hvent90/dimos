@@ -55,7 +55,7 @@ from dimos.msgs.sensor_msgs.PointCloud2 import PointCloud2
 class RayTracingVoxelMapConfig(NativeModuleConfig):
     cwd: str | None = "rust"
     executable: str = "result/bin/voxel_ray_tracing"
-    build_command: str | None = "nix build .#default --no-write-lock-file"
+    build_command: str | None = "nix build path:."
     stdin_config: bool = True
 
     voxel_size: float = 0.1
@@ -72,6 +72,10 @@ class RayTracingVoxelMapConfig(NativeModuleConfig):
     max_health: int = 1
     # Seconds between sequence-counter increments ("slow clock").
     sequence_period_secs: float = 1.0
+    # Spare a clearing miss when |ray dot surface normal| is below this.
+    graze_cos: float = 0.7
+    # Only spare a voxel whose neighborhood was hit within this many frames.
+    recency_window: int = 15
 
 
 class RayTracingVoxelMap(NativeModule):

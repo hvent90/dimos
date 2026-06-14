@@ -69,6 +69,7 @@ def _reconstruct_path(
     goal_tuple: tuple[int, int],
     frame_id: str,
 ) -> Path:
+    frame_id = costmap.frame_id
     waypoints: list[PoseStamped] = []
     while current in parents:
         world_point = costmap.grid_to_world(current)
@@ -112,6 +113,7 @@ def _reconstruct_path_from_coords(
     costmap: OccupancyGrid,
     frame_id: str,
 ) -> Path:
+    frame_id = costmap.frame_id
     waypoints: list[PoseStamped] = []
 
     for gx, gy in path_coords:

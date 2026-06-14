@@ -1,5 +1,21 @@
 {
   "nodes": {
+    "dimos-repo": {
+      "flake": false,
+      "locked": {
+        "lastModified": 1779865691,
+        "narHash": "sha256-2CVWcov7DiC1qX/B/zFKDJiSYsnbrZ3FNT/viprFWTQ=",
+        "ref": "refs/heads/jeff/feat/g1_raycast",
+        "rev": "51666bcd298c1d08bdee179f176f45c0a7dd417d",
+        "revCount": 744,
+        "type": "git",
+        "url": "file:../../../.."
+      },
+      "original": {
+        "type": "git",
+        "url": "file:../../../.."
+      }
+    },
     "flake-utils": {
       "inputs": {
         "systems": "systems"
@@ -20,11 +36,11 @@
     },
     "nixpkgs": {
       "locked": {
-        "lastModified": 1778869304,
-        "narHash": "sha256-30sZNZoA1cqF5JNO9fVX+wgiQYjB7HJqqJ4ztCDeBZE=",
+        "lastModified": 1779560665,
+        "narHash": "sha256-tpyBcxPpcQb8ukyNF7DoCwfSY3VPsxHoYwj00Cayv5o=",
         "owner": "NixOS",
         "repo": "nixpkgs",
-        "rev": "d233902339c02a9c334e7e593de68855ad26c4cb",
+        "rev": "64c08a7ca051951c8eae34e3e3cb1e202fe36786",
         "type": "github"
       },
       "original": {
@@ -36,6 +52,7 @@
     },
     "root": {
       "inputs": {
+        "dimos-repo": "dimos-repo",
         "flake-utils": "flake-utils",
         "nixpkgs": "nixpkgs"
       }
