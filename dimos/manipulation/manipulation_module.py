@@ -201,12 +201,6 @@ class ManipulationModule(Module):
         self._world_monitor = planning_specs.world_monitor
         self._planner = planning_specs.planner
         self._kinematics = planning_specs.kinematics
-        visualization = create_manipulation_visualization(
-            self.config.visualization,
-            world=world,
-            world_monitor=self._world_monitor,
-            manipulation_module=self,
-        )
 
         for robot_config in self.config.robots:
             robot_id = self._world_monitor.add_robot(robot_config)
@@ -239,6 +233,14 @@ class ManipulationModule(Module):
         for _, (robot_id, _, _) in self._robots.items():
             self._world_monitor.start_state_monitor(robot_id)
 
+        # Build the visualizer only after the world is finalized, so the viser GUI's
+        # gizmo/link-pose setup never touches an unfinalized world (startup race).
+        visualization = create_manipulation_visualization(
+            self.config.visualization,
+            world=world,
+            world_monitor=self._world_monitor,
+            manipulation_module=self,
+        )
         self._world_monitor.set_visualization(visualization)
         self._world_monitor.sync_visualization_scene()
 

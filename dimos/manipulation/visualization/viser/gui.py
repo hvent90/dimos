@@ -780,10 +780,18 @@ class ViserPanelGui:
         self._operation_worker.submit(operation)
 
     def _submit_clear(self) -> None:
+        """Clear the plan/preview and snap the target ghost(s) back onto the live
+        robot, ready to plan again from here. Unlike Reset, the robot does NOT
+        move — only the planning artifacts (orange target + blue preview) reset.
+        """
+
         def operation() -> None:
             self.state.action_status = ActionStatus.CLEARING_PLAN
             ok = self.adapter.clear_planned_path()
             self.state.plan_state = PanelPlanState()
+            self.state.target_status = TargetStatus.EMPTY
+            self._last_eval_solution_clear()
+            self._reanchor_gizmos_to_current()
             self._finish_operation(f"clear={ok}")
 
         self._operation_worker.submit(operation)
@@ -819,6 +827,12 @@ class ViserPanelGui:
         robot_id = self.adapter.robot_id_for_name(robot_name)
         if robot_id is None:
             return
+        # Re-align the orange target ghost to the current robot and hide the blue
+        # preview ghost, so reset clears stale ghosts.
+        if hasattr(self.scene, "clear_target"):
+            self.scene.clear_target(str(robot_id))
+        if hasattr(self.scene, "hide_preview"):
+            self.scene.hide_preview(str(robot_id))
         if self._pose_target_links:
             for link in self._pose_target_links:
                 pose = self.adapter.get_link_pose(robot_name, link)

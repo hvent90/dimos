@@ -254,7 +254,7 @@ _r1pro_dual_cfg = _catalog_r1pro_bimanual(name="arm", adapter_type="mock")
 # One gizmo per arm tip; both are solved together via multi-target IK.
 _R1PRO_BIMANUAL_VIZ = {
     **_R1PRO_VISER_VIZ,
-    "pose_target_links": ["left_arm_link7", "right_arm_link7"],
+    "pose_target_links": ["left_arm_link7", "right_arm_link7", "torso_link4"],
 }
 
 galaxea_viser_bimanual = autoconnect(

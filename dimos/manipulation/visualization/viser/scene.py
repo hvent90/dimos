@@ -204,6 +204,9 @@ class ViserManipulationScene:
         config = self._configs_by_id.get(robot_id)
         if config is None:
             return False
+        # Hide the orange target ghost while the blue preview plays, so only the
+        # current robot + the animating preview are shown (not three robots).
+        self._set_target_visibility(robot_id, False)
         self.show_preview(robot_id)
         try:
             return PreviewAnimator(
@@ -211,6 +214,7 @@ class ViserManipulationScene:
             ).animate(path, duration, self.preview_fps)
         finally:
             self.hide_preview(robot_id)
+            self._set_target_visibility(robot_id, True)
 
     def set_target_joints(
         self, robot_id: str, joint_names: Sequence[str], joints: Sequence[float]

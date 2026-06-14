@@ -161,24 +161,6 @@ def r1pro_arm(
 R1PRO_DUAL_MODEL_PATH = R1PRO_PKG / "urdf" / "r1pro_dual_arm.urdf"
 # Per-arm end-effector tip (the pose-target frame for each planning group).
 R1PRO_ARM_TIPS: dict[str, str] = {"left": "left_arm_link7", "right": "right_arm_link7"}
-# Valid non-cramped bimanual home: joint-limit midpoints (left then right, 14 DOF).
-# The right arm's limits are mirrored, so midpoints differ in sign on joint2.
-R1PRO_DUAL_HOME: list[float] = [
-    -1.571,
-    1.484,
-    0.0,
-    -0.873,
-    0.0,
-    0.0,
-    0.0,
-    -1.571,
-    -1.484,
-    0.0,
-    -0.873,
-    0.0,
-    0.0,
-    0.0,
-]
 
 
 def _dual_arm_links() -> set[str]:
@@ -215,10 +197,16 @@ def r1pro_bimanual(
     One robot whose controlled joints are BOTH arms (14 DOF, left then right).
     Bimanual planning targets each arm tip in ``R1PRO_ARM_TIPS`` simultaneously
     via multi-target IK; ``end_effector_link`` is a nominal single-arm default.
-    ``home_joints`` is left ``None`` so it auto-resolves to joint-limit midpoints,
-    which are valid for both arms (the right arm's limits are mirrored).
+    ``home_joints`` is the all-zeros configuration: torso upright and both arms
+    hanging naturally at the sides (collision-free, well inside the mirrored
+    joint limits, so a clean IK seed). RoboPlan's fast collision checking means
+    no specially-tuned seed pose is needed.
     """
-    joint_names = [f"{side}_arm_joint{i}" for side in ("left", "right") for i in range(1, 8)]
+    # 18 DOF: torso (4) is a free DOF so the robot can lean to extend reach, plus
+    # both 7-DOF arms. Order: torso, left, right.
+    joint_names = [f"torso_joint{i}" for i in range(1, 5)] + [
+        f"{side}_arm_joint{i}" for side in ("left", "right") for i in range(1, 8)
+    ]
     defaults: dict[str, Any] = {
         "name": name,
         "model_path": R1PRO_DUAL_MODEL_PATH,
@@ -227,11 +215,13 @@ def r1pro_bimanual(
         "address": address,
         "joint_names": joint_names,
         "base_link": "base_link",
-        "home_joints": list(R1PRO_DUAL_HOME),
+        "home_joints": [0.0] * 18,
         "base_pose": [0, 0, 0, 0, 0, 0, 1],
         "package_paths": {"r1pro_urdf": R1PRO_PKG},
         "auto_convert_meshes": True,
-        "collision_exclusion_pairs": R1PRO_DUAL_EXCLUSIONS,
+        # Full body is present (head/chassis/torso frozen) so exclude the static
+        # chassis self-overlaps too, else the robot reads as always-in-collision.
+        "collision_exclusion_pairs": R1PRO_COLLISION_EXCLUSIONS,
         "max_velocity": 0.5,
         "max_acceleration": 1.0,
     }
