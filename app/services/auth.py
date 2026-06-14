@@ -111,6 +111,22 @@ async def get_robot_id(api_key: str | None = Security(api_key_header)) -> str:
     raise HTTPException(status_code=401, detail="Invalid robot credentials")
 
 
+async def get_robot_owner(api_key: str | None = Security(api_key_header)) -> str:
+    """Authenticate robot via X-Robot-API-Key; return the key's owner (tenant)."""
+    if api_key:
+        if api_key in ROBOT_API_KEYS:
+            return ROBOT_API_KEYS[api_key]  # dev bootstrap: value doubles as owner
+        from models.database import async_session
+        from services.keys import validate_api_key
+
+        async with async_session() as db:
+            key_record = await validate_api_key(db, api_key)
+            if key_record:
+                return key_record.owner_id
+
+    raise HTTPException(status_code=401, detail="Invalid robot credentials")
+
+
 async def get_operator_or_robot(
     credentials: HTTPAuthorizationCredentials | None = Security(bearer_scheme),
     api_key: str | None = Security(api_key_header),

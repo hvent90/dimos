@@ -12,7 +12,7 @@ from sqlalchemy.ext.asyncio import AsyncSession
 from config import settings
 from models.database import get_db
 from models.session import TeleopSession
-from services.auth import get_current_user, get_operator_or_robot, get_robot_id
+from services.auth import get_current_user, get_operator_or_robot, get_robot_owner
 from services.cloudflare import CloudflareRealtimeError, cf_client
 from services.sdp_utils import extract_video_track
 
@@ -141,30 +141,31 @@ async def turn_credentials(identity: dict = Depends(get_operator_or_robot)):
 @router.post("", response_model=CreateSessionResponse, status_code=201)
 async def create_session(
     body: CreateSessionRequest,
-    robot_id: str = Depends(get_robot_id),
+    owner_id: str = Depends(get_robot_owner),
     db: AsyncSession = Depends(get_db),
 ):
     """Robot registers itself. Creates Cloudflare SFU session.
 
-    The canonical robot_id comes from the API key. A robot_id in the body is
-    legacy (older clients echo their TELEOP_ROBOT_ID env) and carries no
-    authority — mismatches are logged, never rejected, since a stale env var
-    on the robot must not block a validly-keyed connection.
+    owner_id (the API key's owner) is the tenant boundary. robot_id is a
+    robot-supplied label distinguishing multiple robots under one key; empty
+    is fine (the session is still unique by id), it just disables reconnect
+    dedup below.
     """
-    if body.robot_id is not None and body.robot_id != robot_id:
-        log.warning(
-            "Ignoring body robot_id %r; key is bound to %r", body.robot_id, robot_id
-        )
+    robot_id = body.robot_id or ""
 
-    # Close existing session for this robot if any
-    existing = await db.execute(
-        select(TeleopSession).where(
-            TeleopSession.robot_id == robot_id,
-            TeleopSession.state != "disconnected",
+    # Same robot reconnecting → close its stale session. Scoped to (owner,
+    # robot_id) so one robot can't disconnect another's; skipped for unnamed
+    # robots (would collapse distinct ones).
+    if robot_id:
+        existing = await db.execute(
+            select(TeleopSession).where(
+                TeleopSession.owner_id == owner_id,
+                TeleopSession.robot_id == robot_id,
+                TeleopSession.state != "disconnected",
+            )
         )
-    )
-    for old in existing.scalars():
-        old.state = "disconnected"
+        for old in existing.scalars():
+            old.state = "disconnected"
 
     # Record the robot's sendonly m=video (mid + trackName) from the offer. The
     # actual publish happens later via /tracks/new in bridge_datachannel — CF
@@ -188,6 +189,7 @@ async def create_session(
     # Store session
     session = TeleopSession(
         robot_id=robot_id,
+        owner_id=owner_id,
         robot_name=body.robot_name,
         state="idle",
         cf_session_id=cf_result["cf_session_id"],
@@ -212,12 +214,12 @@ async def create_session(
 async def heartbeat(
     session_id: str,
     body: HeartbeatRequest,
-    robot_id: str = Depends(get_robot_id),
+    owner_id: str = Depends(get_robot_owner),
     db: AsyncSession = Depends(get_db),
 ):
     """Robot reports connection quality metrics."""
     session = await db.get(TeleopSession, session_id)
-    if not session or session.robot_id != robot_id:
+    if not session or session.owner_id != owner_id:
         raise HTTPException(status_code=404, detail="Session not found")
 
     session.rtt_ms = body.rtt_ms
@@ -239,12 +241,12 @@ async def heartbeat(
 @router.delete("/{session_id}", status_code=204)
 async def delete_session(
     session_id: str,
-    robot_id: str = Depends(get_robot_id),
+    owner_id: str = Depends(get_robot_owner),
     db: AsyncSession = Depends(get_db),
 ):
     """Robot going offline."""
     session = await db.get(TeleopSession, session_id)
-    if not session or session.robot_id != robot_id:
+    if not session or session.owner_id != owner_id:
         raise HTTPException(status_code=404, detail="Session not found")
 
     session.state = "disconnected"
@@ -255,15 +257,21 @@ async def delete_session(
 # ─── Operator endpoints ──────────────────────────────────────────────
 
 
+def _owns(session: TeleopSession, user: dict) -> bool:
+    """Operator may touch only their own robots (admin sees all)."""
+    return user.get("role") == "admin" or session.owner_id == user["sub"]
+
+
 @router.get("", response_model=list[SessionInfo])
 async def list_sessions(
     user: dict = Depends(get_current_user),
     db: AsyncSession = Depends(get_db),
 ):
-    """List available robots (active sessions)."""
-    result = await db.execute(
-        select(TeleopSession).where(TeleopSession.state.in_(["idle", "active"]))
-    )
+    """List available robots (active sessions) the caller owns."""
+    q = select(TeleopSession).where(TeleopSession.state.in_(["idle", "active"]))
+    if user.get("role") != "admin":
+        q = q.where(TeleopSession.owner_id == user["sub"])
+    result = await db.execute(q)
     sessions = result.scalars().all()
     return [
         SessionInfo(
@@ -289,7 +297,7 @@ async def join_session(
 ):
     """Operator or viewer joins a session."""
     session = await db.get(TeleopSession, session_id)
-    if not session or session.state == "disconnected":
+    if not session or session.state == "disconnected" or not _owns(session, user):
         raise HTTPException(status_code=404, detail="Session not found")
 
     user_id = user["sub"]
@@ -558,7 +566,7 @@ async def leave_session(
 ):
     """Operator or viewer leaves."""
     session = await db.get(TeleopSession, session_id)
-    if not session:
+    if not session or not _owns(session, user):
         raise HTTPException(status_code=404, detail="Session not found")
 
     user_id = user["sub"]
@@ -581,7 +589,7 @@ async def session_status(
 ):
     """Get session status and connection quality."""
     session = await db.get(TeleopSession, session_id)
-    if not session:
+    if not session or not _owns(session, user):
         raise HTTPException(status_code=404, detail="Session not found")
 
     return SessionInfo(

@@ -24,6 +24,7 @@ _ADDITIVE_COLUMNS: list[tuple[str, str, str]] = [
     ("teleop_sessions", "published_video_mid", "VARCHAR"),
     ("teleop_sessions", "published_video_track_name", "VARCHAR"),
     ("teleop_sessions", "state_back_channel_id", "INTEGER"),
+    ("teleop_sessions", "owner_id", "VARCHAR"),
 ]
 
 

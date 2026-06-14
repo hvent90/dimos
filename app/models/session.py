@@ -17,6 +17,8 @@ class TeleopSession(Base):
     id: Mapped[str] = Column(String, primary_key=True, default=lambda: str(uuid.uuid4()))
     robot_id: Mapped[str] = Column(String, nullable=False, index=True)
     robot_name: Mapped[str] = Column(String, nullable=False)
+    # Tenant boundary: the API key's owner. Visibility/auth filter on this.
+    owner_id: Mapped[str | None] = Column(String, nullable=True, index=True)
     state: Mapped[str] = Column(String, default="idle")  # idle | active | disconnected
     cf_session_id: Mapped[str] = Column(String, nullable=True)
 
