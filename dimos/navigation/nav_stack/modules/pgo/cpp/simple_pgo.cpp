@@ -2,6 +2,54 @@
 
 #include <cstdio>
 #include <limits>
+#include <pcl/features/normal_3d.h>
+
+namespace {
+// Geometric degeneracy of a scan, à la Zhang 2016 ("On Degeneracy of
+// Optimization-based State Estimation") / X-ICP. Build the point-to-plane
+// translational information matrix M = Σ nᵢ nᵢᵀ over surface normals; its
+// eigenvalues say how constrained the alignment is along each axis. A flat
+// open field has all normals ≈ vertical → M is rank-1 → the smallest
+// normalized eigenvalue → 0 → translation slides freely in-plane (exactly why
+// ICP fitness lies on grass). Walls facing several directions fill all three
+// eigenvalues. Eigenvalues of Σ nnᵀ are invariant to global frame rotation,
+// so the (global-frame) submap is fine. Writes the two smaller normalized
+// eigenvalues (e_min ≤ e_mid ≤ e_max, summing to 1) to the out-params.
+void cloud_degeneracy(const CloudType::Ptr& cloud, float& e_min, float& e_mid)
+{
+    e_min = -1.0f;
+    e_mid = -1.0f;
+    if (!cloud || cloud->size() < 20)
+        return;
+    pcl::NormalEstimation<PointType, pcl::Normal> normal_estimator;
+    pcl::search::KdTree<PointType>::Ptr tree(new pcl::search::KdTree<PointType>);
+    pcl::PointCloud<pcl::Normal>::Ptr normals(new pcl::PointCloud<pcl::Normal>);
+    normal_estimator.setInputCloud(cloud);
+    normal_estimator.setSearchMethod(tree);
+    normal_estimator.setKSearch(10);
+    normal_estimator.compute(*normals);
+
+    Eigen::Matrix3d scatter = Eigen::Matrix3d::Zero();
+    long valid = 0;
+    for (const auto& normal : normals->points) {
+        if (!std::isfinite(normal.normal_x) || !std::isfinite(normal.normal_y) ||
+            !std::isfinite(normal.normal_z))
+            continue;
+        Eigen::Vector3d n(normal.normal_x, normal.normal_y, normal.normal_z);
+        scatter += n * n.transpose();
+        valid++;
+    }
+    if (valid < 20)
+        return;
+    Eigen::SelfAdjointEigenSolver<Eigen::Matrix3d> solver(scatter);
+    Eigen::Vector3d eigenvalues = solver.eigenvalues();  // ascending
+    const double trace = eigenvalues.sum();
+    if (trace <= 0.0)
+        return;
+    e_min = static_cast<float>(eigenvalues(0) / trace);
+    e_mid = static_cast<float>(eigenvalues(1) / trace);
+}
+}  // namespace
 
 SimplePGO::SimplePGO(const Config &config) : m_config(config)
 {
@@ -149,9 +197,11 @@ int SimplePGO::searchByPosition() const
     return -1;
 }
 
-int SimplePGO::searchByScanContext(int& out_sector_shift) const
+int SimplePGO::searchByScanContext(int& out_sector_shift, float& out_best, float& out_second) const
 {
     out_sector_shift = 0;
+    out_best = 2.0f;
+    out_second = 2.0f;
     if (m_scan_context_descriptors.empty() || m_scan_context_descriptors.back().size() == 0) {
         return -1;
     }
@@ -184,6 +234,7 @@ int SimplePGO::searchByScanContext(int& out_sector_shift) const
         });
 
     float best_dist = std::numeric_limits<float>::max();
+    float second_dist = std::numeric_limits<float>::max();
     int best_idx_unfiltered = -1;
     float best_dist_filtered = static_cast<float>(m_scan_context_config.match_threshold);
     int best_idx = -1;
@@ -193,8 +244,11 @@ int SimplePGO::searchByScanContext(int& out_sector_shift) const
         const auto [distance, shift] = scan_context::best_distance(
             query, m_scan_context_descriptors[idx]);
         if (distance < best_dist) {
+            second_dist = best_dist;  // demote previous best
             best_dist = distance;
             best_idx_unfiltered = idx;
+        } else if (distance < second_dist) {
+            second_dist = distance;
         }
         if (distance < best_dist_filtered) {
             best_dist_filtered = distance;
@@ -203,6 +257,11 @@ int SimplePGO::searchByScanContext(int& out_sector_shift) const
         }
     }
 
+    // Lowe-style distinctiveness signal: a true revisit is sharply closer than
+    // any other place; in self-similar scenes (open grass) every candidate
+    // matches about equally -> best ~ second -> ambiguous, reject-worthy.
+    out_best = best_dist < 2.0f ? best_dist : 2.0f;
+    out_second = second_dist < 2.0f ? second_dist : 2.0f;
     out_sector_shift = best_shift;
     return best_idx;
 }
@@ -224,10 +283,32 @@ void SimplePGO::searchForLoopPairs()
 
     size_t cur_idx = m_key_poses.size() - 1;
 
+    // Feature-poverty gate: a scan with no spatially-spread structure (open
+    // grass: returns clustered near the sensor) can't reliably place itself;
+    // any closure it proposes is noise. Skip loop search entirely -> PGO
+    // becomes a no-op here (the intended behavior on feature-poor recordings).
+    // Guarded by use_scan_context (needs descriptors). The observability half
+    // of the gate (degeneracy) runs later, once a candidate's source submap
+    // exists. min_descriptor_std is retained but defaults off (structure
+    // overlaps too much between scenes); occupancy is the effective gate.
+    if (m_config.use_scan_context && !m_scan_context_descriptors.empty() &&
+        m_scan_context_descriptors.back().size() > 0)
+    {
+        const auto& descriptor = m_scan_context_descriptors.back();
+        if (m_config.min_descriptor_std > 0.0 &&
+            scan_context::descriptor_structure(descriptor) < m_config.min_descriptor_std)
+            return;
+        if (m_config.loop_min_occupancy > 0 &&
+            scan_context::descriptor_occupancy(descriptor) < m_config.loop_min_occupancy)
+            return;
+    }
+
     int loop_idx = -1;
     int sector_shift = 0;
+    float sc_best = 2.0f;
+    float sc_second = 2.0f;
     if (m_config.use_scan_context) {
-        loop_idx = searchByScanContext(sector_shift);
+        loop_idx = searchByScanContext(sector_shift, sc_best, sc_second);
     }
     if (loop_idx < 0) {
         // Fallback (or sole path if SC disabled): kdtree on past positions.
@@ -275,6 +356,46 @@ void SimplePGO::searchForLoopPairs()
     m_icp.setInputSource(source_cloud);
     m_icp.setInputTarget(target_cloud);
     m_icp.align(*align_cloud, init_guess);
+
+    // Observability gate: even with a positionally-plausible candidate and low
+    // ICP fitness, a planar/degenerate source scan (open grass) leaves the
+    // alignment unconstrained in-plane — fitness lies. Reject when the smallest
+    // normalized normal-scatter eigenvalue is below threshold.
+    float degeneracy_min = -1.0f;
+    float degeneracy_mid = -1.0f;
+    if (m_config.loop_min_degeneracy > 0.0 || m_config.debug)
+        cloud_degeneracy(source_cloud, degeneracy_min, degeneracy_mid);
+
+    if (m_config.debug)
+    {
+        double cand_dist =
+            (m_key_poses[cur_idx].t_global - m_key_poses[loop_idx].t_global).norm();
+        const bool have_desc =
+            m_config.use_scan_context && !m_scan_context_descriptors.empty();
+        float structure = have_desc
+            ? scan_context::descriptor_structure(m_scan_context_descriptors.back())
+            : -1.0f;
+        int occupancy = have_desc
+            ? scan_context::descriptor_occupancy(m_scan_context_descriptors.back())
+            : -1;
+        // Lowe ratio: best / second-best Scan-Context distance. ~1 => ambiguous
+        // (every place matches equally, e.g. grass); << 1 => a distinctive revisit.
+        float lowe_ratio = (sc_second > 1e-6f) ? sc_best / sc_second : -1.0f;
+        bool accepted = m_icp.hasConverged() &&
+                        m_icp.getFitnessScore() <= m_config.loop_score_thresh;
+        fprintf(stderr,
+                "PGO_DIAG kf=%zu cand=%d dist=%.2f fitness=%.5f converged=%d structure=%.2f "
+                "occ=%d sc_best=%.3f sc_2nd=%.3f lowe=%.3f degen_min=%.4f degen_mid=%.4f "
+                "src_pts=%zu tgt_pts=%zu accepted=%d\n",
+                cur_idx, loop_idx, cand_dist, m_icp.getFitnessScore(),
+                m_icp.hasConverged() ? 1 : 0, structure, occupancy, sc_best, sc_second,
+                lowe_ratio, degeneracy_min, degeneracy_mid,
+                source_cloud->size(), target_cloud->size(), accepted ? 1 : 0);
+    }
+
+    if (m_config.loop_min_degeneracy > 0.0 && degeneracy_min >= 0.0 &&
+        degeneracy_min < m_config.loop_min_degeneracy)
+        return;
 
     if (!m_icp.hasConverged() || m_icp.getFitnessScore() > m_config.loop_score_thresh)
         return;

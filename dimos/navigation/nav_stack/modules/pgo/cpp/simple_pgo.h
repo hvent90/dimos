@@ -45,6 +45,34 @@ struct Config
     // from current keyframe in global pose. 0 disables the check.
     double loop_candidate_max_distance_m = 30.0;
 
+    // Feature-poverty gate: skip loop search when the current scan's
+    // descriptor vertical-structure std (scan_context::descriptor_structure)
+    // is below this — the scan can't reliably place itself (open grass field),
+    // so any closure would be noise. 0 disables (default = current behavior).
+    // Superseded in practice by loop_min_occupancy + loop_min_degeneracy below
+    // (structure overlaps too much between scenes to threshold cleanly).
+    double min_descriptor_std = 0.0;
+
+    // Structure-spread gate: require at least this many occupied Scan-Context
+    // cells. Open grass returns cluster near the sensor (few rings filled);
+    // built environments spread returns out to range. Calibrated on go2 fastlio
+    // (1200-cell 20x60 descriptor): grassy ~70 vs gir_park ~88 vs downtown ~120
+    // at the SAME point count, so this measures spread, not density. 0 disables.
+    int loop_min_occupancy = 80;
+
+    // Observability gate (Zhang 2016 / X-ICP degeneracy factor): reject a loop
+    // candidate whose source scan's smallest normalized normal-scatter
+    // eigenvalue is below this. A planar/degenerate scan (open grass) -> ~0:
+    // ICP slides freely in-plane and reports low fitness for a bogus closure.
+    // Real scenes (incl. sparse gir_park) sit >0.15; grassy's firing closures
+    // sit ~0.01. 0 disables.
+    double loop_min_degeneracy = 0.05;
+
+    // When true, log one "PGO_DIAG ..." line per loop candidate that reaches
+    // ICP (accepted OR rejected) with its fitness / candidate distance /
+    // descriptor structure — the data to design the right loop-acceptance gate.
+    bool debug = false;
+
     // Scan Context settings
     bool use_scan_context = true;
     int scan_context_num_rings = 20;
@@ -83,7 +111,9 @@ public:
 
 private:
     // Scan-context-based candidate search; returns -1 if no acceptable match.
-    int searchByScanContext(int& out_sector_shift) const;
+    // out_best / out_second report the closest and 2nd-closest candidate cosine
+    // distances (for the Lowe ratio distinctiveness signal).
+    int searchByScanContext(int& out_sector_shift, float& out_best, float& out_second) const;
     // Original position-based fallback (radius search on past key-pose
     // positions). Kept for ablation + when scan context is disabled.
     int searchByPosition() const;

@@ -61,6 +61,22 @@ float column_cosine_distance(const Descriptor& query,
 std::pair<float, int> best_distance(const Descriptor& query,
                                     const Descriptor& candidate);
 
+// "Vertical-structure" score of a descriptor: the standard deviation of its
+// occupied (non-zero) cells. Cells hold max-z + lidar_height, so a flat,
+// feature-poor scene (open grass: every bin a near-ground return) has nearly
+// uniform cell values -> low std, while walls/buildings/poles spread the
+// values -> high std. A degeneracy proxy for "this scan can't reliably place
+// itself" (cf. Zhang 2016 degeneracy factor; here cheap, descriptor-only).
+// Returns 0 for an empty/degenerate descriptor.
+float descriptor_structure(const Descriptor& descriptor);
+
+// Count of occupied (non-zero) cells — how much of the polar FOV returned
+// structure out to range. Open grass returns die out at short range (few
+// occupied cells); a built environment fills many rings/sectors out to 80m.
+// A cheap "how much of the scene has structure" term, complementary to
+// descriptor_structure (which only looks at the spread of occupied cells).
+int descriptor_occupancy(const Descriptor& descriptor);
+
 // Convert sector shift to yaw rotation (radians).
 // shift comes from best_distance, which scans [0, n_sectors-1], so
 // the raw yaw lies in (-2pi, 0]; wrap into [-pi, pi].

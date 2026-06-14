@@ -231,6 +231,9 @@ int main(int argc, char** argv)
     config.scan_context_match_threshold = native_module.arg_float("scan_context_match_threshold", 0.4f);
     config.scan_context_lidar_height_m = native_module.arg_float("scan_context_lidar_height_m", 2.0f);
     config.loop_candidate_max_distance_m = native_module.arg_float("loop_candidate_max_distance_m", 30.0f);
+    config.min_descriptor_std = native_module.arg_float("min_descriptor_std", 0.0f);
+    config.loop_min_occupancy = native_module.arg_int("loop_min_occupancy", 80);
+    config.loop_min_degeneracy = native_module.arg_float("loop_min_degeneracy", 0.05f);
 
     // Node-level config
     std::string world_frame = native_module.arg("world_frame", "map");
@@ -248,6 +251,7 @@ int main(int argc, char** argv)
     bool drain_stale_scans = native_module.arg_bool("drain_stale_scans", true);
 
     bool debug = native_module.arg_bool("debug", false);
+    config.debug = debug;
 
     pcl::console::setVerbosityLevel(
         debug ? pcl::console::L_INFO : pcl::console::L_ERROR);

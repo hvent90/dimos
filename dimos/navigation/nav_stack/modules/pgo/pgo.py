@@ -84,6 +84,17 @@ class PGOConfig(NativeModuleConfig):
     # Skip ICP on candidates farther than this (m). 0 disables.
     loop_candidate_max_distance_m: float = 30.0
 
+    # Loop-acceptance gate (backported from jnav cmu_pgo). Open grass / planar
+    # scenes can't reliably place themselves; these reject those closures.
+    # loop_min_occupancy: require >= this many occupied Scan-Context cells
+    # (structure must spread out to range, not cluster). loop_min_degeneracy:
+    # reject when the source scan's smallest normalized normal-scatter eigenvalue
+    # (Zhang 2016 / X-ICP observability) is below this (planar -> ~0, ICP slides
+    # freely). min_descriptor_std: legacy std gate, default off. All 0-disable.
+    min_descriptor_std: float = 0.0
+    loop_min_occupancy: int = 80
+    loop_min_degeneracy: float = 0.05
+
     # True: drop stale queued scans each tick. False: strict FIFO.
     drain_stale_scans: bool = True
 

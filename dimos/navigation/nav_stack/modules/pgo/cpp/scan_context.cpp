@@ -116,4 +116,35 @@ std::pair<float, int> best_distance(const Descriptor& query,
     return {min_distance, best_shift};
 }
 
+float descriptor_structure(const Descriptor& descriptor) {
+    // Std of occupied (non-zero) cells. Empty cells are excluded so the metric
+    // reflects the spread of actual returns' heights, not how full the FOV is.
+    double sum = 0.0;
+    double sum_sq = 0.0;
+    long count = 0;
+    for (int i = 0; i < descriptor.rows(); i++) {
+        for (int j = 0; j < descriptor.cols(); j++) {
+            const float value = descriptor(i, j);
+            if (value <= 0.0f) continue;
+            sum += value;
+            sum_sq += static_cast<double>(value) * value;
+            count++;
+        }
+    }
+    if (count < 2) return 0.0f;
+    const double mean = sum / static_cast<double>(count);
+    const double variance = sum_sq / static_cast<double>(count) - mean * mean;
+    return variance > 0.0 ? static_cast<float>(std::sqrt(variance)) : 0.0f;
+}
+
+int descriptor_occupancy(const Descriptor& descriptor) {
+    int count = 0;
+    for (int i = 0; i < descriptor.rows(); i++) {
+        for (int j = 0; j < descriptor.cols(); j++) {
+            if (descriptor(i, j) > 0.0f) count++;
+        }
+    }
+    return count;
+}
+
 }  // namespace scan_context
