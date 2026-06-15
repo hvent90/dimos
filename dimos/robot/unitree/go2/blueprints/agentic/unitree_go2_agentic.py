@@ -16,11 +16,13 @@
 from dimos.agents.mcp.mcp_client import McpClient
 from dimos.agents.mcp.mcp_server import McpServer
 from dimos.core.coordination.blueprints import autoconnect
+from dimos.navigation.patrolling.module import PatrollingModule
 from dimos.robot.unitree.go2.blueprints.agentic._common_agentic import _common_agentic
 from dimos.robot.unitree.go2.blueprints.smart.unitree_go2_spatial import unitree_go2_spatial
 
 unitree_go2_agentic = autoconnect(
     unitree_go2_spatial,
+    PatrollingModule.blueprint(),
     McpServer.blueprint(),
     McpClient.blueprint(),
     _common_agentic,

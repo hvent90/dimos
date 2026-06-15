@@ -13,21 +13,18 @@
 # limitations under the License.
 
 from dataclasses import asdict
-import time
 from typing import Any
 
 import numpy as np
 from pydantic import Field
-from reactivex import combine_latest, operators as ops
 
-from dimos.core.core import rpc
-from dimos.core.module import Module, ModuleConfig
 from dimos.core.stream import In, Out
 from dimos.mapping.pointclouds.occupancy import (
     OCCUPANCY_ALGOS,
     HeightCostConfig,
     OccupancyConfig,
 )
+from dimos.memory2.puremodule import PureModule, PureModuleConfig, latest, tick
 from dimos.msgs.nav_msgs.OccupancyGrid import OccupancyGrid
 from dimos.msgs.sensor_msgs.PointCloud2 import PointCloud2
 from dimos.utils.logging_config import setup_logger
@@ -56,78 +53,31 @@ def costmap_to_rerun(grid: OccupancyGrid) -> Any:
     )
 
 
-class Config(ModuleConfig):
+class Config(PureModuleConfig):
     algo: str = "height_cost"
     config: OccupancyConfig = Field(default_factory=HeightCostConfig)
     # for robots that cant see directly below themself
     initial_safe_radius_meters: float = 0.0
 
 
-class CostMapper(Module):
+class CostMapper(PureModule):
+    """Turn the freshest map into an occupancy costmap, one grid per map update.
+
+    ``global_map`` (from the voxel mapper) is always wired and drives the
+    ticks; ``relocalized_map`` (from relocalization) is optional and
+    preferred when present, matching the original ``combine_latest`` +
+    select-merged behaviour. The step is pure: same map in, same grid out.
+    """
+
     config: Config
-    global_map: In[PointCloud2]
-    merged_map: In[PointCloud2]
+    global_map: In[PointCloud2] = tick()
+    relocalized_map: In[PointCloud2] = latest()
     global_costmap: Out[OccupancyGrid]
 
-    @rpc
-    def start(self) -> None:
-        super().start()
+    def step(self, global_map: PointCloud2, relocalized_map: PointCloud2 | None) -> OccupancyGrid:
+        msg = relocalized_map if relocalized_map is not None else global_map
+        return self._calculate_costmap(msg)
 
-        def _select_map(
-            pair: tuple[PointCloud2, PointCloud2 | None],
-        ) -> PointCloud2:
-            gmap, merged = pair
-            return merged if merged is not None else gmap
-
-        def _publish_costmap(grid: OccupancyGrid, calc_time_ms: float, rx_monotonic: float) -> None:
-            self.global_costmap.publish(grid)
-
-        def _calculate_and_time(
-            msg: PointCloud2,
-        ) -> tuple[OccupancyGrid, float, float]:
-            rx_monotonic = time.monotonic()  # Capture receipt time
-            start = time.perf_counter()
-            grid = self._calculate_costmap(msg)
-            elapsed_ms = (time.perf_counter() - start) * 1000
-            return grid, elapsed_ms, rx_monotonic
-
-        self.register_disposable(
-            combine_latest(
-                self.global_map.observable(),  # type: ignore[no-untyped-call]
-                self.merged_map.observable().pipe(ops.start_with(None)),  # type: ignore[no-untyped-call,arg-type]
-            )
-            .pipe(ops.map(_select_map))
-            .pipe(ops.map(_calculate_and_time))
-            .subscribe(lambda result: _publish_costmap(result[0], result[1], result[2]))
-        )
-
-    @rpc
-    def stop(self) -> None:
-        super().stop()
-
-    # @timed()  # TODO: fix thread leak in timed decorator
     def _calculate_costmap(self, msg: PointCloud2) -> OccupancyGrid:
         occupancy_function = OCCUPANCY_ALGOS[self.config.algo]
-        grid = occupancy_function(msg, **asdict(self.config.config))
-        self._apply_initial_safe_radius(grid)
-        return grid
-
-    def _apply_initial_safe_radius(self, grid: OccupancyGrid) -> None:
-        radius_meters = self.config.initial_safe_radius_meters
-        if radius_meters <= 0 or grid.grid.size == 0:
-            return
-
-        resolution = grid.resolution
-        origin_x = grid.origin.position.x
-        origin_y = grid.origin.position.y
-
-        rows, columns = np.ogrid[: grid.grid.shape[0], : grid.grid.shape[1]]
-        cell_world_x = columns * resolution + origin_x
-        cell_world_y = rows * resolution + origin_y
-        distance_squared_meters = cell_world_x**2 + cell_world_y**2
-
-        # Half-cell tolerance: a cell counts as inside if any part of it overlaps
-        # the disc. Avoids floating-point boundary flakiness from radius/resolution.
-        effective_radius_meters = radius_meters + resolution * 0.5
-        safe_mask = distance_squared_meters <= effective_radius_meters**2
-        grid.grid[safe_mask] = 0
+        return occupancy_function(msg, **asdict(self.config.config))

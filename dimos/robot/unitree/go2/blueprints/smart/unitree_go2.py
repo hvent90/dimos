@@ -30,7 +30,6 @@ from dimos.navigation.frontier_exploration.wavefront_frontier_goal_selector impo
     WavefrontFrontierExplorer,
 )
 from dimos.navigation.movement_manager.movement_manager import MovementManager
-from dimos.navigation.patrolling.module import PatrollingModule
 from dimos.navigation.replanning_a_star.module import ReplanningAStarPlanner
 from dimos.perception.fiducial.marker_detection_stream_module import MarkerDetectionStreamModule
 from dimos.perception.fiducial.marker_tf_module import MarkerTfModule
@@ -43,7 +42,6 @@ unitree_go2 = autoconnect(
     CostMapper.blueprint(),
     ReplanningAStarPlanner.blueprint(),
     WavefrontFrontierExplorer.blueprint(),
-    PatrollingModule.blueprint(),
     MovementManager.blueprint(),
 ).global_config(n_workers=10, robot_model="unitree_go2")
 
