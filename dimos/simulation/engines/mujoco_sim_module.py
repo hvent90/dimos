@@ -102,6 +102,13 @@ class MujocoSimModuleConfig(ModuleConfig, DepthCameraConfig):
     headless: bool = False
     dof: int = 7
 
+    # Gripper command->ctrl direction. True (default) matches the xArm, whose
+    # actuator ctrl scale runs OPPOSITE to the finger joint (e.g. 0-255 tendon where
+    # ctrl 0 = open). Set False for a direct position-servo gripper whose ctrlrange
+    # equals the finger joint range (e.g. R1Pro: both 0=closed..0.05=open), where the
+    # commanded joint position maps straight through.
+    gripper_ctrl_inverted: bool = True
+
     # Camera config (matches former MujocoCameraConfig).
     camera_name: str = "wrist_camera"
     width: int = 640
@@ -437,6 +444,10 @@ class MujocoSimModule(
         clamped = max(jlo, min(jhi, joint_position))
         if jhi == jlo:
             return clo
+        if not self.config.gripper_ctrl_inverted:
+            # Direct position servo: ctrl == commanded joint position (ctrlrange
+            # equals the joint range). No inversion/rescale.
+            return max(clo, min(chi, clamped))
         t = (clamped - jlo) / (jhi - jlo)
         return chi - t * (chi - clo)
 

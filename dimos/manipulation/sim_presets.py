@@ -87,14 +87,34 @@ _R1PRO_FLOOR_Z = 0.0
 def r1pro_mujoco_scene_preset(
     scene_package_env: str = "DIMOS_SCENE_PACKAGE_PATH",
 ) -> MujocoSimPreset:
-    """Dual-arm R1Pro spawned at the manipulation desk in a scene package."""
+    """Dual-arm R1Pro spawned at the manipulation desk in a scene package.
+
+    Import-safe: with no scene package (``DIMOS_SCENE_PACKAGE_PATH`` unset) this
+    DEGRADES to a robot-only preset at the origin rather than raising — the same
+    import-time tolerance the xArm preset has — so a module-level call here can't
+    crash import of the whole blueprints module (and its xArm blueprints).
+    """
+    robot_mjcf = str(R1PRO_SIM_MJCF_PATH)
+    # R1Pro grippers are direct position servos (ctrlrange == finger joint range),
+    # not the xArm's inverted tendon scale.
+    common_mujoco_kwargs = {
+        "robot_mjcf": robot_mjcf,
+        "robot_meshdir": str(R1PRO_SIM_MESHDIR),
+        "initial_joint_positions": list(_R1PRO_SCENE_HOME_JOINTS),
+        "gripper_ctrl_inverted": False,
+        "render_geom_groups": (0, 1, 2, 3),
+    }
     package = _scene_package_from_env(scene_package_env)
     if package is None:
-        raise ValueError(
-            "r1pro_mujoco_scene_preset requires a scene package; "
-            "set DIMOS_SCENE_PACKAGE_PATH (e.g. data/scene_packages/dimos_office)"
+        return MujocoSimPreset(
+            robot_config_kwargs={
+                "address": robot_mjcf,
+                "base_pose": _base_pose((0.0, 0.0), 0.0, 0.0),
+                "home_joints": list(_R1PRO_SCENE_HOME_JOINTS),
+            },
+            mujoco_module_kwargs={"address": robot_mjcf, **common_mujoco_kwargs},
         )
-    robot_mjcf = str(R1PRO_SIM_MJCF_PATH)
+
     spawn_xy, spawn_z = _r1pro_scene_spawn(package)
     return MujocoSimPreset(
         robot_config_kwargs={
@@ -106,14 +126,11 @@ def r1pro_mujoco_scene_preset(
         },
         mujoco_module_kwargs={
             "scene_xml": str(package.mujoco_scene_path),
-            "robot_mjcf": robot_mjcf,
-            "robot_meshdir": str(R1PRO_SIM_MESHDIR),
             "scene_entities": package.entities,
             "spawn_xy": spawn_xy,
             "spawn_z": spawn_z,
             "spawn_yaw": _R1PRO_SCENE_YAW,
-            "initial_joint_positions": list(_R1PRO_SCENE_HOME_JOINTS),
-            "render_geom_groups": (0, 1, 2, 3),
+            **common_mujoco_kwargs,
         },
     )
 
