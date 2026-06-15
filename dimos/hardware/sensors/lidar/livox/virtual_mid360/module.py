@@ -47,22 +47,17 @@ class VirtualMid360Config(NativeModuleConfig):
 
     # Recorded Mid-360 pcap (point/IMU/status UDP). Read fully into RAM.
     pcap: str = ""
-    # Replay-speed multiplier; 1.0 = original inter-packet timing.
+    # Replay speed; 1.0 = original timing.
     rate: float = 1.0
-    # Seconds to wait after start before streaming begins.
+    # Seconds to wait before streaming begins.
     delay: float = 0.0
-    # IP the fake lidar sends from (must be on this netns's veth). Network-
-    # specific, so required (no default).
+    # IP the fake lidar sends from (on this netns's veth). Required.
     lidar_ip: str
-    # Host IP the recorded data is delivered to (where the SDK listens). Machine-
-    # specific, so required (no default).
+    # Host IP the data is delivered to (where the SDK listens). Required.
     host_ip: str
-    # Network namespace the fake lidar runs inside. Deployment-specific, so
-    # required (no default).
+    # Network namespace the fake lidar runs in. Required.
     lidar_netns: str
-    # Multicast group the point/IMU streams are sent to. 224.1.1.5 is the Livox
-    # default the SDK joins (a genuine Livox default), so it stays defaulted;
-    # override only to match a consumer with a different multicast_ip.
+    # Multicast group for point/IMU. 224.1.1.5 is the Livox default the SDK joins.
     mcast_data: str = "224.1.1.5"
 
 

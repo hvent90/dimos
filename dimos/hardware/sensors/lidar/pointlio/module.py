@@ -94,7 +94,6 @@ class PointLioConfig(NativeModuleConfig):
     msr_freq: float = 50.0
     main_freq: float = 5000.0
 
-    # Output publish rates (Hz)
     pointcloud_freq: float = 10.0
     odom_freq: float = 30.0
 

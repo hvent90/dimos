@@ -1,7 +1,6 @@
-# Point-LIO config, parsed by parameters.cpp via yaml-cpp.
-# Mid-360-specific values: preprocess.lidar_type (Livox), blind/scan_line,
-# mapping.extrinsic_T/R (Mid-360 IMU->lidar mount), det_range, fov_degree.
-# Retune those for a different sensor; the rest is platform-agnostic.
+# Point-LIO config. Mid-360-specific values to retune for a different sensor:
+# preprocess.lidar_type (Livox), blind/scan_line, mapping.extrinsic_T/R (Mid-360
+# IMU->lidar mount), det_range, fov_degree.
 common:
     con_frame: false
     con_frame_num: 1
