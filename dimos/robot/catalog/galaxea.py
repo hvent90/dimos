@@ -229,6 +229,13 @@ def r1pro_bimanual(
         "collision_exclusion_pairs": R1PRO_COLLISION_EXCLUSIONS,
         "max_velocity": 0.5,
         "max_acceleration": 1.0,
+        # left_arm_link7 is the wrist; the gripper fingertips sit ~0.2 m beyond it.
+        # Drive grasp targets to the fingertips (approach aligned to the pose +Z).
+        "grasp_tcp_links": (
+            "left_arm_link7",
+            "left_gripper_finger_link1",
+            "left_gripper_finger_link2",
+        ),
     }
     if add_gripper:
         # Single (left) gripper for now: the MuJoCo sim drives the first gripper

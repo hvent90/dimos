@@ -166,6 +166,10 @@ class ManipulationModule(Module):
         # Init joints: captured from first joint state per robot, used by go_init
         self._init_joints: dict[RobotName, JointState] = {}
 
+        # Grasp tool frame per robot (FK-derived, lazy): for robots whose planning
+        # tip is the wrist, retarget grasp poses to the fingertips. None = no offset.
+        self._grasp_tool: dict[WorldRobotID, tuple[np.ndarray, np.ndarray, np.ndarray] | None] = {}
+
         # TF publishing thread
         self._tf_stop_event = threading.Event()
         self._tf_thread: threading.Thread | None = None
@@ -511,6 +515,90 @@ class ManipulationModule(Module):
         self._world_monitor.publish_visualization()
 
     @rpc
+    @staticmethod
+    def _min_rotation(a: np.ndarray, b: np.ndarray) -> np.ndarray:
+        """Minimal rotation matrix mapping unit vector ``a`` onto unit vector ``b``."""
+        a = a / np.linalg.norm(a)
+        b = b / np.linalg.norm(b)
+        v = np.cross(a, b)
+        c = float(np.dot(a, b))
+
+        def skew(u: np.ndarray) -> np.ndarray:
+            return np.array([[0, -u[2], u[1]], [u[2], 0, -u[0]], [-u[1], u[0], 0]])
+
+        if c < -1.0 + 1e-9:  # anti-parallel: 180° about any perpendicular axis
+            axis = np.cross(a, np.array([1.0, 0.0, 0.0]))
+            if np.linalg.norm(axis) < 1e-6:
+                axis = np.cross(a, np.array([0.0, 1.0, 0.0]))
+            axis /= np.linalg.norm(axis)
+            k = skew(axis)
+            return np.eye(3) + 2.0 * k @ k
+        s = np.linalg.norm(v)
+        if s < 1e-12:
+            return np.eye(3)
+        k = skew(v)
+        return np.eye(3) + k + k @ k * ((1.0 - c) / (s * s))
+
+    def _grasp_tool_frame(
+        self, robot_id: WorldRobotID, config: RobotModelConfig
+    ) -> tuple[np.ndarray, np.ndarray, np.ndarray] | None:
+        """FK-derived grasp tool frame (R_tip_home, approach_home_world, tip->TCP offset
+        in tip frame), or None if the robot has no ``grasp_tcp_links`` / FK is unavailable.
+        Cached per robot. The approach is measured at the home configuration so it tracks
+        the robot's actual base_pose."""
+        if robot_id in self._grasp_tool:
+            return self._grasp_tool[robot_id]
+        result: tuple[np.ndarray, np.ndarray, np.ndarray] | None = None
+        links = getattr(config, "grasp_tcp_links", None)
+        world = self._world_monitor.world if self._world_monitor else None
+        if (
+            links
+            and config.home_joints is not None
+            and world is not None
+            and hasattr(world, "get_link_pose")
+            and hasattr(world, "scratch_context")
+            and hasattr(world, "set_joint_state")
+        ):
+            tip, f1, f2 = links
+            home = JointState(name=list(config.joint_names), position=list(config.home_joints))
+            try:
+                with world.scratch_context() as ctx:
+                    world.set_joint_state(ctx, robot_id, home)
+                    m_tip = np.asarray(world.get_link_pose(ctx, robot_id, tip), dtype=float)
+                    p1 = np.asarray(world.get_link_pose(ctx, robot_id, f1), dtype=float)[:3, 3]
+                    p2 = np.asarray(world.get_link_pose(ctx, robot_id, f2), dtype=float)[:3, 3]
+                r_tip = m_tip[:3, :3]
+                tcp = (p1 + p2) / 2.0
+                delta = tcp - m_tip[:3, 3]
+                norm = float(np.linalg.norm(delta))
+                if norm > 1e-9:
+                    t_local = r_tip.T @ delta
+                    approach_world = delta / norm
+                    result = (r_tip, approach_world, t_local)
+                    logger.info(
+                        f"Grasp tool frame for '{config.name}': fingertip is "
+                        f"{norm:.3f}m from {tip}; grasp targets retargeted to fingertips"
+                    )
+            except Exception as exc:  # noqa: BLE001 - degrade to wrist targeting
+                logger.warning(f"Grasp tool frame FK failed for '{config.name}': {exc}")
+        self._grasp_tool[robot_id] = result
+        return result
+
+    def _grasp_tcp_to_tip(
+        self, pose: Pose, tool: tuple[np.ndarray, np.ndarray, np.ndarray]
+    ) -> Pose:
+        """Convert a fingertip-TCP target pose into the wrist (tip-link) pose the IK
+        solves for: align the gripper approach axis (home wrist->fingertip) to the
+        pose's local +Z, keep the natural wrist roll, and back off the wrist by the
+        tip->TCP offset so the fingertips land on the requested position."""
+        r_tip_home, approach_home_world, t_local = tool
+        r_tcp = pose.orientation.to_rotation_matrix()
+        approach = r_tcp @ np.array([0.0, 0.0, 1.0])  # gripper points along local +Z
+        r_tip = self._min_rotation(approach_home_world, approach) @ r_tip_home
+        p_tcp = np.array([pose.position.x, pose.position.y, pose.position.z])
+        p_tip = p_tcp - r_tip @ t_local
+        return Pose(Vector3(*p_tip), Quaternion.from_rotation_matrix(r_tip))
+
     def plan_to_pose(self, pose: Pose, robot_name: RobotName | None = None) -> bool:
         """Plan motion to pose. Use preview_path() then execute().
 
@@ -526,6 +614,11 @@ class ManipulationModule(Module):
         current = self._world_monitor.get_current_joint_state(robot_id)
         if current is None:
             return self._fail("No joint state")
+
+        # For robots whose planning tip is the wrist, retarget to the fingertips.
+        tool = self._grasp_tool_frame(robot_id, self._world_monitor.world.get_robot_config(robot_id))
+        if tool is not None:
+            pose = self._grasp_tcp_to_tip(pose, tool)
 
         target_pose = PoseStamped(
             frame_id="world",

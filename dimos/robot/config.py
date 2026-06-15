@@ -86,6 +86,9 @@ class RobotConfig(BaseModel):
     max_velocity: float = 1.0
     max_acceleration: float = 2.0
     pre_grasp_offset: float = 0.10
+    # Optional (tip_link, finger_link_1, finger_link_2) so grasp targets drive the
+    # fingertips rather than the planning wrist. See RobotModelConfig.grasp_tcp_links.
+    grasp_tcp_links: tuple[str, str, str] | None = None
 
     # Gripper
     gripper: GripperConfig | None = None
@@ -238,6 +241,7 @@ class RobotConfig(BaseModel):
             tf_extra_links=self.tf_extra_links,
             home_joints=self.home_joints,
             pre_grasp_offset=self.pre_grasp_offset,
+            grasp_tcp_links=self.grasp_tcp_links,
         )
 
     def to_hardware_component(self) -> HardwareComponent:
