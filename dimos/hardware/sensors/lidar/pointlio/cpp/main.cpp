@@ -34,7 +34,6 @@
 #include "cloud_filter.hpp"
 #include "dimos_native_module.hpp"
 
-// dimos LCM message headers
 #include "geometry_msgs/Quaternion.hpp"
 #include "geometry_msgs/Vector3.hpp"
 #include "nav_msgs/Odometry.hpp"
@@ -50,10 +49,6 @@ using livox_common::GRAVITY_MS2;
 using livox_common::DATA_TYPE_IMU;
 using livox_common::DATA_TYPE_CARTESIAN_HIGH;
 using livox_common::DATA_TYPE_CARTESIAN_LOW;
-
-// ---------------------------------------------------------------------------
-// Global state
-// ---------------------------------------------------------------------------
 
 static std::atomic<bool> g_running{true};
 static lcm::LCM* g_lcm = nullptr;
@@ -75,10 +70,6 @@ static std::mutex g_pc_mutex;
 static std::vector<custom_messages::CustomPoint> g_accumulated_points;
 static uint64_t g_frame_start_ns = 0;
 static bool g_frame_has_timestamp = false;
-
-// ---------------------------------------------------------------------------
-// Helpers
-// ---------------------------------------------------------------------------
 
 static uint64_t get_timestamp_ns(const LivoxLidarEthernetPacket* pkt) {
     uint64_t ns = 0;
@@ -172,10 +163,6 @@ static void publish_odometry(const custom_messages::Odometry& odom, double times
     g_lcm->publish(g_odometry_topic, &msg);
 }
 
-
-// ---------------------------------------------------------------------------
-// Livox SDK callbacks
-// ---------------------------------------------------------------------------
 
 static void on_point_cloud(const uint32_t /*handle*/, const uint8_t /*dev_type*/,
                            LivoxLidarEthernetPacket* data, void* /*client_data*/) {
@@ -329,7 +316,6 @@ static void signal_handler(int /*sig*/) {
 int main(int argc, char** argv) {
     dimos::NativeModule mod(argc, argv);
 
-    // Required: LCM topics for output ports
     g_lidar_topic = mod.has("lidar") ? mod.topic("lidar") : "";
     g_odometry_topic = mod.has("odometry") ? mod.topic("odometry") : "";
 

@@ -74,9 +74,9 @@ class PointLioConfig(NativeModuleConfig):
     cwd: str | None = "cpp"
     executable: str = "result/bin/pointlio_native"
     build_command: str | None = "nix build .#pointlio_native"
-    # host_ip/lidar_ip are machine/network-specific, so there's no baked-in
-    # default. They come from the config or the DIMOS_POINTLIO_HOST_IP /
-    # DIMOS_POINTLIO_LIDAR_IP env vars; start() errors if neither supplies them.
+    # lidar_ip is required (network-specific); from the config or
+    # DIMOS_POINTLIO_LIDAR_IP. host_ip is optional — start() derives the local
+    # NIC on the lidar's subnet when unset (or via DIMOS_POINTLIO_HOST_IP).
     host_ip: str | None = Field(default_factory=lambda: os.environ.get("DIMOS_POINTLIO_HOST_IP"))
     lidar_ip: str | None = Field(default_factory=lambda: os.environ.get("DIMOS_POINTLIO_LIDAR_IP"))
     frequency: float = 10.0
@@ -94,7 +94,6 @@ class PointLioConfig(NativeModuleConfig):
     msr_freq: float = 50.0
     main_freq: float = 5000.0
 
-    # Output publish rates (Hz)
     pointcloud_freq: float = 10.0
     odom_freq: float = 30.0
 
@@ -179,60 +178,49 @@ class PointLio(NativeModule, perception.Lidar, perception.Odometry):
         super().stop()
 
     def _validate_network(self) -> None:
-        host_ip = self.config.host_ip
         lidar_ip = self.config.lidar_ip
-        if not host_ip or not lidar_ip:
-            missing = [
-                name for name, value in (("host_ip", host_ip), ("lidar_ip", lidar_ip)) if not value
-            ]
+        if not lidar_ip:
             raise RuntimeError(
-                f"PointLio: {' and '.join(missing)} not set — these are network-specific and "
-                "have no default. Set them in the config, or via the DIMOS_POINTLIO_HOST_IP / "
-                "DIMOS_POINTLIO_LIDAR_IP env vars."
+                "PointLio: lidar_ip not set — it's network-specific. Set it in the config "
+                "or via the DIMOS_POINTLIO_LIDAR_IP env var."
             )
         local_ips = [ip for ip, _iface in get_local_ips()]
 
-        _logger.info(
-            "PointLio network check",
-            host_ip=host_ip,
-            lidar_ip=lidar_ip,
-            local_ips=local_ips,
-        )
-
-        # Check if host_ip is actually assigned to this machine.
-        if host_ip not in local_ips:
+        # host_ip is optional — it's just the local NIC facing the lidar. When
+        # it's unset (or not one of our IPs) derive it as the local IP on the
+        # lidar's /24.
+        configured = self.config.host_ip
+        if configured and configured in local_ips:
+            host_ip = configured
+        else:
             try:
                 lidar_net = ipaddress.IPv4Network(f"{lidar_ip}/24", strict=False)
                 same_subnet = [ip for ip in local_ips if ipaddress.IPv4Address(ip) in lidar_net]
             except (ValueError, TypeError):
                 same_subnet = []
-
-            if same_subnet:
-                picked = same_subnet[0]
-                _logger.warning(
-                    f"PointLio: host_ip={host_ip!r} not found locally. "
-                    f"Auto-correcting to {picked!r} (same subnet as lidar {lidar_ip}).",
-                    configured_ip=host_ip,
-                    corrected_ip=picked,
-                    lidar_ip=lidar_ip,
-                    local_ips=local_ips,
-                )
-                self.config.host_ip = picked
-                host_ip = picked
-            else:
+            if not same_subnet:
                 subnet_prefix = ".".join(lidar_ip.split(".")[:3])
                 msg = (
-                    f"PointLio: host_ip={host_ip!r} is not assigned to any local interface.\n"
-                    f"  Lidar IP: {lidar_ip}\n"
+                    f"PointLio: cannot resolve host_ip — no local IP on the lidar's subnet "
+                    f"(lidar {lidar_ip}).\n"
                     f"  Local IPs found: {', '.join(local_ips) or '(none)'}\n"
-                    f"  No local IP found on the same subnet as lidar ({lidar_ip}).\n"
-                    f"  The lidar network interface may be down or unconfigured.\n"
+                    f"  → Bring up the lidar NIC, or set host_ip explicitly.\n"
                     f"  → Check: ip addr | grep {subnet_prefix}\n"
-                    f"  → Or assign an IP: "
-                    f"sudo ip addr add {subnet_prefix}.5/24 dev <iface>\n"
+                    f"  → Or assign: sudo ip addr add {subnet_prefix}.5/24 dev <iface>\n"
                 )
                 _logger.error(msg)
                 raise RuntimeError(msg)
+            host_ip = same_subnet[0]
+            self.config.host_ip = host_ip
+            if configured:
+                _logger.warning(
+                    f"PointLio: host_ip={configured!r} not local; using {host_ip!r} "
+                    f"(on lidar {lidar_ip}'s subnet).",
+                )
+
+        _logger.info(
+            "PointLio network check", host_ip=host_ip, lidar_ip=lidar_ip, local_ips=local_ips
+        )
 
         # Check if we can bind a UDP socket on host_ip (port 0 = ephemeral).
         try:

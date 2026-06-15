@@ -12,45 +12,19 @@
 # See the License for the specific language governing permissions and
 # limitations under the License.
 
-"""Blueprint: PointLio fed by a VirtualMid360 replaying a recorded pcap.
+"""PointLio fed by a VirtualMid360 replaying a recorded pcap (live SDK path).
 
-VirtualMid360 stands up a fake Mid-360 on a virtual NIC and replays the pcap
-over the Livox wire protocol; PointLio connects to it exactly as it would to
-real hardware (no replay_pcap — it runs in live SDK mode and never knows the
-sensor is synthetic). Use this to re-run a recorded session through the live
-SLAM path, e.g. to confirm a clip does not diverge.
-
-The two talk over UDP on lidar_ip/host_ip, so they need a network where those
-IPs are reachable (the e2e harness runs VirtualMid360 in a `lidar` netns and
-PointLio in a `drv` netns joined by a veth carrying lidar_ip).
+Each module reads its own config from env vars (DIMOS_MID360_* for the sensor,
+DIMOS_POINTLIO_* for PointLio); set the lidar/host IPs so the two ends agree.
 """
-
-import os
 
 from dimos.core.coordination.blueprints import autoconnect
 from dimos.hardware.sensors.lidar.livox.virtual_mid360.module import VirtualMid360
 from dimos.hardware.sensors.lidar.pointlio.module import PointLio
 from dimos.visualization.vis_module import vis_module
 
-# Point this at a recorded Mid-360 capture via the env var, e.g. the ruwik2_part3
-# LFS sample:
-#   VIRTUAL_MID360_PCAP="$(python -c 'from dimos.utils.data import get_data; \
-#       print(get_data("ruwik2_part3/ruwik2_part3.pcap"))')" dimos run ...
-# Read here (not get_data at import) so registering the blueprint never triggers
-# an LFS pull.
-_PCAP = os.environ.get("VIRTUAL_MID360_PCAP", "")
-
-# lidar_ip/host_ip/lidar_netns are deployment-specific (required, no defaults);
-# these are the values the e2e netns harness assigns (drv/lidar veth on .1.x).
 demo_virtual_mid360_pointlio = autoconnect(
-    VirtualMid360.blueprint(
-        pcap=_PCAP,
-        lidar_ip="192.168.1.155",
-        host_ip="192.168.1.5",
-        lidar_netns="lidar",
-    ),
-    # PointLio's host_ip/lidar_ip have no default — supply the harness's values
-    # so the two ends agree on the (virtual) Mid-360's address.
-    PointLio.blueprint(host_ip="192.168.1.5", lidar_ip="192.168.1.155"),
+    VirtualMid360.blueprint(),
+    PointLio.blueprint(),
     vis_module("rerun"),
 ).global_config(n_workers=3, robot_model="virtual_mid360_pointlio")

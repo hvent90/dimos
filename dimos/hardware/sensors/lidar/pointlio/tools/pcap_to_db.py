@@ -269,7 +269,7 @@ def _setup_netns(
 
 def _resolve_vm_binary() -> str:
     """Path to the virtual_mid360 binary; build it via nix if not present."""
-    env = os.environ.get("VIRTUAL_MID360_BIN")
+    env = os.environ.get("DIMOS_MID360_BIN")
     if env:
         return env
     out = _VM_DIR / "result" / "bin" / "virtual_mid360"

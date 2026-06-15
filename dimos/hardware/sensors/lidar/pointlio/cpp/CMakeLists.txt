@@ -10,7 +10,6 @@ if(CMAKE_INSTALL_PREFIX_INITIALIZED_TO_DEFAULT)
   set(CMAKE_INSTALL_PREFIX "${CMAKE_SOURCE_DIR}/result" CACHE PATH "" FORCE)
 endif()
 
-# OpenMP for parallel processing
 find_package(OpenMP QUIET)
 if(OpenMP_CXX_FOUND)
   set(CMAKE_CXX_FLAGS "${CMAKE_CXX_FLAGS} ${OpenMP_CXX_FLAGS}")
@@ -32,7 +31,6 @@ else()
   add_definitions(-DMP_PROC_NUM=1)
 endif()
 
-# Fetch dependencies
 include(FetchContent)
 
 # FAST-LIO-NON-ROS (pass -DFASTLIO_DIR=<path> or use local copy)
@@ -40,7 +38,6 @@ if(NOT FASTLIO_DIR)
   set(FASTLIO_DIR ${CMAKE_CURRENT_SOURCE_DIR}/fast-lio-non-ros)
 endif()
 
-# dimos-lcm C++ message headers
 FetchContent_Declare(dimos_lcm
   GIT_REPOSITORY https://github.com/dimensionalOS/dimos-lcm.git
   GIT_TAG main
@@ -48,23 +45,19 @@ FetchContent_Declare(dimos_lcm
 )
 FetchContent_MakeAvailable(dimos_lcm)
 
-# LCM
 find_package(PkgConfig REQUIRED)
 pkg_check_modules(LCM REQUIRED lcm)
 
-# Eigen3
 find_package(Eigen3 REQUIRED)
 
 # PCL (only components we need — avoid full PCL which drags in VTK via io)
 find_package(PCL 1.8 REQUIRED COMPONENTS common filters)
 
-# yaml-cpp (FAST-LIO config parsing — standard YAML format)
 find_package(yaml-cpp REQUIRED)
 
 # glog (iVox map backend — include/ivox/ivox3d.h needs glog)
 find_package(glog REQUIRED)
 
-# Livox SDK2 (from nix or /usr/local fallback)
 find_library(LIVOX_SDK livox_lidar_sdk_shared)
 if(NOT LIVOX_SDK)
   message(FATAL_ERROR "Livox SDK2 not found. Available via nix flake in lidar/livox/")
@@ -80,7 +73,6 @@ add_executable(pointlio_native
   ${FASTLIO_DIR}/src/parameters.cpp
 )
 
-# Shared Livox common headers (livox_sdk_config.hpp etc.)
 if(NOT LIVOX_COMMON_DIR)
   set(LIVOX_COMMON_DIR ${CMAKE_CURRENT_SOURCE_DIR}/../../common)
 endif()

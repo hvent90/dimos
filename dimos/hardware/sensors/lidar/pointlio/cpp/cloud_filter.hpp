@@ -27,14 +27,12 @@ typename pcl::PointCloud<PointT>::Ptr filter_cloud(
 
     if (!input || input->empty()) return input;
 
-    // Voxel grid downsample
     typename pcl::PointCloud<PointT>::Ptr voxelized(new pcl::PointCloud<PointT>());
     pcl::VoxelGrid<PointT> vg;
     vg.setInputCloud(input);
     vg.setLeafSize(cfg.voxel_size, cfg.voxel_size, cfg.voxel_size);
     vg.filter(*voxelized);
 
-    // Statistical outlier removal
     if (cfg.sor_mean_k > 0 && voxelized->size() > static_cast<size_t>(cfg.sor_mean_k)) {
         typename pcl::PointCloud<PointT>::Ptr cleaned(new pcl::PointCloud<PointT>());
         pcl::StatisticalOutlierRemoval<PointT> sor;
