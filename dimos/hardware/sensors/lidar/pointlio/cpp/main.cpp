@@ -33,7 +33,6 @@
 
 #include "cloud_filter.hpp"
 #include "dimos_native_module.hpp"
-#include "timing.hpp"
 
 // dimos LCM message headers
 #include "geometry_msgs/Quaternion.hpp"
@@ -58,7 +57,7 @@ using livox_common::DATA_TYPE_CARTESIAN_LOW;
 
 static std::atomic<bool> g_running{true};
 static lcm::LCM* g_lcm = nullptr;
-static FastLio* g_fastlio = nullptr;
+static PointLio* g_point_lio = nullptr;
 
 static double get_publish_ts() {
     return std::chrono::duration<double>(
@@ -107,7 +106,6 @@ static void publish_lidar(PointCloudXYZI::Ptr cloud, double timestamp,
     pc.is_bigendian = 0;
     pc.is_dense = 1;
 
-    // x, y, z, intensity (float32 each)
     pc.fields_length = 4;
     pc.fields.resize(4);
 
@@ -232,7 +230,7 @@ static void on_point_cloud(const uint32_t /*handle*/, const uint8_t /*dev_type*/
 
 static void on_imu_data(const uint32_t /*handle*/, const uint8_t /*dev_type*/,
                         LivoxLidarEthernetPacket* data, void* /*client_data*/) {
-    if (!g_running.load() || data == nullptr || !g_fastlio) return;
+    if (!g_running.load() || data == nullptr || !g_point_lio) return;
 
     uint64_t pkt_ts_ns = get_timestamp_ns(data);
     // Live IMU-drop instrumentation: a dropped datagram shows as a sensor-ts
@@ -302,7 +300,7 @@ static void on_imu_data(const uint32_t /*handle*/, const uint8_t /*dev_type*/,
         for (int cov_idx = 0; cov_idx < 9; ++cov_idx)
             imu_msg->linear_acceleration_covariance[cov_idx] = 0.0;
 
-        g_fastlio->feed_imu(imu_msg);
+        g_point_lio->feed_imu(imu_msg);
     }
 }
 
@@ -340,7 +338,6 @@ int main(int argc, char** argv) {
         return 1;
     }
 
-    // Point-LIO config path
     std::string config_path = mod.arg("config_path", "");
     if (config_path.empty()) {
         fprintf(stderr, "Error: --config_path <path> is required\n");
@@ -356,7 +353,7 @@ int main(int argc, char** argv) {
     std::string lidar_ip = mod.arg("lidar_ip", "192.168.1.155");
     g_frequency = mod.arg_float("frequency", 10.0f);
     g_frame_id = mod.arg_required("frame_id");
-    g_child_frame_id = mod.arg_required("odom_frame_id");
+    g_child_frame_id = mod.arg_required("body_frame_id");
     float pointcloud_freq = mod.arg_float("pointcloud_freq", 5.0f);
     float odom_freq = mod.arg_float("odom_freq", 50.0f);
     CloudFilterConfig filter_cfg;
@@ -408,8 +405,8 @@ int main(int argc, char** argv) {
     g_lcm = &lcm;
 
     if (debug) printf("[pointlio] Initializing Point-LIO...\n");
-    FastLio fast_lio(config_path, msr_freq, main_freq);
-    g_fastlio = &fast_lio;
+    PointLio point_lio(config_path, msr_freq, main_freq);
+    g_point_lio = &point_lio;
     if (debug) printf("[pointlio] Point-LIO initialized.\n");
 
     // Main-loop state. Body lives in `run_main_iter`, driven by the wall-paced
@@ -427,19 +424,7 @@ int main(int argc, char** argv) {
     std::optional<std::chrono::steady_clock::time_point> last_odom_publish;
 
 
-    // Per-section timing for `run_main_iter`, active only with --debug.
-    // maybe_flush() below prints a summary every second.
-    static timing::Section t_iter{"run_main_iter"};
-    static timing::Section t_emit_check{"emit.lock+swap"};
-    static timing::Section t_feed_lidar{"fast_lio.feed_lidar"};
-    static timing::Section t_process{"fast_lio.process"};
-    static timing::Section t_get_world_cloud{"fast_lio.get_body_cloud"};
-    static timing::Section t_filter_cloud{"filter_cloud"};
-    static timing::Section t_publish_lidar{"publish_lidar"};
-    static timing::Section t_publish_odom{"publish_odometry"};
-
     auto run_main_iter = [&](std::chrono::steady_clock::time_point now) {
-        timing::Scope iter_scope(t_iter);
         // Lazy-seed rate-limit bookmarks on the first iteration so they align
         // with the wall clock.
         if (!last_emit.has_value()) {
@@ -458,7 +443,6 @@ int main(int argc, char** argv) {
         std::vector<custom_messages::CustomPoint> points;
         uint64_t frame_start = 0;
         {
-            timing::Scope scope(t_emit_check);
             std::lock_guard<std::mutex> lock(g_pc_mutex);
             if (now - *last_emit >= frame_interval) {
                 if (!g_accumulated_points.empty()) {
@@ -470,6 +454,7 @@ int main(int argc, char** argv) {
             }
         }
         if (!points.empty()) {
+            const size_t num_points = points.size();
             auto lidar_msg = boost::make_shared<custom_messages::CustomMsg>();
             lidar_msg->header.seq = 0;
             lidar_msg->header.stamp = custom_messages::Time().fromSec(
@@ -478,19 +463,18 @@ int main(int argc, char** argv) {
             lidar_msg->timebase = frame_start;
             lidar_msg->lidar_id = 0;
             for (int idx = 0; idx < 3; idx++) lidar_msg->rsvd[idx] = 0;
-            lidar_msg->point_num = static_cast<uli>(points.size());
+            lidar_msg->point_num = static_cast<uli>(num_points);
             lidar_msg->points = std::move(points);
-            timing::Scope scope(t_feed_lidar);
-            fast_lio.feed_lidar(lidar_msg);
+            if (fastlio_debug) {
+                fprintf(stderr, "[pointlio] feed_lidar frame: %zu points\n", num_points);
+            }
+            point_lio.feed_lidar(lidar_msg);
         }
 
         // One Point-LIO IESKF step (cheap when queues empty).
-        {
-            timing::Scope scope(t_process);
-            fast_lio.process();
-        }
+        point_lio.process();
 
-        auto pose = fast_lio.get_pose();
+        auto pose = point_lio.get_pose();
         if (!pose.empty() && (pose[0] != 0.0 || pose[1] != 0.0 || pose[2] != 0.0)) {
             double ts = get_publish_ts();
 
@@ -500,30 +484,29 @@ int main(int argc, char** argv) {
             // get_body_cloud + filter_cloud (SOR) is the loop's costliest step,
             // so build it only when a publish is due.
             if (lidar_due) {
-                auto body_cloud = ([&]() {
-                    timing::Scope scope(t_get_world_cloud);
-                    return fast_lio.get_body_cloud();
-                })();
+                auto body_cloud = point_lio.get_body_cloud();
                 if (body_cloud && !body_cloud->empty()) {
-                    auto filtered = ([&]() {
-                        timing::Scope scope(t_filter_cloud);
-                        return filter_cloud<PointType>(body_cloud, filter_cfg);
-                    })();
-                    timing::Scope scope(t_publish_lidar);
+                    auto filtered = filter_cloud<PointType>(body_cloud, filter_cfg);
                     publish_lidar(filtered, ts);
                     last_pc_publish = now;
+                    if (fastlio_debug) {
+                        fprintf(stderr,
+                                "[pointlio] publish lidar: %zu points  pose=(%.3f, %.3f, %.3f)\n",
+                                filtered ? filtered->size() : 0, pose[0], pose[1], pose[2]);
+                    }
                 }
             }
 
             // Pose + covariance at odom_freq.
             if (!g_odometry_topic.empty() && now - *last_odom_publish >= odom_interval) {
-                timing::Scope scope(t_publish_odom);
-                publish_odometry(fast_lio.get_odometry(), ts);
+                publish_odometry(point_lio.get_odometry(), ts);
                 last_odom_publish = now;
+                if (fastlio_debug) {
+                    fprintf(stderr, "[pointlio] publish odom: pose=(%.3f, %.3f, %.3f)\n",
+                            pose[0], pose[1], pose[2]);
+                }
             }
         }
-
-        timing::maybe_flush(std::chrono::steady_clock::now());
     };
 
     // Packet source: Livox SDK callbacks from its own threads feed the
@@ -557,7 +540,7 @@ int main(int argc, char** argv) {
     }
 
     if (debug) printf("[pointlio] Shutting down...\n");
-    g_fastlio = nullptr;
+    g_point_lio = nullptr;
     LivoxLidarSdkUninit();
     g_lcm = nullptr;
 
