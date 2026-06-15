@@ -37,7 +37,10 @@ import roboplan.rrt as roboplan_rrt
 from dimos.manipulation.planning.spec.config import RobotModelConfig
 from dimos.manipulation.planning.spec.enums import ObstacleType, PlanningStatus
 from dimos.manipulation.planning.spec.models import Obstacle, PlanningResult, WorldRobotID
-from dimos.manipulation.planning.utils.mesh_utils import prepare_urdf_for_drake
+from dimos.manipulation.planning.utils.mesh_utils import (
+    inject_base_pose_into_urdf,
+    prepare_urdf_for_drake,
+)
 from dimos.manipulation.planning.utils.path_utils import compute_path_length
 from dimos.msgs.geometry_msgs.PoseStamped import PoseStamped
 from dimos.msgs.sensor_msgs.JointState import JointState
@@ -458,41 +461,7 @@ class RoboPlanWorld:
         # Weld the robot at its world base_pose so the planning frame == world frame
         # (matching DrakeWorld), instead of leaving the base at the origin. No-op for
         # an identity base_pose (e.g. the bimanual viser demo), so that path is unchanged.
-        if not np.allclose(pose_to_matrix(config.base_pose), np.eye(4)):
-            urdf_path = self._inject_base_pose(urdf_path, config.base_pose)
-        return urdf_path
-
-    @staticmethod
-    def _inject_base_pose(urdf_path: Path, base_pose: Any) -> Path:
-        """Wrap the URDF root link in a fixed joint placed at ``base_pose`` so the
-        loaded model's base sits at its world pose. Adds a ``world`` root link +
-        ``base_pose_mount`` fixed joint; the existing root becomes its child."""
-        import math
-        import xml.etree.ElementTree as ET
-
-        m = pose_to_matrix(base_pose)
-        x, y, z = (float(v) for v in m[:3, 3])
-        r = m[:3, :3]
-        # URDF rpy (fixed-axis XYZ, R = Rz(yaw) Ry(pitch) Rx(roll)).
-        pitch = math.atan2(-float(r[2, 0]), math.hypot(float(r[0, 0]), float(r[1, 0])))
-        roll = math.atan2(float(r[2, 1]), float(r[2, 2]))
-        yaw = math.atan2(float(r[1, 0]), float(r[0, 0]))
-
-        tree = ET.parse(urdf_path)
-        root = tree.getroot()
-        links = {link.get("name") for link in root.findall("link")}
-        children = {j.find("child").get("link") for j in root.findall("joint")}
-        base_link = next(iter(links - children))
-
-        ET.SubElement(root, "link", {"name": "world"})
-        joint = ET.SubElement(root, "joint", {"name": "base_pose_mount", "type": "fixed"})
-        ET.SubElement(joint, "origin", {"xyz": f"{x} {y} {z}", "rpy": f"{roll} {pitch} {yaw}"})
-        ET.SubElement(joint, "parent", {"link": "world"})
-        ET.SubElement(joint, "child", {"link": base_link})
-
-        out_path = urdf_path.with_name(f"{urdf_path.stem}_based.urdf")
-        tree.write(out_path, xml_declaration=True, encoding="unicode")
-        return out_path
+        return inject_base_pose_into_urdf(urdf_path, config.base_pose)
 
     def _prepare_robot_srdf(self, config: RobotModelConfig, urdf_path: Path) -> Path:
         srdf = self._generate_srdf(config, urdf_path)

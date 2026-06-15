@@ -249,6 +249,50 @@ def _convert_meshes(urdf_content: str, output_dir: Path) -> str:
     return re.sub(pattern, convert_mesh, urdf_content)
 
 
+def inject_base_pose_into_urdf(urdf_path: Path | str, base_pose: object) -> Path:
+    """Wrap a URDF's root link in a fixed joint placed at ``base_pose`` so the
+    loaded model's base sits at its world pose instead of the origin.
+
+    Adds a ``world`` root link + ``base_pose_mount`` fixed joint (quat->rpy); the
+    existing root link becomes its child. Returns the original path unchanged for
+    an identity base_pose. Used by BOTH the RoboPlan planning world and the viser
+    visualizer so the rendered robot and its planning frame agree.
+    """
+    import math
+    import xml.etree.ElementTree as ET
+
+    import numpy as np
+
+    from dimos.utils.transform_utils import pose_to_matrix
+
+    m = pose_to_matrix(base_pose)
+    if np.allclose(m, np.eye(4)):
+        return Path(urdf_path)
+
+    x, y, z = (float(v) for v in m[:3, 3])
+    r = m[:3, :3]
+    pitch = math.atan2(-float(r[2, 0]), math.hypot(float(r[0, 0]), float(r[1, 0])))
+    roll = math.atan2(float(r[2, 1]), float(r[2, 2]))
+    yaw = math.atan2(float(r[1, 0]), float(r[0, 0]))
+
+    tree = ET.parse(urdf_path)
+    root = tree.getroot()
+    links = {link.get("name") for link in root.findall("link")}
+    children = {j.find("child").get("link") for j in root.findall("joint")}
+    base_link = next(iter(links - children))
+    world_name = "world" if "world" not in links else "base_pose_world"
+
+    ET.SubElement(root, "link", {"name": world_name})
+    joint = ET.SubElement(root, "joint", {"name": "base_pose_mount", "type": "fixed"})
+    ET.SubElement(joint, "origin", {"xyz": f"{x} {y} {z}", "rpy": f"{roll} {pitch} {yaw}"})
+    ET.SubElement(joint, "parent", {"link": world_name})
+    ET.SubElement(joint, "child", {"link": base_link})
+
+    out_path = Path(urdf_path).with_name(f"{Path(urdf_path).stem}_based.urdf")
+    tree.write(out_path, encoding="unicode")
+    return out_path
+
+
 def pointcloud_to_convex_hull_obj(
     points: NDArray[np.float64],
     output_path: Path | str | None = None,

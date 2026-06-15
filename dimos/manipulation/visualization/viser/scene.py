@@ -19,7 +19,10 @@ from pathlib import Path
 from typing import Protocol, cast
 
 from dimos.manipulation.planning.spec.config import RobotModelConfig
-from dimos.manipulation.planning.utils.mesh_utils import prepare_urdf_for_drake
+from dimos.manipulation.planning.utils.mesh_utils import (
+    inject_base_pose_into_urdf,
+    prepare_urdf_for_drake,
+)
 from dimos.manipulation.visualization.viser.animation import PreviewAnimator
 from dimos.msgs.sensor_msgs.JointState import JointState
 
@@ -335,7 +338,7 @@ class ViserManipulationScene:
 
     def prepared_urdf_path(self, config: RobotModelConfig) -> Path:
         package_paths = {package: Path(path) for package, path in config.package_paths.items()}
-        return Path(
+        prepared = Path(
             prepare_urdf_for_drake(
                 Path(str(config.model_path)),
                 package_paths=package_paths,
@@ -343,6 +346,10 @@ class ViserManipulationScene:
                 convert_meshes=bool(config.auto_convert_meshes),
             )
         )
+        # Weld the robot at its world base_pose so the rendered robot sits where the
+        # planning frame puts it (and its tip gizmos), instead of at the origin
+        # (no-op for an identity base_pose).
+        return inject_base_pose_into_urdf(prepared, config.base_pose)
 
     def set_urdf_joints(
         self, urdf: object | None, joint_names: Sequence[str], joints: Sequence[float]
