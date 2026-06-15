@@ -95,11 +95,17 @@ class ViserRuntime:
 
 # Brand color sampled from the dimensional logo; used as the viser UI accent.
 _BRAND_COLOR = (96, 200, 220)
+# Built-in viser HDRI used for image-based lighting and as a soft (blurred) backdrop.
+# One of: apartment, city, dawn, forest, lobby, night, park, studio, sunset, warehouse.
+_ENV_HDRI = "warehouse"
+_ENV_BACKGROUND_BLUR = 0.35  # 0 = sharp env photo .. 1 = fully blurred bokeh
+_ENV_BACKGROUND_INTENSITY = 0.65  # dim the backdrop so the robot stays the focus
+_LOGO_PANEL_WIDTH = 360  # px width of the dimensional logo at the top of the control panel
 
 
-def _branded_background_image() -> object | None:
-    """A dark vertical gradient with the dimensional logo centered, used instead of
-    viser's flat white background. Returns an HxWx3 uint8 array, or None on failure."""
+def _dark_gradient_image() -> object | None:
+    """Plain dark vertical gradient, used as the flat-background fallback when the HDRI
+    environment map isn't available. Returns an HxWx3 uint8 array, or None on failure."""
     try:
         import numpy as np
 
@@ -108,58 +114,75 @@ def _branded_background_image() -> object | None:
         bot = np.array([8.0, 10.0, 15.0])
         t = np.linspace(0.0, 1.0, h)[:, None, None]
         grad = (top * (1.0 - t) + bot * t).astype(np.uint8)  # (h, 1, 3)
-        bg = np.ascontiguousarray(np.broadcast_to(grad, (h, w, 3)))
-
-        try:
-            from PIL import Image
-
-            from dimos.constants import DIMOS_PROJECT_ROOT
-
-            logo_path = (
-                DIMOS_PROJECT_ROOT / "docs" / "assets" / "dimensional-logo-master-transparent.png"
-            )
-            if logo_path.exists():
-                logo = Image.open(logo_path).convert("RGBA")
-                # Scale by width only (keeps the logo's native aspect ratio) and seat it in
-                # the upper third rather than dead center.
-                logo_width_frac = 0.72  # fraction of the canvas width the logo spans
-                logo_center_y_frac = 0.30  # vertical center, 0 = top .. 1 = bottom
-                scale = (w * logo_width_frac) / logo.width
-                logo = logo.resize(
-                    (max(1, int(logo.width * scale)), max(1, int(logo.height * scale)))
-                )
-                logo.putalpha(logo.split()[3].point(lambda v: int(v * 0.85)))  # slightly soften
-                canvas = Image.fromarray(bg, "RGB").convert("RGBA")
-                canvas.alpha_composite(
-                    logo,
-                    (
-                        (w - logo.width) // 2,
-                        int(h * logo_center_y_frac - logo.height / 2),
-                    ),
-                )
-                bg = np.asarray(canvas.convert("RGB"))
-        except Exception as exc:  # noqa: BLE001 - logo is optional; keep the gradient
-            logger.debug(f"viser: dimensional logo overlay skipped: {exc}")
-
-        return bg
+        return np.ascontiguousarray(np.broadcast_to(grad, (h, w, 3)))
     except Exception as exc:  # noqa: BLE001 - background is cosmetic, never fatal
-        logger.debug(f"viser: branded background skipped: {exc}")
+        logger.debug(f"viser: gradient background skipped: {exc}")
+        return None
+
+
+def _logo_panel_image(max_width: int) -> object | None:
+    """The dimensional logo as a small RGB thumbnail (composited onto a dark tile so it
+    blends into the control panel). Returns an HxWx3 uint8 array, or None on failure."""
+    try:
+        import numpy as np
+        from PIL import Image
+
+        from dimos.constants import DIMOS_PROJECT_ROOT
+
+        logo_path = (
+            DIMOS_PROJECT_ROOT / "docs" / "assets" / "dimensional-logo-master-transparent.png"
+        )
+        if not logo_path.exists():
+            return None
+        logo = Image.open(logo_path).convert("RGBA")
+        scale = max_width / logo.width
+        logo = logo.resize((max(1, int(logo.width * scale)), max(1, int(logo.height * scale))))
+        tile = Image.new("RGBA", logo.size, (20, 22, 30, 255))  # ~ control-panel background
+        tile.alpha_composite(logo)
+        return np.asarray(tile.convert("RGB"))
+    except Exception as exc:  # noqa: BLE001 - branding is optional, never fatal
+        logger.debug(f"viser: panel logo skipped: {exc}")
         return None
 
 
 def _apply_appearance(server: object) -> None:
-    """Give the viser scene a branded look (dark gradient + dimensional logo background,
-    a ground grid, and a dark UI theme) instead of a flat white page. Every step is
-    best-effort so a viser API change never breaks the visualization."""
+    """Give the viser scene a product-grade look instead of a flat white page: HDRI
+    environment lighting + a soft blurred backdrop, a grounding shadow, a floor grid, a
+    dark UI theme, and a small dimensional logo at the top of the control panel. Every
+    step is best-effort so a viser API change can never break the visualization."""
     scene = getattr(server, "scene", None)
     gui = getattr(server, "gui", None)
 
-    img = _branded_background_image()
-    if img is not None and scene is not None and hasattr(scene, "set_background_image"):
+    # Image-based lighting + a real (blurred) environment as the backdrop. This is the
+    # lightweight stand-in for a full scene background and also lights the robot softly.
+    env_ok = False
+    if scene is not None and hasattr(scene, "configure_environment_map"):
         try:
-            scene.set_background_image(img)
+            scene.configure_environment_map(
+                _ENV_HDRI,
+                background=True,
+                background_blurriness=_ENV_BACKGROUND_BLUR,
+                background_intensity=_ENV_BACKGROUND_INTENSITY,
+            )
+            env_ok = True
         except Exception as exc:  # noqa: BLE001
-            logger.debug(f"viser: set_background_image skipped: {exc}")
+            logger.debug(f"viser: environment map skipped: {exc}")
+
+    # A grounding contact shadow so the robot sits on the floor instead of floating.
+    if scene is not None and hasattr(scene, "configure_default_lights"):
+        try:
+            scene.configure_default_lights(enabled=True, cast_shadow=True)
+        except Exception as exc:  # noqa: BLE001
+            logger.debug(f"viser: default lights skipped: {exc}")
+
+    # Fall back to a flat dark gradient only if the HDRI backdrop wasn't applied.
+    if not env_ok and scene is not None and hasattr(scene, "set_background_image"):
+        img = _dark_gradient_image()
+        if img is not None:
+            try:
+                scene.set_background_image(img)
+            except Exception as exc:  # noqa: BLE001
+                logger.debug(f"viser: set_background_image skipped: {exc}")
 
     if scene is not None and hasattr(scene, "add_grid"):
         try:
@@ -174,10 +197,22 @@ def _apply_appearance(server: object) -> None:
         except Exception as exc:  # noqa: BLE001
             logger.debug(f"viser: add_grid skipped: {exc}")
 
+    # Branding lives in the control panel (a small logo), not as a billboard in the scene.
+    if gui is not None and hasattr(gui, "add_image"):
+        logo = _logo_panel_image(_LOGO_PANEL_WIDTH)
+        if logo is not None:
+            try:
+                gui.add_image(logo, order=0.0)  # order 0 keeps it at the very top
+            except Exception as exc:  # noqa: BLE001
+                logger.debug(f"viser: panel logo image skipped: {exc}")
+
     if gui is not None and hasattr(gui, "configure_theme"):
         try:
             gui.configure_theme(
-                dark_mode=True, brand_color=_BRAND_COLOR, control_layout="collapsible"
+                dark_mode=True,
+                brand_color=_BRAND_COLOR,
+                control_layout="collapsible",
+                show_logo=False,  # hide viser's own logo; ours is in the panel
             )
         except Exception as exc:  # noqa: BLE001
             logger.debug(f"viser: configure_theme skipped: {exc}")
