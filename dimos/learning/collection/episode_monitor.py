@@ -33,6 +33,9 @@ from dimos.core.core import rpc
 from dimos.core.module import Module, ModuleConfig
 from dimos.core.stream import In, Out
 from dimos.teleop.quest.quest_types import Buttons
+from dimos.utils.logging_config import setup_logger
+
+logger = setup_logger()
 
 # Friendly names → Quest Buttons attribute names. Override by supplying an
 # attribute name directly in `button_map`.
@@ -182,4 +185,24 @@ class EpisodeMonitorModule(Module):
                 task_label=self.config.default_task_label,
             )
         self.status.publish(status)
+        self._log_status(status)
         return status
+
+    def _log_status(self, status: EpisodeStatus) -> None:
+        """Print a one-line operator-facing status to the terminal on every
+        transition — the only live feedback during a collection session."""
+        verb = {
+            "start": "▶ RECORDING episode",
+            "save": "✓ SAVED episode",
+            "discard": "✗ DISCARDED episode",
+            "init": "· ready",
+        }.get(status.last_event, status.last_event)
+        label = f" [{status.task_label}]" if status.task_label else ""
+        logger.info(
+            "[collect] %s%s  (state=%s  saved=%d  discarded=%d)",
+            verb,
+            label,
+            status.state,
+            status.episodes_saved,
+            status.episodes_discarded,
+        )
