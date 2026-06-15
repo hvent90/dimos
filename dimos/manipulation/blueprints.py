@@ -683,10 +683,10 @@ and hold the object unless the user asks you to place it.
 cup/can if a harder object was requested).
 """
 
-# Claude (Anthropic) drives the agent — needs ANTHROPIC_API_KEY + langchain-anthropic.
-# init_chat_model parses the "anthropic:" prefix; swap the model id if your account
-# doesn't have this exact one (e.g. "anthropic:claude-3-5-sonnet-latest").
-_R1PRO_AGENT_MODEL = "anthropic:claude-sonnet-4-5-20250929"
+# LLM that drives the agent. Default gpt-4o (needs OPENAI_API_KEY). To use Claude,
+# set this to e.g. "anthropic:claude-sonnet-4-5-20250929" (needs ANTHROPIC_API_KEY +
+# langchain-anthropic); init_chat_model parses the "anthropic:" prefix.
+_R1PRO_AGENT_MODEL = "gpt-4o"
 
 r1pro_perception_sim_agent = autoconnect(
     r1pro_perception_sim,
