@@ -1,7 +1,7 @@
 // Copyright 2026 Dimensional Inc.
 // SPDX-License-Identifier: Apache-2.0
 
-use std::time::{Duration, SystemTime, UNIX_EPOCH};
+use std::time::{Duration, Instant, SystemTime, UNIX_EPOCH};
 
 use dimos_mls_planner::edges::{edges_to_segments, PlannerGraph};
 use dimos_mls_planner::mls_planner::{Config, Planner, RegionBounds};
@@ -51,6 +51,7 @@ struct MlsPlanner {
     latest_start: Option<(f32, f32, f32)>,
     pending_local: Option<PointCloud2>,
     pending_bounds: Option<PoseStamped>,
+    last_path_at: Option<Instant>,
 }
 
 impl MlsPlanner {
@@ -174,6 +175,7 @@ impl MlsPlanner {
         let p = &msg.pose.position;
         let goal = (p.x as f32, p.y as f32, p.z as f32);
 
+        let plan_start = Instant::now();
         let waypoints = match self.planner.plan(start, goal, &self.config) {
             Some(wp) => wp,
             None => {
@@ -182,9 +184,19 @@ impl MlsPlanner {
                 return;
             }
         };
+        let plan_ms = plan_start.elapsed().as_secs_f64() * 1e3;
+        let produced = Instant::now();
+        let since_last_ms = self
+            .last_path_at
+            .map_or(-1.0, |t| (produced - t).as_secs_f64() * 1e3);
+        self.last_path_at = Some(produced);
+
         let stamp = now();
         let path_msg = build_path_from_waypoints(&waypoints, &self.config.world_frame, stamp);
-        info!(waypoints = waypoints.len(), "path planned");
+        debug!(
+            waypoints = waypoints.len(),
+            plan_ms, since_last_ms, "path planned"
+        );
         publish_path(&self.path, &path_msg).await;
     }
 }

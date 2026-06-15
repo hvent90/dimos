@@ -76,6 +76,8 @@ class BasicPathFollower(Module):
         self._thread: Thread | None = None
         self._path_count = 0
         self._stats_last = 0.0
+        self._last_path_t = 0.0
+        self._max_gap = 0.0
 
     @rpc
     def start(self) -> None:
@@ -107,7 +109,11 @@ class BasicPathFollower(Module):
         if len(path.poses) == 0:
             return
         waypoints = np.array([[p.position.x, p.position.y] for p in path.poses])
+        now = time.perf_counter()
         with self._lock:
+            if self._last_path_t:
+                self._max_gap = max(self._max_gap, now - self._last_path_t)
+            self._last_path_t = now
             self._waypoints = waypoints
             self._path_count += 1
 
@@ -139,7 +145,9 @@ class BasicPathFollower(Module):
         self._stats_last = now
         with self._lock:
             count = self._path_count
+            gap = self._max_gap
             self._path_count = 0
+            self._max_gap = 0.0
         if count == 0:
             return
         rate = count / elapsed
@@ -147,7 +155,12 @@ class BasicPathFollower(Module):
         if odom is not None and waypoints is not None:
             position = np.array([odom.position.x, odom.position.y])
             lag = float(np.linalg.norm(waypoints[0] - position))
-        logger.info("path follower stats", replan_hz=round(rate, 1), path_lag_m=round(lag, 2))
+        logger.debug(
+            "path follower stats",
+            replan_hz=round(rate, 1),
+            max_gap_ms=round(gap * 1000),
+            path_lag_m=round(lag, 2),
+        )
 
     def _step(self, odom: PoseStamped, waypoints: np.ndarray) -> None:
         position = np.array([odom.position.x, odom.position.y])
