@@ -140,11 +140,13 @@ class BasicPathFollower(Module):
         with self._lock:
             count = self._path_count
             self._path_count = 0
-        if odom is None or waypoints is None:
+        if count == 0:
             return
         rate = count / elapsed
-        position = np.array([odom.position.x, odom.position.y])
-        lag = float(np.linalg.norm(waypoints[0] - position))
+        lag = float("nan")
+        if odom is not None and waypoints is not None:
+            position = np.array([odom.position.x, odom.position.y])
+            lag = float(np.linalg.norm(waypoints[0] - position))
         logger.info("path follower stats", replan_hz=round(rate, 1), path_lag_m=round(lag, 2))
 
     def _step(self, odom: PoseStamped, waypoints: np.ndarray) -> None:

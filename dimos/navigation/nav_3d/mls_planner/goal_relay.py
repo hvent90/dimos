@@ -36,6 +36,7 @@ logger = setup_logger()
 
 class GoalRelayConfig(ModuleConfig):
     replan_hz: float = 10.0
+    goal_tolerance: float = 0.3
 
 
 class GoalRelay(Module):
@@ -104,9 +105,13 @@ class GoalRelay(Module):
                 goal = self._goal
                 odom = self._latest_odom
             if goal is not None and odom is not None:
-                self.start_pose.publish(odom.to_pose_stamped())
-                # Let start_pose land before the goal triggers planning.
-                self._stop_event.wait(0.05)
-                self.goal_pose.publish(goal.to_pose_stamped())
+                start = odom.to_pose_stamped()
+                # Stop replanning once we are at the goal, otherwise the planner
+                # spins and the follower loops on goal_reached forever.
+                if math.hypot(start.x - goal.x, start.y - goal.y) >= self.config.goal_tolerance:
+                    self.start_pose.publish(start)
+                    # Let start_pose land before the goal triggers planning.
+                    self._stop_event.wait(0.05)
+                    self.goal_pose.publish(goal.to_pose_stamped())
             elapsed = time.perf_counter() - start_time
             self._stop_event.wait(max(0.0, period - elapsed))
