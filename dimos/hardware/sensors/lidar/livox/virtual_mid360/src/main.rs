@@ -30,35 +30,27 @@ const CMD_WORKMODE: u16 = 0x0100;
 #[derive(Debug, Deserialize, Validate)]
 #[serde(deny_unknown_fields)]
 struct Config {
-    /// Recorded Mid-360 pcap (data plane: point/IMU/status UDP). Read fully into RAM.
+    /// Recorded Mid-360 pcap (point/IMU/status UDP). Read fully into RAM.
     pcap: String,
-    /// Replay-speed multiplier; 1.0 = original inter-packet timing, >1 = faster.
+    /// Replay speed; 1.0 = original timing, >1 = faster.
     #[validate(range(min = 0.01, max = 1000.0))]
     rate: f64,
-    /// Seconds to wait after start before streaming begins.
+    /// Seconds to wait before streaming begins.
     #[serde(default)]
     #[validate(range(min = 0.0, max = 3600.0))]
     delay: f64,
-    /// IP the fake lidar sends from (must be assigned to this netns's veth).
-    /// Network-specific — required, no default.
+    /// IP the fake lidar sends from (on this netns's veth). Required.
     lidar_ip: String,
-    /// Host IP the recorded data is delivered to (where pointlio's SDK listens).
-    /// Machine-specific — required, no default.
+    /// Host IP the data is delivered to (where the SDK listens). Required.
     host_ip: String,
-    /// Network namespace the fake lidar runs inside (named in the setup-help
-    /// error). Deployment-specific — required, no default.
+    /// Network namespace the fake lidar runs in. Required.
     lidar_netns: String,
-    /// Multicast group the point/IMU streams are sent to. A real Mid-360
-    /// multicasts these and the Livox SDK joins whatever `multicast_ip` is in
-    /// its host config; 224.1.1.5 is the Livox default (what pointlio uses), so
-    /// it's the default here. Override only to match a consumer configured with
-    /// a different `multicast_ip`. (Needs a `<group>/32 dev <lidar-veth>` route.)
+    /// Multicast group for point/IMU. 224.1.1.5 is the Livox default the SDK
+    /// joins; override only to match a differently-configured consumer.
     #[serde(default = "default_mcast_data")]
     mcast_data: String,
 }
 
-// 224.1.1.5 is the Livox Mid-360 default multicast_ip (a genuine Livox default,
-// unlike the lidar/host IP + netns, which are deployment-specific and required).
 fn default_mcast_data() -> String {
     "224.1.1.5".into()
 }
@@ -101,9 +93,8 @@ fn crc32_ieee(data: &[u8]) -> u32 {
     !crc
 }
 
-/// Build a Livox SDK2 ACK frame from scratch (synthesized, not replayed):
-/// header[0:18] (SOF, version=0, length, seq, cmd_id, cmd_type=1 ACK, sender_type=1)
-/// + crc16_h@18 + data[] + crc32_d. `data` is the per-cmd ACK payload.
+/// Synthesize a Livox SDK2 ACK frame: 18-byte header (SOF, ver, len, seq, cmd_id,
+/// cmd_type=1, sender=1) + crc16@18 + `data` (per-cmd payload) + crc32@20.
 fn build_ack(cmd_id: u16, seq: u32, data: &[u8]) -> Vec<u8> {
     let length = (WRAPPER + data.len()) as u16;
     let mut frame = vec![0u8; WRAPPER + data.len()];
@@ -271,13 +262,11 @@ impl VirtualMid360 {
         let rate = cfg.rate;
         let delay = cfg.delay;
 
-        // discovery responder (:56000 broadcast) — synthesize the 0x0000 ACK
+        // discovery responder (:56000) — answers the 0x0000 broadcast
         spawn_discovery(lidar_ip, stop.clone());
-        // control responder (:56100) — synthesize per-cmd ACKs; arm streaming
-        // when the host issues the work-mode/config command (0x0100)
+        // control responder (:56100) — per-cmd ACKs; arms streaming on 0x0100
         spawn_control(lidar_ip, armed.clone(), stop.clone());
-        // data streamer — point/IMU/status, paced at `rate`, timestamps rewritten
-        // to now, armed by the handshake (`delay` as a startup floor / fallback)
+        // data streamer — point/IMU/status paced at `rate`, timestamps shifted to now
         spawn_stream(
             lidar_ip, host_ip, mcast_data, packets, rate, delay, armed, stop,
         );
@@ -400,9 +389,8 @@ fn spawn_stream(
         std::thread::sleep(Duration::from_secs_f64(delay.max(0.0)));
         tracing::info!("streaming {} packets at {rate}x", packets.len());
 
-        // Shift every packet's Livox sensor timestamp by a constant so the first
-        // emitted packet reads ≈ now and the original inter-packet spacing (used for
-        // intra-scan deskew) is preserved — the stream looks current/live.
+        // Shift every packet's sensor timestamp so the first reads ≈ now,
+        // preserving inter-packet spacing — the stream looks live.
         let now_ns = SystemTime::now()
             .duration_since(UNIX_EPOCH)
             .unwrap()
@@ -420,9 +408,8 @@ fn spawn_stream(
             if stop.load(Ordering::Relaxed) {
                 break;
             }
-            // The Mid-360 MULTICASTS point/IMU to mcast_data:port (the SDK joins that
-            // group — confirmed via `ss -ulnp` showing 224.1.1.5:56301/56401); status
-            // is unicast to the host. Sending point/IMU unicast is silently dropped.
+            // Mid-360 multicasts point/IMU to mcast_data:port (the SDK joins it);
+            // status is unicast. Unicasting point/IMU is silently dropped.
             let (socket, dest_ip, dest_port) = match pkt.src_port {
                 PORT_POINT => (&point, mcast_data, DST_POINT),
                 PORT_IMU => (&imu, mcast_data, DST_IMU),
@@ -475,10 +462,9 @@ const FW_TYPE_APP: u8 = 1;
 /// per-cmd response struct, which are #pragma pack(1) (packed, no padding).
 fn control_ack_payload(cmd_id: u16) -> Vec<u8> {
     match cmd_id {
-        // GetInternalInfo (0x0101): LivoxLidarDiagInternalInfoResponse (packed) —
-        //   ret_code:u8 @0, param_num:u16 @1, data @3 (= LivoxLidarKeyValueParam:
-        //   key:u16 @0, length:u16 @2, value @4). QueryFwType expects one param
-        //   keyed kKeyFwType (0x8010) with a 1-byte fw_type value (non-zero = app).
+        // GetInternalInfo (0x0101), packed: ret_code:u8 @0, param_num:u16 @1, then
+        // one KeyValueParam (key:u16, len:u16, value). QueryFwType wants kKeyFwType
+        // (0x8010) -> 1-byte fw_type != 0.
         0x0101 => {
             let mut payload = vec![0u8; 8];
             // payload[0] ret_code = 0
@@ -493,10 +479,8 @@ fn control_ack_payload(cmd_id: u16) -> Vec<u8> {
         _ => vec![0u8; 3],
     }
 }
-// LivoxLidarEthernetPacket.timestamp[8] sits at payload offset 28 (packed:
-// version@0,len@1,time_interval@3,dot_num@5,udp_cnt@7,frame_cnt@9,data_type@10,
-// time_type@11,rsvd@12,crc32@24,timestamp@28). The SDK casts the UDP payload
-// directly to LivoxLidarEthernetPacket*, so offset 28 is in the payload.
+// LivoxLidarEthernetPacket.timestamp[8] is at payload offset 28 (the SDK casts
+// the UDP payload straight to that packed struct), so rewrite 8 bytes there.
 const TS_OFFSET: usize = 28;
 
 fn read_ts_ns(payload: &[u8]) -> u64 {

@@ -77,10 +77,9 @@ _EPS = 1e-9
 _POLL_SEC = 1.0
 # Stop after the odom stream has been stagnant this long (pcap fully drained).
 _STAGNANT_SEC = 5.0
-# Give up if no odometry row appears within this long after start — a binary
-# that never produces output (missing artifact, bad pcap, SLAM init crash) would
-# otherwise hang the poll loop forever (the stagnation timeout only arms after
-# the first row). Generous: covers Point-LIO's IMU-init + first-frame latency.
+# No odometry row within this long after start = binary failed to come up
+# (missing artifact, bad pcap, SLAM-init crash); bounds the poll loop. Generous
+# to cover Point-LIO's IMU-init latency.
 _STARTUP_TIMEOUT_SEC = 60.0
 # virtual_mid360 crate dir (its `nix build .#default` produces result/bin/virtual_mid360).
 # .../sensors/lidar/pointlio/tools/pcap_to_db.py -> parents[2] == .../sensors/lidar
