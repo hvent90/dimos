@@ -97,10 +97,15 @@ class PointLioConfig(NativeModuleConfig):
     pointcloud_freq: float = 10.0
     odom_freq: float = 30.0
 
-    # Point cloud filtering
+    # Published-cloud cleanup. raw_cloud=True publishes the unfiltered scan
+    # (skips both downsample and outlier removal).
+    raw_cloud: bool = False
+    # Voxel-grid downsample leaf size (m); 0 keeps full resolution.
     voxel_size: float = 0.1
-    sor_mean_k: int = 50
-    sor_stddev: float = 1.0
+    # Statistical outlier removal: neighbors examined per point (0 disables it)
+    # and how many std-devs from the mean neighbor distance is kept.
+    outlier_neighbor_count: int = 50
+    outlier_std_threshold: float = 1.0
 
     # Point-LIO YAML config (relative to config/ dir, or absolute path).
     config: Annotated[

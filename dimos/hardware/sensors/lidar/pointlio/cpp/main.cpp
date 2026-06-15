@@ -83,10 +83,9 @@ using dimos::make_header;
 // Publish the lidar point cloud in the sensor body frame (g_frame_id).
 // `cloud` is Point-LIO's undistorted scan in the sensor's own frame
 // (get_body_cloud), so points are published as-is with no world registration.
-static void publish_lidar(PointCloudXYZI::Ptr cloud, double timestamp,
-                          const std::string& topic = "") {
+static void publish_lidar(PointCloudXYZI::Ptr cloud, double timestamp, const std::string& topic = "") {
     const std::string& chan = topic.empty() ? g_lidar_topic : topic;
-    if (!g_lcm || !cloud || cloud->empty() || chan.empty()) return;
+    if (!g_lcm || !cloud || cloud->empty() || chan.empty()) { return; }
 
     int num_points = static_cast<int>(cloud->size());
 
@@ -132,7 +131,7 @@ static void publish_lidar(PointCloudXYZI::Ptr cloud, double timestamp,
 }
 
 static void publish_odometry(const custom_messages::Odometry& odom, double timestamp) {
-    if (!g_lcm) return;
+    if (!g_lcm) { return; }
 
     nav_msgs::Odometry msg;
     msg.header = make_header(g_frame_id, timestamp);
@@ -164,9 +163,8 @@ static void publish_odometry(const custom_messages::Odometry& odom, double times
 }
 
 
-static void on_point_cloud(const uint32_t /*handle*/, const uint8_t /*dev_type*/,
-                           LivoxLidarEthernetPacket* data, void* /*client_data*/) {
-    if (!g_running.load() || data == nullptr) return;
+static void on_point_cloud(const uint32_t /*handle*/, const uint8_t /*dev_type*/, LivoxLidarEthernetPacket* data, void* /*client_data*/) {
+    if (!g_running.load() || data == nullptr) { return; }
 
     uint64_t ts_ns = get_timestamp_ns(data);
     uint16_t dot_num = data->dot_num;
@@ -215,9 +213,8 @@ static void on_point_cloud(const uint32_t /*handle*/, const uint8_t /*dev_type*/
     }
 }
 
-static void on_imu_data(const uint32_t /*handle*/, const uint8_t /*dev_type*/,
-                        LivoxLidarEthernetPacket* data, void* /*client_data*/) {
-    if (!g_running.load() || data == nullptr || !g_point_lio) return;
+static void on_imu_data(const uint32_t /*handle*/, const uint8_t /*dev_type*/, LivoxLidarEthernetPacket* data, void* /*client_data*/) {
+    if (!g_running.load() || data == nullptr || !g_point_lio) { return; }
 
     uint64_t pkt_ts_ns = get_timestamp_ns(data);
     // Live IMU-drop instrumentation: a dropped datagram shows as a sensor-ts
@@ -269,14 +266,16 @@ static void on_imu_data(const uint32_t /*handle*/, const uint8_t /*dev_type*/,
         imu_msg->orientation.y = 0.0;
         imu_msg->orientation.z = 0.0;
         imu_msg->orientation.w = 1.0;
-        for (int cov_idx = 0; cov_idx < 9; ++cov_idx)
+        for (int cov_idx = 0; cov_idx < 9; ++cov_idx) {
             imu_msg->orientation_covariance[cov_idx] = 0.0;
+        }
 
         imu_msg->angular_velocity.x = static_cast<double>(imu_pts[point_idx].gyro_x);
         imu_msg->angular_velocity.y = static_cast<double>(imu_pts[point_idx].gyro_y);
         imu_msg->angular_velocity.z = static_cast<double>(imu_pts[point_idx].gyro_z);
-        for (int cov_idx = 0; cov_idx < 9; ++cov_idx)
+        for (int cov_idx = 0; cov_idx < 9; ++cov_idx) {
             imu_msg->angular_velocity_covariance[cov_idx] = 0.0;
+        }
 
         // Point-LIO expects accel in g (EKF does its own scaling). SDK already
         // reports g, so feed raw — scaling by GRAVITY_MS2 would double-scale and
@@ -284,16 +283,16 @@ static void on_imu_data(const uint32_t /*handle*/, const uint8_t /*dev_type*/,
         imu_msg->linear_acceleration.x = static_cast<double>(imu_pts[point_idx].acc_x);
         imu_msg->linear_acceleration.y = static_cast<double>(imu_pts[point_idx].acc_y);
         imu_msg->linear_acceleration.z = static_cast<double>(imu_pts[point_idx].acc_z);
-        for (int cov_idx = 0; cov_idx < 9; ++cov_idx)
+        for (int cov_idx = 0; cov_idx < 9; ++cov_idx) {
             imu_msg->linear_acceleration_covariance[cov_idx] = 0.0;
+        }
 
         g_point_lio->feed_imu(imu_msg);
     }
 }
 
-static void on_info_change(const uint32_t handle, const LivoxLidarInfo* info,
-                           void* /*client_data*/) {
-    if (info == nullptr) return;
+static void on_info_change(const uint32_t handle, const LivoxLidarInfo* info, void* /*client_data*/) {
+    if (info == nullptr) { return; }
 
     char sn[17] = {};
     std::memcpy(sn, info->sn, 16);
@@ -342,10 +341,11 @@ int main(int argc, char** argv) {
     g_child_frame_id = mod.arg_required("body_frame_id");
     float pointcloud_freq = mod.arg_float("pointcloud_freq", 5.0f);
     float odom_freq = mod.arg_float("odom_freq", 50.0f);
+    bool raw_cloud = mod.arg_bool("raw_cloud", false);
     CloudFilterConfig filter_cfg;
     filter_cfg.voxel_size = mod.arg_float("voxel_size", 0.1f);
-    filter_cfg.sor_mean_k = mod.arg_int("sor_mean_k", 50);
-    filter_cfg.sor_stddev = mod.arg_float("sor_stddev", 1.0f);
+    filter_cfg.outlier_neighbor_count = mod.arg_int("outlier_neighbor_count", 50);
+    filter_cfg.outlier_std_threshold = mod.arg_float("outlier_std_threshold", 1.0f);
 
     // Propagates to the Point-LIO core via the `fastlio_debug` global.
     bool debug = mod.arg_bool("debug", false);
@@ -376,8 +376,10 @@ int main(int argc, char** argv) {
                host_ip.c_str(), lidar_ip.c_str(), g_frequency);
         printf("[pointlio] pointcloud_freq: %.1f Hz  odom_freq: %.1f Hz\n",
                pointcloud_freq, odom_freq);
-        printf("[pointlio] voxel_size: %.3f  sor_mean_k: %d  sor_stddev: %.1f\n",
-               filter_cfg.voxel_size, filter_cfg.sor_mean_k, filter_cfg.sor_stddev);
+        printf("[pointlio] output cloud: raw=%d voxel_size=%.3f outlier_neighbors=%d "
+               "outlier_std=%.1f\n",
+               raw_cloud, filter_cfg.voxel_size, filter_cfg.outlier_neighbor_count,
+               filter_cfg.outlier_std_threshold);
     }
 
     signal(SIGTERM, signal_handler);
@@ -390,10 +392,10 @@ int main(int argc, char** argv) {
     }
     g_lcm = &lcm;
 
-    if (debug) printf("[pointlio] Initializing Point-LIO...\n");
+    if (debug) { printf("[pointlio] Initializing Point-LIO...\n"); }
     PointLio point_lio(config_path, msr_freq, main_freq);
     g_point_lio = &point_lio;
-    if (debug) printf("[pointlio] Point-LIO initialized.\n");
+    if (debug) { printf("[pointlio] Point-LIO initialized.\n"); }
 
     // Main-loop state. Body lives in `run_main_iter`, driven by the wall-paced
     // main thread.
@@ -448,7 +450,7 @@ int main(int argc, char** argv) {
             lidar_msg->header.frame_id = "livox_frame";
             lidar_msg->timebase = frame_start;
             lidar_msg->lidar_id = 0;
-            for (int idx = 0; idx < 3; idx++) lidar_msg->rsvd[idx] = 0;
+            for (int idx = 0; idx < 3; idx++) { lidar_msg->rsvd[idx] = 0; }
             lidar_msg->point_num = static_cast<uli>(num_points);
             lidar_msg->points = std::move(points);
             if (fastlio_debug) {
@@ -472,7 +474,8 @@ int main(int argc, char** argv) {
             if (lidar_due) {
                 auto body_cloud = point_lio.get_body_cloud();
                 if (body_cloud && !body_cloud->empty()) {
-                    auto filtered = filter_cloud<PointType>(body_cloud, filter_cfg);
+                    auto filtered = raw_cloud ? body_cloud
+                                              : filter_cloud<PointType>(body_cloud, filter_cfg);
                     publish_lidar(filtered, ts);
                     last_pc_publish = now;
                     if (fastlio_debug) {
@@ -508,7 +511,7 @@ int main(int argc, char** argv) {
         LivoxLidarSdkUninit();
         return 1;
     }
-    if (debug) printf("[pointlio] SDK started, waiting for device...\n");
+    if (debug) { printf("[pointlio] SDK started, waiting for device...\n"); }
 
     while (g_running.load()) {
         auto loop_start = std::chrono::high_resolution_clock::now();
@@ -525,11 +528,11 @@ int main(int argc, char** argv) {
         }
     }
 
-    if (debug) printf("[pointlio] Shutting down...\n");
+    if (debug) { printf("[pointlio] Shutting down...\n"); }
     g_point_lio = nullptr;
     LivoxLidarSdkUninit();
     g_lcm = nullptr;
 
-    if (debug) printf("[pointlio] Done.\n");
+    if (debug) { printf("[pointlio] Done.\n"); }
     return 0;
 }
