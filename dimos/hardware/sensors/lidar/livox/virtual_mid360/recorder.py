@@ -64,14 +64,26 @@ def _stop_when_parent_dies(cmd: list[str], grace_sec: float) -> list[str]:
     it from a label tcpdump accepts (a no-op where AppArmor isn't in the way)."""
     parent_pid = os.getpid()
     quoted = " ".join(shlex.quote(arg) for arg in cmd)
+    # Resolved here so the failure echo can show real paths + the long-term fix.
+    aa = shutil.which("aa-exec") or "/usr/sbin/aa-exec"
+    kill = shutil.which("kill") or "/usr/bin/kill"
+    user = getpass.getuser()
+    sudoers = "/etc/sudoers.d/dimos-mid360-pcap-kill"
+    # Narrow rule: passwordless for ONLY the unconfined kill, not all sudo.
+    rule = f"{user} ALL=(root) NOPASSWD: {aa} -p unconfined -- {kill} *"
+    long_term_fix = (
+        f"Long-term fix (passwordless for ONLY this kill, not all sudo): "
+        f"echo '{rule}' | sudo tee {sudoers} && sudo chmod 440 {sudoers}"
+    )
 
     def _kill(sig: str) -> str:
         return (
             f'kill -{sig} "$child" 2>/dev/null'
-            f' || sudo -n aa-exec -p unconfined -- kill -{sig} "$child" 2>/dev/null'
+            f' || sudo -n {aa} -p unconfined -- {kill} -{sig} "$child" 2>/dev/null'
             f' || echo "[mid360_record] FAILED to {sig} tcpdump pid $child'
             f" (AppArmor blocked it + sudo -n could not escalate) — it is ORPHANED."
-            f' Kill it: sudo aa-exec -p unconfined -- kill -9 $child" >&2'
+            f" Kill it now: sudo {aa} -p unconfined -- {kill} -9 $child."
+            f'    {long_term_fix}" >&2'
         )
 
     # Foreground waits on tcpdump so a startup failure propagates its exit code.
