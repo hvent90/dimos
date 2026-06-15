@@ -199,13 +199,10 @@ def _table_stats(db_path: Path, table: str) -> tuple[int, float, float]:
         con.close()
 
 
-# ---------------------------------------------------------------------------
-# Network-namespace orchestration (outer process; needs CAP_NET_ADMIN via sudo)
-# ---------------------------------------------------------------------------
+# Network-namespace orchestration (outer process; needs CAP_NET_ADMIN via sudo).
 
 
 def _sudo() -> list[str]:
-    """Privilege-escalation prefix for the netns/veth commands."""
     return ["sudo"]
 
 
@@ -418,9 +415,7 @@ def _run_outer(args: argparse.Namespace) -> int:
     return 0
 
 
-# ---------------------------------------------------------------------------
-# Inner process: live Point-LIO + recorder, already inside the drv netns
-# ---------------------------------------------------------------------------
+# Inner process: live Point-LIO + recorder, already inside the drv netns.
 
 
 def _run_inner(args: argparse.Namespace) -> int:

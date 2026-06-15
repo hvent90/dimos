@@ -1,14 +1,8 @@
 // Fake Livox Mid-360 — replays a recorded pcap over a virtual NIC and synthesizes
 // the Livox SDK2 control handshake so an unmodified, live-mode pointlio ingests it
-// through the real Livox SDK as if from a live sensor.
-//
-// Inverse of pointlio's in-process `cpp/pcap_replay.hpp` (--replay_pcap), which
-// bypasses the network. This exercises the full live stack: SDK discovery +
-// control handshake, then point/IMU UDP off a (virtual) wire.
-//
-// Runs inside the "lidar" network namespace (see setup_commands()); the unmodified
-// pointlio runs in the peer "drv" namespace. On any failure the error names the
-// exact command to run, then asks the user to re-run the module.
+// through the real Livox SDK as if from a live sensor. Runs in the "lidar" netns
+// (peer "drv" runs pointlio); on a setup failure the error prints the exact
+// netns/veth commands to run.
 
 use dimos_module::{run, LcmTransport, Module};
 use serde::Deserialize;
@@ -203,8 +197,8 @@ fn ensure_interface(cfg: &Config) -> Result<Ipv4Addr, String> {
         .lidar_ip
         .parse()
         .map_err(|_| format!("invalid lidar_ip '{}'", cfg.lidar_ip))?;
-    // Probe: can we bind the lidar control port on lidar_ip? If not, the veth/netns
-    // isn't set up (or we're in the wrong namespace).
+    // If we can't bind the control port on lidar_ip, the veth/netns isn't set up
+    // (or we're in the wrong namespace).
     let probe = UdpSocket::bind(SocketAddrV4::new(lidar_ip, CMD_PORT));
     if probe.is_err() {
         let ns = &cfg.lidar_netns;
@@ -244,8 +238,7 @@ impl VirtualMid360 {
         let lidar_ip = match ensure_interface(cfg) {
             Ok(ip) => ip,
             Err(msg) => {
-                // Actionable error: print the fix command, then exit non-zero so the
-                // coordinator surfaces it and the user can re-run after setup.
+                // Exit non-zero so the coordinator surfaces the fix command.
                 tracing::error!("{msg}");
                 eprintln!("\n[virtual_mid360] {msg}\n");
                 std::process::exit(2);
@@ -288,13 +281,13 @@ impl VirtualMid360 {
         let rate = cfg.rate;
         let delay = cfg.delay;
 
-        // Role 1: discovery responder (:56000 broadcast) — synthesize the 0x0000 ACK.
+        // discovery responder (:56000 broadcast) — synthesize the 0x0000 ACK
         spawn_discovery(lidar_ip, stop.clone());
-        // Role 2: control responder (:56100) — synthesize per-cmd ACKs; arm streaming
-        // when the host issues the work-mode/config command (0x0100).
+        // control responder (:56100) — synthesize per-cmd ACKs; arm streaming
+        // when the host issues the work-mode/config command (0x0100)
         spawn_control(lidar_ip, armed.clone(), stop.clone());
-        // Role 3: data streamer — point/IMU/status, paced at `rate`, timestamps rewritten
-        // to now, armed by the handshake (with `delay` as a startup floor / fallback).
+        // data streamer — point/IMU/status, paced at `rate`, timestamps rewritten
+        // to now, armed by the handshake (`delay` as a startup floor / fallback)
         spawn_stream(
             lidar_ip, host_ip, mcast_data, packets, rate, delay, armed, stop,
         );

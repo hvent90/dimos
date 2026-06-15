@@ -90,10 +90,7 @@ static uint64_t get_timestamp_ns(const LivoxLidarEthernetPacket* pkt) {
 using dimos::time_from_seconds;
 using dimos::make_header;
 
-// ---------------------------------------------------------------------------
-// Publish lidar point cloud in the sensor body frame (g_frame_id / mid360_link)
-// ---------------------------------------------------------------------------
-//
+// Publish the lidar point cloud in the sensor body frame (g_frame_id).
 // `cloud` is FAST-LIO's undistorted scan in the sensor's own frame
 // (get_body_cloud), so points are published as-is with no world registration.
 static void publish_lidar(PointCloudXYZI::Ptr cloud, double timestamp,
@@ -145,10 +142,6 @@ static void publish_lidar(PointCloudXYZI::Ptr cloud, double timestamp,
     g_lcm->publish(chan, &pc);
 }
 
-// ---------------------------------------------------------------------------
-// Publish odometry
-// ---------------------------------------------------------------------------
-
 static void publish_odometry(const custom_messages::Odometry& odom, double timestamp) {
     if (!g_lcm) return;
 
@@ -156,7 +149,7 @@ static void publish_odometry(const custom_messages::Odometry& odom, double times
     msg.header = make_header(g_frame_id, timestamp);
     msg.child_frame_id = g_child_frame_id;
 
-    // Pose in the SLAM/sensor frame (no mount offset applied).
+    // Pose in the SLAM/sensor frame.
     msg.pose.pose.position.x = odom.pose.pose.position.x;
     msg.pose.pose.position.y = odom.pose.pose.position.y;
     msg.pose.pose.position.z = odom.pose.pose.position.z;
@@ -329,17 +322,9 @@ static void on_info_change(const uint32_t handle, const LivoxLidarInfo* info,
     EnableLivoxLidarImuData(handle, nullptr, nullptr);
 }
 
-// ---------------------------------------------------------------------------
-// Signal handling
-// ---------------------------------------------------------------------------
-
 static void signal_handler(int /*sig*/) {
     g_running.store(false);
 }
-
-// ---------------------------------------------------------------------------
-// Main
-// ---------------------------------------------------------------------------
 
 int main(int argc, char** argv) {
     dimos::NativeModule mod(argc, argv);
@@ -410,11 +395,9 @@ int main(int argc, char** argv) {
                filter_cfg.voxel_size, filter_cfg.sor_mean_k, filter_cfg.sor_stddev);
     }
 
-    // Signal handlers
     signal(SIGTERM, signal_handler);
     signal(SIGINT, signal_handler);
 
-    // Init LCM
     lcm::LCM lcm;
     if (!lcm.good()) {
         fprintf(stderr, "Error: LCM init failed\n");
@@ -571,7 +554,6 @@ int main(int argc, char** argv) {
         }
     }
 
-    // Cleanup
     if (debug) printf("[fastlio2] Shutting down...\n");
     g_fastlio = nullptr;
     LivoxLidarSdkUninit();
