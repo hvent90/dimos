@@ -95,12 +95,13 @@ _R1PRO_FLOOR_Z = 0.0
 # natural. Robot stays on the floor; the same offset is applied to the planning
 # obstacles + ground-truth detections so the sim and planner agree.
 #
-# 0.30 m puts the desk top at ~0.95 m (counter height) where the left arm grasps the
-# front objects (cup/can) robustly. NOTE: going higher (~0.5 m) puts objects near
-# shoulder height where top-down grasps become marginal/unreachable; centered-tall
-# (bottle) and far-back (box/marker/tape) objects sit at the LEFT arm's workspace
-# edge at any height and need the right arm (bimanual follow-on).
-_R1PRO_DESK_Z_OFFSET = 0.30
+# Reliable at 0.0 (original height). Raising the desk destabilizes the pick: the arm
+# hangs BELOW the desk at the all-zeros home, so reaching over a raised table forces
+# the RRT planner to route up-and-over, which flakes (pre-grasp path fails ~1/4 at
+# +0.10 m, ~3/4 at +0.15 m). A bigger raise needs a raised "ready" home pose so the
+# arm starts above the desk -- but that also requires decoupling the grasp tool frame
+# from home and re-seeding IK (a tuning pass), so it's left at 0 until that's done.
+_R1PRO_DESK_Z_OFFSET = 0.0
 
 
 def _r1pro_raised_entities(package: ScenePackage) -> list[dict[str, Any]]:
