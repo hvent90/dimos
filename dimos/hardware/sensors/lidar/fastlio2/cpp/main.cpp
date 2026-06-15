@@ -650,10 +650,12 @@ int main(int argc, char** argv) {
         }
     }
 
-    // Cleanup
+    // Cleanup. Uninit the SDK (stops + joins its callback threads) BEFORE
+    // clearing the globals the callbacks read, so a late on_point/on_imu can't
+    // race the assignment and dereference a null g_fastlio / g_lcm.
     if (debug) printf("[fastlio2] Shutting down...\n");
-    g_fastlio = nullptr;
     LivoxLidarSdkUninit();
+    g_fastlio = nullptr;
     g_lcm = nullptr;
 
     if (debug) printf("[fastlio2] Done.\n");
