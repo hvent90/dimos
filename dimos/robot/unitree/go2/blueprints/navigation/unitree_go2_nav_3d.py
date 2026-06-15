@@ -45,6 +45,14 @@ def _render_global_map(msg: Any) -> Any:
     return msg.to_rerun()
 
 
+def _render_path(msg: Any) -> Any:
+    # The planner clears its plan with an empty path on every start-pose change.
+    # Logging those would blank the line. Drop them so the last path stays shown.
+    if len(msg.poses) == 0:
+        return None
+    return msg
+
+
 def _static_robot_body(rr: Any) -> list[Any]:
     """Go2-shaped box on fastlio's body frame, counter-rotated for the lidar pitch."""
     return [
@@ -61,9 +69,9 @@ _nav_rerun_config = {
     "max_hz": {
         **rerun_config["max_hz"],
         "world/global_map": 1.0,
-        "world/local_map": 0,
+        "world/local_map": 1.0,
     },
-    "memory_limit": "1GB",
+    "memory_limit": "256MB",
     # base_link tf comes from the go2 internal odometry, which is not the map
     # frame. Anchor the robot box to fastlio's body frame instead and hide the
     # camera frustum that rides base_link.
@@ -71,6 +79,7 @@ _nav_rerun_config = {
     "visual_override": {
         **rerun_config["visual_override"],
         "world/global_map": _render_global_map,
+        "world/path": _render_path,
         "world/camera_info": None,
         "world/color_image": None,
         "world/lidar": None,
@@ -94,7 +103,7 @@ unitree_go2_nav_3d = autoconnect(
         map_freq=-1.0,
     ).remappings([(FastLio2, "global_map", "global_map_fastlio")]),
     RayTracingVoxelMap.blueprint(
-        voxel_size=voxel_size, emit_every=1, global_emit_every=300, max_health=5
+        voxel_size=voxel_size, emit_every=1, global_emit_every=1500, max_health=5
     ),
     # global_map is remapped off so the planner runs purely on the
     # incremental local_map + region_bounds pair.
