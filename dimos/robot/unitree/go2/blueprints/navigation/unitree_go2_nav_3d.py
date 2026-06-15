@@ -27,6 +27,7 @@ from dimos.core.coordination.blueprints import autoconnect
 from dimos.core.global_config import global_config
 from dimos.hardware.sensors.lidar.fastlio2.module import FastLio2
 from dimos.mapping.ray_tracing.module import RayTracingVoxelMap
+from dimos.msgs.sensor_msgs.PointCloud2 import PointCloud2
 from dimos.navigation.basic_path_follower.module import BasicPathFollower
 from dimos.navigation.movement_manager.movement_manager import MovementManager
 from dimos.navigation.nav_3d.mls_planner.goal_relay import GoalRelay
@@ -40,9 +41,22 @@ voxel_size = 0.1
 go2_lidar_height = 0.5
 
 
-def _render_global_map(msg: Any) -> Any:
-    # don't use a min z height because why would we want that
-    return msg.to_rerun()
+def _downsampled(stride: int) -> Any:
+    """Stride a cloud before rendering. Cuts viewer encode and stream weight.
+
+    The full-rate cloud still goes to the planner over LCM. This only thins
+    what the bridge sends to the viewer.
+    """
+
+    def render(msg: Any) -> Any:
+        points = msg.points_f32()
+        if len(points) == 0:
+            return None
+        if len(points) <= stride:
+            return msg
+        return PointCloud2.from_numpy(points[::stride], frame_id=msg.frame_id)
+
+    return render
 
 
 def _render_path(msg: Any) -> Any:
@@ -68,8 +82,9 @@ _nav_rerun_config = {
     **rerun_config,
     "max_hz": {
         **rerun_config["max_hz"],
-        "world/global_map": 1.0,
-        "world/local_map": 1.0,
+        # pose and path are unthrottled (not listed) for live high-rate viz.
+        "world/local_map": 5.0,
+        "world/global_map": 0.5,
     },
     "memory_limit": "256MB",
     # base_link tf comes from the go2 internal odometry, which is not the map
@@ -78,7 +93,8 @@ _nav_rerun_config = {
     "static": {"world/tf/body": _static_robot_body},
     "visual_override": {
         **rerun_config["visual_override"],
-        "world/global_map": _render_global_map,
+        "world/global_map": _downsampled(8),
+        "world/local_map": _downsampled(3),
         "world/path": _render_path,
         "world/camera_info": None,
         "world/color_image": None,
