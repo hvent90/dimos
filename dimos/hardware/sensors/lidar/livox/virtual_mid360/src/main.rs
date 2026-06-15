@@ -311,8 +311,7 @@ fn spawn_discovery(lidar_ip: Ipv4Addr, stop: Arc<AtomicBool>) {
                 continue;
             }
             let seq = u32::from_le_bytes([buf[4], buf[5], buf[6], buf[7]]);
-            // TODO(payload): discovery ACK data describes the device (dev_type, serial,
-            // lidar_ip, cmd port). Enumerate the exact layout from livox-sdk2 source.
+            // ACK describes the device (dev_type, serial, lidar_ip, cmd port).
             let ack = build_ack(0x0000, seq, &discovery_ack_payload(lidar_ip));
             let _ = sock.send_to(&ack, bcast);
         }
@@ -340,9 +339,8 @@ fn spawn_control(lidar_ip: Ipv4Addr, armed: Arc<AtomicBool>, stop: Arc<AtomicBoo
             }
             let seq = u32::from_le_bytes([buf[4], buf[5], buf[6], buf[7]]);
             let cmd_id = u16::from_le_bytes([buf[8], buf[9]]);
-            // TODO(payload): per-cmd_id ACK data. Most replies = ret_code(u8)=0 (success);
-            // queries echo the requested fields. Enumerate cmd_ids + payloads from
-            // livox-sdk2 source (comm/command_impl) or one captured real handshake.
+            // Per-cmd_id ACK data (control_ack_payload): QueryFwType echoes a
+            // key-value param; the rest reply ret_code(u8)=0 (success).
             let ack = build_ack(cmd_id, seq, &control_ack_payload(cmd_id));
             let _ = sock.send_to(&ack, from);
             tracing::info!(
