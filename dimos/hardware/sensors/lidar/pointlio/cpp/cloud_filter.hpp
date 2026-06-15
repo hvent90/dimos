@@ -13,37 +13,42 @@
 #include <pcl/point_types.h>
 
 struct CloudFilterConfig {
-    float voxel_size = 0.1f;
-    int sor_mean_k = 50;
-    float sor_stddev = 1.0f;
+    float voxel_size = 0.1f;           // downsample leaf size (m); <=0 skips downsampling
+    int outlier_neighbor_count = 50;   // statistical-outlier-removal neighbors; <=0 skips it
+    float outlier_std_threshold = 1.0f;
 };
 
-/// Apply voxel grid downsample + statistical outlier removal in-place.
-/// Returns the filtered cloud (new allocation).
+/// Voxel-grid downsample + statistical outlier removal; each stage is skipped
+/// when its config is <=0. Returns the filtered cloud (new allocation).
 template <typename PointT>
 typename pcl::PointCloud<PointT>::Ptr filter_cloud(
     const typename pcl::PointCloud<PointT>::Ptr& input,
     const CloudFilterConfig& cfg) {
 
-    if (!input || input->empty()) return input;
+    if (!input || input->empty()) { return input; }
 
-    typename pcl::PointCloud<PointT>::Ptr voxelized(new pcl::PointCloud<PointT>());
-    pcl::VoxelGrid<PointT> vg;
-    vg.setInputCloud(input);
-    vg.setLeafSize(cfg.voxel_size, cfg.voxel_size, cfg.voxel_size);
-    vg.filter(*voxelized);
+    auto working = input;
+    if (cfg.voxel_size > 0.0f) {
+        typename pcl::PointCloud<PointT>::Ptr voxelized(new pcl::PointCloud<PointT>());
+        pcl::VoxelGrid<PointT> vg;
+        vg.setInputCloud(working);
+        vg.setLeafSize(cfg.voxel_size, cfg.voxel_size, cfg.voxel_size);
+        vg.filter(*voxelized);
+        working = voxelized;
+    }
 
-    if (cfg.sor_mean_k > 0 && voxelized->size() > static_cast<size_t>(cfg.sor_mean_k)) {
+    if (cfg.outlier_neighbor_count > 0 &&
+        working->size() > static_cast<size_t>(cfg.outlier_neighbor_count)) {
         typename pcl::PointCloud<PointT>::Ptr cleaned(new pcl::PointCloud<PointT>());
         pcl::StatisticalOutlierRemoval<PointT> sor;
-        sor.setInputCloud(voxelized);
-        sor.setMeanK(cfg.sor_mean_k);
-        sor.setStddevMulThresh(cfg.sor_stddev);
+        sor.setInputCloud(working);
+        sor.setMeanK(cfg.outlier_neighbor_count);
+        sor.setStddevMulThresh(cfg.outlier_std_threshold);
         sor.filter(*cleaned);
         return cleaned;
     }
 
-    return voxelized;
+    return working;
 }
 
 #endif
