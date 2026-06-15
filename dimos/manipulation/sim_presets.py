@@ -25,6 +25,13 @@ from typing import Any
 from dimos.robot.catalog.galaxea import R1PRO_SIM_MESHDIR, R1PRO_SIM_MJCF_PATH
 from dimos.robot.catalog.ufactory import XARM7_SIM_PATH
 from dimos.simulation.scene_assets.spec import ScenePackage, load_scene_package
+from dimos.utils.logging_config import setup_logger
+
+logger = setup_logger()
+
+# The R1Pro sim defaults to this scene package so `dimos run r1pro-...` works
+# without setting DIMOS_SCENE_PACKAGE_PATH (it exists in the repo data dir).
+_R1PRO_DEFAULT_SCENE = "data/scene_packages/dimos_office"
 
 
 @dataclass(frozen=True)
@@ -104,7 +111,7 @@ def r1pro_mujoco_scene_preset(
         "gripper_ctrl_inverted": False,
         "render_geom_groups": (0, 1, 2, 3),
     }
-    package = _scene_package_from_env(scene_package_env)
+    package = _r1pro_scene_package(scene_package_env)
     if package is None:
         return MujocoSimPreset(
             robot_config_kwargs={
@@ -133,6 +140,31 @@ def r1pro_mujoco_scene_preset(
             **common_mujoco_kwargs,
         },
     )
+
+
+def _r1pro_scene_package(env_name: str) -> ScenePackage | None:
+    """Load the R1Pro sim scene from the env var or the committed default, warning
+    (not raising) if it can't be loaded so import + run stay robust and the
+    robot-only fallback is never silent."""
+    path = os.environ.get(env_name) or _R1PRO_DEFAULT_SCENE
+    meta = Path(path).expanduser()
+    if meta.is_dir():
+        meta = meta / "scene.meta.json"
+    if not meta.exists():
+        logger.warning(
+            f"R1Pro sim: scene package not found at '{meta}'; spawning robot-only at "
+            f"the origin (no desk). Set {env_name} to a scene package directory."
+        )
+        return None
+    try:
+        package = load_scene_package(meta)
+    except Exception as exc:  # noqa: BLE001 - degrade on any malformed package
+        logger.warning(f"R1Pro sim: failed to load scene package '{meta}': {exc}; robot-only.")
+        return None
+    if package.mujoco_scene_path is None or not package.mujoco_scene_path.exists():
+        logger.warning(f"R1Pro sim: scene package '{meta}' has no MuJoCo scene artifact; robot-only.")
+        return None
+    return package
 
 
 def _r1pro_scene_spawn(package: ScenePackage) -> tuple[tuple[float, float], float]:

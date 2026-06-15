@@ -552,6 +552,17 @@ _r1pro_sim_cfg = _catalog_r1pro_bimanual(
 )
 
 r1pro_sim_preview = autoconnect(
+    # ManipulationModule owns the viser visualization (web, :8095). The robot is
+    # welded at its desk spawn (base_pose), so viser shows it at the desk and the
+    # per-arm gizmos drive plan->preview->execute against the MuJoCo sim below.
+    ManipulationModule.blueprint(
+        robots=[_r1pro_sim_cfg.to_robot_model_config()],
+        planning_timeout=10.0,
+        world_backend="roboplan",
+        planner_name="roboplan",
+        kinematics_name="pink",
+        visualization=_R1PRO_BIMANUAL_VIZ,
+    ),
     MujocoSimModule.blueprint(
         **_r1pro_sim_preset.mujoco_module_kwargs,
         headless=False,
@@ -567,11 +578,6 @@ r1pro_sim_preview = autoconnect(
         joint_state_frame_id="coordinator",
         hardware=[_r1pro_sim_cfg.to_hardware_component()],
         tasks=[_r1pro_sim_cfg.to_task_config()],
-    ),
-    RerunBridgeModule.blueprint(
-        blueprint=_xarm_perception_rerun_blueprint,
-        memory_limit="5%",
-        max_hz={"world/color_image": 2.0, "world/depth_image": 2.0},
     ),
 ).transports(
     {
