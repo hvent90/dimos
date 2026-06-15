@@ -49,6 +49,8 @@ demo_virtual_mid360_pointlio = autoconnect(
         host_ip="192.168.1.5",
         lidar_netns="lidar",
     ),
-    PointLio.blueprint(),
+    # PointLio's host_ip/lidar_ip have no default — supply the harness's values
+    # so the two ends agree on the (virtual) Mid-360's address.
+    PointLio.blueprint(host_ip="192.168.1.5", lidar_ip="192.168.1.155"),
     vis_module("rerun"),
 ).global_config(n_workers=3, robot_model="virtual_mid360_pointlio")

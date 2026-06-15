@@ -24,7 +24,7 @@ Usage::
 
     from dimos.core.coordination.module_coordinator import ModuleCoordinator
     ModuleCoordinator.build(autoconnect(
-        PointLio.blueprint(host_ip="192.168.1.5"),
+        PointLio.blueprint(host_ip="192.168.1.5", lidar_ip="192.168.1.155"),
         SomeConsumer.blueprint(),
     )).loop()
 """
@@ -32,11 +32,13 @@ Usage::
 from __future__ import annotations
 
 import ipaddress
+import os
 from pathlib import Path
 import socket
 import time
 from typing import TYPE_CHECKING, Annotated
 
+from pydantic import Field
 from pydantic.experimental.pipeline import validate_as
 from reactivex.disposable import Disposable
 
@@ -73,19 +75,21 @@ class PointLioConfig(NativeModuleConfig):
     cwd: str | None = "cpp"
     executable: str = "result/bin/pointlio_native"
     build_command: str | None = "nix build .#pointlio_native"
-    # Livox SDK hardware config
-    host_ip: str = "192.168.1.5"
-    lidar_ip: str = "192.168.1.155"
+    # host_ip/lidar_ip are machine/network-specific, so there's no baked-in
+    # default. They come from the config or the DIMOS_POINTLIO_HOST_IP /
+    # DIMOS_POINTLIO_LIDAR_IP env vars; start() errors if neither supplies them.
+    host_ip: str | None = Field(default_factory=lambda: os.environ.get("DIMOS_POINTLIO_HOST_IP"))
+    lidar_ip: str | None = Field(default_factory=lambda: os.environ.get("DIMOS_POINTLIO_LIDAR_IP"))
     frequency: float = 10.0
 
     # frame_id is the header frame for BOTH the point cloud and the odometry
     # message (the Mid-360 sensor frame). The TF published by the module is a
-    # separate odom_parent_frame_id -> odom_frame_id transform.
+    # separate body_start_frame_id -> body_frame_id transform.
     frame_id: str = "mid360_link"
-    # TF publish frames (odom -> base_link): the sensor pose expressed as the
-    # base_link pose in the odom frame.
-    odom_parent_frame_id: str = FRAME_ODOM
-    odom_frame_id: str = "base_link"
+    # TF publish frames (body_start -> body): the sensor pose expressed as the
+    # body_frame pose in the body_start frame.
+    body_start_frame_id: str = FRAME_ODOM
+    body_frame_id: str = "base_link"
 
     # Point-LIO internal processing rates
     msr_freq: float = 50.0
@@ -100,8 +104,7 @@ class PointLioConfig(NativeModuleConfig):
     sor_mean_k: int = 50
     sor_stddev: float = 1.0
 
-    # Point-LIO YAML config (relative to config/ dir, or absolute path)
-    # C++ binary reads YAML directly via yaml-cpp
+    # Point-LIO YAML config (relative to config/ dir, or absolute path).
     config: Annotated[
         Path,
         validate_as(...).transform(lambda path: path if path.is_absolute() else _CONFIG_DIR / path),
@@ -124,7 +127,7 @@ class PointLioConfig(NativeModuleConfig):
     # Resolved in __post_init__, passed as --config_path to the binary
     config_path: str | None = None
 
-    cli_exclude: frozenset[str] = frozenset({"config", "odom_parent_frame_id"})
+    cli_exclude: frozenset[str] = frozenset({"config", "body_start_frame_id"})
 
     def model_post_init(self, __context: object) -> None:
         """Resolve the Point-LIO YAML config to an absolute config_path."""
@@ -152,8 +155,8 @@ class PointLio(NativeModule, perception.Lidar, perception.Odometry):
     def _on_odom_for_tf(self, msg: Odometry) -> None:
         self.tf.publish(
             Transform(
-                frame_id=self.config.odom_parent_frame_id,
-                child_frame_id=self.config.odom_frame_id,
+                frame_id=self.config.body_start_frame_id,
+                child_frame_id=self.config.body_frame_id,
                 translation=Vector3(
                     msg.pose.position.x,
                     msg.pose.position.y,
@@ -176,6 +179,15 @@ class PointLio(NativeModule, perception.Lidar, perception.Odometry):
     def _validate_network(self) -> None:
         host_ip = self.config.host_ip
         lidar_ip = self.config.lidar_ip
+        if not host_ip or not lidar_ip:
+            missing = [
+                name for name, value in (("host_ip", host_ip), ("lidar_ip", lidar_ip)) if not value
+            ]
+            raise RuntimeError(
+                f"PointLio: {' and '.join(missing)} not set — these are network-specific and "
+                "have no default. Set them in the config, or via the DIMOS_POINTLIO_HOST_IP / "
+                "DIMOS_POINTLIO_LIDAR_IP env vars."
+            )
         local_ips = [ip for ip, _iface in get_local_ips()]
 
         _logger.info(

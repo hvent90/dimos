@@ -77,6 +77,11 @@ _EPS = 1e-9
 _POLL_SEC = 1.0
 # Stop after the odom stream has been stagnant this long (pcap fully drained).
 _STAGNANT_SEC = 5.0
+# Give up if no odometry row appears within this long after start — a binary
+# that never produces output (missing artifact, bad pcap, SLAM init crash) would
+# otherwise hang the poll loop forever (the stagnation timeout only arms after
+# the first row). Generous: covers Point-LIO's IMU-init + first-frame latency.
+_STARTUP_TIMEOUT_SEC = 60.0
 # virtual_mid360 crate dir (its `nix build .#default` produces result/bin/virtual_mid360).
 # .../sensors/lidar/pointlio/tools/pcap_to_db.py -> parents[2] == .../sensors/lidar
 _VM_DIR = Path(__file__).resolve().parents[2] / "livox" / "virtual_mid360"
@@ -317,20 +322,25 @@ def _run_outer(args: argparse.Namespace) -> int:
         flush=True,
     )
 
-    # An existing db is user-owned; hand it (and its WAL sidecars) to root so the
-    # root inner can write it (SQLite WAL refuses cross-uid writes). Restored below.
-    if db_existed:
-        for suffix in ("", "-wal", "-shm"):
-            sidecar = Path(f"{db_path}{suffix}")
-            if sidecar.exists():
-                _ns(["chown", "0:0", str(sidecar)], check=False)
-
-    _setup_netns(
-        args.drv_ns, args.lidar_ns, args.veth_drv, args.veth_lidar, args.host_ip, args.lidar_ip
-    )
     vm_proc: subprocess.Popen[bytes] | None = None
     inner: subprocess.Popen[bytes] | None = None
+    # The first chown + netns setup live inside the try so the finally's
+    # ownership-restore always runs — even if _setup_netns raises (e.g. missing
+    # CAP_NET_ADMIN), the db must not be left root-owned.
     try:
+        # An existing db is user-owned; hand it (and its WAL sidecars) to root so
+        # the root inner can write it (SQLite WAL refuses cross-uid writes).
+        # Restored to the invoking user in the finally below.
+        if db_existed:
+            for suffix in ("", "-wal", "-shm"):
+                sidecar = Path(f"{db_path}{suffix}")
+                if sidecar.exists():
+                    _ns(["chown", "0:0", str(sidecar)], check=False)
+
+        _setup_netns(
+            args.drv_ns, args.lidar_ns, args.veth_drv, args.veth_lidar, args.host_ip, args.lidar_ip
+        )
+
         # Recorder + live Point-LIO run together in the drv ns (one coordinator).
         inner_cmd = [
             *_sudo(),
@@ -385,10 +395,19 @@ def _run_outer(args: argparse.Namespace) -> int:
         # The inner exits itself once the odom stream goes stagnant (pcap drained).
         inner.wait()
     finally:
+        # Kill ONLY this run's processes — the ones living in its two (uniquely
+        # named) network namespaces — as root, since the binaries run under sudo.
+        # `ip netns pids` scopes precisely to this run, so a concurrent run in
+        # other namespaces (which the docstring promises is supported) is left
+        # alone; a name-based `pkill virtual_mid360/pointlio_native` would kill
+        # its binaries too. This also catches the netns children regardless of
+        # how sudo / ip-netns-exec session or group them.
+        for ns in (args.lidar_ns, args.drv_ns):
+            pids = _ns(["ip", "netns", "pids", ns], check=False).stdout.decode().split()
+            if pids:
+                _ns(["kill", "-9", *pids], check=False)
         for proc in (vm_proc, inner):
             if proc and proc.poll() is None:
-                _ns(["pkill", "-9", "-f", "virtual_mid360"], check=False)
-                _ns(["pkill", "-9", "-f", "pointlio_native"], check=False)
                 try:
                     proc.wait(timeout=5)
                 except subprocess.TimeoutExpired:
@@ -449,11 +468,25 @@ def _run_inner(args: argparse.Namespace) -> int:
     last_max = 0.0
     first_max: float | None = None
     stagnant_since: float | None = None
+    start_time = time.time()
+    startup_failed = False
     try:
         while True:
             time.sleep(_POLL_SEC)
             cnt, min_ts, max_ts = _table_stats(db_path, "pointlio_odometry")
             if cnt == 0:
+                # Bound the no-output wait so a binary that never starts fails
+                # cleanly instead of hanging (stagnation timeout only arms once
+                # the first row exists).
+                if time.time() - start_time > _STARTUP_TIMEOUT_SEC:
+                    print(
+                        f"[pcap_to_db] no odometry after {_STARTUP_TIMEOUT_SEC:.0f}s — Point-LIO "
+                        "failed to start (check the binary, pcap path, and netns wiring).",
+                        file=sys.stderr,
+                        flush=True,
+                    )
+                    startup_failed = True
+                    break
                 continue
             if first_max is None:
                 first_max = min_ts
@@ -472,7 +505,7 @@ def _run_inner(args: argparse.Namespace) -> int:
                 stagnant_since = None
     finally:
         coord.stop()
-    return 0
+    return 1 if startup_failed else 0
 
 
 def main(argv: list[str]) -> int:
