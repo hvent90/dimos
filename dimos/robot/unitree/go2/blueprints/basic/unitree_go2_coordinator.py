@@ -46,6 +46,21 @@ from dimos.utils.path_utils import get_project_root
 
 _go2_joints = make_twist_base_joints("go2")
 
+# Default Go2 characterization artifact (TuningConfig JSON). Both the
+# precision_follower and the trajectory_tracker load their plant model +
+# envelope from it; override per run with
+#   -o coordinator.tasks[<i>].params.artifact_path=<full/path/to.json>
+# NOTE: the holonomic trajectory_tracker needs an artifact with a REAL vy
+# fit (not the placeholder vy=vx) — point it at a fresh Go2 characterization
+# that excites the lateral axis.
+_GO2_ARTIFACT = str(
+    get_project_root()
+    / "data"
+    / "characterization"
+    / "go2"
+    / "go2_config_hw_concrete_2026-05-28_normal.json"
+)
+
 
 def _make_coordinator(mode: str = "default"):
     """Build a coordinator blueprint with the Go2 firmware in the given
@@ -97,16 +112,20 @@ def _make_coordinator(mode: str = "default"):
                         joint_names=_go2_joints,
                         priority=10,
                         params={
-                            "artifact_path": str(
-                                get_project_root()
-                                / "data"
-                                / "characterization"
-                                / "go2"
-                                / "go2_config_hw_concrete_2026-05-28_normal.json"
-                            ),
+                            "artifact_path": _GO2_ARTIFACT,
                             "speed": 1.4,
                             "v_max_override": 1.4,
                         },
+                    ),
+                    # FF + per-axis P trajectory tracker (trajtrack arm), built
+                    # from the artifact's plant fit + envelope. Inactive until
+                    # the Benchmarker RPCs configure(...) + start_path(...).
+                    TaskConfig(
+                        name="trajectory_tracker",
+                        type="trajectory_tracking",
+                        joint_names=_go2_joints,
+                        priority=10,
+                        params={"artifact_path": _GO2_ARTIFACT},
                     ),
                 ],
             ),

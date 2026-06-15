@@ -68,11 +68,11 @@ from dimos.utils.benchmarking.characterization_recorder import CharacterizationR
 from dimos.utils.path_utils import get_project_root
 
 
-def _make(coord, gait_tag: str):
+def _make(coord, gait_tag: str, trajtrack: bool = False):
     return autoconnect(
         coord,
         KeyboardTeleop.blueprint(publish_only_when_active=True),
-        Benchmarker.blueprint(robot="go2", mode="hw", gate_source="stream"),
+        Benchmarker.blueprint(robot="go2", mode="hw", gate_source="stream", trajtrack=trajtrack),
         CharacterizationRecorder.blueprint(
             robot_id="go2",
             tag=f"benchmark_{gait_tag}",
@@ -97,5 +97,15 @@ unitree_go2_benchmark = _make(unitree_go2_coordinator, gait_tag="default")
 # gait mode in its provenance. Use this with an artifact produced by
 # ``unitree-go2-characterization-rage`` for a consistent measurement.
 unitree_go2_benchmark_rage = _make(unitree_go2_coordinator_rage, gait_tag="rage")
+# Trajtrack arm — routes runs through the coordinator's trajectory_tracker
+# task (FF + per-axis P, built from the Go2 artifact). Pass the fresh
+# real-vy Go2 fit via -o coordinator.tasks[3].params.artifact_path=<json>.
+unitree_go2_benchmark_trajtrack = _make(
+    unitree_go2_coordinator, gait_tag="trajtrack", trajtrack=True
+)
 
-__all__ = ["unitree_go2_benchmark", "unitree_go2_benchmark_rage"]
+__all__ = [
+    "unitree_go2_benchmark",
+    "unitree_go2_benchmark_rage",
+    "unitree_go2_benchmark_trajtrack",
+]

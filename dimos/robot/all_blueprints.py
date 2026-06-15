@@ -110,6 +110,7 @@ all_blueprints = {
     "unitree-go2-benchmark-rage": "dimos.robot.unitree.go2.blueprints.basic.unitree_go2_benchmark:unitree_go2_benchmark_rage",
     "unitree-go2-benchmark-rg": "dimos.robot.unitree.go2.blueprints.basic.unitree_go2_benchmark_rg:unitree_go2_benchmark_rg",
     "unitree-go2-benchmark-rg-rage": "dimos.robot.unitree.go2.blueprints.basic.unitree_go2_benchmark_rg:unitree_go2_benchmark_rg_rage",
+    "unitree-go2-benchmark-trajtrack": "dimos.robot.unitree.go2.blueprints.basic.unitree_go2_benchmark:unitree_go2_benchmark_trajtrack",
     "unitree-go2-characterization": "dimos.robot.unitree.go2.blueprints.basic.unitree_go2_characterization:unitree_go2_characterization",
     "unitree-go2-characterization-rage": "dimos.robot.unitree.go2.blueprints.basic.unitree_go2_characterization:unitree_go2_characterization_rage",
     "unitree-go2-coordinator": "dimos.robot.unitree.go2.blueprints.basic.unitree_go2_coordinator:unitree_go2_coordinator",
