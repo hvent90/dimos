@@ -41,13 +41,13 @@ struct Config {
     #[validate(range(min = 0.0, max = 3600.0))]
     delay: f64,
     /// IP the fake lidar sends from (must be assigned to this netns's veth).
-    #[serde(default = "default_lidar_ip")]
+    /// Network-specific — required, no default.
     lidar_ip: String,
     /// Host IP the recorded data is delivered to (where pointlio's SDK listens).
-    #[serde(default = "default_host_ip")]
+    /// Machine-specific — required, no default.
     host_ip: String,
-    /// Network namespace the fake lidar must run inside.
-    #[serde(default = "default_netns")]
+    /// Network namespace the fake lidar runs inside (named in the setup-help
+    /// error). Deployment-specific — required, no default.
     lidar_netns: String,
     /// Multicast group the point/IMU streams are sent to. A real Mid-360
     /// multicasts these and the Livox SDK joins whatever `multicast_ip` is in
@@ -61,15 +61,8 @@ struct Config {
 fn one() -> f64 {
     1.0
 }
-fn default_lidar_ip() -> String {
-    "192.168.1.155".into()
-}
-fn default_host_ip() -> String {
-    "192.168.1.5".into()
-}
-fn default_netns() -> String {
-    "lidar".into()
-}
+// 224.1.1.5 is the Livox Mid-360 default multicast_ip (a genuine Livox default,
+// unlike the lidar/host IP + netns, which are deployment-specific and required).
 fn default_mcast_data() -> String {
     "224.1.1.5".into()
 }

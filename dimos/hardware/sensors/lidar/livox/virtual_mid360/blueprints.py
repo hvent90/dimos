@@ -40,8 +40,15 @@ from dimos.visualization.vis_module import vis_module
 # an LFS pull.
 _PCAP = os.environ.get("VIRTUAL_MID360_PCAP", "")
 
+# lidar_ip/host_ip/lidar_netns are deployment-specific (required, no defaults);
+# these are the values the e2e netns harness assigns (drv/lidar veth on .1.x).
 demo_virtual_mid360_pointlio = autoconnect(
-    VirtualMid360.blueprint(pcap=_PCAP),
+    VirtualMid360.blueprint(
+        pcap=_PCAP,
+        lidar_ip="192.168.1.155",
+        host_ip="192.168.1.5",
+        lidar_netns="lidar",
+    ),
     PointLio.blueprint(),
     vis_module("rerun"),
 ).global_config(n_workers=3, robot_model="virtual_mid360_pointlio")
