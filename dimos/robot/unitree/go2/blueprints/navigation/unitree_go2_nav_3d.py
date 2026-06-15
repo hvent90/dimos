@@ -103,7 +103,7 @@ unitree_go2_nav_3d = autoconnect(
         map_freq=-1.0,
     ).remappings([(FastLio2, "global_map", "global_map_fastlio")]),
     RayTracingVoxelMap.blueprint(
-        voxel_size=voxel_size, emit_every=1, global_emit_every=1500, max_health=5
+        voxel_size=voxel_size, emit_every=2, global_emit_every=600, max_health=5
     ),
     # global_map is remapped off so the planner runs purely on the
     # incremental local_map + region_bounds pair.
