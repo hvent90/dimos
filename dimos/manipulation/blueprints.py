@@ -637,7 +637,7 @@ r1pro_perception_sim = autoconnect(
     {
         ("joint_state", JointState): LCMTransport("/coordinator/joint_state", JointState),
     }
-)
+).global_config(n_workers=5)
 
 
 # Agentic variant: gpt-4o drives the same pick-and-place skills over MCP. The base
@@ -698,7 +698,7 @@ r1pro_perception_sim_agent = autoconnect(
         system_prompt=_R1PRO_PERCEPTION_AGENT_SYSTEM_PROMPT,
         model=_R1PRO_AGENT_MODEL,
     ),
-)
+).global_config(n_workers=5)
 
 
 __all__ = [
