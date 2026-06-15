@@ -3,17 +3,17 @@
     "dimos-repo": {
       "flake": false,
       "locked": {
-        "lastModified": 1779865691,
-        "narHash": "sha256-2CVWcov7DiC1qX/B/zFKDJiSYsnbrZ3FNT/viprFWTQ=",
-        "ref": "refs/heads/jeff/feat/g1_raycast",
-        "rev": "51666bcd298c1d08bdee179f176f45c0a7dd417d",
-        "revCount": 744,
+        "lastModified": 1781505942,
+        "narHash": "sha256-NAjf4/pEbZGbOVFfkbdZCBbZJMrpErcQuFmqSeSRbRM=",
+        "ref": "refs/heads/jeff/feat/pointlio_native",
+        "rev": "76743e05777bdd812a0271308c71d7bb5d412619",
+        "revCount": 860,
         "type": "git",
-        "url": "file:../../../.."
+        "url": "file:../../../../../.."
       },
       "original": {
         "type": "git",
-        "url": "file:../../../.."
+        "url": "file:../../../../../.."
       }
     },
     "flake-utils": {
