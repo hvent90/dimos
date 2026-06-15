@@ -74,6 +74,8 @@ class BasicPathFollower(Module):
         self._waypoints: np.ndarray | None = None
         self._stop_event = Event()
         self._thread: Thread | None = None
+        self._path_count = 0
+        self._stats_last = 0.0
 
     @rpc
     def start(self) -> None:
@@ -82,6 +84,7 @@ class BasicPathFollower(Module):
         self.register_disposable(Disposable(self.path.subscribe(self._on_path)))
         if self.stop_movement.transport is not None:
             self.register_disposable(Disposable(self.stop_movement.subscribe(self._on_stop)))
+        self._stats_last = time.perf_counter()
         self._thread = Thread(target=self._follow, daemon=True)
         self._thread.start()
 
@@ -106,6 +109,7 @@ class BasicPathFollower(Module):
         waypoints = np.array([[p.position.x, p.position.y] for p in path.poses])
         with self._lock:
             self._waypoints = waypoints
+            self._path_count += 1
 
     def _on_stop(self, msg: Bool) -> None:
         if msg.data:
@@ -122,8 +126,26 @@ class BasicPathFollower(Module):
                 waypoints = self._waypoints
             if odom is not None and waypoints is not None:
                 self._step(odom, waypoints)
+            self._maybe_log_stats(odom, waypoints)
             elapsed = time.perf_counter() - start_time
             self._stop_event.wait(max(0.0, period - elapsed))
+
+    # DEBUG: replanning telemetry, remove before merge
+    def _maybe_log_stats(self, odom: PoseStamped | None, waypoints: np.ndarray | None) -> None:
+        now = time.perf_counter()
+        elapsed = now - self._stats_last
+        if elapsed < 2.0:
+            return
+        self._stats_last = now
+        with self._lock:
+            count = self._path_count
+            self._path_count = 0
+        if odom is None or waypoints is None:
+            return
+        rate = count / elapsed
+        position = np.array([odom.position.x, odom.position.y])
+        lag = float(np.linalg.norm(waypoints[0] - position))
+        logger.info("path follower stats", replan_hz=round(rate, 1), path_lag_m=round(lag, 2))
 
     def _step(self, odom: PoseStamped, waypoints: np.ndarray) -> None:
         position = np.array([odom.position.x, odom.position.y])
