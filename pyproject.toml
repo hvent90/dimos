@@ -334,8 +334,17 @@ apriltag = [
     "reportlab>=4.5.0",
 ]
 
+# QP differential IK (mink) for the reachability oracle, plus the viser
+# one-shot viewer for capability maps. mink is pinned because 1.1.1+
+# raises the mujoco floor past the version the sim stack is locked to.
+ik = [
+    "daqp>=0.8.7",
+    "mink==1.1.0",
+    "viser[urdf]>=1.0.26",
+]
+
 all = [
-    "dimos[agents,apriltag,base,cpu,cuda,drone,manipulation,misc,perception,psql,sim,unitree,visualization,web]",
+    "dimos[agents,apriltag,base,cpu,cuda,drone,ik,manipulation,misc,perception,psql,sim,unitree,visualization,web]",
 ]
 
 [dependency-groups]
@@ -530,6 +539,8 @@ module = [
     "lazy_loader",
     "mcap",
     "mcap.*",
+    "mink",
+    "mink.*",
     "mujoco",
     "mujoco_playground.*",
     "nav_msgs.*",
@@ -558,13 +569,18 @@ module = [
     "tf2_msgs.*",
     "transformers",
     "transformers.*",
+    "trimesh",
+    "trimesh.*",
     "torchreid",
     "turbojpeg",
     "ultralytics.*",
     "unitree_sdk2py.*",
     "unitree_webrtc_connect.*",
+    "viser",
+    "viser.*",
     "websocket",
     "xarm.*",
+    "yourdfpy",
     "ament_index_python.*",
 ]
 ignore_missing_imports = true
