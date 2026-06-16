@@ -137,10 +137,7 @@ class Florence2Model(HuggingFaceModel, Captioner):
         task_prompt = self._task_prompt
 
         # Convert all to PIL
-        pil_images = [
-            PILImage.fromarray(img.to_rgb().data)
-            for img in images
-        ]
+        pil_images = [PILImage.fromarray(img.to_rgb().data) for img in images]
 
         # Process batch
         inputs = self._processor(
