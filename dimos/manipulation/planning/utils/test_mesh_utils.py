@@ -15,7 +15,7 @@
 from pathlib import Path
 
 from dimos.manipulation.planning.utils import mesh_utils
-from dimos.robot.assets import processing
+import dimos.robot.assets.processing as processing
 
 
 def test_prepare_urdf_for_drake_uses_rendered_urdf_and_keeps_drake_cleanup(

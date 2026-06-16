@@ -14,7 +14,7 @@
 
 from pathlib import Path
 
-from dimos.robot.assets import processing
+import dimos.robot.assets.processing as processing
 
 
 def test_render_urdf_preserves_package_uris_by_default(

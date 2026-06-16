@@ -18,7 +18,9 @@ import subprocess
 
 import pytest
 
-from dimos.robot.assets import (
+from dimos.robot.assets.declarations import ROBOT_ASSETS
+from dimos.robot.assets.git_cache import GitAssetCache
+from dimos.robot.assets.manager import (
     ArtifactRole,
     RobotAssetDeclaration,
     RobotAssetError,
@@ -29,8 +31,6 @@ from dimos.robot.assets import (
     robot_asset_xacro_args,
     set_default_robot_asset_manager,
 )
-from dimos.robot.assets.declarations import ROBOT_ASSETS
-from dimos.robot.assets.git_cache import GitAssetCache
 
 
 def _git(cwd: Path, *args: str) -> str:

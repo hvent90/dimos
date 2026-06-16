@@ -18,7 +18,7 @@ from __future__ import annotations
 
 from typing import Any
 
-from dimos.robot.assets import (
+from dimos.robot.assets.manager import (
     RobotAssetPath,
     robot_asset_package_paths,
     robot_asset_xacro_args,

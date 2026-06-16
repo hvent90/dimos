@@ -36,7 +36,7 @@ from dimos.msgs.geometry_msgs.PoseStamped import PoseStamped
 from dimos.msgs.geometry_msgs.Quaternion import Quaternion
 from dimos.msgs.geometry_msgs.Vector3 import Vector3
 from dimos.msgs.sensor_msgs.JointState import JointState
-from dimos.robot.assets import RobotAssetPath, robot_asset_package_paths
+from dimos.robot.assets.manager import RobotAssetPath, robot_asset_package_paths
 
 pytestmark = pytest.mark.self_hosted
 

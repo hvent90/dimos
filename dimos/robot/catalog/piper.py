@@ -18,7 +18,7 @@ from __future__ import annotations
 
 from typing import Any
 
-from dimos.robot.assets import RobotAssetPath, robot_asset_package_paths
+from dimos.robot.assets.manager import RobotAssetPath, robot_asset_package_paths
 from dimos.robot.config import GripperConfig, RobotConfig
 from dimos.utils.data import LfsPath
 
