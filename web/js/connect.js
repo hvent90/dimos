@@ -11,15 +11,13 @@ import { startKeyboardLoop } from './views/keyboard.js';
 import { startVR } from './vr.js';
 import { setupWebRTC } from './webrtc.js';
 
-// Pick the operator transport by what the robot connected with. The robot's
-// blueprint chose it; the broker surfaces it on the session (SessionInfo /
-// join response). The two setups expose the same state.* surface downstream.
+// Operator transport follows what the robot connected with (broker surfaces it).
 function setupTransport(sessionId, transport) {
     return transport === 'livekit' ? setupLiveKit(sessionId) : setupWebRTC(sessionId);
 }
 
 export async function connectToRobot(sessionId, robotName, transport) {
-    state.activeRobot = { session_id: sessionId, robot_name: robotName };
+    state.activeRobot = { session_id: sessionId, robot_name: robotName, transport: transport || 'cloudflare' };
     try {
         if (!navigator.xr) throw new Error('WebXR not supported. Use Quest 3 browser.');
 
@@ -42,7 +40,7 @@ export async function connectToRobot(sessionId, robotName, transport) {
 }
 
 export async function connectKeyboard(sessionId, robotName, transport) {
-    state.activeRobot = { session_id: sessionId, robot_name: robotName };
+    state.activeRobot = { session_id: sessionId, robot_name: robotName, transport: transport || 'cloudflare' };
     try {
         navigate('keyboard');
         await setupTransport(sessionId, transport);

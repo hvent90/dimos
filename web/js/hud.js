@@ -26,6 +26,11 @@ export function healthColor() {
     return { good: HUD_GOOD, warn: HUD_WARN, bad: HUD_BAD }[statsHealth()];
 }
 
+// SFU the operator is connected through.
+export function transportLabel() {
+    return state.activeRobot?.transport === 'livekit' ? 'LiveKit' : 'Cloudflare';
+}
+
 export function hudSummaryLine() {
     const v = state.liveStats.video;
     const fps = v ? `${(v.fps ?? 0).toFixed(0)}fps` : '—fps';
@@ -45,6 +50,7 @@ export function hudDetailLines() {
           `loss ${c.loss_pct != null ? c.loss_pct.toFixed(1) : '—'}%  ${(c.rate_hz ?? 0).toFixed(0)}Hz`
         : '—';
     return [
+        `Link   ${transportLabel()}`,
         `Video  ${(v.fps ?? 0).toFixed(0)}fps  ${(((v.kbps ?? 0) / 1000)).toFixed(1)}mbps  ${v.width ?? '—'}x${v.height ?? '—'}`,
         `       loss ${(v.loss_pct ?? 0).toFixed(1)}%  jbuf ${(v.jitter_buffer_ms ?? 0).toFixed(0)}ms`,
         `       decode ${(v.decode_ms ?? 0).toFixed(0)}ms  freezes ${v.freezes ?? 0}`,
@@ -59,26 +65,23 @@ export function mountHud() {
     if (document.getElementById('live-hud')) return;
     const hud = document.createElement('div');
     hud.id = 'live-hud';
+    // Always-on card: header (health · transport · robot) over live stats.
     hud.style.cssText =
         'position:fixed;top:12px;right:12px;z-index:50;font-family:ui-monospace,monospace;' +
-        'cursor:pointer;user-select:none;';
+        'user-select:none;background:rgba(21,21,21,0.92);border:1px solid #2a2a2a;' +
+        'border-radius:10px;padding:10px 12px;color:#e5e7eb;font-size:12px;' +
+        'backdrop-filter:blur(4px);min-width:236px;';
     hud.innerHTML = `
-        <div id="live-hud-pill" style="display:flex;align-items:center;gap:8px;
-            background:rgba(21,21,21,0.88);border:1px solid #2a2a2a;border-radius:9999px;
-            padding:6px 12px;color:#e5e7eb;font-size:12px;backdrop-filter:blur(4px);">
+        <div style="display:flex;align-items:center;gap:8px;
+            border-bottom:1px solid #2a2a2a;padding-bottom:7px;margin-bottom:7px;">
             <span id="live-hud-dot" style="width:9px;height:9px;border-radius:9999px;
                 background:${HUD_WARN};"></span>
-            <span id="live-hud-summary">—</span>
+            <span id="live-hud-link" style="text-transform:uppercase;letter-spacing:0.1em;
+                font-size:11px;font-weight:600;color:#b0e1f0;">—</span>
+            <span id="live-hud-robot" style="margin-left:auto;color:#9ca3af;font-size:11px;"></span>
         </div>
-        <pre id="live-hud-panel" style="display:none;margin:6px 0 0;
-            background:rgba(21,21,21,0.92);border:1px solid #2a2a2a;border-radius:8px;
-            padding:10px 12px;color:#b0e1f0;font-size:11px;line-height:1.5;
-            white-space:pre;"></pre>`;
-    hud.onclick = () => {
-        const panel = document.getElementById('live-hud-panel');
-        panel.style.display = panel.style.display === 'none' ? 'block' : 'none';
-        refreshHud();
-    };
+        <pre id="live-hud-panel" style="margin:0;color:#cbd5e1;font-size:11px;
+            line-height:1.6;white-space:pre;"></pre>`;
     document.body.appendChild(hud);
 
     let lastSampleMs = performance.now();
@@ -96,14 +99,15 @@ export function mountHud() {
 
 function refreshHud() {
     const dot = document.getElementById('live-hud-dot');
-    const summary = document.getElementById('live-hud-summary');
-    if (!dot || !summary) return;
+    if (!dot) return;
     dot.style.background = healthColor();
-    summary.textContent = hudSummaryLine();
+    const link = document.getElementById('live-hud-link');
+    if (link) link.textContent = transportLabel();
+    const robot = document.getElementById('live-hud-robot');
+    if (robot) robot.textContent = state.activeRobot?.robot_name || '';
     const panel = document.getElementById('live-hud-panel');
-    if (panel && panel.style.display !== 'none') {
-        panel.textContent = hudDetailLines().join('\n');
-    }
+    // Link line is in the header.
+    if (panel) panel.textContent = hudDetailLines().slice(1).join('\n');
 }
 
 export function unmountHud() {
