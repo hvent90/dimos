@@ -60,3 +60,44 @@ def test_render_urdf_can_rewrite_package_uris_to_absolute_paths(
     rendered_text = rendered.read_text()
     assert "package://" not in rendered_text
     assert str(mesh) in rendered_text
+
+
+def test_render_urdf_cache_key_tracks_package_root_changes(
+    tmp_path: Path,
+    monkeypatch,
+) -> None:
+    monkeypatch.setattr(processing, "_RENDERED_URDF_CACHE_ROOT", tmp_path / "rendered")
+    package_root = tmp_path / "pkg"
+    mesh = package_root / "meshes" / "link.stl"
+    mesh.parent.mkdir(parents=True)
+    mesh.write_text("solid old\nendsolid old\n")
+    urdf = tmp_path / "robot.urdf"
+    urdf.write_text(
+        "<robot name='r'><link name='base'><visual><geometry>"
+        "<mesh filename='package://pkg/meshes/link.stl'/>"
+        "</geometry></visual></link></robot>"
+    )
+
+    first = processing.render_urdf(urdf, {"pkg": package_root})
+    mesh.write_text("solid new\nendsolid new\n")
+    second = processing.render_urdf(urdf, {"pkg": package_root})
+
+    assert second != first
+
+
+def test_render_urdf_strips_nested_urdf_suffix_from_cache_name(
+    tmp_path: Path,
+    monkeypatch,
+) -> None:
+    monkeypatch.setattr(processing, "_RENDERED_URDF_CACHE_ROOT", tmp_path / "rendered")
+    xacro = tmp_path / "robot.urdf.xacro"
+    xacro.write_text("<robot name='r'/>")
+    monkeypatch.setattr(
+        processing,
+        "_process_xacro",
+        lambda _path, _package_paths, _xacro_args: "<robot name='r'/>",
+    )
+
+    rendered = processing.render_urdf(xacro)
+
+    assert rendered.name == "robot.urdf"

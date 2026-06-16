@@ -61,9 +61,10 @@ def render_urdf(
         resolved_xacro_args,
         package_uri_mode,
     )
-    cache_path = _RENDERED_URDF_CACHE_ROOT / cache_key / source_path.stem
+    rendered_stem = _rendered_urdf_stem(source_path)
+    cache_path = _RENDERED_URDF_CACHE_ROOT / cache_key / rendered_stem
     cache_path.mkdir(parents=True, exist_ok=True)
-    rendered_urdf = cache_path / f"{source_path.stem}.urdf"
+    rendered_urdf = cache_path / f"{rendered_stem}.urdf"
 
     if rendered_urdf.exists():
         logger.debug(f"Using cached rendered URDF: {rendered_urdf}")
@@ -121,7 +122,7 @@ def _generate_render_key(
     xacro_args: Mapping[str, str],
     package_uri_mode: PackageUriMode,
 ) -> str:
-    processing_version = "urdf-render-v1"
+    processing_version = "urdf-render-v2"
     mtime = urdf_path.stat().st_mtime if urdf_path.exists() else 0
     key_data = repr(
         (
@@ -129,11 +130,51 @@ def _generate_render_key(
             str(urdf_path),
             mtime,
             sorted((name, str(path)) for name, path in package_paths.items()),
+            _render_dependency_fingerprints(urdf_path, package_paths),
             sorted(xacro_args.items()),
             package_uri_mode,
         )
     )
     return hashlib.sha256(key_data.encode()).hexdigest()[:16]
+
+
+def _rendered_urdf_stem(source_path: Path) -> str:
+    """Return a stable output stem without duplicated URDF suffixes."""
+    return source_path.stem.removesuffix(".urdf")
+
+
+def _render_dependency_fingerprints(
+    urdf_path: Path,
+    package_paths: Mapping[str, Path],
+) -> tuple[tuple[str, str], ...]:
+    """Fingerprint files that can affect Xacro expansion or URI rewriting."""
+    roots = list(package_paths.values()) or [urdf_path.parent]
+    fingerprints = []
+    for root in sorted(set(roots), key=str):
+        fingerprints.append((str(root), _directory_fingerprint(root)))
+    return tuple(fingerprints)
+
+
+def _directory_fingerprint(root: Path) -> str:
+    digest = hashlib.sha256()
+    if not root.exists():
+        digest.update(b"missing")
+        return digest.hexdigest()[:16]
+
+    for path in sorted(root.rglob("*")):
+        if ".git" in path.parts:
+            continue
+        try:
+            stat = path.stat()
+        except OSError:
+            continue
+        if not path.is_file():
+            continue
+        relative_path = path.relative_to(root)
+        digest.update(str(relative_path).encode())
+        digest.update(str(stat.st_size).encode())
+        digest.update(str(stat.st_mtime_ns).encode())
+    return digest.hexdigest()[:16]
 
 
 def _process_xacro(
