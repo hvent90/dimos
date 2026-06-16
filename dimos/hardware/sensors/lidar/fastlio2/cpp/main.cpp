@@ -50,9 +50,7 @@ using livox_common::DATA_TYPE_IMU;
 using livox_common::DATA_TYPE_CARTESIAN_HIGH;
 using livox_common::DATA_TYPE_CARTESIAN_LOW;
 
-// ---------------------------------------------------------------------------
 // Global state
-// ---------------------------------------------------------------------------
 
 static std::atomic<bool> g_running{true};
 static lcm::LCM* g_lcm = nullptr;
@@ -80,9 +78,7 @@ static std::vector<custom_messages::CustomPoint> g_accumulated_points;
 static uint64_t g_frame_start_ns = 0;
 static bool g_frame_has_timestamp = false;
 
-// ---------------------------------------------------------------------------
 // Helpers
-// ---------------------------------------------------------------------------
 
 static uint64_t get_timestamp_ns(const LivoxLidarEthernetPacket* pkt) {
     uint64_t ns = 0;
@@ -93,9 +89,7 @@ static uint64_t get_timestamp_ns(const LivoxLidarEthernetPacket* pkt) {
 using dimos::time_from_seconds;
 using dimos::make_header;
 
-// ---------------------------------------------------------------------------
 // Publish lidar (world-frame point cloud)
-// ---------------------------------------------------------------------------
 
 static void publish_lidar(PointCloudXYZI::Ptr cloud, double timestamp,
                           const std::string& topic = "") {
@@ -146,9 +140,7 @@ static void publish_lidar(PointCloudXYZI::Ptr cloud, double timestamp,
     g_lcm->publish(chan, &pc);
 }
 
-// ---------------------------------------------------------------------------
 // Publish odometry
-// ---------------------------------------------------------------------------
 
 static void publish_odometry(const custom_messages::Odometry& odom, double timestamp) {
     if (!g_lcm) return;
@@ -183,9 +175,7 @@ static void publish_odometry(const custom_messages::Odometry& odom, double times
 }
 
 
-// ---------------------------------------------------------------------------
 // Livox SDK callbacks
-// ---------------------------------------------------------------------------
 
 static void on_point_cloud(const uint32_t /*handle*/, const uint8_t /*dev_type*/,
                            LivoxLidarEthernetPacket* data, void* /*client_data*/) {
@@ -287,17 +277,13 @@ static void on_info_change(const uint32_t handle, const LivoxLidarInfo* info,
     EnableLivoxLidarImuData(handle, nullptr, nullptr);
 }
 
-// ---------------------------------------------------------------------------
 // Signal handling
-// ---------------------------------------------------------------------------
 
 static void signal_handler(int /*sig*/) {
     g_running.store(false);
 }
 
-// ---------------------------------------------------------------------------
 // Main
-// ---------------------------------------------------------------------------
 
 int main(int argc, char** argv) {
     dimos::NativeModule mod(argc, argv);

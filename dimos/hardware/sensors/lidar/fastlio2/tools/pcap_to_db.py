@@ -109,9 +109,7 @@ def _table_stats(db_path: Path, table: str) -> tuple[int, float, float]:
         con.close()
 
 
-# ---------------------------------------------------------------------------
 # Orchestrator: set up the netns + fake sensor, drive the consumer, tear down.
-# ---------------------------------------------------------------------------
 
 
 def _sudo(*args: str, check: bool = True) -> subprocess.CompletedProcess[bytes]:
@@ -291,9 +289,7 @@ def _orchestrate(args: argparse.Namespace) -> int:
     return rc
 
 
-# ---------------------------------------------------------------------------
 # Consumer: FastLio2 live SDK + recorder. Runs inside the drv netns.
-# ---------------------------------------------------------------------------
 
 
 def _consume(args: argparse.Namespace) -> int:
