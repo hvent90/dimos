@@ -503,19 +503,19 @@ If you want motion planning (collision-free trajectories via Drake), you need a 
 
 ### 4a. Add your URDF
 
-Prefer an upstream Robot Description Source and add a typed declaration in `dimos/robot/robot_asset_declarations.py`. `RobotAssetPath` is a lazy `Path`-like adapter: importing the catalog does not clone or update the repo, but the first concrete path access resolves the source into `~/.cache/dimos/robot_assets`.
+Prefer an upstream Robot Description Source and add a typed declaration in `dimos/robot/assets/declarations.py`. `RobotAssetPath` is a lazy `Path`-like adapter: importing the catalog does not clone or update the repo, but the first concrete path access resolves the source into `~/.cache/dimos/robot_assets`.
 
 Use `LfsPath` only when the asset is intentionally vendored, locally modified, or has no suitable upstream source.
 
 ```python skip
-from dimos.robot.asset_manager import RobotAssetPath, robot_asset_package_paths
+from dimos.robot.assets.manager import RobotAssetPath, robot_asset_package_paths
 from dimos.manipulation.manipulation_module import manipulation_module
 from dimos.manipulation.planning.spec import RobotModelConfig
 from dimos.msgs.geometry_msgs.PoseStamped import PoseStamped
 from dimos.msgs.geometry_msgs.Quaternion import Quaternion
 from dimos.msgs.geometry_msgs.Vector3 import Vector3
 
-# Add a RobotAssetDeclaration for "yourarm" in robot_asset_declarations.py.
+# Add a RobotAssetDeclaration for "yourarm" in dimos/robot/assets/declarations.py.
 # Common artifact roles are "urdf", "mjcf", "srdf", and "mesh_dir".
 _YOURARM_URDF_PATH = RobotAssetPath("yourarm", "urdf")
 
