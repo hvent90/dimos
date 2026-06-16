@@ -2,7 +2,9 @@
 
 import asyncio
 import logging
+import uuid
 from datetime import datetime, timezone
+from typing import Literal
 
 from fastapi import APIRouter, Depends, HTTPException
 from pydantic import BaseModel
@@ -44,7 +46,9 @@ class CreateSessionRequest(BaseModel):
     # When provided it must match (guards against misconfigured robots).
     robot_id: str | None = None
     robot_name: str
-    transport: str = "cloudflare"  # "cloudflare" | "livekit"
+    # Validated by the schema, so an unknown transport is a 422 before any
+    # handler code runs (no manual check needed downstream).
+    transport: Literal["cloudflare", "livekit"] = "cloudflare"
     # Required for cloudflare (broker relays it to CF); unused for livekit,
     # which does its own SDP negotiation directly with the LiveKit server.
     sdp_offer: str | None = None
@@ -163,24 +167,23 @@ async def _create_livekit_session(
     db: AsyncSession,
 ) -> LiveKitSessionResponse:
     """Robot create for the LiveKit backend: persist the row, name a per-session
-    room, mint the robot's publish token. No SDP/CF round-trip."""
+    room, mint the robot's publish token. No SDP/CF round-trip.
+
+    The id is assigned up front so the room name (a pure function of it) is known
+    before the insert — one commit, no second write. Mint the token first so a
+    failed mint never persists an unusable row (the robot just retries create)."""
     if not settings.livekit_configured:
         raise HTTPException(status_code=503, detail="LiveKit backend not configured")
 
     session = TeleopSession(
+        id=str(uuid.uuid4()),
         robot_id=robot_id,
         owner_id=owner_id,
         robot_name=body.robot_name,
         state="idle",
         transport="livekit",
     )
-    db.add(session)
-    await db.commit()
-    await db.refresh(session)
-
     room = livekit.room_name(session.id)
-    session.livekit_room = room
-    await db.commit()
 
     try:
         token = livekit.mint_token(
@@ -191,6 +194,9 @@ async def _create_livekit_session(
         )
     except LiveKitError as e:
         raise HTTPException(status_code=503, detail=str(e))
+
+    db.add(session)
+    await db.commit()
 
     return LiveKitSessionResponse(
         session_id=session.id,
@@ -237,8 +243,7 @@ async def create_session(
     if body.transport == "livekit":
         return await _create_livekit_session(body, owner_id, robot_id, db)
 
-    if body.transport != "cloudflare":
-        raise HTTPException(status_code=400, detail=f"Unknown transport: {body.transport!r}")
+    # transport is a validated Literal, so anything here is "cloudflare".
     if not body.sdp_offer:
         raise HTTPException(status_code=422, detail="sdp_offer required for cloudflare transport")
 
@@ -397,24 +402,28 @@ async def join_session(
     if session.transport == "livekit":
         if not settings.livekit_configured:
             raise HTTPException(status_code=503, detail="LiveKit backend not configured")
-        if body.role == "operator":
-            session.operator_id = user_id
-            session.state = "active"
-            await db.commit()
+        room = livekit.room_name(session.id)
+        # Mint first; only bind the operator (state='active') once we have a
+        # token. Committing the binding before a mint that then fails would
+        # leave the session wedged 'active' with no operator able to take it.
         try:
             token = livekit.mint_token(
                 identity=f"op-{user_id}",
                 name=user_id,
-                room=session.livekit_room,
+                room=room,
                 can_publish=False,  # operator drives via data; no media uplink
             )
         except LiveKitError as e:
             raise HTTPException(status_code=503, detail=str(e))
+        if body.role == "operator":
+            session.operator_id = user_id
+            session.state = "active"
+            await db.commit()
         return LiveKitSessionResponse(
             session_id=session.id,
             url=settings.livekit_url,
             token=token,
-            room=session.livekit_room,
+            room=room,
             role=body.role,
         )
 

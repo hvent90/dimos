@@ -25,8 +25,8 @@ class TeleopSession(Base):
     transport: Mapped[str] = Column(String, nullable=False, default="cloudflare")
     cf_session_id: Mapped[str] = Column(String, nullable=True)
 
-    # LiveKit room the robot + operator both join (null for cloudflare rows).
-    livekit_room: Mapped[str | None] = Column(String, nullable=True)
+    # Note: the LiveKit room is not stored — it is a pure function of the
+    # session id (services.livekit.room_name), derived on demand at join.
 
     # Video the robot offered (sendonly m=video), extracted from its SDP at
     # create_session. The actual CF publish (/tracks/new) happens in

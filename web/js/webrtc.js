@@ -18,7 +18,7 @@ const CONNECT_TIMEOUT_MS = 20000;
 const CHANNEL_OPEN_TIMEOUT_MS = 10000;
 const GATHER_TIMEOUT_MS = 10000;
 
-function timeout(ms, label) {
+export function timeout(ms, label) {
     return new Promise((_, reject) =>
         setTimeout(() => reject(new Error(label)), ms));
 }
