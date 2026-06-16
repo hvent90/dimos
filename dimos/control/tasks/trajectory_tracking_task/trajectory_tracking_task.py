@@ -50,6 +50,7 @@ from dimos.control.tasks.trajectory_tracking_task.config import (
     tracking_config_from_artifact_path,
 )
 from dimos.control.tasks.trajectory_tracking_task.constants import FLOWBASE_TRACKING
+from dimos.control.tasks.trajectory_tracking_task.gain_schedule import ScheduledGainCompensator
 from dimos.control.tasks.trajectory_tracking_task.trajectory_generator import (
     TimedTrajectory,
     TrajectorySample,
@@ -113,10 +114,8 @@ class TrajectoryTrackingTask(BaseControlTask):
         self._joint_names_list = list(config.joint_names)
         self._joint_names = frozenset(config.joint_names)
         self._kp = self._tracking.kp(config.gain_profile)
-        self._compensator: FeedforwardGainCompensator | None = (
-            FeedforwardGainCompensator(self._tracking.feedforward_config())
-            if config.compensate_gain
-            else None
+        self._compensator: FeedforwardGainCompensator | ScheduledGainCompensator | None = (
+            self._build_compensator()
         )
 
         self._state: TrajectoryTrackingState = "idle"
@@ -190,6 +189,20 @@ class TrajectoryTrackingTask(BaseControlTask):
     # ------------------------------------------------------------------
     # Control law
     # ------------------------------------------------------------------
+
+    def _build_compensator(
+        self,
+    ) -> FeedforwardGainCompensator | ScheduledGainCompensator | None:
+        """Pick the gain-inversion block: speed-scheduled when the config
+        carries a schedule (nonlinear plant), else constant-K. None if
+        compensation is off."""
+        if not self._config.compensate_gain:
+            return None
+        if self._tracking.schedule is not None:
+            return ScheduledGainCompensator(
+                self._tracking.schedule, self._tracking.ff_output_limit.as_tuple()
+            )
+        return FeedforwardGainCompensator(self._tracking.feedforward_config())
 
     def _read_pose(self, state: CoordinatorState) -> tuple[float, float, float] | None:
         # Twist-base ConnectedHardware routes adapter.read_odometry() ->
@@ -291,11 +304,7 @@ class TrajectoryTrackingTask(BaseControlTask):
             self._kp = self._tracking.kp(gain_profile)
         if compensate_gain is not None:
             self._config.compensate_gain = compensate_gain
-            self._compensator = (
-                FeedforwardGainCompensator(self._tracking.feedforward_config())
-                if compensate_gain
-                else None
-            )
+            self._compensator = self._build_compensator()
         if heading_mode is not None:
             self._config.heading_mode = heading_mode  # type: ignore[assignment]
         if fixed_heading is not None:
@@ -315,8 +324,7 @@ class TrajectoryTrackingTask(BaseControlTask):
             return
         self._tracking = tracking_config_from_artifact_path(self._artifact_path)
         self._kp = self._tracking.kp(self._config.gain_profile)
-        if self._compensator is not None:
-            self._compensator = FeedforwardGainCompensator(self._tracking.feedforward_config())
+        self._compensator = self._build_compensator()
         self._artifact_loaded = True
         logger.info(
             f"TrajectoryTrackingTask '{self._name}' loaded artifact ({self._tracking.provenance})"

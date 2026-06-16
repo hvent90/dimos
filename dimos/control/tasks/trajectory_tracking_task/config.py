@@ -33,8 +33,11 @@ the envelope are robot-specific.
 from __future__ import annotations
 
 from dataclasses import dataclass
+import json
+from pathlib import Path
 
 from dimos.control.tasks.feedforward_gain_compensator import FeedforwardGainConfig
+from dimos.control.tasks.trajectory_tracking_task.gain_schedule import GainSchedule
 from dimos.utils.benchmarking.plant import TwistBasePlantParams
 from dimos.utils.benchmarking.tuning import TuningConfig
 
@@ -93,6 +96,9 @@ class TrackingConfig:
     plan_max_acc: AxisTriple
     a_lat_max: float  # lateral/centripetal accel budget for cornering
     ff_output_limit: AxisTriple  # command-space clamp on the gain-inverted output
+    # Optional speed-scheduled gain inversion (nonlinear plants). When set,
+    # the controller inverts K(|v|) per axis instead of the constant k_hat.
+    schedule: GainSchedule | None = None
     fb_clamp_linear: float = FB_CLAMP_LINEAR
     fb_clamp_yaw: float = FB_CLAMP_YAW
     provenance: str = ""
@@ -161,11 +167,12 @@ class TrackingConfig:
         )
 
     @staticmethod
-    def from_artifact(tuning: TuningConfig) -> TrackingConfig:
+    def from_artifact(tuning: TuningConfig, schedule: GainSchedule | None = None) -> TrackingConfig:
         """Build from a characterization artifact (Go2 style): gains from the
         plant fit, limits straight from the artifact's velocity-profile
         envelope. The artifact already carries the operating margins, so no
-        extra planning margin is applied here."""
+        extra planning margin is applied here. ``schedule`` (optional) enables
+        speed-scheduled gain inversion for nonlinear plants."""
         plant = tuning.plant
         vp = tuning.velocity_profile
         k_hat = AxisTriple(plant.vx.K, plant.vy.K, plant.wz.K)
@@ -197,13 +204,18 @@ class TrackingConfig:
                 _safe_div(vp.max_linear_speed, k_hat.y),
                 _safe_div(vp.max_angular_speed, k_hat.yaw),
             ),
+            schedule=schedule,
             provenance=f"{prov.robot_id} {prov.date} {prov.git_sha}",
         )
 
 
 def tracking_config_from_artifact_path(path: str) -> TrackingConfig:
-    """Load a characterization artifact JSON and build a TrackingConfig."""
-    return TrackingConfig.from_artifact(TuningConfig.from_json(path))
+    """Load a characterization artifact JSON and build a TrackingConfig,
+    including a speed-scheduled gain inversion when the artifact carries a
+    ``dynamics_by_amplitude`` table (nonlinear plants)."""
+    raw = json.loads(Path(path).read_text())
+    schedule = GainSchedule.from_dynamics(raw.get("dynamics_by_amplitude"))
+    return TrackingConfig.from_artifact(TuningConfig.from_json(path), schedule=schedule)
 
 
 __all__ = [
