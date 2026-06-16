@@ -26,11 +26,12 @@ import time
 import cv2
 import numpy as np
 
+from dimos.constants import DEFAULT_CAPACITY_COLOR_IMAGE
 from dimos.core.coordination.blueprints import autoconnect
 from dimos.core.core import rpc
 from dimos.core.module import Module, ModuleConfig
 from dimos.core.stream import In, Out
-from dimos.core.transport import H264LcmTransport
+from dimos.core.transport import H264LcmTransport, pSHMTransport
 from dimos.hardware.sensors.camera.module import CameraModule
 from dimos.hardware.sensors.camera.webcam import Webcam
 from dimos.memory2.module import OnExisting, Recorder
@@ -552,10 +553,9 @@ demo_h264_webcam_record = autoconnect(
     ),
 ).transports(
     {
-        ("color_image", Image): H264LcmTransport(
+        ("color_image", Image): pSHMTransport(
             "/demo_h264_webcam_record/color_image",
-            Image,
-            config=_webcam_h264_config,
+            default_capacity=DEFAULT_CAPACITY_COLOR_IMAGE,
         )
     }
 )
