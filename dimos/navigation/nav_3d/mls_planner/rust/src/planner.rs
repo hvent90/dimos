@@ -10,6 +10,7 @@ use crate::adjacency::{CellId, SurfaceCells, SurfaceLookup};
 use crate::dijkstra::walk_preds;
 use crate::edges::{NodeEdgeIdx, NodeId, PlannerGraph, NO_NODE};
 use crate::mls_planner::Config;
+use crate::nodes::penalty_of;
 use crate::voxel::{surface_point_xyz, VoxelKey};
 
 /// Robot-rooted candidate search radius, in multiples of node spacing.
@@ -170,8 +171,14 @@ pub fn plan(
     // Shortcut height tolerance in cells, tied to the traversable step.
     let smooth_tol_cells = ((config.node_step_threshold_m / voxel_size).round() as i32).max(1);
 
+    let wall_cost = WallCost {
+        robot_radius_m: config.robot_radius_m,
+        buffer_m: config.node_wall_buffer_m,
+        weight: config.wall_penalty_weight,
+        voxel_size,
+    };
     let cells = assemble_cells(plg, &node_seq, &lead_in, &goal_segment);
-    let cells = string_pull(plg, &cells, smooth_tol_cells, config.node_wall_buffer_m);
+    let cells = string_pull(plg, &cells, smooth_tol_cells, &wall_cost);
     Some(cells_to_waypoints(
         plg, &cells, start_pose, goal_pose, voxel_size,
     ))
@@ -386,48 +393,77 @@ fn cells_to_waypoints(
     waypoints
 }
 
-/// Shortcut runs of cells with straight on-surface segments, keeping the
-/// farthest cell in line of sight from each anchor. Shortcuts never pass
-/// still account for the wall buffer, so even the new path should be safe.
-fn string_pull(plg: &PlannerGraph, cells: &[CellId], tol_cells: i32, buffer_m: f32) -> Vec<CellId> {
+/// Wall-penalty cost model for smoothing, mirroring the node graph's.
+struct WallCost {
+    robot_radius_m: f32,
+    buffer_m: f32,
+    weight: f32,
+    voxel_size: f32,
+}
+
+/// Shortcut runs of cells with straight on-surface segments. A shortcut is only
+/// taken when its wall-penalty-weighted cost is no worse than the rough sub-path
+/// it replaces, so smoothing never trades away the clearance the node graph
+/// earned: it straightens in the open but keeps the centered route near walls.
+fn string_pull(plg: &PlannerGraph, cells: &[CellId], tol_cells: i32, wc: &WallCost) -> Vec<CellId> {
     if cells.len() <= 2 {
         return cells.to_vec();
     }
+    let cost = |from: CellId, to: CellId| {
+        segment_cost(
+            plg,
+            plg.cells.coord(from),
+            plg.cells.coord(to),
+            tol_cells,
+            wc,
+        )
+    };
     let mut out = vec![cells[0]];
     let mut anchor = 0;
     while anchor + 1 < cells.len() {
-        let anchor_coord = plg.cells.coord(cells[anchor]);
-        let mut last_ok = anchor + 1;
+        // Farthest cell reachable by a straight segment that is at least as safe
+        // (penalty-weighted) as the rough path between anchor and that cell.
+        let mut best = anchor + 1;
+        let mut rough_cost = 0.0_f32;
         let mut j = anchor + 1;
         while j < cells.len() {
-            let coord = plg.cells.coord(cells[j]);
-            if !los_on_surface(plg, anchor_coord, coord, tol_cells, buffer_m) {
-                break;
+            rough_cost += cost(cells[j - 1], cells[j]).unwrap_or(f32::INFINITY);
+            match cost(cells[anchor], cells[j]) {
+                // Straight segment is no costlier than the rough path it spans.
+                Some(shortcut) if shortcut <= rough_cost + 1e-3 => best = j,
+                // Segment leaves the surface or enters the robot radius — stop.
+                None => break,
+                // Valid but less safe than the rough path; keep scanning farther.
+                _ => {}
             }
-            last_ok = j;
             j += 1;
         }
-        out.push(cells[last_ok]);
-        anchor = last_ok;
+        out.push(cells[best]);
+        anchor = best;
     }
     out
 }
 
-/// True if every column the segment crosses has a surface cell near the
-/// segment height that is at least buffer_m from the nearest wall.
-fn los_on_surface(
+/// Wall-penalty-weighted length of the straight on-surface segment a -> b,
+/// matching the node graph's cost model (geometric length times the average
+/// `penalty_of` along it). None if the segment leaves the surface, jumps more
+/// than tol_cells in height, or passes within robot_radius_m of a wall.
+fn segment_cost(
     plg: &PlannerGraph,
     a: VoxelKey,
     b: VoxelKey,
     tol_cells: i32,
-    buffer_m: f32,
-) -> bool {
+    wc: &WallCost,
+) -> Option<f32> {
     let (dx, dy, dz) = (b.0 - a.0, b.1 - a.1, b.2 - a.2);
     let samples = dx.abs().max(dy.abs()) * 2;
     if samples == 0 {
-        return true;
+        return Some(0.0);
     }
+    let length_m = (((dx * dx + dy * dy) as f32).sqrt()) * wc.voxel_size;
     let (mut last_ix, mut last_iy) = (i32::MIN, i32::MIN);
+    let mut penalty_sum = 0.0_f32;
+    let mut counted = 0u32;
     for k in 0..=samples {
         let t = k as f32 / samples as f32;
         let ix = (a.0 as f32 + t * dx as f32).round() as i32;
@@ -438,9 +474,7 @@ fn los_on_surface(
         last_ix = ix;
         last_iy = iy;
         let iz_line = a.2 as f32 + t * dz as f32;
-        let Some(zs) = plg.surface_lookup.get(&(ix, iy)) else {
-            return false;
-        };
+        let zs = plg.surface_lookup.get(&(ix, iy))?;
         // Surface cell in this column nearest the interpolated segment height.
         let mut nearest: Option<(f32, i32)> = None;
         for &iz in zs {
@@ -449,25 +483,30 @@ fn los_on_surface(
                 nearest = Some((d, iz));
             }
         }
-        let Some((d, iz)) = nearest else {
-            return false;
-        };
+        let (d, iz) = nearest?;
         if d > tol_cells as f32 {
-            return false;
+            return None;
         }
-        if let Some(id) = plg.cells.id((ix, iy, iz)) {
-            let wall_dist = plg
-                .wall_state
-                .dist
-                .get(id as usize)
-                .copied()
-                .unwrap_or(f32::INFINITY);
-            if wall_dist < buffer_m {
-                return false;
+        // Columns on the surface but not in the graph carry no penalty.
+        let p = match plg.cells.id((ix, iy, iz)) {
+            Some(id) => {
+                let wall_dist = plg
+                    .wall_state
+                    .dist
+                    .get(id as usize)
+                    .copied()
+                    .unwrap_or(f32::INFINITY);
+                penalty_of(wall_dist, wc.buffer_m, wc.robot_radius_m, wc.weight)
             }
+            None => 1.0,
+        };
+        if !p.is_finite() {
+            return None;
         }
+        penalty_sum += p;
+        counted += 1;
     }
-    true
+    Some(length_m * penalty_sum / counted.max(1) as f32)
 }
 
 fn edge_between(plg: &PlannerGraph, a: NodeId, b: NodeId) -> Option<NodeEdgeIdx> {
@@ -661,15 +700,22 @@ mod tests {
                 "waypoint {w:?} is off the surface"
             );
         }
+        let wc = WallCost {
+            robot_radius_m: 0.2,
+            buffer_m: 0.3,
+            weight: 4.0,
+            voxel_size: VOXEL,
+        };
         for pair in wp[1..wp.len() - 1].windows(2) {
             assert!(
-                los_on_surface(
+                segment_cost(
                     &plg,
                     waypoint_key(&pair[0]),
                     waypoint_key(&pair[1]),
                     tol,
-                    0.3
-                ),
+                    &wc
+                )
+                .is_some(),
                 "segment {:?} -> {:?} leaves the surface",
                 pair[0],
                 pair[1]
@@ -706,13 +752,19 @@ mod tests {
         build_surface_cells(&mut plg.cells, &plg.surface_lookup, VOXEL, 2);
         let path: Vec<CellId> = (0..10).map(|x| plg.cells.id((x, 0, 0)).unwrap()).collect();
 
+        let wc = WallCost {
+            robot_radius_m: 0.2,
+            buffer_m: 0.3,
+            weight: 4.0,
+            voxel_size: VOXEL,
+        };
         plg.wall_state.dist = vec![f32::INFINITY; plg.cells.slot_capacity()];
-        let open = string_pull(&plg, &path, 1, 0.3);
+        let open = string_pull(&plg, &path, 1, &wc);
         assert_eq!(open.len(), 2, "open strip should collapse to its endpoints");
 
         let mid = plg.cells.id((5, 0, 0)).unwrap();
         plg.wall_state.dist[mid as usize] = 0.1;
-        let guarded = string_pull(&plg, &path, 1, 0.3);
+        let guarded = string_pull(&plg, &path, 1, &wc);
         assert!(
             guarded.len() > 2,
             "shortcut across a sub-buffer cell must be refused: {guarded:?}"

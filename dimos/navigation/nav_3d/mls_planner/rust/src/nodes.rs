@@ -313,7 +313,7 @@ fn scale_edges(
 /// Cost multiplier at wall distance d. Infinite inside the robot radius,
 /// then decays from 1 + weight toward 1 with length scale buffer_m.
 #[inline]
-fn penalty_of(d: f32, buffer_m: f32, robot_radius_m: f32, weight: f32) -> f32 {
+pub(crate) fn penalty_of(d: f32, buffer_m: f32, robot_radius_m: f32, weight: f32) -> f32 {
     if d < robot_radius_m {
         return f32::INFINITY;
     }
