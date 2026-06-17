@@ -98,6 +98,7 @@ def _accumulate(
     device: str,
     graph: PoseGraph | None = None,
     world_frame: bool = False,
+    carve_columns: bool = False,
     progress_cb: Callable[[Observation[Any]], None] | None = None,
 ) -> PointCloud2 | None:
     """Accumulate a voxel map from `obs_iter`, optionally PGO-correcting each frame.
@@ -151,6 +152,7 @@ def _accumulate(
         voxel_size=voxel,
         block_count=block_count,
         device=device,
+        carve_columns=carve_columns,
     )
     result = next(iter(vmt(iter(prepared()))), None)
     return result.data if result is not None else None
@@ -332,6 +334,13 @@ def main(
         help="Clouds are already world-registered (e.g. fastlio); skip applying the "
         "per-frame pose. Default registers each (body-frame) cloud by its pose.",
     ),
+    carve: bool = typer.Option(
+        False,
+        "--carve/--no-carve",
+        help="Column carving: keep only the latest frame's points per (X,Y) column. "
+        "Off by default (full 3D accumulation); on collapses vertical structure "
+        "(stairs, revisited columns) to the most recent observation.",
+    ),
     markers: bool = typer.Option(
         False,
         "--markers",
@@ -462,6 +471,7 @@ def main(
             device=device,
             graph=graph,
             world_frame=go2,
+            carve_columns=carve,
             progress_cb=progress(n_kept, "pgo pass 2 (rebuilding)"),
         )
 
@@ -475,6 +485,7 @@ def main(
             device=device,
             graph=graph,
             world_frame=go2,
+            carve_columns=carve,
             progress_cb=progress(total, "full pgo (rebuilding)"),
         )
 
@@ -485,6 +496,7 @@ def main(
         block_count=block_count,
         device=device,
         world_frame=go2,
+        carve_columns=carve,
         progress_cb=progress(n_kept, "reconstructing global map"),
     )
 
