@@ -20,9 +20,7 @@ registered (world-frame) point clouds and odometry with covariance.
 
 from __future__ import annotations
 
-import ipaddress
 from pathlib import Path
-import socket
 import time
 from typing import TYPE_CHECKING, Annotated
 
@@ -32,6 +30,7 @@ from reactivex.disposable import Disposable
 from dimos.core.core import rpc
 from dimos.core.native_module import NativeModule, NativeModuleConfig
 from dimos.core.stream import Out
+from dimos.hardware.sensors.lidar.livox.net import resolve_host_ip
 from dimos.hardware.sensors.lidar.livox.ports import (
     SDK_CMD_DATA_PORT,
     SDK_HOST_CMD_DATA_PORT,
@@ -51,11 +50,8 @@ from dimos.msgs.nav_msgs.Odometry import Odometry
 from dimos.msgs.sensor_msgs.PointCloud2 import PointCloud2
 from dimos.navigation.nav_stack.frames import FRAME_BODY, FRAME_ODOM
 from dimos.spec import perception
-from dimos.utils.generic import get_local_ips
-from dimos.utils.logging_config import setup_logger
 
 _CONFIG_DIR = Path(__file__).parent / "config"
-_logger = setup_logger()
 
 
 class FastLio2Config(NativeModuleConfig):
@@ -153,70 +149,10 @@ class FastLio2(NativeModule, perception.Lidar, perception.Odometry):
         super().stop()
 
     def _validate_network(self) -> None:
-        host_ip = self.config.host_ip
-        lidar_ip = self.config.lidar_ip
-        local_ips = [ip for ip, _iface in get_local_ips()]
-
-        _logger.info(
-            "FastLio2 network check",
-            host_ip=host_ip,
-            lidar_ip=lidar_ip,
-            local_ips=local_ips,
-        )
-
-        if host_ip not in local_ips:
-            try:
-                lidar_net = ipaddress.IPv4Network(f"{lidar_ip}/24", strict=False)
-                same_subnet = [ip for ip in local_ips if ipaddress.IPv4Address(ip) in lidar_net]
-            except (ValueError, TypeError):
-                same_subnet = []
-
-            if same_subnet:
-                picked = same_subnet[0]
-                _logger.warning(
-                    f"FastLio2: host_ip={host_ip!r} not found locally. "
-                    f"Auto-correcting to {picked!r} (same subnet as lidar {lidar_ip}).",
-                    configured_ip=host_ip,
-                    corrected_ip=picked,
-                    lidar_ip=lidar_ip,
-                    local_ips=local_ips,
-                )
-                self.config.host_ip = picked
-                host_ip = picked
-            else:
-                subnet_prefix = ".".join(lidar_ip.split(".")[:3])
-                msg = (
-                    f"FastLio2: host_ip={host_ip!r} is not assigned to any local interface.\n"
-                    f"  Lidar IP: {lidar_ip}\n"
-                    f"  Local IPs found: {', '.join(local_ips) or '(none)'}\n"
-                    f"  No local IP found on the same subnet as lidar ({lidar_ip}).\n"
-                    f"  The lidar network interface may be down or unconfigured.\n"
-                    f"  → Check: ip addr | grep {subnet_prefix}\n"
-                    f"  → Or assign an IP: "
-                    f"sudo ip addr add {subnet_prefix}.5/24 dev <iface>\n"
-                )
-                _logger.error(msg)
-                raise RuntimeError(msg)
-
-        # Check if we can bind a UDP socket on host_ip (port 0 = ephemeral).
-        try:
-            with socket.socket(socket.AF_INET, socket.SOCK_DGRAM) as sock:
-                sock.bind((host_ip, 0))
-        except OSError as e:
-            _logger.error(
-                f"FastLio2: Cannot bind UDP socket on host_ip={host_ip!r}: {e}\n"
-                f"  Another process may be using the Livox SDK ports.\n"
-                f"  → Check: ss -ulnp | grep {host_ip}"
-            )
-            raise RuntimeError(
-                f"FastLio2: Cannot bind UDP on {host_ip}: {e}. "
-                f"Check if another Livox/FastLio2 process is running."
-            ) from e
-
-        _logger.info(
-            "FastLio2 network check passed",
-            host_ip=host_ip,
-            lidar_ip=lidar_ip,
+        # Auto-derive host_ip from a local NIC on the lidar's subnet (shared with
+        # the Mid360 driver / Point-LIO) when the configured value isn't local.
+        self.config.host_ip = resolve_host_ip(
+            self.config.lidar_ip, self.config.host_ip, label="FastLio2"
         )
 
 

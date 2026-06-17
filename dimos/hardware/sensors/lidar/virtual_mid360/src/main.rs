@@ -1,16 +1,15 @@
 // Fake Livox Mid-360 — replays a recorded pcap over a virtual NIC and synthesizes
 // the Livox SDK2 control handshake so an unmodified, live-mode pointlio ingests it
-// through the real Livox SDK as if from a live sensor. Runs in the "lidar" netns
-// (peer "drv" runs pointlio); on a setup failure the error prints the exact
-// netns/veth commands to run.
+// through the real Livox SDK as if from a live sensor. Namespace-agnostic: it just
+// binds lidar_ip and sends UDP, so it works wherever the host_ip/lidar_ip are
+// reachable — IPs aliased on an interface (host ns, incl. macOS lo0) or a netns.
 
-use dimos_module::{run, LcmTransport, Module};
-use serde::Deserialize;
+use dimos_module::{native_config, run, LcmTransport, Module};
+use socket2::{Domain, Protocol, Socket, Type};
 use std::net::{Ipv4Addr, SocketAddrV4, UdpSocket};
 use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::Arc;
 use std::time::{Duration, Instant, SystemTime, UNIX_EPOCH};
-use validator::Validate;
 
 // ---- Livox SDK2 control wire format (SdkPacket) ----
 const SOF: u8 = 0xAA;
@@ -27,8 +26,11 @@ const DST_STATUS: u16 = 56201;
 // cmd_id whose ACK means the host finished configuring -> start streaming
 const CMD_WORKMODE: u16 = 0x0100;
 
-#[derive(Debug, Deserialize, Validate)]
-#[serde(deny_unknown_fields)]
+// native_config: every field required + supplied by the Python wrapper over
+// stdin (no Rust-side serde defaults / Option). VirtualMid360Config sends all of
+// these, so each is unconditionally present. Injects the
+// Deserialize/Serialize/Validate derives + deny_unknown_fields + impl NativeConfig.
+#[native_config]
 struct Config {
     /// Recorded Mid-360 pcap (point/IMU/status UDP). Read fully into RAM.
     pcap: String,
@@ -36,23 +38,20 @@ struct Config {
     #[validate(range(min = 0.01, max = 1000.0))]
     rate: f64,
     /// Seconds to wait before streaming begins.
-    #[serde(default)]
     #[validate(range(min = 0.0, max = 3600.0))]
     delay: f64,
-    /// IP the fake lidar sends from (on this netns's veth). Required.
+    /// IP the fake lidar sends from.
     lidar_ip: String,
-    /// Host IP the data is delivered to (where the SDK listens). Required.
+    /// Host IP the data is delivered to (where the SDK listens).
     host_ip: String,
-    /// Network namespace the fake lidar runs in. Required.
+    /// Network namespace the fake lidar runs in. Accepted for wire-config
+    /// compatibility but not acted on: the process is *placed* in the netns by
+    /// the launcher (`ip netns exec`), so the binary itself stays agnostic.
+    #[allow(dead_code)]
     lidar_netns: String,
     /// Multicast group for point/IMU. 224.1.1.5 is the Livox default the SDK
     /// joins; override only to match a differently-configured consumer.
-    #[serde(default = "default_mcast_data")]
     mcast_data: String,
-}
-
-fn default_mcast_data() -> String {
-    "224.1.1.5".into()
 }
 
 #[derive(Module)]
@@ -182,32 +181,34 @@ fn ensure_interface(cfg: &Config) -> Result<Ipv4Addr, String> {
     // (or we're in the wrong namespace).
     let probe = UdpSocket::bind(SocketAddrV4::new(lidar_ip, CMD_PORT));
     if probe.is_err() {
-        let netns = &cfg.lidar_netns;
         let lidar_addr = &cfg.lidar_ip;
         let host_addr = &cfg.host_ip;
         let mcast_group = &cfg.mcast_data;
+        // The VirtualMid360 module sets the NIC up automatically (setup_network,
+        // via sudo); this fires only when that was skipped/failed. Show the
+        // by-hand recipe for the current platform.
+        let how = if cfg!(target_os = "macos") {
+            format!(
+                "macOS — alias the IPs onto loopback and route the Livox multicast there:\n  \
+                 sudo ifconfig lo0 alias {host_addr} netmask 255.255.255.0\n  \
+                 sudo ifconfig lo0 alias {lidar_addr} netmask 255.255.255.0\n  \
+                 sudo route -n add -host {mcast_group} -interface lo0\n  \
+                 sudo route -n add -host 255.255.255.255 -interface lo0"
+            )
+        } else {
+            format!(
+                "Linux — alias the IPs onto a dummy interface (no netns needed):\n  \
+                 sudo ip link add dimos-mid360 type dummy\n  \
+                 sudo ip addr add {host_addr}/24 dev dimos-mid360\n  \
+                 sudo ip addr add {lidar_addr}/24 dev dimos-mid360\n  \
+                 sudo ip link set dimos-mid360 up\n  \
+                 sudo ip link set dimos-mid360 multicast on\n  \
+                 sudo ip route add {mcast_group}/32 dev dimos-mid360\n  \
+                 sudo ip route add 255.255.255.255/32 dev dimos-mid360"
+            )
+        };
         return Err(format!(
-            "cannot bind {lidar_addr}:{CMD_PORT} — the virtual network interface isn't set up \
-             (or this process isn't in the '{netns}' netns).\n\
-             Run this once (creates the lidar/drv veth pair), then re-run the module:\n\
-             \n  sudo ip netns add drv\n  sudo ip netns add {netns}\n  \
-             sudo ip link add veth-drv type veth peer name veth-lidar\n  \
-             sudo ip link set veth-drv netns drv\n  \
-             sudo ip link set veth-lidar netns {netns}\n  \
-             sudo ip netns exec drv   ip addr add {host_addr}/24 dev veth-drv\n  \
-             sudo ip netns exec {netns} ip addr add {lidar_addr}/24 dev veth-lidar\n  \
-             sudo ip netns exec drv   ip link set veth-drv up\n  \
-             sudo ip netns exec {netns} ip link set veth-lidar up\n  \
-             sudo ip netns exec drv   ip link set lo up\n  \
-             sudo ip netns exec {netns} ip link set lo up\n  \
-             sudo ip netns exec drv   ip link set veth-drv multicast on\n  \
-             sudo ip netns exec {netns} ip link set veth-lidar multicast on\n  \
-             sudo ip netns exec {netns} ip route add 255.255.255.255/32 dev veth-lidar\n  \
-             sudo ip netns exec {netns} ip route add {mcast_group}/32 dev veth-lidar  # point/IMU multicast\n  \
-             sudo ip netns exec drv   ip route add 224.0.0.0/4 dev lo  # LCM (dimos transport)\n  \
-             sudo ip netns exec {netns} ip route add 224.0.0.0/4 dev lo  # LCM (dimos transport)\n\
-             \nThen launch this module inside the lidar netns:\n  \
-             sudo ip netns exec {netns} <run the blueprint / binary>"
+            "cannot bind {lidar_addr}:{CMD_PORT} — the virtual NIC isn't set up.\n{how}"
         ));
     }
     Ok(lidar_ip)
@@ -221,7 +222,6 @@ impl VirtualMid360 {
             Err(msg) => {
                 // Exit non-zero so the coordinator surfaces the fix command.
                 tracing::error!("{msg}");
-                eprintln!("\n[virtual_mid360] {msg}\n");
                 std::process::exit(2);
             }
         };
@@ -229,7 +229,7 @@ impl VirtualMid360 {
         let mcast_data: Ipv4Addr = match cfg.mcast_data.parse() {
             Ok(ip) => ip,
             Err(_) => {
-                eprintln!(
+                tracing::error!(
                     "[virtual_mid360] invalid mcast_data '{}' — expected an IPv4 multicast \
                      address matching the consumer's Livox multicast_ip (default 224.1.1.5).",
                     cfg.mcast_data
@@ -241,7 +241,7 @@ impl VirtualMid360 {
         let packets = match parse_pcap(&cfg.pcap) {
             Ok(parsed) if !parsed.is_empty() => Arc::new(parsed),
             Ok(_) => {
-                eprintln!(
+                tracing::error!(
                     "[virtual_mid360] pcap '{}' has no Livox UDP data packets. \
                      Check the path / that it's a Mid-360 capture, then re-run.",
                     cfg.pcap
@@ -249,7 +249,7 @@ impl VirtualMid360 {
                 std::process::exit(2);
             }
             Err(err) => {
-                eprintln!(
+                tracing::error!(
                     "[virtual_mid360] failed to read pcap '{}': {err}. Fix the path, then re-run.",
                     cfg.pcap
                 );
@@ -262,8 +262,8 @@ impl VirtualMid360 {
         let rate = cfg.rate;
         let delay = cfg.delay;
 
-        // discovery responder (:56000) — answers the 0x0000 broadcast
-        spawn_discovery(lidar_ip, stop.clone());
+        // discovery responder (:56000) — proactively announces + answers 0x0000
+        spawn_discovery(lidar_ip, host_ip, stop.clone());
         // control responder (:56100) — per-cmd ACKs; arms streaming on 0x0100
         spawn_control(lidar_ip, armed.clone(), stop.clone());
         // data streamer — point/IMU/status paced at `rate`, timestamps shifted to now
@@ -274,39 +274,62 @@ impl VirtualMid360 {
     }
 }
 
-fn spawn_discovery(lidar_ip: Ipv4Addr, stop: Arc<AtomicBool>) {
+/// UDP socket bound with SO_REUSEADDR so it can share a port with the consumer
+/// SDK's own sockets when both run in one network namespace — macOS (and Linux
+/// alias mode) have no netns to separate the two endpoints.
+fn reuse_bind(addr: SocketAddrV4) -> std::io::Result<UdpSocket> {
+    let socket = Socket::new(Domain::IPV4, Type::DGRAM, Some(Protocol::UDP))?;
+    socket.set_reuse_address(true)?;
+    // SO_REUSEPORT too: the consumer SDK opens its own :56000 sockets (one on
+    // INADDR_ANY), and on macOS a wildcard bind can't be added over an existing
+    // specific bind with SO_REUSEADDR alone — so without this the two race and
+    // whichever loses fails to bind. REUSEPORT makes the binds order-independent.
+    socket.set_reuse_port(true)?;
+    let bind_addr: std::net::SocketAddr = addr.into();
+    socket.bind(&bind_addr.into())?;
+    Ok(socket.into())
+}
+
+fn spawn_discovery(lidar_ip: Ipv4Addr, host_ip: Ipv4Addr, stop: Arc<AtomicBool>) {
     std::thread::spawn(move || {
-        let socket = match UdpSocket::bind(SocketAddrV4::new(Ipv4Addr::UNSPECIFIED, DISCOVERY_PORT))
-        {
+        // Bind the lidar's detection port (not INADDR_ANY): SO_REUSEADDR + a
+        // specific source IP lets this coexist with the consumer SDK's own
+        // :56000 sockets in a shared namespace, and makes our packets arrive
+        // *from* lidar_ip:56000 (which is how the SDK identifies the device).
+        let socket = match reuse_bind(SocketAddrV4::new(lidar_ip, DISCOVERY_PORT)) {
             Ok(socket) => socket,
             Err(err) => {
-                tracing::error!("discovery bind :{DISCOVERY_PORT} failed: {err}");
+                tracing::error!("discovery bind {lidar_ip}:{DISCOVERY_PORT} failed: {err}");
                 return;
             }
         };
-        let _ = socket.set_broadcast(true);
         socket
-            .set_read_timeout(Some(Duration::from_millis(500)))
+            .set_read_timeout(Some(Duration::from_millis(200)))
             .ok();
-        let broadcast_addr = SocketAddrV4::new(Ipv4Addr::BROADCAST, DISCOVERY_PORT);
+        // The SDK solicits lidars by broadcasting to 255.255.255.255, which macOS
+        // refuses to send — so it can never reach us. Instead we *proactively*
+        // unicast the search-ACK to the host's detection port; the SDK accepts an
+        // unsolicited detection response (it matches no request seq — none is
+        // required for cmd 0x0000) and registers the device. Harmless on Linux,
+        // where the broadcast path also works.
+        let host_detect = SocketAddrV4::new(host_ip, DISCOVERY_PORT);
+        let announce = build_ack(0x0000, 0, &discovery_ack_payload(lidar_ip));
         let mut buffer = [0u8; 2048];
         while !stop.load(Ordering::Relaxed) {
-            let len = match socket.recv_from(&mut buffer) {
-                Ok((len, _)) => len,
-                Err(_) => continue,
-            };
-            if len < WRAPPER || buffer[0] != SOF {
-                continue;
+            let _ = socket.send_to(&announce, host_detect);
+            // Also answer a real broadcast solicitation if one arrives, echoing
+            // its seq (the original live/netns path).
+            if let Ok((len, _)) = socket.recv_from(&mut buffer) {
+                if len >= WRAPPER
+                    && buffer[0] == SOF
+                    && u16::from_le_bytes([buffer[8], buffer[9]]) == 0x0000
+                    && buffer[10] == 0
+                {
+                    let seq = u32::from_le_bytes([buffer[4], buffer[5], buffer[6], buffer[7]]);
+                    let ack = build_ack(0x0000, seq, &discovery_ack_payload(lidar_ip));
+                    let _ = socket.send_to(&ack, host_detect);
+                }
             }
-            let cmd_id = u16::from_le_bytes([buffer[8], buffer[9]]);
-            let cmd_type = buffer[10];
-            if cmd_id != 0x0000 || cmd_type != 0 {
-                continue;
-            }
-            let seq = u32::from_le_bytes([buffer[4], buffer[5], buffer[6], buffer[7]]);
-            // ACK describes the device (dev_type, serial, lidar_ip, cmd port).
-            let ack = build_ack(0x0000, seq, &discovery_ack_payload(lidar_ip));
-            let _ = socket.send_to(&ack, broadcast_addr);
         }
     });
 }

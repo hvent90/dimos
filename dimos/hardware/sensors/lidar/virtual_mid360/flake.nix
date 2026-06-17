@@ -4,16 +4,18 @@
   inputs = {
     nixpkgs.url = "github:NixOS/nixpkgs/nixos-unstable";
     flake-utils.url = "github:numtide/flake-utils";
-    # Relative git+file: reaches the repo root for the local dimos-module path
-    # deps (same approach as dimos/mapping/ray_tracing/rust).
-    dimos-repo = { url = "git+file:../../../../../.."; flake = false; };
+    # Path input to the in-repo rust crates (mirrors pointlio/cpp's path: inputs).
+    # A plain path: (not git+file:) hashes the directory contents, so it carries no
+    # git-tree NAR hash — which varies by nix version / clean-vs-dirty checkout and
+    # breaks cross-machine builds.
+    dimos-rust = { url = "path:../../../../../native/rust"; flake = false; };
   };
 
-  outputs = { self, nixpkgs, flake-utils, dimos-repo }:
+  outputs = { self, nixpkgs, flake-utils, dimos-rust }:
     flake-utils.lib.eachDefaultSystem (system:
       let
         pkgs = import nixpkgs { inherit system; };
-        sub = "dimos/hardware/sensors/lidar/livox/virtual_mid360";
+        sub = "dimos/hardware/sensors/lidar/virtual_mid360";
 
         src = pkgs.runCommand "virtual-mid360-src" {} ''
           mkdir -p $out/${sub}
@@ -22,8 +24,8 @@
           cp ${./Cargo.lock} $out/${sub}/Cargo.lock
 
           mkdir -p $out/native/rust
-          cp -r ${dimos-repo}/native/rust/dimos-module $out/native/rust/dimos-module
-          cp -r ${dimos-repo}/native/rust/dimos-module-macros $out/native/rust/dimos-module-macros
+          cp -r ${dimos-rust}/dimos-module $out/native/rust/dimos-module
+          cp -r ${dimos-rust}/dimos-module-macros $out/native/rust/dimos-module-macros
         '';
       in {
         packages.default = pkgs.rustPlatform.buildRustPackage {
