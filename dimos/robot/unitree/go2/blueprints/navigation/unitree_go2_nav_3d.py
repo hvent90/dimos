@@ -111,9 +111,8 @@ unitree_go2_nav_3d = autoconnect(
         world_frame="odom",
         voxel_size=voxel_size,
         robot_height=go2_lidar_height,
-        # Hard wall clearance: paths stay at least this far off walls. Raised
-        # from the 0.2 default so the robot keeps more distance.
-        robot_radius_m=0.35,
+        # Hard wall clearance radius
+        robot_radius_m=0.2,
         # Soft push toward the open centerline, decaying with wall distance.
         # Never blocks a corridor, so safe to raise well above the 4.0 default.
         wall_penalty_weight=8.0,
