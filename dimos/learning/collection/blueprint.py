@@ -21,6 +21,8 @@ shutdown. DataPrep reads that DB afterwards.
 
 from __future__ import annotations
 
+from datetime import datetime
+
 from dimos.core.coordination.blueprints import Blueprint, autoconnect
 from dimos.core.global_config import global_config
 from dimos.core.transport import LCMTransport, pLCMTransport
@@ -40,6 +42,8 @@ from dimos.teleop.quest.quest_types import Buttons
 
 _DEFAULT_BUTTON_MAP = {"start": "A", "save": "B", "discard": "X"}
 
+_SESSION_DB = f"data/recordings/session_{datetime.now():%Y%m%d_%H%M%S}.db"
+
 
 def _camera_if_real() -> tuple[Blueprint, ...]:
     """Real RealSense only off-sim. In `--simulation` the teleop coordinator's
@@ -57,7 +61,7 @@ learning_collect_quest_xarm7 = autoconnect(
     teleop_quest_xarm7,
     *_camera_if_real(),
     EpisodeMonitorModule.blueprint(button_map=_DEFAULT_BUTTON_MAP),
-    CollectionRecorder.blueprint(),
+    CollectionRecorder.blueprint(db_path=_SESSION_DB),
 ).transports(
     {
         ("buttons", Buttons): LCMTransport("/teleop/buttons", Buttons),
@@ -72,7 +76,7 @@ learning_collect_quest_piper = autoconnect(
     teleop_quest_piper,
     *_camera_if_real(),
     EpisodeMonitorModule.blueprint(button_map=_DEFAULT_BUTTON_MAP),
-    CollectionRecorder.blueprint(),
+    CollectionRecorder.blueprint(db_path=_SESSION_DB),
 ).transports(
     {
         ("buttons", Buttons): LCMTransport("/teleop/buttons", Buttons),
