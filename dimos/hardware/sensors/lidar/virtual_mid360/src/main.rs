@@ -5,7 +5,7 @@
 // reachable — IPs aliased on an interface (host ns, incl. macOS lo0) or a netns.
 
 use dimos_module::{run, LcmTransport, Module};
-use serde::Deserialize;
+use serde::{Deserialize, Serialize};
 use socket2::{Domain, Protocol, Socket, Type};
 use std::net::{Ipv4Addr, SocketAddrV4, UdpSocket};
 use std::sync::atomic::{AtomicBool, Ordering};
@@ -28,7 +28,7 @@ const DST_STATUS: u16 = 56201;
 // cmd_id whose ACK means the host finished configuring -> start streaming
 const CMD_WORKMODE: u16 = 0x0100;
 
-#[derive(Debug, Deserialize, Validate)]
+#[derive(Debug, Deserialize, Serialize, Validate)]
 #[serde(deny_unknown_fields)]
 struct Config {
     /// Recorded Mid-360 pcap (point/IMU/status UDP). Read fully into RAM.
