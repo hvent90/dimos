@@ -54,15 +54,10 @@ from dimos.spec import perception
 
 
 class Mid360Config(NativeModuleConfig):
-    """Config for the C++ Mid-360 native module."""
-
     cwd: str | None = "cpp"
     executable: str = "result/bin/mid360_native"
     build_command: str | None = "nix build .#mid360_native"
-    # host_ip is machine-specific — left unset it's auto-derived in start() from a
-    # local NIC on lidar_ip's subnet. DIMOS_MID360_HOST_IP overrides.
     host_ip: str | None = Field(default_factory=lambda: os.environ.get("DIMOS_MID360_HOST_IP"))
-    # DIMOS_MID360_LIDAR_IP overrides; falls back to the Livox factory-default IP.
     lidar_ip: str = Field(
         default_factory=lambda: os.environ.get("DIMOS_MID360_LIDAR_IP", "192.168.1.155")
     )
@@ -85,13 +80,6 @@ class Mid360Config(NativeModuleConfig):
 
 
 class Mid360(NativeModule, perception.Lidar, perception.IMU):
-    """Livox Mid-360 LiDAR module backed by a native C++ binary.
-
-    Ports:
-        lidar (Out[PointCloud2]): Point cloud frames at configured frequency.
-        imu (Out[Imu]): IMU data at ~200 Hz (if enabled).
-    """
-
     config: Mid360Config
 
     lidar: Out[PointCloud2]
