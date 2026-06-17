@@ -61,6 +61,35 @@ _STAGNANT_SEC = 5.0
 _STARTUP_TIMEOUT_SEC = 60.0
 # Max |Δts| to match a lidar frame to an odometry pose when aggregating the .rrd.
 _POSE_MATCH_TOL = 0.1
+# Extra seconds past the pcap's own duration before auto-stopping, when no
+# explicit --max-sensor-sec is given.
+_DRAIN_MARGIN_SEC = 4.0
+
+
+def _pcap_sensor_span(pcap_path: Path) -> float:
+    """Span (s) between the first and last packet of a classic little-endian pcap,
+    walking only record headers (seeking past payloads). 0.0 if not parseable —
+    the caller then falls back to stream-stagnation drain detection."""
+    import struct
+
+    try:
+        with open(pcap_path, "rb") as handle:
+            if handle.read(24)[:4] != b"\xd4\xc3\xb2\xa1":
+                return 0.0
+            first: float | None = None
+            last = 0.0
+            while True:
+                header = handle.read(16)
+                if len(header) < 16:
+                    break
+                ts_sec, ts_usec, incl_len, _orig = struct.unpack("<IIII", header)
+                last = ts_sec + ts_usec / 1e6
+                if first is None:
+                    first = last
+                handle.seek(incl_len, 1)
+            return max(0.0, last - first) if first is not None else 0.0
+    except OSError:
+        return 0.0
 
 
 def _odom_stats(db_path: Path, table: str) -> tuple[int, float, float]:
@@ -278,10 +307,20 @@ def _run(args: argparse.Namespace) -> int:
         print(f"[pcap_to_db] missing --config: {config_path}", file=sys.stderr)
         return 2
 
+    # Default the stop bound to the pcap's own duration: Point-LIO keeps
+    # dead-reckoning (publishing at full rate) after the pcap drains, so the
+    # stream-stagnation check never fires on its own. Adding the real span makes
+    # the run stop shortly after the data ends. --max-sensor-sec overrides.
+    max_sensor_sec = args.max_sensor_sec
+    if max_sensor_sec <= 0:
+        span = _pcap_sensor_span(pcap_path)
+        if span > 0:
+            max_sensor_sec = span + _DRAIN_MARGIN_SEC
+
     print(
         f"[pcap_to_db] pcap={pcap_path.name} db={db_path.name} "
         f"({'append' if db_path.exists() else 'new'}) rate={args.rate} "
-        f"ips={args.host_ip}/{args.lidar_ip}",
+        f"ips={args.host_ip}/{args.lidar_ip} stop_at={max_sensor_sec or 'drain'}",
         flush=True,
     )
 
@@ -289,7 +328,7 @@ def _run(args: argparse.Namespace) -> int:
     try:
         coord = ModuleCoordinator.build(_build_blueprint(args, db_path, config_path))
         drained = _poll_until_drained(
-            db_path, args.odom_stream_name, args.lidar_stream_name, args.max_sensor_sec
+            db_path, args.odom_stream_name, args.lidar_stream_name, max_sensor_sec
         )
     finally:
         if coord is not None:

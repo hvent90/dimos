@@ -20,6 +20,10 @@ memory2 store. Timestamps are converted onto the db's existing clock so a run
 can be appended to an existing db (e.g. a fastlio replay) and compared on one
 timeline. Owns the db lifecycle: refuses to clobber existing streams unless
 ``force``, and derives the alignment reference from whatever the db already holds.
+
+Each lidar frame is stamped with the latest odometry pose, so ``pointlio_lidar``
+carries the trajectory and ``dimos map global`` can register it directly (it
+transforms the body-frame cloud by that pose) — no ``dimos map pose-fill`` pass.
 """
 
 from __future__ import annotations
@@ -32,6 +36,7 @@ import time
 
 from dimos.core.module import Module, ModuleConfig
 from dimos.core.stream import In
+from dimos.msgs.geometry_msgs.Pose import Pose
 from dimos.msgs.nav_msgs.Odometry import Odometry
 from dimos.msgs.sensor_msgs.PointCloud2 import PointCloud2
 
@@ -39,6 +44,10 @@ from dimos.msgs.sensor_msgs.PointCloud2 import PointCloud2
 _SENSOR_CLOCK_MAX = 1e8
 # Strictly-increasing tie-breaker so two samples never collide on ts.
 _EPS = 1e-9
+# Max sensor-ts gap to attach the latest odometry pose to a lidar frame, so
+# pointlio_lidar carries the trajectory and `dimos map global` can register it
+# (it transforms by the per-frame pose). Matches pose_fill's nearest-match window.
+_POSE_MATCH_TOL = 0.1
 
 
 def _existing_min_ts(db_path: Path) -> float:
@@ -93,6 +102,10 @@ class PointlioRecorder(Module):
     _last_lidar_ts: float = 0.0
     _odom_count: int = 0
     _lidar_count: int = 0
+    # Latest odometry pose + its raw sensor ts, stamped onto each lidar frame so
+    # pointlio_lidar carries the trajectory (no separate pose-fill pass).
+    _last_odom_pose: Pose | None = None
+    _last_odom_raw_ts: float = 0.0
 
     async def main(self) -> AsyncIterator[None]:
         # Deferred: the store is opened in the worker process that runs main(),
@@ -145,6 +158,8 @@ class PointlioRecorder(Module):
         pose = getattr(msg, "pose", None)
         pose_inner = getattr(pose, "pose", None) if pose is not None else None
         self._os.append(msg, ts=ts, pose=pose_inner)
+        self._last_odom_pose = pose_inner
+        self._last_odom_raw_ts = raw_ts
         self._odom_count += 1
 
     async def handle_lidar(self, msg: PointCloud2) -> None:
@@ -152,5 +167,16 @@ class PointlioRecorder(Module):
         raw_ts = raw_ts_raw if raw_ts_raw is not None else time.time()
         ts = self._aligned_ts(raw_ts, self._last_lidar_ts)
         self._last_lidar_ts = ts
-        self._ls.append(msg, ts=ts)
+        # Stamp the latest odometry pose (within tolerance) onto the frame so
+        # pointlio_lidar carries the trajectory; map global transforms the
+        # body-frame cloud by it. Both Point-LIO outputs share a publish ts, so
+        # the nearest odometry is at most ~one odom period stale. Frames with no
+        # match (e.g. before the first odometry) get None and are map-skipped.
+        pose = (
+            self._last_odom_pose
+            if self._last_odom_pose is not None
+            and abs(raw_ts - self._last_odom_raw_ts) <= _POSE_MATCH_TOL
+            else None
+        )
+        self._ls.append(msg, ts=ts, pose=pose)
         self._lidar_count += 1
