@@ -31,7 +31,6 @@
 
 #include "livox_sdk_config.hpp"
 
-#include "cloud_filter.hpp"
 #include "dimos_native_module.hpp"
 
 #include "geometry_msgs/Quaternion.hpp"
@@ -330,11 +329,6 @@ int main(int argc, char** argv) {
     g_child_frame_id = mod.arg_required("body_frame_id");
     float pointcloud_freq = mod.arg_float("pointcloud_freq", 5.0f);
     float odom_freq = mod.arg_float("odom_freq", 50.0f);
-    bool raw_cloud = mod.arg_bool("raw_cloud", false);
-    CloudFilterConfig filter_cfg;
-    filter_cfg.voxel_size = mod.arg_float("voxel_size", 0.1f);
-    filter_cfg.outlier_neighbor_count = mod.arg_int("outlier_neighbor_count", 50);
-    filter_cfg.outlier_std_threshold = mod.arg_float("outlier_std_threshold", 1.0f);
 
     // Propagates to the Point-LIO core via the `pointlio_debug` global.
     bool debug = mod.arg_bool("debug", false);
@@ -361,7 +355,6 @@ int main(int argc, char** argv) {
         printf("[pointlio] config: %s\n", config_path.c_str());
         printf("[pointlio] host_ip: %s  lidar_ip: %s  frequency: %.1f Hz\n", host_ip.c_str(), lidar_ip.c_str(), g_frequency);
         printf("[pointlio] pointcloud_freq: %.1f Hz  odom_freq: %.1f Hz\n", pointcloud_freq, odom_freq);
-        printf("[pointlio] output cloud: raw=%d voxel_size=%.3f outlier_neighbors=%d " "outlier_std=%.1f\n", raw_cloud, filter_cfg.voxel_size, filter_cfg.outlier_neighbor_count, filter_cfg.outlier_std_threshold);
     }
 
     signal(SIGTERM, signal_handler);
@@ -446,16 +439,15 @@ int main(int argc, char** argv) {
 
             const bool lidar_due = !g_lidar_topic.empty() && now - *last_pc_publish >= pc_interval;
 
-            // get_body_cloud + filter_cloud (SOR) is the loop's costliest step,
-            // so build it only when a publish is due.
+            // get_body_cloud is the loop's costliest step, so build it only when
+            // a publish is due.
             if (lidar_due) {
                 auto body_cloud = point_lio.get_body_cloud();
                 if (body_cloud && !body_cloud->empty()) {
-                    auto filtered = raw_cloud ? body_cloud : filter_cloud<PointType>(body_cloud, filter_cfg);
-                    publish_lidar(filtered, ts);
+                    publish_lidar(body_cloud, ts);
                     last_pc_publish = now;
                     if (pointlio_debug) {
-                        fprintf(stderr, "[pointlio] publish lidar: %zu points  pose=(%.3f, %.3f, %.3f)\n", filtered ? filtered->size() : 0, pose[0], pose[1], pose[2]);
+                        fprintf(stderr, "[pointlio] publish lidar: %zu points  pose=(%.3f, %.3f, %.3f)\n", body_cloud->size(), pose[0], pose[1], pose[2]);
                     }
                 }
             }

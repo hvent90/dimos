@@ -22,7 +22,7 @@ voxel_size = 0.05
 
 
 mid360_pointlio = autoconnect(
-    PointLio.blueprint(voxel_size=voxel_size),
+    PointLio.blueprint(),
     vis_module("rerun"),
 ).global_config(n_workers=2, robot_model="mid360_pointlio")
 
