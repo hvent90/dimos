@@ -152,7 +152,7 @@ def _write_rrd(db_path: Path, odom_stream: str, lidar_stream: str, voxel: float)
 
         # Height gradient: hot pink (low) -> dark purple (high).
         z = agg[:, 2]
-        zn = (z - z.min()) / (np.ptp(z) + 1e-9)
+        zn = (z - z.min()) / ((z.max() - z.min()) + 1e-9)
         low = np.array([255, 20, 147], dtype=np.float64)
         high = np.array([60, 0, 80], dtype=np.float64)
         colors = (low * (1 - zn)[:, None] + high * zn[:, None]).astype(np.uint8)
