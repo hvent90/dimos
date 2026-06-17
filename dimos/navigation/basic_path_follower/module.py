@@ -76,6 +76,7 @@ class BasicPathFollower(Module):
         self._stats_last = 0.0
         self._last_path_t = 0.0
         self._max_gap = 0.0
+        self._cmd_log_last = 0.0
 
     @rpc
     def start(self) -> None:
@@ -186,6 +187,20 @@ class BasicPathFollower(Module):
         # (cos -> 0). Slower speed at sharp corners means a tighter turn radius,
         # so it tracks the safe path instead of stopping and lurching.
         linear = self.config.speed * max(0.0, math.cos(yaw_error))
+
+        # DEBUG: command trace, remove before merge
+        now = time.perf_counter()
+        if now - self._cmd_log_last >= 0.2:
+            self._cmd_log_last = now
+            logger.debug(
+                "follower cmd",
+                lin=round(linear, 3),
+                ang=round(angular, 3),
+                yaw_err_deg=round(math.degrees(yaw_error), 1),
+                target_dx=round(float(target[0] - position[0]), 2),
+                target_dy=round(float(target[1] - position[1]), 2),
+                goal_dist=round(float(np.linalg.norm(waypoints[-1] - position)), 2),
+            )
 
         self.nav_cmd_vel.publish(Twist(Vector3(linear, 0, 0), Vector3(0, 0, angular)))
 
