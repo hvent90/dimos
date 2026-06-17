@@ -83,6 +83,9 @@ class RobotConfig(BaseModel):
     base_pose: list[float] = Field(default_factory=lambda: [0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 1.0])
 
     # Planning
+    joint_limits_lower: list[float] | None = None
+    joint_limits_upper: list[float] | None = None
+    velocity_limits: list[float] | None = None
     max_velocity: float = 1.0
     max_acceleration: float = 2.0
     pre_grasp_offset: float = 0.10
@@ -232,6 +235,9 @@ class RobotConfig(BaseModel):
             auto_convert_meshes=self.auto_convert_meshes,
             max_velocity=self.max_velocity,
             max_acceleration=self.max_acceleration,
+            joint_limits_lower=self.joint_limits_lower,
+            joint_limits_upper=self.joint_limits_upper,
+            velocity_limits=self.velocity_limits,
             joint_name_mapping=self.joint_name_mapping,
             coordinator_task_name=self.coordinator_task_name,
             gripper_hardware_id=self.name if self.gripper else None,

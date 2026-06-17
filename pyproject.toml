@@ -275,6 +275,12 @@ manipulation = [
     "pyyaml>=6.0",
 ]
 
+vamp = [
+    # Optional VAMP planning backend. Keep out of broad extras to avoid forcing
+    # native planner bindings into non-VAMP manipulation environments.
+    "vamp-planner @ git+https://github.com/TomCC7/vamp.git@2b59552179c2af473c59c8617519e4663497fbe6",
+]
+
 cpu = [
     # CPU inference backends
     "onnxruntime",

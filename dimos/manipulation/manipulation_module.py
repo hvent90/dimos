@@ -27,10 +27,11 @@ from __future__ import annotations
 from enum import Enum
 import threading
 import time
-from typing import TYPE_CHECKING, Any, TypeAlias
+from typing import TYPE_CHECKING, Any, Self, TypeAlias
+import warnings
 
 import numpy as np
-from pydantic import Field
+from pydantic import Field, model_validator
 
 from dimos.agents.annotation import skill
 from dimos.agents.skill_result import SkillResult
@@ -38,13 +39,22 @@ from dimos.constants import DEFAULT_THREAD_JOIN_TIMEOUT
 from dimos.core.core import rpc
 from dimos.core.module import Module, ModuleConfig
 from dimos.core.stream import In
-from dimos.manipulation.planning.factory import create_kinematics, create_planner
+from dimos.manipulation.planning.factory import (
+    create_kinematics,
+    create_planner,
+    validate_planning_stack_config,
+)
 from dimos.manipulation.planning.kinematics.config import (
     JacobianKinematicsConfig,
     ManipulationKinematicsConfig,
     kinematics_config_from_name,
 )
 from dimos.manipulation.planning.monitor.world_monitor import WorldMonitor
+from dimos.manipulation.planning.planners.config import (
+    ManipulationPlannerConfig,
+    RRTConnectPlannerConfig,
+    planner_config_from_name,
+)
 from dimos.manipulation.planning.spec.config import RobotModelConfig
 from dimos.manipulation.planning.spec.enums import IKStatus, ObstacleType
 from dimos.manipulation.planning.spec.models import (
@@ -58,8 +68,11 @@ from dimos.manipulation.planning.spec.protocols import KinematicsSpec, PlannerSp
 from dimos.manipulation.planning.trajectory_generator.joint_trajectory_generator import (
     JointTrajectoryGenerator,
 )
+from dimos.manipulation.planning.vamp.errors import UnsupportedWorldCapabilityError
+from dimos.manipulation.planning.world.config import DrakeWorldConfig, ManipulationWorldConfig
 from dimos.manipulation.skill_errors import ManipulationSkillError
 from dimos.msgs.geometry_msgs.Pose import Pose
+from dimos.msgs.geometry_msgs.PoseStamped import PoseStamped
 from dimos.msgs.geometry_msgs.Quaternion import Quaternion
 from dimos.msgs.geometry_msgs.Vector3 import Vector3
 from dimos.msgs.sensor_msgs.JointState import JointState
@@ -101,7 +114,10 @@ class ManipulationModuleConfig(ModuleConfig):
     robots: list[RobotModelConfig] = Field(default_factory=list)
     planning_timeout: float = 10.0
     enable_viz: bool = False
-    planner_name: str = "rrt_connect"  # "rrt_connect"
+    world: ManipulationWorldConfig = Field(default_factory=DrakeWorldConfig)
+    planner: ManipulationPlannerConfig = Field(default_factory=RRTConnectPlannerConfig)
+    # Deprecated: use planner.backend instead.
+    planner_name: str | None = None
     kinematics: ManipulationKinematicsConfig = Field(default_factory=JacobianKinematicsConfig)
     # Deprecated: use kinematics.backend instead.
     kinematics_name: str | None = None  # "jacobian", "drake_optimization", or "pink"
@@ -109,6 +125,27 @@ class ManipulationModuleConfig(ModuleConfig):
     # to prevent the planner from routing trajectories below this height.
     # Set to None to disable.
     floor_z: float | None = None
+
+    @model_validator(mode="after")
+    def apply_legacy_flat_backend_fields(self) -> Self:
+        """Apply deprecated flat backend fields as noisy compatibility shims."""
+        if self.planner_name is not None:
+            warnings.warn(
+                "ManipulationModuleConfig.planner_name is deprecated; use "
+                "planner={'backend': ...} instead.",
+                DeprecationWarning,
+                stacklevel=3,
+            )
+            self.planner = planner_config_from_name(self.planner_name)
+        if self.kinematics_name is not None:
+            warnings.warn(
+                "ManipulationModuleConfig.kinematics_name is deprecated; use "
+                "kinematics={'backend': ...} instead.",
+                DeprecationWarning,
+                stacklevel=3,
+            )
+            self.kinematics = kinematics_config_from_name(self.kinematics_name)
+        return self
 
 
 class ManipulationModule(Module):
@@ -178,7 +215,16 @@ class ManipulationModule(Module):
             logger.warning("No robots configured, planning disabled")
             return
 
-        self._world_monitor = WorldMonitor(enable_viz=self.config.enable_viz)
+        validate_planning_stack_config(
+            world=self.config.world,
+            planner=self.config.planner,
+            kinematics=self.config.kinematics,
+        )
+
+        self._world_monitor = WorldMonitor(
+            config=self.config.world,
+            enable_viz=self.config.enable_viz,
+        )
 
         for robot_config in self.config.robots:
             robot_id = self._world_monitor.add_robot(robot_config)
@@ -216,11 +262,8 @@ class ManipulationModule(Module):
             if url := self._world_monitor.get_visualization_url():
                 logger.info(f"Visualization: {url}")
 
-        self._planner = create_planner(name=self.config.planner_name)
-        kinematics_config = self.config.kinematics
-        if self.config.kinematics_name is not None:
-            kinematics_config = kinematics_config_from_name(self.config.kinematics_name)
-        self._kinematics = create_kinematics(config=kinematics_config)
+        self._planner = create_planner(config=self.config.planner)
+        self._kinematics = create_kinematics(config=self.config.kinematics)
 
         # Start TF publishing thread if any robot has tf_extra_links
         if any(c.tf_extra_links for _, c, _ in self._robots.values()):
@@ -470,22 +513,22 @@ class ManipulationModule(Module):
         """Run the configured kinematics backend for a world-frame pose."""
         assert self._world_monitor and self._kinematics
 
-        # Convert Pose to PoseStamped for the IK solver
-        from dimos.msgs.geometry_msgs.PoseStamped import PoseStamped
-
         target_pose = PoseStamped(
             frame_id="world",
             position=pose.position,
             orientation=pose.orientation,
         )
 
-        return self._kinematics.solve(
-            world=self._world_monitor.world,
-            robot_id=robot_id,
-            target_pose=target_pose,
-            seed=seed,
-            check_collision=check_collision,
-        )
+        try:
+            return self._kinematics.solve(
+                world=self._world_monitor.world,
+                robot_id=robot_id,
+                target_pose=target_pose,
+                seed=seed,
+                check_collision=check_collision,
+            )
+        except UnsupportedWorldCapabilityError as exc:
+            return IKResult(status=IKStatus.NO_SOLUTION, message=str(exc))
 
     @rpc
     def solve_ik(
@@ -548,7 +591,8 @@ class ManipulationModule(Module):
 
         ik = self._solve_ik_for_pose(robot_id, pose, current, check_collision=True)
         if not ik.is_success() or ik.joint_state is None:
-            return self._fail(f"IK failed: {ik.status.name}")
+            detail = f": {ik.message}" if ik.message else ""
+            return self._fail(f"IK failed: {ik.status.name}{detail}")
 
         logger.info(f"IK solved, error: {ik.position_error:.4f}m")
         return self._plan_path_only(robot_name, robot_id, ik.joint_state)

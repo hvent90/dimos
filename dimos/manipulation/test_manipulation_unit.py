@@ -29,10 +29,13 @@ from dimos.manipulation.manipulation_module import (
 )
 from dimos.manipulation.planning.kinematics.config import PinkKinematicsConfig
 from dimos.manipulation.planning.monitor.world_monitor import WorldMonitor
+from dimos.manipulation.planning.planners.config import RRTConnectPlannerConfig, VampPlannerConfig
 from dimos.manipulation.planning.spec.config import RobotModelConfig
 from dimos.manipulation.planning.spec.enums import IKStatus
 from dimos.manipulation.planning.spec.models import IKResult
 from dimos.manipulation.planning.spec.protocols import VisualizationSpec
+from dimos.manipulation.planning.vamp.errors import UnsupportedWorldCapabilityError
+from dimos.manipulation.planning.world.config import DrakeWorldConfig, VampWorldConfig
 from dimos.msgs.geometry_msgs.Pose import Pose
 from dimos.msgs.geometry_msgs.PoseStamped import PoseStamped
 from dimos.msgs.geometry_msgs.Quaternion import Quaternion
@@ -225,17 +228,19 @@ class TestPlanningInitialization:
         ):
             module._initialize_planning()
 
-        mock_planner.assert_called_once_with(name="rrt_connect")
+        planner_config = mock_planner.call_args.kwargs["config"]
+        assert isinstance(planner_config, RRTConnectPlannerConfig)
         mock_kinematics.assert_called_once_with(config=kinematics)
 
     def test_legacy_kinematics_name_still_selects_backend(self, robot_config):
         """The old kinematics_name field remains a compatibility shim."""
         module = _make_module()
-        module.config = ManipulationModuleConfig(
-            robots=[robot_config],
-            kinematics_name="pink",
-            enable_viz=False,
-        )
+        with pytest.warns(DeprecationWarning, match="kinematics_name is deprecated"):
+            module.config = ManipulationModuleConfig(
+                robots=[robot_config],
+                kinematics_name="pink",
+                enable_viz=False,
+            )
         mock_world_monitor = MagicMock(spec=WorldMonitor)
         mock_world_monitor.add_robot.return_value = "robot_id"
 
@@ -268,6 +273,69 @@ class TestPlanningInitialization:
         assert config.kinematics.max_iterations == 100
         assert config.kinematics.dt == 0.02
         assert config.kinematics.posture_cost == 0.0
+
+    def test_nested_world_and_planner_config_parses_cli_override_shape(self) -> None:
+        """Pydantic parses nested world/planner config shapes used by -o overrides."""
+        config = ManipulationModuleConfig(
+            world={
+                "backend": "vamp",
+                "artifact": {
+                    "mode": "official",
+                    "robot": "panda",
+                },
+            },
+            planner={
+                "backend": "vamp",
+                "algorithm": "prm",
+                "simplify": "false",
+                "validate_path": "true",
+            },
+        )
+
+        assert isinstance(config.world, VampWorldConfig)
+        assert config.world.artifact.mode == "official"
+        assert config.world.artifact.robot == "panda"
+        assert isinstance(config.planner, VampPlannerConfig)
+        assert config.planner.algorithm == "prm"
+        assert config.planner.simplify is False
+        assert config.planner.validate_path is True
+
+    def test_default_world_and_planner_config_preserves_drake_rrt_behavior(self) -> None:
+        """Default config remains Drake world plus RRT-Connect planner."""
+        config = ManipulationModuleConfig()
+
+        assert isinstance(config.world, DrakeWorldConfig)
+        assert isinstance(config.planner, RRTConnectPlannerConfig)
+        assert config.kinematics.backend == "jacobian"
+
+    def test_legacy_planner_name_still_selects_backend(self) -> None:
+        """The old planner_name field remains a noisy compatibility shim."""
+        with pytest.warns(DeprecationWarning, match="planner_name is deprecated"):
+            config = ManipulationModuleConfig(planner_name="vamp")
+
+        assert isinstance(config.planner, VampPlannerConfig)
+
+    def test_vamp_planner_requires_vamp_world(self, robot_config) -> None:
+        """Planning initialization fails early for invalid VAMP planner pairing."""
+        module = _make_module()
+        module.config = ManipulationModuleConfig(
+            robots=[robot_config],
+            planner={"backend": "vamp"},
+        )
+
+        with pytest.raises(ValueError, match="VAMP planner requires world backend 'vamp'"):
+            module._initialize_planning()
+
+    def test_vamp_world_requires_vamp_planner(self, robot_config) -> None:
+        """Planning initialization fails early for invalid VAMP world pairing."""
+        module = _make_module()
+        module.config = ManipulationModuleConfig(
+            robots=[robot_config],
+            world={"backend": "vamp"},
+        )
+
+        with pytest.raises(ValueError, match="VAMP world backend requires planner backend 'vamp'"):
+            module._initialize_planning()
 
     def test_solve_ik_rpc_calls_configured_backend(self, robot_config):
         """solve_ik returns the backend IKResult without path planning."""
@@ -340,6 +408,27 @@ class TestPlanningInitialization:
         _, kwargs = module._kinematics.solve.call_args
         assert kwargs["seed"] is explicit_seed
         module._world_monitor.get_current_joint_state.assert_not_called()
+
+    def test_solve_ik_rpc_reports_unsupported_world_capability(self, robot_config):
+        """Pose planning surfaces incompatible world/kinematics capabilities clearly."""
+        module = _make_module()
+        module._robots = {"test_arm": ("robot_id", robot_config, MagicMock())}
+        module._world_monitor = MagicMock()
+        module._world_monitor.world = MagicMock()
+        module._world_monitor.get_current_joint_state.return_value = JointState(
+            name=robot_config.joint_names, position=[0.0, 0.0, 0.0]
+        )
+        module._kinematics = MagicMock()
+        module._kinematics.solve.side_effect = UnsupportedWorldCapabilityError(
+            "vamp", "end-effector Jacobian"
+        )
+
+        pose = Pose(position=Vector3(x=0.45, y=0.0, z=0.25), orientation=Quaternion())
+        result = module.solve_ik(pose)
+
+        assert result.status == IKStatus.NO_SOLUTION
+        assert "end-effector Jacobian" in result.message
+        assert module._state == ManipulationState.IDLE
 
 
 class TestJointNameTranslation:

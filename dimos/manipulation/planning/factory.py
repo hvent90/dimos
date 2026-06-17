@@ -25,6 +25,18 @@ from dimos.manipulation.planning.kinematics.config import (
     PinkKinematicsConfig,
     kinematics_config_from_name,
 )
+from dimos.manipulation.planning.planners.config import (
+    ManipulationPlannerConfig,
+    RRTConnectPlannerConfig,
+    VampPlannerConfig,
+    planner_config_from_name,
+)
+from dimos.manipulation.planning.world.config import (
+    DrakeWorldConfig,
+    ManipulationWorldConfig,
+    VampWorldConfig,
+    world_config_from_name,
+)
 
 if TYPE_CHECKING:
     from dimos.manipulation.planning.spec.protocols import KinematicsSpec, PlannerSpec, WorldSpec
@@ -32,16 +44,23 @@ if TYPE_CHECKING:
 
 def create_world(
     backend: str = "drake",
+    config: ManipulationWorldConfig | None = None,
     enable_viz: bool = False,
     **kwargs: Any,
 ) -> WorldSpec:
-    """Create a world instance. backend='drake', enable_viz for Meshcat."""
-    if backend == "drake":
+    """Create a world instance from a backend name or typed world config."""
+    if config is None:
+        config = world_config_from_name(backend)
+
+    if isinstance(config, DrakeWorldConfig):
         from dimos.manipulation.planning.world.drake_world import DrakeWorld
 
         return DrakeWorld(enable_viz=enable_viz, **kwargs)
-    else:
-        raise ValueError(f"Unknown backend: {backend}. Available: ['drake']")
+    if isinstance(config, VampWorldConfig):
+        from dimos.manipulation.planning.world.vamp_world import VampWorld
+
+        return VampWorld(config=config, **kwargs)
+    raise TypeError(f"Unsupported world config: {type(config).__name__}")
 
 
 def create_kinematics(
@@ -73,30 +92,68 @@ def create_kinematics(
 
 def create_planner(
     name: str = "rrt_connect",
+    config: ManipulationPlannerConfig | None = None,
     **kwargs: Any,
 ) -> PlannerSpec:
-    """Create motion planner. name='rrt_connect'."""
-    if name == "rrt_connect":
+    """Create motion planner from a backend name or typed planner config."""
+    if config is None:
+        config = planner_config_from_name(name)
+
+    if isinstance(config, RRTConnectPlannerConfig):
         from dimos.manipulation.planning.planners.rrt_planner import RRTConnectPlanner
 
-        return RRTConnectPlanner(**kwargs)
-    else:
-        raise ValueError(f"Unknown planner: {name}. Available: ['rrt_connect']")
+        return RRTConnectPlanner(
+            step_size=config.step_size,
+            connect_step_size=config.connect_step_size,
+            goal_tolerance=config.goal_tolerance,
+            collision_step_size=config.collision_step_size,
+            **kwargs,
+        )
+    if isinstance(config, VampPlannerConfig):
+        from dimos.manipulation.planning.planners.vamp_planner import VampPlanner
+
+        return VampPlanner(config=config, **kwargs)
+    raise TypeError(f"Unsupported planner config: {type(config).__name__}")
+
+
+def validate_planning_stack_config(
+    world: ManipulationWorldConfig,
+    planner: ManipulationPlannerConfig,
+    kinematics: ManipulationKinematicsConfig,
+) -> None:
+    """Validate that selected world, planner, and kinematics backends can pair."""
+    if isinstance(planner, VampPlannerConfig) and not isinstance(world, VampWorldConfig):
+        raise ValueError("VAMP planner requires world backend 'vamp'")
+    if isinstance(world, VampWorldConfig) and not isinstance(planner, VampPlannerConfig):
+        raise ValueError("VAMP world backend requires planner backend 'vamp'")
+    if isinstance(kinematics, DrakeOptimizationKinematicsConfig) and not isinstance(
+        world, DrakeWorldConfig
+    ):
+        raise ValueError("Drake optimization kinematics requires world backend 'drake'")
 
 
 def create_planning_stack(
     robot_config: Any,
     enable_viz: bool = False,
+    world: ManipulationWorldConfig | None = None,
     planner_name: str = "rrt_connect",
+    planner: ManipulationPlannerConfig | None = None,
     kinematics_name: str = "jacobian",
     kinematics: ManipulationKinematicsConfig | None = None,
 ) -> tuple[WorldSpec, KinematicsSpec, PlannerSpec, str]:
     """Create complete planning stack. Returns (world, kinematics, planner, robot_id)."""
-    world = create_world(backend="drake", enable_viz=enable_viz)
-    kinematics_solver = create_kinematics(name=kinematics_name, config=kinematics)
-    planner = create_planner(name=planner_name)
+    world_config = world if world is not None else DrakeWorldConfig()
+    planner_config = planner if planner is not None else planner_config_from_name(planner_name)
+    kinematics_config = (
+        kinematics if kinematics is not None else kinematics_config_from_name(kinematics_name)
+    )
+    validate_planning_stack_config(world_config, planner_config, kinematics_config)
 
-    robot_id = world.add_robot(robot_config)
-    world.finalize()
+    world_backend = create_world(config=world_config, enable_viz=enable_viz)
+    kinematics_solver = create_kinematics(name=kinematics_name, config=kinematics_config)
+    planner_backend = create_planner(name=planner_name, config=planner_config)
 
-    return world, kinematics_solver, planner, robot_id
+    robot_id = world_backend.add_robot(robot_config)
+    world_backend.finalize()
+
+    return world_backend, kinematics_solver, planner_backend, robot_id

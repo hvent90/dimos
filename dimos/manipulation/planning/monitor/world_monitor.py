@@ -25,6 +25,7 @@ from dimos.manipulation.planning.factory import create_world
 from dimos.manipulation.planning.monitor.robot_state_monitor import RobotStateMonitor
 from dimos.manipulation.planning.monitor.world_obstacle_monitor import WorldObstacleMonitor
 from dimos.manipulation.planning.spec.protocols import VisualizationSpec
+from dimos.manipulation.planning.world.config import ManipulationWorldConfig, world_config_from_name
 from dimos.msgs.geometry_msgs.PoseStamped import PoseStamped
 from dimos.msgs.sensor_msgs.JointState import JointState
 from dimos.utils.logging_config import setup_logger
@@ -55,11 +56,13 @@ class WorldMonitor:
     def __init__(
         self,
         backend: str = "drake",
+        config: ManipulationWorldConfig | None = None,
         enable_viz: bool = False,
         **kwargs: Any,
     ) -> None:
-        self._backend = backend
-        self._world: WorldSpec = create_world(backend=backend, enable_viz=enable_viz, **kwargs)
+        world_config = config if config is not None else world_config_from_name(backend)
+        self._backend = world_config.backend
+        self._world: WorldSpec = create_world(config=world_config, enable_viz=enable_viz, **kwargs)
         self._visualization: VisualizationSpec | None = (
             self._world if isinstance(self._world, VisualizationSpec) else None
         )
