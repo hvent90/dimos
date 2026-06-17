@@ -35,9 +35,8 @@ export async function setupLiveKit(sessionId) {
     const data = await api('POST', `/sessions/${sessionId}/join`, { role: 'operator' });
     if (!data.url || !data.token) throw new Error('Broker did not return LiveKit url/token');
 
-    // adaptiveStream pauses/downgrades subscribed video whose attached element
-    // is hidden or zero-size — exactly the VR GL-texture <video> (display:none /
-    // offscreen). Teleop wants full-rate always, so keep it off.
+    // adaptiveStream downgrades video whose attached element is hidden/zero-size
+    // — exactly the VR GL-texture <video>. Teleop wants full rate, so keep off.
     const room = new LK.Room({ adaptiveStream: false });
     state.room = room;
 
@@ -52,9 +51,8 @@ export async function setupLiveKit(sessionId) {
         v.play?.().catch(() => {});
     });
 
-    // Robot → operator messages arrive on the back channel by protocol (the
-    // robot always replies on state_reliable_back); LiveKit never echoes our own
-    // published data, so the forward topic carries nothing inbound here.
+    // Robot replies on the back channel by protocol; LiveKit never echoes our
+    // own published data, so the forward topic carries nothing inbound.
     room.on(LK.RoomEvent.DataReceived, (payload, _participant, _kind, topic) => {
         if (topic === STATE_BACK_TOPIC) {
             handleStateMessage(DEC.decode(payload));
@@ -76,12 +74,10 @@ export async function setupLiveKit(sessionId) {
         throw err;
     }
 
-    // Shim the two outbound DataChannels onto LiveKit topics. send() (webrtc.js)
-    // and startClockSync only touch .readyState + .send(), so these stand in
-    // transparently; .close() is a no-op (room teardown happens in disconnect).
-    // readyState tracks room.state so callers stop sending during a reconnect
-    // (otherwise they'd fire into a half-open room); publishData is fire-and-
-    // forget, so swallow its rejection to avoid unhandled promise rejections.
+    // Shim the outbound DataChannels onto LiveKit topics: send()/startClockSync
+    // only touch .readyState + .send(). readyState tracks room.state so callers
+    // stop sending mid-reconnect; .close() is a no-op (disconnect tears down);
+    // publishData rejections are swallowed (fire-and-forget).
     const lp = room.localParticipant;
     const publish = (bytes, opts) => lp.publishData(bytes, opts).catch(() => {});
     const isOpen = () => (room.state === 'connected' ? 'open' : 'closed');

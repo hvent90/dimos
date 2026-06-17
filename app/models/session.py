@@ -21,12 +21,12 @@ class TeleopSession(Base):
     owner_id: Mapped[str | None] = Column(String, nullable=True, index=True)
     state: Mapped[str] = Column(String, default="idle")  # idle | active | disconnected
     # Backend for this session: "cloudflare" (default) | "livekit". Set at
-    # create_session and drives every transport-specific branch downstream.
+    # create_session; drives the transport-specific branches.
     transport: Mapped[str] = Column(String, nullable=False, default="cloudflare")
     cf_session_id: Mapped[str] = Column(String, nullable=True)
 
-    # Note: the LiveKit room is not stored — it is a pure function of the
-    # session id (services.livekit.room_name), derived on demand at join.
+    # LiveKit room isn't stored — derived from the session id on demand
+    # (services.livekit.room_name).
 
     # Video the robot offered (sendonly m=video), extracted from its SDP at
     # create_session. The actual CF publish (/tracks/new) happens in

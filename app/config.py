@@ -18,11 +18,9 @@ class Settings(BaseSettings):
     cf_turn_api_token: str = ""
     cf_turn_base_url: str = "https://rtc.live.cloudflare.com/v1/turn"
 
-    # LiveKit (alternative backend to Cloudflare, selected per session by the
-    # `transport` field). The URL is what robot/operator dial; the API
-    # key/secret mint room-scoped JWTs server-side and never reach clients.
-    # Optional: unset → LiveKit sessions are refused with a 503, Cloudflare
-    # (the default backend) is unaffected.
+    # LiveKit (alternative backend, per-session via `transport`). URL is dialed
+    # by clients; key/secret mint room JWTs server-side. Unset → LiveKit sessions
+    # 503; Cloudflare (the default) is unaffected.
     livekit_url: str = ""  # wss://<host> (self-hosted) or LiveKit Cloud project URL
     livekit_api_key: str = ""
     livekit_api_secret: str = ""

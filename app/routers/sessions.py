@@ -166,12 +166,11 @@ async def _create_livekit_session(
     robot_id: str,
     db: AsyncSession,
 ) -> LiveKitSessionResponse:
-    """Robot create for the LiveKit backend: persist the row, name a per-session
-    room, mint the robot's publish token. No SDP/CF round-trip.
+    """Robot create for LiveKit: persist the row, mint the robot's publish token.
+    No SDP/CF round-trip.
 
-    The id is assigned up front so the room name (a pure function of it) is known
-    before the insert — one commit, no second write. Mint the token first so a
-    failed mint never persists an unusable row (the robot just retries create)."""
+    Id assigned up front so the room name (derived from it) is known before the
+    insert. Mint before commit so a failed mint never persists an unusable row."""
     if not settings.livekit_configured:
         raise HTTPException(status_code=503, detail="LiveKit backend not configured")
 
@@ -403,9 +402,8 @@ async def join_session(
         if not settings.livekit_configured:
             raise HTTPException(status_code=503, detail="LiveKit backend not configured")
         room = livekit.room_name(session.id)
-        # Mint first; only bind the operator (state='active') once we have a
-        # token. Committing the binding before a mint that then fails would
-        # leave the session wedged 'active' with no operator able to take it.
+        # Mint before binding: committing state='active' then failing the mint
+        # would wedge the session 'active' with no operator able to take it.
         try:
             token = livekit.mint_token(
                 identity=f"op-{user_id}",
