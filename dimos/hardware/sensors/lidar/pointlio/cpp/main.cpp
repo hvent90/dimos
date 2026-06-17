@@ -65,6 +65,13 @@ static float g_frequency = 10.0f;
 
 // Frame accumulator (Livox SDK raw → CustomMsg)
 static std::mutex g_pc_mutex;
+// Serializes all Point-LIO EKF access. The SDK delivers IMU on its own callback
+// thread (on_imu_data → feed_imu) while the main loop runs feed_lidar/process/
+// get_* — Point-LIO's estimator is not thread-safe, so without this the two
+// threads race on the EKF state and occasionally emit a corrupt 2nd trajectory.
+// Distinct from g_pc_mutex (which only guards the point accumulator) so incoming
+// point packets can still accumulate while the EKF is processing.
+static std::mutex g_lio_mutex;
 static std::vector<custom_messages::CustomPoint> g_accumulated_points;
 static uint64_t g_frame_start_ns = 0;
 static bool g_frame_has_timestamp = false;
@@ -245,6 +252,9 @@ static void on_imu_data(const uint32_t /*handle*/, const uint8_t /*dev_type*/, L
     auto* imu_pts = reinterpret_cast<const LivoxLidarImuRawPoint*>(data->data);
     uint16_t dot_num = data->dot_num;
 
+    // Serialize EKF access against the main loop (run_main_iter). Held across the
+    // whole packet so its samples feed atomically.
+    std::lock_guard<std::mutex> lio_lock(g_lio_mutex);
     for (uint16_t point_idx = 0; point_idx < dot_num; ++point_idx) {
         auto imu_msg = boost::make_shared<custom_messages::Imu>();
         imu_msg->header.stamp = custom_messages::Time().fromSec(ts);
@@ -413,6 +423,9 @@ int main(int argc, char** argv) {
                 last_emit = now;
             }
         }
+        // Serialize EKF access against the SDK IMU callback (on_imu_data) for the
+        // rest of the iteration — feed_lidar/process/get_* all touch the estimator.
+        std::lock_guard<std::mutex> lio_lock(g_lio_mutex);
         if (!points.empty()) {
             const size_t num_points = points.size();
             auto lidar_msg = boost::make_shared<custom_messages::CustomMsg>();
