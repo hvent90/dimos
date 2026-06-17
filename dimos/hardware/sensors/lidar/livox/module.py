@@ -27,7 +27,10 @@ Usage::
 
 from __future__ import annotations
 
+import os
 from typing import TYPE_CHECKING
+
+from pydantic import Field
 
 from dimos.core.core import rpc
 from dimos.core.native_module import NativeModule, NativeModuleConfig
@@ -56,7 +59,10 @@ class Mid360Config(NativeModuleConfig):
     executable: str = "result/bin/mid360_native"
     build_command: str | None = "nix build .#mid360_native"
     host_ip: str = "192.168.1.5"
-    lidar_ip: str = "192.168.1.155"
+    # DIMOS_MID360_LIDAR_IP overrides; falls back to the Livox factory-default IP.
+    lidar_ip: str = Field(
+        default_factory=lambda: os.environ.get("DIMOS_MID360_LIDAR_IP", "192.168.1.155")
+    )
     frequency: float = 10.0
     enable_imu: bool = True
     frame_id: str = "lidar_link"
