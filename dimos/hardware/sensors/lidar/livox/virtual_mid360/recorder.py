@@ -97,7 +97,7 @@ def _stop_when_parent_dies(cmd: list[str], grace_sec: float) -> list[str]:
 class Mid360PcapRecorderConfig(ModuleConfig):
     pcap_path: Path = Field(default_factory=_default_pcap_path)
     iface: str = Field(default_factory=lambda: os.environ.get("DIMOS_MID360_PCAP_IFACE", ""))
-    lidar_ip: str
+    lidar_ip: str = Field(default_factory=lambda: os.environ.get("DIMOS_MID360_LIDAR_IP", ""))
     snaplen: int = 2048
     stop_timeout: float = 5.0
 
@@ -132,6 +132,11 @@ class Mid360PcapRecorder(Module):
 
     def _start_pcap(self) -> None:
         cfg = self.config
+        if not cfg.lidar_ip:
+            raise ValueError(
+                "Mid360PcapRecorder requires lidar_ip — pass lidar_ip=... or set "
+                "DIMOS_MID360_LIDAR_IP. It's the real Mid-360's IP, used to filter the capture."
+            )
         path = Path(cfg.pcap_path).expanduser()
         path.parent.mkdir(parents=True, exist_ok=True)
 
