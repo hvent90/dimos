@@ -102,6 +102,7 @@ class StreamingStats:
             if agg.mean is None:
                 continue
             n = max(1, agg.n)
+            assert agg.m2 is not None
             var = agg.m2 / n if agg.n > 1 else np.zeros_like(agg.mean)
             std = np.sqrt(var)
             entry: dict[str, Any] = {

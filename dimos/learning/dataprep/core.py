@@ -40,6 +40,7 @@ Writer = Callable[[Iterator["Sample"], "OutputConfig"], Path]
 
 if TYPE_CHECKING:
     from dimos.memory2.store.sqlite import SqliteStore
+    from dimos.memory2.stream import Stream
 
 
 # ─────────────────────────────────────────────────────────────────────────────
@@ -90,7 +91,7 @@ class DataPrepConfig(BaseConfig):
     observation: dict[str, StreamField] = {}
     action: dict[str, StreamField] = {}
     sync: SyncConfig = SyncConfig(anchor="image", rate_hz=30.0, tolerance_ms=50.0)
-    output: OutputConfig = OutputConfig(format="lerobot", path="data/datasets/default")
+    output: OutputConfig = OutputConfig(format="lerobot", path=Path("data/datasets/default"))
 
 
 # ─────────────────────────────────────────────────────────────────────────────
@@ -167,7 +168,7 @@ def extract_episodes(store: SqliteStore, cfg: EpisodeExtractor) -> list[Episode]
         ]
 
     # episode_status (default)
-    status_stream = store.stream(cfg.status_stream)
+    status_stream: Stream[Any, Any] = store.stream(cfg.status_stream)
     events = list(status_stream)  # observations in storage order
 
     episodes: list[Episode] = []
@@ -248,7 +249,9 @@ def iter_episode_samples(
     # Materialize each stream's (timestamps, messages) once per episode.
     cached: dict[str, tuple[list[float], list[Any]]] = {}
     for key, ref in streams.items():
-        sub = store.stream(ref.stream).time_range(episode.start_ts, episode.end_ts)
+        sub: Stream[Any, Any] = store.stream(ref.stream).time_range(
+            episode.start_ts, episode.end_ts
+        )
         ts_list: list[float] = []
         msg_list: list[Any] = []
         for obs in sub:

@@ -91,7 +91,7 @@ def write(samples: Iterator[Sample], output: OutputConfig) -> Path:
     (root / VIDEO_DIR / CHUNK).mkdir(parents=True, exist_ok=True)
 
     fps = float(output.metadata.get("fps", 30.0))
-    fourcc = cv2.VideoWriter_fourcc(*"mp4v")
+    fourcc = cv2.VideoWriter.fourcc(*"mp4v")
 
     stats = StreamingStats(
         image_subsample=int(output.metadata.get("image_subsample", 10)),

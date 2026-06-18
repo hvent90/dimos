@@ -174,8 +174,8 @@ def inspect(path: Path) -> dict[str, Any]:
 
         # Are per-frame shapes consistent across every episode?
         shapes_uniform = True
-        for e in ep_names[1:]:
-            g = eps_g[e]
+        for ep_name in ep_names[1:]:
+            g = eps_g[ep_name]
             for grp, ref in (("observation", observation), ("action", action)):
                 if grp in g:
                     for k, d in g[grp].items():

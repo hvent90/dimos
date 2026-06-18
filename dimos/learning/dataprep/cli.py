@@ -27,7 +27,7 @@ from __future__ import annotations
 
 import json
 from pathlib import Path
-from typing import TYPE_CHECKING
+from typing import TYPE_CHECKING, Literal, cast
 
 import typer
 
@@ -53,8 +53,13 @@ def _load_config(
     if source is not None:
         updates["source"] = str(source)
     if output is not None or output_format is not None:
+        fmt = (
+            cast("Literal['lerobot', 'hdf5']", output_format)
+            if output_format
+            else cfg.output.format
+        )
         updates["output"] = OutputConfig(
-            format=output_format or cfg.output.format,
+            format=fmt,
             path=output or cfg.output.path,
             metadata=cfg.output.metadata,
         )
