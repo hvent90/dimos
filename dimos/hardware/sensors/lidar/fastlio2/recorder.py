@@ -12,14 +12,14 @@
 # See the License for the specific language governing permissions and
 # limitations under the License.
 
-"""Record Point-LIO odometry + lidar into a memory2 SQLite db.
+"""Record FAST-LIO odometry + lidar into a memory2 SQLite db.
 
 A ``Recorder`` that records its In ports under their own names
-(``pointlio_odometry`` / ``pointlio_lidar``) — wire them to PointLio's
+(``fastlio_odometry`` / ``fastlio_lidar``) — wire them to FastLio2's
 ``odometry`` / ``lidar`` outputs with ``.remappings()``. Poses come straight
 from the odometry stream (``@pose_setter_for``): each lidar frame is stamped with
-the latest odometry pose so ``pointlio_lidar`` carries the trajectory and ``dimos
-map global`` can register the body-frame cloud directly (no ``pose-fill`` pass).
+the latest odometry pose so ``fastlio_lidar`` carries the trajectory and ``dimos
+map global`` can register it.
 """
 
 from __future__ import annotations
@@ -31,26 +31,26 @@ from dimos.msgs.nav_msgs.Odometry import Odometry
 from dimos.msgs.sensor_msgs.PointCloud2 import PointCloud2
 
 
-class PointlioRecorderConfig(RecorderConfig):
+class FastLio2RecorderConfig(RecorderConfig):
     # Append into a populated db (keep other streams); replace only our own.
     on_existing: OnExisting = OnExisting.APPEND
 
 
-class PointlioRecorder(Recorder):
-    config: PointlioRecorderConfig
+class FastLio2Recorder(Recorder):
+    config: FastLio2RecorderConfig
 
-    pointlio_odometry: In[Odometry]
-    pointlio_lidar: In[PointCloud2]
+    fastlio_odometry: In[Odometry]
+    fastlio_lidar: In[PointCloud2]
 
     _last_odom_pose: Pose | None = None
 
-    @pose_setter_for("pointlio_odometry")
+    @pose_setter_for("fastlio_odometry")
     def _odom_pose(self, msg: Odometry) -> Pose | None:
         pose = getattr(msg, "pose", None)
         self._last_odom_pose = getattr(pose, "pose", None) if pose is not None else None
         return self._last_odom_pose
 
-    @pose_setter_for("pointlio_lidar")
+    @pose_setter_for("fastlio_lidar")
     def _lidar_pose(self, msg: PointCloud2) -> Pose | None:
         # Most-recent odometry pose, stamped directly (no tf). None before the
         # first odometry -> frame stored unposed, map-skipped.
