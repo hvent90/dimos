@@ -4,9 +4,9 @@
 //! Config and the owned-state Planner that builds and queries the MLS graph.
 
 use ahash::AHashSet;
+use dimos_module::native_config;
 use rayon::prelude::*;
-use serde::Deserialize;
-use validator::{Validate, ValidationError};
+use validator::ValidationError;
 
 use crate::adjacency::{build_surface_cells, build_surface_lookup, rebuild_edges_around, CellId};
 use crate::edges::{build_node_edges, build_node_edges_region, PlannerGraph};
@@ -17,9 +17,9 @@ use crate::surfaces::{
 };
 use crate::voxel::{voxelize, VoxelKey};
 
-#[derive(Debug, Clone, Deserialize, Validate)]
+#[native_config]
+#[derive(Clone)]
 #[validate(schema(function = "validate_wall_buffer"))]
-#[serde(deny_unknown_fields)]
 pub struct Config {
     pub world_frame: String,
     #[validate(range(exclusive_min = 0.0))]
