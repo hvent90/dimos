@@ -406,7 +406,7 @@ class Recorder(MemoryModule):
         ``world <- frame_id`` tf lookup."""
         setter = self._pose_setters.get(name)
         if setter is not None:
-            return setter(msg)
+            return cast("Pose | None", setter(msg))
         frame_id = getattr(msg, "frame_id", None) or self.config.default_frame_id
         transform = self.tf.get(
             "world", frame_id, time_point=ts, time_tolerance=self.config.tf_tolerance
