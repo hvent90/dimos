@@ -14,7 +14,7 @@
 
 """Record Point-LIO odometry + lidar into a memory2 SQLite db.
 
-A ``TfRecorder`` that records its In ports under their own names
+A ``Recorder`` that records its In ports under their own names
 (``pointlio_odometry`` / ``pointlio_lidar``) — wire them to PointLio's
 ``odometry`` / ``lidar`` outputs with ``.remappings()``. Poses come straight
 from the odometry stream (``@pose_setter_for``): each lidar frame is stamped with
@@ -25,19 +25,18 @@ map global`` can register the body-frame cloud directly (no ``pose-fill`` pass).
 from __future__ import annotations
 
 from dimos.core.stream import In
-from dimos.memory2.module import OnExisting
-from dimos.memory2.tf_recorder import TfRecorder, TfRecorderConfig, pose_setter_for
+from dimos.memory2.module import OnExisting, Recorder, RecorderConfig, pose_setter_for
 from dimos.msgs.geometry_msgs.Pose import Pose
 from dimos.msgs.nav_msgs.Odometry import Odometry
 from dimos.msgs.sensor_msgs.PointCloud2 import PointCloud2
 
 
-class PointlioRecorderConfig(TfRecorderConfig):
+class PointlioRecorderConfig(RecorderConfig):
     # Append into a populated db (keep other streams); replace only our own.
     on_existing: OnExisting = OnExisting.APPEND
 
 
-class PointlioRecorder(TfRecorder):
+class PointlioRecorder(Recorder):
     config: PointlioRecorderConfig
 
     pointlio_odometry: In[Odometry]
