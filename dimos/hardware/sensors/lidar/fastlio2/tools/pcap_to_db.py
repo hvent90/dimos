@@ -255,7 +255,6 @@ def _build_blueprint(
             db_path=str(db_path),
             odom_stream_name=args.odom_stream_name,
             lidar_stream_name=args.lidar_stream_name,
-            time_offset=float("nan") if args.time_offset is None else args.time_offset,
             force=args.force,
         ),
     ).global_config(n_workers=4, robot_model="mid360_fastlio_pcap_to_db")
@@ -436,12 +435,6 @@ def main(argv: list[str]) -> int:
         type=float,
         default=0.0,
         help="stop after N sensor seconds (0 = whole pcap)",
-    )
-    parser.add_argument(
-        "--time-offset",
-        type=float,
-        default=None,
-        help="seconds added to every output ts (auto if omitted)",
     )
     parser.add_argument("--force", action="store_true", help="overwrite existing fastlio streams")
     parser.add_argument(
