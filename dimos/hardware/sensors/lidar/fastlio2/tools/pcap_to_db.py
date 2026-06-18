@@ -31,8 +31,7 @@ Usage:
     python -m dimos.hardware.sensors.lidar.fastlio2.tools.pcap_to_db --db "$DB"  --pcap "$PCAP_PATH"
 
     # A quick-look <db>.rrd (aggregated world lidar + pose path) is written next
-    # to the db automatically. View it with:
-    rerun "${DB%.db}.rrd"
+    # to the db and opened in rerun automatically (--no-gui to skip opening).
 
 One coordinator runs three autoconnected modules: a ``VirtualMid360`` replays the
 pcap over the Livox wire (aliasing the host/lidar IPs onto a dummy interface on
@@ -47,6 +46,7 @@ from __future__ import annotations
 import argparse
 from pathlib import Path
 import sqlite3
+import subprocess
 import sys
 import time
 from typing import TYPE_CHECKING, Any
@@ -332,10 +332,19 @@ def _load_overrides(config: str) -> dict[str, Any]:
 def _run(args: argparse.Namespace) -> int:
     from dimos.core.coordination.module_coordinator import ModuleCoordinator
 
-    pcap_path = Path(args.pcap).expanduser().resolve()
+    pcap_path = Path(args.pcap).expanduser()
     if not pcap_path.exists():
-        print(f"[pcap_to_db] missing pcap: {pcap_path}", file=sys.stderr)
-        return 2
+        try:
+            from dimos.utils.data import get_data
+
+            pcap_path = get_data(args.pcap)
+        except (FileNotFoundError, RuntimeError, OSError) as exc:
+            print(
+                f"[pcap_to_db] pcap not found locally or via get_data: {args.pcap} ({exc})",
+                file=sys.stderr,
+            )
+            return 2
+    pcap_path = pcap_path.resolve()
     args.pcap_path = pcap_path
     db_path = _resolve_db_path(args, pcap_path)
     db_path.parent.mkdir(parents=True, exist_ok=True)
@@ -381,6 +390,8 @@ def _run(args: argparse.Namespace) -> int:
             rrd = _write_rrd(db_path, args.odom_stream_name, args.lidar_stream_name, args.voxel)
             if rrd is not None:
                 print(f"[pcap_to_db] wrote {rrd.name} (aggregated lidar + pose path)", flush=True)
+                if not args.no_gui:
+                    subprocess.Popen(["rerun", str(rrd)])
         except Exception as exc:  # viz is a non-fatal bonus
             print(f"[pcap_to_db] .rrd generation skipped ({exc})", file=sys.stderr, flush=True)
     return 0
@@ -418,6 +429,9 @@ def main(argv: list[str]) -> int:
         "--no-rrd",
         action="store_true",
         help="skip writing the <db>.rrd quick-look (aggregated world lidar + pose path)",
+    )
+    parser.add_argument(
+        "--no-gui", action="store_true", help="write the <db>.rrd but don't open it in rerun"
     )
     parser.add_argument(
         "--voxel", type=float, default=0.2, help="voxel size (m) for the .rrd aggregated map"
