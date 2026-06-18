@@ -18,7 +18,7 @@ from __future__ import annotations
 
 from typing import Annotated, Literal
 
-from pydantic import Field
+from pydantic import Field, TypeAdapter
 
 from dimos.protocol.service.spec import BaseConfig
 
@@ -47,14 +47,14 @@ ManipulationPlannerConfig = Annotated[
     Field(discriminator="backend"),
 ]
 
+_PLANNER_CONFIG_ADAPTER: TypeAdapter[ManipulationPlannerConfig] = TypeAdapter(
+    ManipulationPlannerConfig
+)
+
 
 def planner_config_from_name(name: str) -> ManipulationPlannerConfig:
     """Create a default planner config from a legacy planner name."""
-    if name == "rrt_connect":
-        return RRTConnectPlannerConfig()
-    if name == "vamp":
-        return VampPlannerConfig()
-    raise ValueError(f"Unknown planner: {name}. Available: ['rrt_connect', 'vamp']")
+    return _PLANNER_CONFIG_ADAPTER.validate_python({"backend": name})
 
 
 __all__ = [

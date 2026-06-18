@@ -19,7 +19,7 @@ from __future__ import annotations
 from pathlib import Path
 from typing import Annotated, Literal
 
-from pydantic import Field
+from pydantic import Field, TypeAdapter
 
 from dimos.protocol.service.spec import BaseConfig
 
@@ -62,14 +62,12 @@ ManipulationWorldConfig = Annotated[
     Field(discriminator="backend"),
 ]
 
+_WORLD_CONFIG_ADAPTER: TypeAdapter[ManipulationWorldConfig] = TypeAdapter(ManipulationWorldConfig)
+
 
 def world_config_from_name(name: str) -> ManipulationWorldConfig:
     """Create a default world config from a backend name."""
-    if name == "drake":
-        return DrakeWorldConfig()
-    if name == "vamp":
-        return VampWorldConfig()
-    raise ValueError(f"Unknown backend: {name}. Available: ['drake', 'vamp']")
+    return _WORLD_CONFIG_ADAPTER.validate_python({"backend": name})
 
 
 __all__ = [

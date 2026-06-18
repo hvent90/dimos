@@ -19,15 +19,17 @@ from __future__ import annotations
 from contextlib import contextmanager
 from copy import deepcopy
 from dataclasses import dataclass
-from types import ModuleType
+from itertools import pairwise
+import time
 from typing import TYPE_CHECKING, Any
 
 import numpy as np
 from scipy.spatial.transform import Rotation as R
 
+from dimos.manipulation.planning.planners.config import VampPlannerConfig
 from dimos.manipulation.planning.spec.config import RobotModelConfig
-from dimos.manipulation.planning.spec.enums import ObstacleType
-from dimos.manipulation.planning.spec.models import Obstacle, WorldRobotID
+from dimos.manipulation.planning.spec.enums import ObstacleType, PlanningStatus
+from dimos.manipulation.planning.spec.models import Obstacle, PlanningResult, WorldRobotID
 from dimos.manipulation.planning.spec.protocols import WorldSpec
 from dimos.manipulation.planning.vamp.errors import UnsupportedWorldCapabilityError
 from dimos.manipulation.planning.vamp.loader import load_vamp_robot_module
@@ -59,21 +61,6 @@ class VampWorld(WorldSpec):
         self._obstacles: dict[str, Obstacle] = {}
         self._robot_counter = 0
         self._finalized = False
-
-    @property
-    def vamp_module(self) -> ModuleType:
-        """The imported VAMP package module."""
-        return self._vamp_module
-
-    @property
-    def robot_module(self) -> ModuleType:
-        """The loaded VAMP robot module for this world."""
-        return self._robot_module
-
-    @property
-    def environment(self) -> Any:
-        """The current VAMP environment object."""
-        return self._environment
 
     def add_robot(self, config: RobotModelConfig) -> WorldRobotID:
         """Add a robot to the VAMP world."""
@@ -231,11 +218,94 @@ class VampWorld(WorldSpec):
         """VAMP's Python API does not expose a Jacobian."""
         raise UnsupportedWorldCapabilityError("vamp", "end-effector Jacobian")
 
+    def plan_joint_path(
+        self,
+        planner_config: VampPlannerConfig,
+        robot_id: WorldRobotID,
+        start: JointState,
+        goal: JointState,
+        timeout: float = 10.0,
+    ) -> PlanningResult:
+        """Plan a VAMP-native joint-space path inside the VAMP world adapter."""
+        start_time = time.time()
+        if not self.is_finalized:
+            return _failure(PlanningStatus.NO_SOLUTION, "World must be finalized before planning")
+        if robot_id not in self.get_robot_ids():
+            return _failure(PlanningStatus.NO_SOLUTION, f"Robot '{robot_id}' not found")
+
+        if not self.check_config_collision_free(robot_id, start):
+            return _failure(PlanningStatus.COLLISION_AT_START, "Start configuration is invalid")
+        if not self.check_config_collision_free(robot_id, goal):
+            return _failure(PlanningStatus.COLLISION_AT_GOAL, "Goal configuration is invalid")
+
+        robot_module, planner_func, plan_settings, simplify_settings = (
+            self._vamp_module.configure_robot_and_planner_with_kwargs(
+                self._robot_name(),
+                planner_config.algorithm,
+                max_iterations=_timeout_to_iteration_budget(timeout),
+            )
+        )
+        sampler = robot_module.halton()
+        result = planner_func(
+            list(start.position),
+            list(goal.position),
+            self._environment,
+            plan_settings,
+            sampler,
+        )
+        if not bool(getattr(result, "solved", False)):
+            return _failure(
+                PlanningStatus.NO_SOLUTION,
+                "VAMP planner did not find a path",
+                planning_time=time.time() - start_time,
+                iterations=int(getattr(result, "iterations", 0)),
+            )
+
+        path_source = result.path
+        if planner_config.simplify:
+            simplified = robot_module.simplify(
+                path_source, self._environment, simplify_settings, sampler
+            )
+            if bool(getattr(simplified, "solved", True)):
+                path_source = simplified.path
+
+        path = _path_to_joint_states(
+            path_source, start.name or self.get_robot_config(robot_id).joint_names
+        )
+        if planner_config.validate_path and not self._validate_path(robot_id, path):
+            return _failure(
+                PlanningStatus.NO_SOLUTION,
+                "VAMP returned a path that failed native validation",
+                planning_time=time.time() - start_time,
+            )
+        return PlanningResult(
+            status=PlanningStatus.SUCCESS,
+            path=path,
+            planning_time=time.time() - start_time,
+            path_length=_path_length(path),
+            iterations=int(getattr(result, "iterations", 0)),
+            message="VAMP planning succeeded",
+        )
+
     def _normalize_joint_state(self, robot_id: WorldRobotID, joint_state: JointState) -> JointState:
         config = self._robots[robot_id]
         positions = list(joint_state.position[: len(config.joint_names)])
         names = list(joint_state.name[: len(positions)]) if joint_state.name else config.joint_names
         return JointState(name=names, position=positions)
+
+    def _robot_name(self) -> str:
+        robot = getattr(self.config.artifact, "robot", None)
+        if isinstance(robot, str):
+            return robot
+        return self._robot_module.__name__.split(".")[-1]
+
+    def _validate_path(self, robot_id: WorldRobotID, path: list[JointState]) -> bool:
+        if not path:
+            return False
+        return all(
+            self.check_edge_collision_free(robot_id, before, after)
+            for before, after in pairwise(path)
+        )
 
     def _validate_state(self, joint_state: JointState, check_bounds: bool) -> bool:
         return bool(
@@ -281,3 +351,43 @@ class VampWorld(WorldSpec):
             )
         else:
             raise UnsupportedWorldCapabilityError("vamp", f"{obstacle.obstacle_type.name} obstacle")
+
+
+def _timeout_to_iteration_budget(timeout: float) -> int:
+    return max(1, int(timeout * 1000))
+
+
+def _path_to_joint_states(path_source: Any, joint_names: list[str]) -> list[JointState]:
+    path_array = _path_to_array(path_source)
+    return [JointState(name=joint_names, position=row.astype(float).tolist()) for row in path_array]
+
+
+def _path_to_array(path_source: Any) -> np.ndarray:
+    if hasattr(path_source, "numpy"):
+        return np.asarray(path_source.numpy(), dtype=np.float64)
+    return np.asarray(path_source, dtype=np.float64)
+
+
+def _path_length(path: list[JointState]) -> float:
+    if len(path) < 2:
+        return 0.0
+    total = 0.0
+    for before, after in pairwise(path):
+        q_before = np.array(before.position, dtype=np.float64)
+        q_after = np.array(after.position, dtype=np.float64)
+        total += float(np.linalg.norm(q_after - q_before))
+    return total
+
+
+def _failure(
+    status: PlanningStatus,
+    message: str,
+    planning_time: float = 0.0,
+    iterations: int = 0,
+) -> PlanningResult:
+    return PlanningResult(
+        status=status,
+        planning_time=planning_time,
+        iterations=iterations,
+        message=message,
+    )
