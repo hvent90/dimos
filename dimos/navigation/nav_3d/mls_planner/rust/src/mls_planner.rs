@@ -26,10 +26,10 @@ pub struct Config {
     pub voxel_size: f32,
     #[validate(range(exclusive_min = 0.0))]
     pub robot_height: f32,
-    #[validate(range(min = 0))]
-    pub surface_dilation_passes: u32,
-    #[validate(range(min = 0))]
-    pub surface_erosion_passes: u32,
+    /// Radius in meters of the morphological closing that fills small holes in
+    /// the extracted surface. Fills holes up to twice this wide.
+    #[validate(range(min = 0.0))]
+    pub surface_closing_radius: f32,
     #[validate(range(exclusive_min = 0.0))]
     pub node_spacing_m: f32,
     /// Hard clearance. Cells closer than this to a wall or edge are impassable.
@@ -66,6 +66,13 @@ fn validate_wall_buffer(config: &Config) -> Result<(), ValidationError> {
         ));
     }
     Ok(())
+}
+
+impl Config {
+    /// Compute number of dilations and erosions to do based on closing radius
+    pub fn closing_passes(&self) -> u32 {
+        (self.surface_closing_radius / self.voxel_size).ceil() as u32
+    }
 }
 
 /// Cylindrical region the planner re-derives from a local map slice.
@@ -121,8 +128,7 @@ impl Planner {
         extract_surfaces(
             &self.voxel_map,
             clearance,
-            config.surface_dilation_passes,
-            config.surface_erosion_passes,
+            config.closing_passes(),
             &mut self.by_col,
             &mut surface,
         );
@@ -141,7 +147,7 @@ impl Planner {
     ) {
         let voxel_size = config.voxel_size;
         let clearance = (config.robot_height / voxel_size).ceil() as i32;
-        let pad = (config.surface_dilation_passes + config.surface_erosion_passes) as i32;
+        let pad = (2 * config.closing_passes()) as i32;
 
         let changed = self.replace_region_voxels(local_points, bounds, voxel_size);
 
@@ -153,13 +159,8 @@ impl Planner {
         // A changed voxel column shifts surfaces only within pad of it, so the
         // write-back box is the changed-column bbox grown by pad.
         let write = (bx0 - pad, bx1 + pad, by0 - pad, by1 + pad);
-        let new_cells = extract_surfaces_region(
-            &self.by_col,
-            clearance,
-            config.surface_dilation_passes,
-            config.surface_erosion_passes,
-            write,
-        );
+        let new_cells =
+            extract_surfaces_region(&self.by_col, clearance, config.closing_passes(), write);
         let (added, removed) = self.replace_surface_region(write, &new_cells);
 
         self.rebuild_region_graph(added, removed, config);
@@ -331,7 +332,7 @@ impl Planner {
         // A few extra cells beyond the morphology, wall-buffer, and spacing reach.
         const SLACK_CELLS: i32 = 2;
         let voxel_size = config.voxel_size;
-        let pad = (config.surface_dilation_passes + config.surface_erosion_passes) as i32;
+        let pad = (2 * config.closing_passes()) as i32;
         let buffer_cells =
             ((config.wall_clearance_m + config.wall_buffer_m) / voxel_size).ceil() as i32;
         let spacing_cells = (config.node_spacing_m / voxel_size).ceil() as i32;
@@ -486,8 +487,7 @@ mod region_tests {
             world_frame: String::new(),
             voxel_size: 0.1,
             robot_height: 0.5,
-            surface_dilation_passes: 3,
-            surface_erosion_passes: 3,
+            surface_closing_radius: 0.3,
             node_spacing_m: 1.0,
             wall_clearance_m: 0.0,
             wall_buffer_m: 0.3,
@@ -929,8 +929,7 @@ mod region_tests {
     #[test]
     fn final_path_never_climbs_over_threshold_step() {
         let mut cfg = test_config();
-        cfg.surface_dilation_passes = 0;
-        cfg.surface_erosion_passes = 0;
+        cfg.surface_closing_radius = 0.0;
         cfg.wall_clearance_m = 0.0;
         cfg.wall_buffer_m = 0.0;
         cfg.node_spacing_m = 0.5;
@@ -981,8 +980,7 @@ mod region_tests {
     #[test]
     fn step_penalty_diverts_path_around_ridge() {
         let mut cfg = test_config();
-        cfg.surface_dilation_passes = 0;
-        cfg.surface_erosion_passes = 0;
+        cfg.surface_closing_radius = 0.0;
         cfg.wall_clearance_m = 0.0;
         cfg.wall_buffer_m = 0.0;
         cfg.node_spacing_m = 0.5;

@@ -34,8 +34,7 @@ class MLSPlannerNativeConfig(NativeModuleConfig):
     voxel_size: float = 0.1
     robot_height: float = 1.5
 
-    surface_dilation_passes: int = 3
-    surface_erosion_passes: int = 3
+    surface_closing_radius: float = 0.3
     node_spacing_m: float = 1.0
     wall_clearance_m: float = 0.3
     wall_buffer_m: float = 0.75
