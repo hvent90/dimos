@@ -84,6 +84,9 @@ _TUNING_FIELDS = (
 )
 # Max |Δts| to match a lidar frame to an odometry pose when aggregating the .rrd.
 _POSE_MATCH_TOL = 0.1
+# db stream/table names (= the recorder's In-port names).
+_ODOM_STREAM = "fastlio_odometry"
+_LIDAR_STREAM = "fastlio_lidar"
 
 
 def _quat_to_rot(qx: float, qy: float, qz: float, qw: float) -> Any:
@@ -224,9 +227,10 @@ def _build_blueprint(
 ) -> Blueprint:
     """autoconnect(VirtualMid360 + FastLio2 + FastLio2Recorder).
 
-    FastLio2's ``odometry``/``lidar`` outputs auto-wire to the recorder's
-    same-named inputs. VirtualMid360 carries no dimos streams — it speaks the
-    Livox wire protocol, reached by host_ip/lidar_ip, and sets up the NIC itself.
+    The recorder's ``fastlio_odometry``/``fastlio_lidar`` In ports (which name
+    the db streams) are remapped to FastLio2's ``odometry``/``lidar`` outputs.
+    VirtualMid360 carries no dimos streams — it speaks the Livox wire protocol,
+    reached by host_ip/lidar_ip, and sets up the NIC itself.
     """
     from dimos.core.coordination.blueprints import autoconnect
     from dimos.hardware.sensors.lidar.fastlio2.module import FastLio2
@@ -238,25 +242,30 @@ def _build_blueprint(
     )
     fastlio_kwargs.update(overrides)
 
-    return autoconnect(
-        VirtualMid360.blueprint(
-            pcap=str(args.pcap_path),
-            rate=args.rate,
-            delay=args.warmup_sec,  # hold streaming until FastLio2's SDK is up
-            host_ip=args.host_ip,
-            lidar_ip=args.lidar_ip,
-            alias_iface=args.alias_iface,
-            # When the NIC is provisioned by hand, skip the module's own sudo
-            # (it runs in a tty-less worker where a password prompt can't appear).
-            setup_network=not args.no_network_setup,
-        ),
-        FastLio2.blueprint(**fastlio_kwargs),
-        FastLio2Recorder.blueprint(
-            db_path=str(db_path),
-            odom_stream_name=args.odom_stream_name,
-            lidar_stream_name=args.lidar_stream_name,
-        ),
-    ).global_config(n_workers=4, robot_model="mid360_fastlio_pcap_to_db")
+    return (
+        autoconnect(
+            VirtualMid360.blueprint(
+                pcap=str(args.pcap_path),
+                rate=args.rate,
+                delay=args.warmup_sec,  # hold streaming until FastLio2's SDK is up
+                host_ip=args.host_ip,
+                lidar_ip=args.lidar_ip,
+                alias_iface=args.alias_iface,
+                # When the NIC is provisioned by hand, skip the module's own sudo
+                # (it runs in a tty-less worker where a password prompt can't appear).
+                setup_network=not args.no_network_setup,
+            ),
+            FastLio2.blueprint(**fastlio_kwargs),
+            FastLio2Recorder.blueprint(db_path=str(db_path)),
+        )
+        .remappings(
+            [
+                (FastLio2Recorder, "fastlio_odometry", "odometry"),
+                (FastLio2Recorder, "fastlio_lidar", "lidar"),
+            ]
+        )
+        .global_config(n_workers=4, robot_model="mid360_fastlio_pcap_to_db")
+    )
 
 
 def _poll_until_drained(
@@ -387,14 +396,12 @@ def _run(args: argparse.Namespace) -> int:
     coord = None
     try:
         coord = ModuleCoordinator.build(_build_blueprint(args, db_path, overrides))
-        drained = _poll_until_drained(
-            db_path, args.odom_stream_name, args.lidar_stream_name, max_sensor_sec
-        )
+        drained = _poll_until_drained(db_path, _ODOM_STREAM, _LIDAR_STREAM, max_sensor_sec)
     finally:
         if coord is not None:
             coord.stop()
 
-    o_cnt, o_min, o_max = _odom_stats(db_path, args.odom_stream_name)
+    o_cnt, o_min, o_max = _odom_stats(db_path, _ODOM_STREAM)
     if o_cnt == 0 or not drained:
         print("[pcap_to_db] no odometry recorded — check the run above", file=sys.stderr)
         return 1
@@ -404,7 +411,7 @@ def _run(args: argparse.Namespace) -> int:
     )
     if not args.no_rrd:
         try:
-            rrd = _write_rrd(db_path, args.odom_stream_name, args.lidar_stream_name, args.voxel)
+            rrd = _write_rrd(db_path, _ODOM_STREAM, _LIDAR_STREAM, args.voxel)
             if rrd is not None:
                 print(f"[pcap_to_db] wrote {rrd.name} (aggregated lidar + pose path)", flush=True)
                 if not args.no_gui:
@@ -487,16 +494,6 @@ def main(argv: list[str]) -> int:
         action=argparse.BooleanOptionalAction,
         default=None,
         help="publish the full (vs voxel-downsampled) cloud",
-    )
-    parser.add_argument(
-        "--odom-stream-name",
-        default="fastlio_odometry",
-        help="db stream/table name for the recorded odometry",
-    )
-    parser.add_argument(
-        "--lidar-stream-name",
-        default="fastlio_lidar",
-        help="db stream/table name for the recorded point cloud",
     )
     # Addressing knobs (override to run two replays at once).
     parser.add_argument("--host-ip", default="192.168.1.5")

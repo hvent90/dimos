@@ -63,6 +63,9 @@ _STAGNANT_SEC = 5.0
 _STARTUP_TIMEOUT_SEC = 60.0
 # Max |Δts| to match a lidar frame to an odometry pose when aggregating the .rrd.
 _POSE_MATCH_TOL = 0.1
+# db stream/table names (= the recorder's In-port names).
+_ODOM_STREAM = "pointlio_odometry"
+_LIDAR_STREAM = "pointlio_lidar"
 # Extra seconds past the pcap's own duration before auto-stopping, when no
 # explicit --max-sensor-sec is given.
 _DRAIN_MARGIN_SEC = 4.0
@@ -220,25 +223,30 @@ def _build_blueprint(
     )
     pointlio_kwargs.update(overrides)
 
-    return autoconnect(
-        VirtualMid360.blueprint(
-            pcap=str(args.pcap_path),
-            rate=args.rate,
-            delay=args.warmup_sec,  # hold streaming until PointLio's SDK is up
-            host_ip=args.host_ip,
-            lidar_ip=args.lidar_ip,
-            alias_iface=args.alias_iface,
-            # When the NIC is provisioned by hand, skip the module's own sudo
-            # (it runs in a tty-less worker where a password prompt can't appear).
-            setup_network=not args.no_network_setup,
-        ),
-        PointLio.blueprint(**pointlio_kwargs),
-        PointlioRecorder.blueprint(
-            db_path=str(db_path),
-            odom_stream_name=args.odom_stream_name,
-            lidar_stream_name=args.lidar_stream_name,
-        ),
-    ).global_config(n_workers=4, robot_model="mid360_pointlio_pcap_to_db")
+    return (
+        autoconnect(
+            VirtualMid360.blueprint(
+                pcap=str(args.pcap_path),
+                rate=args.rate,
+                delay=args.warmup_sec,  # hold streaming until PointLio's SDK is up
+                host_ip=args.host_ip,
+                lidar_ip=args.lidar_ip,
+                alias_iface=args.alias_iface,
+                # When the NIC is provisioned by hand, skip the module's own sudo
+                # (it runs in a tty-less worker where a password prompt can't appear).
+                setup_network=not args.no_network_setup,
+            ),
+            PointLio.blueprint(**pointlio_kwargs),
+            PointlioRecorder.blueprint(db_path=str(db_path)),
+        )
+        .remappings(
+            [
+                (PointlioRecorder, "pointlio_odometry", "odometry"),
+                (PointlioRecorder, "pointlio_lidar", "lidar"),
+            ]
+        )
+        .global_config(n_workers=4, robot_model="mid360_pointlio_pcap_to_db")
+    )
 
 
 def _poll_until_drained(
@@ -334,14 +342,12 @@ def _run(args: argparse.Namespace) -> int:
     coord = None
     try:
         coord = ModuleCoordinator.build(_build_blueprint(args, db_path, overrides))
-        drained = _poll_until_drained(
-            db_path, args.odom_stream_name, args.lidar_stream_name, max_sensor_sec
-        )
+        drained = _poll_until_drained(db_path, _ODOM_STREAM, _LIDAR_STREAM, max_sensor_sec)
     finally:
         if coord is not None:
             coord.stop()
 
-    o_cnt, o_min, o_max = _odom_stats(db_path, args.odom_stream_name)
+    o_cnt, o_min, o_max = _odom_stats(db_path, _ODOM_STREAM)
     if o_cnt == 0 or not drained:
         print("[pcap_to_db] no odometry recorded — check the run above", file=sys.stderr)
         return 1
@@ -351,7 +357,7 @@ def _run(args: argparse.Namespace) -> int:
     )
     if not args.no_rrd:
         try:
-            rrd = _write_rrd(db_path, args.odom_stream_name, args.lidar_stream_name, args.voxel)
+            rrd = _write_rrd(db_path, _ODOM_STREAM, _LIDAR_STREAM, args.voxel)
             if rrd is not None:
                 print(f"[pcap_to_db] wrote {rrd.name} (aggregated lidar + pose path)", flush=True)
         except Exception as exc:  # viz is a non-fatal bonus
@@ -398,16 +404,6 @@ def main(argv: list[str]) -> int:
         "--config",
         default="",
         help="YAML/JSON doc of PointLioConfig field overrides (e.g. {acc_cov_input: 0.3})",
-    )
-    parser.add_argument(
-        "--odom-stream-name",
-        default="pointlio_odometry",
-        help="db stream/table name for the recorded odometry",
-    )
-    parser.add_argument(
-        "--lidar-stream-name",
-        default="pointlio_lidar",
-        help="db stream/table name for the recorded point cloud",
     )
     # Addressing knobs (override to run two replays at once).
     parser.add_argument("--host-ip", default="192.168.1.5")

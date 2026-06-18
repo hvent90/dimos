@@ -14,9 +14,9 @@
 
 """Record FAST-LIO odometry + lidar into a memory2 SQLite db.
 
-A ``TfRecorder`` whose ``odometry`` / ``lidar`` In ports auto-connect to a
-FastLio2's same-named outputs. It records them under configurable stream names,
-replacing only its own streams when appending (``force``). Poses come straight
+A ``TfRecorder`` that records its In ports under their own names
+(``fastlio_odometry`` / ``fastlio_lidar``) — wire them to FastLio2's
+``odometry`` / ``lidar`` outputs with ``.remappings()``. Poses come straight
 from the odometry stream (``@pose_setter_for``): each lidar frame is stamped with
 the latest odometry pose so ``fastlio_lidar`` carries the trajectory and ``dimos
 map global`` can register it.
@@ -33,43 +33,31 @@ from dimos.msgs.sensor_msgs.PointCloud2 import PointCloud2
 
 
 class FastLio2RecorderConfig(TfRecorderConfig):
-    """Target db + stream names for the FAST-LIO recorder."""
-
-    # db stream/table names the FastLio2 outputs are recorded under.
-    odom_stream_name: str = "fastlio_odometry"
-    lidar_stream_name: str = "fastlio_lidar"
-    # Append into a populated db (keep other streams); replace only our two.
+    # Append into a populated db (keep other streams); replace only our own.
     on_existing: OnExisting = OnExisting.APPEND
 
 
 class FastLio2Recorder(TfRecorder):
     config: FastLio2RecorderConfig
 
-    odometry: In[Odometry]
-    lidar: In[PointCloud2]
+    fastlio_odometry: In[Odometry]
+    fastlio_lidar: In[PointCloud2]
 
     _last_odom_pose: Pose | None = None
 
-    def _stream_name(self, port_name: str) -> str:
-        if port_name == "odometry":
-            return self.config.odom_stream_name
-        if port_name == "lidar":
-            return self.config.lidar_stream_name
-        return port_name
-
     def _prepare_streams(self) -> None:
-        # Replace only our own streams (keep anything else in the db).
-        for name in (self.config.odom_stream_name, self.config.lidar_stream_name):
+        # Replace our own streams (keep anything else in the db).
+        for name in self.inputs:
             if name in self.store.list_streams():
                 self.store.delete_stream(name)
 
-    @pose_setter_for("odometry")
+    @pose_setter_for("fastlio_odometry")
     def _odom_pose(self, msg: Odometry) -> Pose | None:
         pose = getattr(msg, "pose", None)
         self._last_odom_pose = getattr(pose, "pose", None) if pose is not None else None
         return self._last_odom_pose
 
-    @pose_setter_for("lidar")
+    @pose_setter_for("fastlio_lidar")
     def _lidar_pose(self, msg: PointCloud2) -> Pose | None:
         # Most-recent odometry pose, stamped directly (no tf). None before the
         # first odometry -> frame stored unposed, map-skipped.
