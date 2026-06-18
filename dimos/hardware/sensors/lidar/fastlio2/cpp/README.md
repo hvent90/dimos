@@ -26,7 +26,7 @@ Requires:
 - CMake >= 3.14
 - [LCM](https://lcm-proj.github.io/) (`pacman -S lcm` or build from source)
 - [Livox SDK2](https://github.com/Livox-SDK/Livox-SDK2) installed to `/usr/local`
-- Eigen3, PCL (common, filters), yaml-cpp, Boost, OpenMP
+- Eigen3, PCL (common, filters), Boost, OpenMP
 - [FAST-LIO-NON-ROS](https://github.com/leshy/FAST-LIO-NON-ROS) checked out locally
 
 ```bash
@@ -74,7 +74,7 @@ autoconnect(
     --odometry '/odometry#nav_msgs.Odometry' \
     --host_ip 192.168.1.5 \
     --lidar_ip 192.168.1.155 \
-    --config_path /path/to/fastlio.yaml   # FAST-LIO tuning; module.py generates this from FastLio2Config
+    --acc_cov 1.0 --filter_size_surf 0.1 --extrinsic_t -0.011,-0.02329,0.04412
 ```
 
 Topic strings must include the `#type` suffix -- this is the actual LCM channel
@@ -92,10 +92,10 @@ lcm-spy
 
 ## Configuration
 
-There are no checked-in config files. FAST-LIO2 tuning (filter sizes, EKF
-covariance, extrinsics, point-cloud processing) lives on `FastLio2Config` in
-`../module.py`; on `start()` the module renders those fields to a throwaway YAML
-and passes it as `--config_path`.
+There are no config files and no YAML. FAST-LIO2 tuning (filter sizes, EKF
+covariance, extrinsics, …) lives on `FastLio2Config` in `../module.py` and is
+passed to the binary as plain CLI args, which `main.cpp` reads into a
+`FastLioParams` struct.
 
 ## File overview
 

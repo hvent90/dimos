@@ -80,7 +80,6 @@
             pkgs.glib
             pkgs.eigen
             pkgs.pcl
-            pkgs.yaml-cpp
             pkgs.boost
             pkgs.llvmPackages.openmp
           ];
