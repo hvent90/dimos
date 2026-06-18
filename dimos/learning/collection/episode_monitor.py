@@ -70,12 +70,11 @@ class KeyPress(BaseModel):
 
 
 class EpisodeMonitorModuleConfig(ModuleConfig):
-    button_map: dict[Literal["start", "save", "discard"], str] = {
-        "start": "A",
-        "save": "B",
-        "discard": "X",
+    button_map: dict[Literal["start", "save", "discard", "toggle"], str] = {
+        "toggle": "B",
+        "discard": "Y",
     }
-    keyboard_map: dict[Literal["start", "save", "discard"], str] = {}
+    keyboard_map: dict[Literal["start", "save", "discard", "toggle"], str] = {}
     default_task_label: str | None = None
 
 
@@ -154,9 +153,16 @@ class EpisodeMonitorModule(Module):
                 self._transition(event_name, msg.ts)
                 break
 
-    def _transition(self, event: Literal["start", "save", "discard"], ts: float) -> None:
-        """State-machine transition. Publishes EpisodeStatus on every change."""
+    def _transition(self, event: Literal["start", "save", "discard", "toggle"], ts: float) -> None:
+        """State-machine transition. Publishes EpisodeStatus on every change.
+
+        ``toggle`` resolves to ``start`` when idle and ``save`` when recording,
+        so one button can begin and end a take. The resolved event is what gets
+        published (DataPrep only ever sees start/save/discard).
+        """
         with self._lock:
+            if event == "toggle":
+                event = "save" if self._state == "recording" else "start"
             if event == "start":
                 # Auto-commit any in-progress episode (matches DataPrep extractor).
                 if self._state == "recording" and self._current_start_ts is not None:

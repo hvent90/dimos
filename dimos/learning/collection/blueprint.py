@@ -40,7 +40,7 @@ from dimos.teleop.quest.blueprints import (
 )
 from dimos.teleop.quest.quest_types import Buttons
 
-_DEFAULT_BUTTON_MAP = {"start": "A", "save": "B", "discard": "X"}
+_DEFAULT_BUTTON_MAP = {"toggle": "B", "discard": "Y"}
 
 _SESSION_DB = f"data/recordings/session_{datetime.now():%Y%m%d_%H%M%S}.db"
 
