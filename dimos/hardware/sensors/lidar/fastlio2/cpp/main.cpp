@@ -326,12 +326,10 @@ int main(int argc, char** argv) {
     float pointcloud_freq = mod.arg_float("pointcloud_freq", 5.0f);
     float odom_freq = mod.arg_float("odom_freq", 50.0f);
 
-    // Cloud-publish behaviour. scan_publish_en gates the lidar output;
-    // scan_bodyframe_pub_en picks the sensor/body (true) or world (false) frame;
+    // Cloud-publish behaviour: scan_publish_en gates the lidar output;
     // dense_publish_en false voxel-downsamples the published cloud.
     bool scan_publish_en = mod.arg_bool("scan_publish_en", true);
     bool dense_publish_en = mod.arg_bool("dense_publish_en", true);
-    bool scan_bodyframe_pub_en = mod.arg_bool("scan_bodyframe_pub_en", true);
 
     // Verbose logging — propagates to the FAST-LIO C++ core via the
     // `fastlio_debug` global. Default false → only real errors print.
@@ -442,14 +440,11 @@ int main(int argc, char** argv) {
             double ts = get_publish_ts();
             if (scan_publish_en && !g_lidar_topic.empty()
                     && now - last_pc_publish >= pc_interval) {
-                // Body frame: register downstream via the odometry pose. World
-                // frame: already registered.
-                auto cloud = scan_bodyframe_pub_en ? fast_lio.get_body_cloud()
-                                                   : fast_lio.get_world_cloud();
+                // Sensor/body-frame cloud; register downstream via the odom pose.
+                auto cloud = fast_lio.get_body_cloud();
                 if (cloud && !cloud->empty()) {
                     if (!dense_publish_en) cloud = voxel_downsample(cloud, PUBLISH_VOXEL_LEAF);
-                    publish_lidar(cloud, ts,
-                                  scan_bodyframe_pub_en ? g_child_frame_id : g_frame_id);
+                    publish_lidar(cloud, ts, g_child_frame_id);
                 }
                 last_pc_publish = now;
             }

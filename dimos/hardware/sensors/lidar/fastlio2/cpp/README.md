@@ -2,8 +2,8 @@
 
 Real-time LiDAR SLAM using FAST-LIO2 with integrated Livox Mid-360 driver.
 Binds Livox SDK2 directly into FAST-LIO-NON-ROS: SDK callbacks feed
-CustomMsg/Imu to FastLio, which performs EKF-LOAM SLAM. Registered
-(world-frame) point clouds and odometry are published on LCM.
+CustomMsg/Imu to FastLio, which performs EKF-LOAM SLAM. Sensor/body-frame
+point clouds and odometry are published on LCM.
 
 ## Build
 

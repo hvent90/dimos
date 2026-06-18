@@ -146,7 +146,6 @@ class FastLio2Config(NativeModuleConfig):
     # publish behaviour (passed to the binary as CLI args, not the YAML)
     scan_publish_en: bool = True  # false closes the lidar output
     dense_publish_en: bool = True  # false voxel-downsamples the published cloud
-    scan_bodyframe_pub_en: bool = True  # true: sensor/body frame; false: world frame
 
     # SDK port configuration (see livox/ports.py for defaults)
     cmd_data_port: int = SDK_CMD_DATA_PORT
