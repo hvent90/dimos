@@ -144,7 +144,7 @@ class FastLio2Config(NativeModuleConfig):
     b_gyr_cov: float = 0.0001
     filter_size_surf: float = 0.1  # IESKF scan voxel; does not affect divergence
     filter_size_map: float = 0.1
-    fov_degree: float = 360.0
+    fov_degree: int = 360  # FAST-LIO reads this as an int
     det_range: float = 100.0
     extrinsic_est_en: bool = False  # online IMU-LiDAR extrinsic estimation
     extrinsic_t: list[float] = Field(default_factory=lambda: [-0.011, -0.02329, 0.04412])
