@@ -56,6 +56,8 @@ class RayTracingVoxelMapConfig(NativeModuleConfig):
     # Size the local region to this percentile of batch point distances,
     # so a stray far hit cannot inflate the region the planner recomputes.
     region_percentile: float = 95.0
+    # False registers sensor-frame clouds by the odom pose. True leaves them as-is.
+    registered_clouds: bool = True
 
 
 class RayTracingVoxelMap(NativeModule, mapping.GlobalPointcloud):

@@ -12,6 +12,7 @@ use lcm_msgs::geometry_msgs::{Point, Pose, PoseStamped, Quaternion};
 use lcm_msgs::nav_msgs::Odometry;
 use lcm_msgs::sensor_msgs::{PointCloud2, PointField};
 use lcm_msgs::std_msgs::{Header, Time};
+use nalgebra::{UnitQuaternion, Vector3};
 
 #[derive(Module)]
 struct RayTracingVoxelMap {
@@ -37,7 +38,7 @@ struct RayTracingVoxelMap {
     config: Config,
 
     map: VoxelMap,
-    last_origin: Option<(f32, f32, f32)>,
+    last_pose: Option<(Vector3<f32>, UnitQuaternion<f32>)>,
     frame_count: u32,
     batch_points: Vec<(f32, f32, f32)>,
     batch_origins: Vec<(f32, f32, f32)>,
@@ -45,18 +46,22 @@ struct RayTracingVoxelMap {
 
 impl RayTracingVoxelMap {
     async fn on_odometry(&mut self, msg: Odometry) {
-        self.last_origin = Some((
-            msg.pose.pose.position.x as f32,
-            msg.pose.pose.position.y as f32,
-            msg.pose.pose.position.z as f32,
+        let p = &msg.pose.pose.position;
+        let q = &msg.pose.pose.orientation;
+        self.last_pose = Some((
+            Vector3::new(p.x as f32, p.y as f32, p.z as f32),
+            UnitQuaternion::from_quaternion(nalgebra::Quaternion::new(
+                q.w as f32, q.x as f32, q.y as f32, q.z as f32,
+            )),
         ));
     }
 
     async fn on_lidar(&mut self, msg: PointCloud2) {
-        let Some(origin) = self.last_origin else {
+        let Some((translation, rotation)) = self.last_pose else {
             // Need at least one odometry sample before we can raycast.
             return;
         };
+        let origin = (translation.x, translation.y, translation.z);
 
         let voxel_size = self.config.voxel_size;
 
@@ -74,6 +79,23 @@ impl RayTracingVoxelMap {
         if points.is_empty() {
             return;
         }
+
+        // Register sensor-frame clouds into the world by the odom pose.
+        let points = if self.config.registered_clouds {
+            points
+        } else {
+            let rot = rotation.to_rotation_matrix();
+            points
+                .iter()
+                .map(|&(x, y, z)| {
+                    let p = rot * Vector3::new(x, y, z) + translation;
+                    (p.x, p.y, p.z)
+                })
+                .collect()
+        };
+
+        // The integrated points are world-frame either way.
+        let out_frame_id = "world";
 
         let live = update_map(&mut self.map, origin, &points, &self.config);
 
@@ -93,7 +115,7 @@ impl RayTracingVoxelMap {
                 &self.map,
                 &live,
                 voxel_size,
-                &msg.header.frame_id,
+                out_frame_id,
                 msg.header.stamp.clone(),
             );
             if let Err(e) = self.global_map.publish(&cloud).await {
@@ -130,7 +152,7 @@ impl RayTracingVoxelMap {
             header: Header {
                 seq: 0,
                 stamp: msg.header.stamp.clone(),
-                frame_id: msg.header.frame_id.clone(),
+                frame_id: out_frame_id.to_string(),
             },
             pose: Pose {
                 position: Point {
@@ -159,7 +181,7 @@ impl RayTracingVoxelMap {
             &live,
             voxel_size,
             &cylinder,
-            &msg.header.frame_id,
+            out_frame_id,
             msg.header.stamp,
         );
         if let Err(e) = self.local_map.publish(&local_cloud).await {

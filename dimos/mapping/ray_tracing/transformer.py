@@ -22,6 +22,9 @@ import open3d.core as o3c  # type: ignore[import-untyped]
 
 from dimos.mapping.ray_tracing.voxel_map import VoxelRayMapper, local_bounds
 from dimos.memory2.transform import Transformer
+from dimos.msgs.geometry_msgs.Quaternion import Quaternion
+from dimos.msgs.geometry_msgs.Transform import Transform
+from dimos.msgs.geometry_msgs.Vector3 import Vector3
 from dimos.msgs.sensor_msgs.PointCloud2 import PointCloud2
 from dimos.utils.logging_config import setup_logger
 
@@ -36,7 +39,11 @@ logger = setup_logger()
 
 
 class RayTraceMap(Transformer[PointCloud2, PointCloud2]):
-    """Accumulate world-frame lidar into a voxel map with raycast clearing."""
+    """Accumulate lidar into a voxel map with raycast clearing.
+
+    Clouds are assumed world-registered. With ``registered_clouds=False`` each
+    cloud is sensor-frame and registered into the world by its odometry pose.
+    """
 
     def __init__(
         self,
@@ -46,6 +53,7 @@ class RayTraceMap(Transformer[PointCloud2, PointCloud2]):
         emit_every: int = 1,
         emit_local: bool = False,
         region_percentile: float = 95.0,
+        registered_clouds: bool = True,
         **mapper_kwargs: Any,
     ) -> None:
         if emit_every < 0:
@@ -55,6 +63,7 @@ class RayTraceMap(Transformer[PointCloud2, PointCloud2]):
         self.emit_every = emit_every
         self.emit_local = emit_local
         self.region_percentile = region_percentile
+        self.registered_clouds = registered_clouds
         self._mapper_kwargs = mapper_kwargs
 
     def _local_bounds(
@@ -114,8 +123,13 @@ class RayTraceMap(Transformer[PointCloud2, PointCloud2]):
             if obs.pose_tuple is None:
                 logger.debug("RayTraceMap: obs %s has no pose; skipping", obs.id)
                 continue
-            x, y, z, *_ = obs.pose_tuple
-            pts = obs.data.points_f32()
+            x, y, z, qx, qy, qz, qw = obs.pose_tuple
+            if self.registered_clouds:
+                pts = obs.data.points_f32()
+            else:
+                # Sensor-frame cloud: register into the world by the pose first.
+                tf = Transform(translation=Vector3(x, y, z), rotation=Quaternion(qx, qy, qz, qw))
+                pts = obs.data.transform(tf).points_f32()
             mapper.add_frame(pts, (x, y, z))
             if self.emit_local and pts.size:
                 batch_points.append(pts)

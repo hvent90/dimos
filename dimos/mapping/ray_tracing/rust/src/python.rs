@@ -94,6 +94,7 @@ impl VoxelRayMapper {
             emit_every: 1,
             global_emit_every: 1,
             region_percentile: 95.0,
+            registered_clouds: true,
         };
         config
             .validate()

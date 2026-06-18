@@ -45,6 +45,9 @@ pub struct Config {
     /// so a stray far hit cannot inflate the region the planner recomputes.
     #[validate(range(min = 0.0, max = 100.0))]
     pub region_percentile: f32,
+    /// False registers sensor-frame clouds by the odom pose before integration.
+    /// True leaves clouds as-is and odometry only supplies the raycast origin.
+    pub registered_clouds: bool,
 }
 
 fn validate_health_range(cfg: &Config) -> Result<(), ValidationError> {
@@ -692,6 +695,7 @@ mod tests {
             emit_every: 1,
             global_emit_every: 1,
             region_percentile: 95.0,
+            registered_clouds: true,
         }
     }
 
@@ -881,6 +885,7 @@ mod tests {
             emit_every: 1,
             global_emit_every: 1,
             region_percentile: 95.0,
+            registered_clouds: true,
         };
         // Build the floor over a y band so it is a 2d plane, not a wire.
         let max_x = 25.0_f32;
@@ -1036,6 +1041,7 @@ mod tests {
             emit_every: 1,
             global_emit_every: 1,
             region_percentile: 95.0,
+            registered_clouds: true,
         };
 
         // Staircase
@@ -1110,6 +1116,7 @@ mod tests {
             emit_every: 1,
             global_emit_every: 1,
             region_percentile: 95.0,
+            registered_clouds: true,
         };
 
         // Flat floor from the sensor out to a vertical wall.
@@ -1172,6 +1179,7 @@ mod tests {
             emit_every: 1,
             global_emit_every: 1,
             region_percentile: 95.0,
+            registered_clouds: true,
         };
 
         // Staircase topped by a flat landing and a back wall.
@@ -1303,6 +1311,7 @@ mod tests {
                 emit_every: 1,
                 global_emit_every: 1,
                 region_percentile: 95.0,
+                registered_clouds: true,
             };
             let (mut map, _) = build_surface(&floor, voxel_size, cfg.max_health);
             let row: Vec<VoxelKey> = map
