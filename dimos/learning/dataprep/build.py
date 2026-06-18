@@ -90,7 +90,11 @@ def run_dataprep(config: DataPrepConfig) -> Path:
     try:
         logger.info("[dataprep] streams in source: %s", store.list_streams())
         all_eps = extract_episodes(store, config.episodes)
-        episodes = [e for e in all_eps if e.success]
+        # Reindex survivors so sidecar ids match the writers' episode_index.
+        episodes = [
+            e.model_copy(update={"id": f"ep_{i:06d}"})
+            for i, e in enumerate(e for e in all_eps if e.success)
+        ]
         logger.info(
             "[dataprep] episodes extracted: %d total / %d successful",
             len(all_eps),
@@ -116,7 +120,14 @@ def run_dataprep(config: DataPrepConfig) -> Path:
             config.sync.model_dump(),
         )
         writer = get_writer(config.output.format)
-        logger.info("[dataprep] writing %s dataset to %s", config.output.format, config.output.path)
+        # fps drives written timestamps + video rate, so tie it to the resample
+        # rate; an explicit metadata.fps still wins.
+        output = config.output
+        if config.sync.rate_hz > 0 and "fps" not in output.metadata:
+            output = output.model_copy(
+                update={"metadata": {**output.metadata, "fps": config.sync.rate_hz}}
+            )
+        logger.info("[dataprep] writing %s dataset to %s", config.output.format, output.path)
 
         samples_seen = 0
         episodes_done = 0
@@ -145,7 +156,7 @@ def run_dataprep(config: DataPrepConfig) -> Path:
                     yield sample
                 episodes_done += 1
 
-        dataset_path = Path(writer(_all_samples(), config.output))
+        dataset_path = Path(writer(_all_samples(), output))
         _write_dimos_meta(dataset_path, config, episodes)
         logger.info(
             "[dataprep] succeeded — wrote %d samples across %d episodes to %s",

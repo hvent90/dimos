@@ -75,7 +75,7 @@ class SyncConfig(BaseConfig):
 class OutputConfig(BaseConfig):
     format: Literal["lerobot", "hdf5"] = "lerobot"
     path: Path
-    metadata: dict[str, Any] = {}
+    metadata: dict[str, Any] = Field(default_factory=dict)
 
 
 class DataPrepConfig(BaseConfig):
@@ -88,8 +88,8 @@ class DataPrepConfig(BaseConfig):
 
     source: str = ""
     episodes: EpisodeExtractor = EpisodeExtractor()
-    observation: dict[str, StreamField] = {}
-    action: dict[str, StreamField] = {}
+    observation: dict[str, StreamField] = Field(default_factory=dict)
+    action: dict[str, StreamField] = Field(default_factory=dict)
     sync: SyncConfig = SyncConfig(anchor="image", rate_hz=30.0, tolerance_ms=50.0)
     output: OutputConfig = OutputConfig(format="lerobot", path=Path("data/datasets/default"))
 

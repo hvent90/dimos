@@ -28,6 +28,7 @@ import time
 from typing import Any, Literal
 
 from pydantic import BaseModel
+from reactivex.disposable import Disposable
 
 from dimos.core.core import rpc
 from dimos.core.module import Module, ModuleConfig
@@ -98,11 +99,14 @@ class EpisodeMonitorModule(Module):
     @rpc
     def start(self) -> None:
         super().start()
-        self.buttons.subscribe(self._on_buttons)
-        self.keyboard.subscribe(self._on_keyboard)
+        # Registered so the base Module.stop() disposes them on shutdown.
+        self.register_disposable(Disposable(self.buttons.subscribe(self._on_buttons)))
+        self.register_disposable(Disposable(self.keyboard.subscribe(self._on_keyboard)))
         # Emit an initial idle status so subscribers (and recorders) have a
         # known starting point in the timeline.
-        self._publish("init")
+        with self._lock:
+            status = self._snapshot("init")
+        self._emit(status)
 
     @rpc
     def stop(self) -> None:
@@ -116,7 +120,8 @@ class EpisodeMonitorModule(Module):
             self._discarded = 0
             self._current_start_ts = None
             self._prev_bits = {}
-        return self._publish("init")
+            status = self._snapshot("init")
+        return self._emit(status)
 
     @rpc
     def get_status(self) -> EpisodeStatus:
@@ -185,19 +190,24 @@ class EpisodeMonitorModule(Module):
                     self._discarded += 1
                 self._state = "idle"
                 self._current_start_ts = None
-        self._publish(event)
+            # Snapshot under the mutation's lock so the event matches the state.
+            status = self._snapshot(event)
+        self._emit(status)
 
-    def _publish(self, last_event: Literal["start", "save", "discard", "init"]) -> EpisodeStatus:
-        with self._lock:
-            self._last_event = last_event
-            status = EpisodeStatus(
-                state=self._state,
-                episodes_saved=self._saved,
-                episodes_discarded=self._discarded,
-                current_episode_start_ts=self._current_start_ts,
-                last_event=last_event,
-                task_label=self.config.default_task_label,
-            )
+    def _snapshot(self, last_event: Literal["start", "save", "discard", "init"]) -> EpisodeStatus:
+        """Build a status from current state. Caller must hold `self._lock`."""
+        self._last_event = last_event
+        return EpisodeStatus(
+            state=self._state,
+            episodes_saved=self._saved,
+            episodes_discarded=self._discarded,
+            current_episode_start_ts=self._current_start_ts,
+            last_event=last_event,
+            task_label=self.config.default_task_label,
+        )
+
+    def _emit(self, status: EpisodeStatus) -> EpisodeStatus:
+        """Publish + log a snapshot. Must run outside the lock (does I/O)."""
         self.status.publish(status)
         self._log_status(status)
         return status
