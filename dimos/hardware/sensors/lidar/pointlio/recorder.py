@@ -14,14 +14,14 @@
 
 """Record Point-LIO odometry + lidar into a memory2 SQLite db.
 
-A memory2 ``Recorder`` whose ``odometry`` / ``lidar`` In ports auto-connect to a
+A ``TfRecorder`` whose ``odometry`` / ``lidar`` In ports auto-connect to a
 PointLio's same-named outputs. Beyond the base recorder it: records under
 configurable stream names, re-bases timestamps onto the db's existing clock so a
 run can be appended (e.g. onto a fastlio replay) and compared on one timeline,
-replaces only its own streams when appending (``force``), and sets poses from the
-odometry stream rather than tf — each lidar frame is stamped with the latest
-odometry pose, so ``pointlio_lidar`` carries the trajectory and ``dimos map
-global`` can register the body-frame cloud directly (no ``pose-fill`` pass).
+and replaces only its own streams when appending (``force``). Poses come straight
+from the odometry stream (``@pose_setter_for``): each lidar frame is stamped with
+the latest odometry pose so ``pointlio_lidar`` carries the trajectory and ``dimos
+map global`` can register the body-frame cloud directly (no ``pose-fill`` pass).
 """
 
 from __future__ import annotations
@@ -33,7 +33,8 @@ import time
 from typing import Any
 
 from dimos.core.stream import In
-from dimos.memory2.module import OnExisting, Recorder, RecorderConfig
+from dimos.memory2.module import OnExisting
+from dimos.memory2.tf_recorder import TfRecorder, TfRecorderConfig, pose_setter_for
 from dimos.msgs.geometry_msgs.Pose import Pose
 from dimos.msgs.nav_msgs.Odometry import Odometry
 from dimos.msgs.sensor_msgs.PointCloud2 import PointCloud2
@@ -42,9 +43,6 @@ from dimos.msgs.sensor_msgs.PointCloud2 import PointCloud2
 _SENSOR_CLOCK_MAX = 1e8
 # Strictly-increasing tie-breaker so two samples never collide on ts.
 _EPS = 1e-9
-# Max sensor-ts gap to attach the latest odometry pose to a lidar frame. Matches
-# pose_fill's nearest-match window; odometry is ~30 Hz so this nearly always hits.
-_POSE_MATCH_TOL = 0.1
 
 
 def _existing_min_ts(db_path: Path) -> float:
@@ -75,7 +73,7 @@ def _existing_min_ts(db_path: Path) -> float:
         con.close()
 
 
-class PointlioRecorderConfig(RecorderConfig):
+class PointlioRecorderConfig(TfRecorderConfig):
     """Target db + timing conversion for the Point-LIO recorder."""
 
     # db stream/table names the Point-LIO outputs are recorded under.
@@ -89,7 +87,7 @@ class PointlioRecorderConfig(RecorderConfig):
     on_existing: OnExisting = OnExisting.APPEND
 
 
-class PointlioRecorder(Recorder):
+class PointlioRecorder(TfRecorder):
     config: PointlioRecorderConfig
 
     odometry: In[Odometry]
@@ -99,9 +97,7 @@ class PointlioRecorder(Recorder):
     _ref_start_ts: float = -1.0
     _last_odom_ts: float = 0.0
     _last_lidar_ts: float = 0.0
-    # Latest odometry pose + its raw sensor ts, stamped onto each lidar frame.
     _last_odom_pose: Pose | None = None
-    _last_odom_raw_ts: float = 0.0
 
     def _stream_name(self, port_name: str) -> str:
         if port_name == "odometry":
@@ -151,23 +147,15 @@ class PointlioRecorder(Recorder):
             self._last_lidar_ts = ts
         return ts
 
-    def _resolve_pose(self, name: str, msg: Any, ts: float) -> Pose | None:
-        if name == "odometry":
-            pose = getattr(msg, "pose", None)
-            inner = getattr(pose, "pose", None) if pose is not None else None
-            self._last_odom_pose = inner
-            raw = getattr(msg, "ts", None)
-            self._last_odom_raw_ts = raw if raw is not None else 0.0
-            return inner
-        # lidar: stamp the latest odometry pose when it's recent enough. Both
-        # Point-LIO outputs share a publish ts, so the nearest odometry is at most
-        # ~one odom period stale. Frames with no match (e.g. before the first
-        # odometry) get None and are map-skipped.
-        raw = getattr(msg, "ts", None)
-        raw = raw if raw is not None else 0.0
-        if (
-            self._last_odom_pose is not None
-            and abs(raw - self._last_odom_raw_ts) <= _POSE_MATCH_TOL
-        ):
-            return self._last_odom_pose
-        return None
+    @pose_setter_for("odometry")
+    def _odom_pose(self, msg: Odometry) -> Pose | None:
+        pose = getattr(msg, "pose", None)
+        self._last_odom_pose = getattr(pose, "pose", None) if pose is not None else None
+        return self._last_odom_pose
+
+    @pose_setter_for("lidar")
+    def _lidar_pose(self, msg: PointCloud2) -> Pose | None:
+        # Stamp each (sensor-frame) cloud with the most-recent odometry pose
+        # directly — no tf / static-transform composition. None before the first
+        # odometry, in which case the frame is stored unposed and map-skipped.
+        return self._last_odom_pose
