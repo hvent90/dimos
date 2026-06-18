@@ -13,11 +13,11 @@
 # See the License for the specific language governing permissions and
 # limitations under the License.
 
-"""Go2 3D nav stack: fastlio odometry, raytraced voxel map, MLS planning, path following.
+"""Go2 3D nav stack: pointlio odometry, raytraced voxel map, MLS planning, path following.
 
-Expects a mid360 + fastlio running against a lidar mounted on the robot.
+Expects a mid360 + pointlio running against a lidar mounted on the robot.
 The go2's built-in lidar and odometry are remapped aside and unused for
-navigation. The map, paths, and robot pose all live in fastlio's world frame.
+navigation. The map, paths, and robot pose all live in pointlio's world frame.
 """
 
 import os
@@ -25,7 +25,7 @@ from typing import Any
 
 from dimos.core.coordination.blueprints import autoconnect
 from dimos.core.global_config import global_config
-from dimos.hardware.sensors.lidar.fastlio2.module import FastLio2
+from dimos.hardware.sensors.lidar.pointlio.module import PointLio
 from dimos.mapping.ray_tracing.module import RayTracingVoxelMap
 from dimos.navigation.basic_path_follower.module import BasicPathFollower
 from dimos.navigation.movement_manager.movement_manager import MovementManager
@@ -54,7 +54,7 @@ def _render_path(msg: Any) -> Any:
 
 
 def _static_robot_body(rr: Any) -> list[Any]:
-    """Go2-shaped box on fastlio's body frame, counter-rotated for the lidar pitch."""
+    """Go2-shaped box on pointlio's body frame, counter-rotated for the lidar pitch."""
     return [
         rr.Boxes3D(half_sizes=[0.35, 0.155, 0.2], colors=[(0, 255, 127)]),
         rr.Transform3D(
@@ -73,7 +73,7 @@ _nav_rerun_config = {
     },
     "memory_limit": "256MB",
     # base_link tf comes from the go2 internal odometry, which is not the map
-    # frame. Anchor the robot box to fastlio's body frame instead and hide the
+    # frame. Anchor the robot box to pointlio's body frame instead and hide the
     # camera frustum that rides base_link.
     "static": {"world/tf/body": _static_robot_body},
     "visual_override": {
@@ -100,13 +100,19 @@ unitree_go2_nav_3d = autoconnect(
             (GO2Connection, "odom", "odom_go2"),
         ]
     ),
-    FastLio2.blueprint(
+    PointLio.blueprint(
         host_ip=os.getenv("LIDAR_HOST_IP", "192.168.1.5"),
         lidar_ip=os.getenv("LIDAR_IP", "192.168.1.155"),
-        map_freq=-1.0,
-    ).remappings([(FastLio2, "global_map", "global_map_fastlio")]),
+        body_frame_id="body",
+    ),
+    # registered_clouds=False: pointlio publishes sensor-frame clouds, so the
+    # ray tracer registers them by the odometry pose.
     RayTracingVoxelMap.blueprint(
-        voxel_size=voxel_size, emit_every=2, global_emit_every=50, max_health=5
+        voxel_size=voxel_size,
+        emit_every=2,
+        global_emit_every=50,
+        max_health=5,
+        registered_clouds=False,
     ),
     # global_map is remapped off so the planner runs purely on the
     # incremental local_map + region_bounds pair.
