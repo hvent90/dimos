@@ -19,7 +19,7 @@ from __future__ import annotations
 from typing import Any
 
 from dimos.robot.config import RobotConfig
-from dimos.utils.data import LfsPath
+from dimos.robot.description_assets import robot_description_path
 
 # Collision exclusion pairs — structural mesh overlaps in the OpenArm URDF.
 # link5 and link7 collision meshes overlap by ~3mm at zero pose (and every
@@ -29,8 +29,7 @@ OPENARM_COLLISION_EXCLUSIONS: list[tuple[str, str]] = [
     ("openarm_right_link5", "openarm_right_link7"),
 ]
 
-# LFS-backed: data/.lfs/openarm_description.tar.gz extracts to data/openarm_description/
-_OPENARM_PKG = LfsPath("openarm_description")
+_OPENARM_PKG = robot_description_path("openarm_description")
 _OPENARM_MODEL_PATH = _OPENARM_PKG / "urdf/robot/openarm_v10_bimanual.urdf"
 # Per-side URDFs: extracted from bimanual expansion, only one arm + torso each.
 # Avoids phantom-arm collisions when Drake loads both sides into one world.

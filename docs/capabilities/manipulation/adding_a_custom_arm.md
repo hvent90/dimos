@@ -503,19 +503,19 @@ If you want motion planning (collision-free trajectories via Drake), you need a 
 
 ### 4a. Add your URDF
 
-Place your URDF/xacro files under LFS data so they can be resolved via `LfsPath`. `LfsPath` is a `Path` subclass that lazily downloads LFS data on first access — this avoids downloading at import time when the blueprint module is loaded.
+Place your URDF/xacro files and referenced meshes in a local directory owned by your integration, then pass normal filesystem `Path` values to DimOS. Built-in robot descriptions ship with DimOS, but custom robot descriptions are external path inputs; do not put custom URDF, mesh, or SRDF descriptions behind `get_data()`/`LfsPath`.
 
 ```python skip
-from dimos.utils.data import LfsPath
+from pathlib import Path
+
 from dimos.manipulation.manipulation_module import manipulation_module
 from dimos.manipulation.planning.spec import RobotModelConfig
 from dimos.msgs.geometry_msgs.PoseStamped import PoseStamped
 from dimos.msgs.geometry_msgs.Quaternion import Quaternion
 from dimos.msgs.geometry_msgs.Vector3 import Vector3
 
-# LfsPath defers download until the path is actually accessed
-_YOURARM_URDF_PATH = LfsPath("yourarm_description/urdf/yourarm.urdf")
-_YOURARM_PACKAGE_PATH = LfsPath("yourarm_description")
+_YOURARM_PACKAGE_PATH = Path("/opt/robot_descriptions/yourarm_description")
+_YOURARM_URDF_PATH = _YOURARM_PACKAGE_PATH / "urdf/yourarm.urdf"
 
 
 def _make_base_pose(x=0.0, y=0.0, z=0.0) -> PoseStamped:

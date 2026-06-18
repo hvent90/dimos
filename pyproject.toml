@@ -46,6 +46,7 @@ exclude = [
     "**/*.js",
     "**/*.tcss",
     "**/*.pyi",
+    "robot/descriptions/**",
     "rxpy_backpressure/*.txt",
 ]
 
@@ -614,4 +615,5 @@ ignore = [
     "dimos/manipulation/manipulation_module.py",
     "dimos/navigation/nav_stack/modules/*/main.cpp",
     "dimos/navigation/nav_stack/common/*.hpp",
+    "dimos/robot/descriptions/*_description/meshes/**",
 ]

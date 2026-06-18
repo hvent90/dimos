@@ -19,10 +19,13 @@ from __future__ import annotations
 from typing import Any
 
 from dimos.robot.config import GripperConfig, RobotConfig
+from dimos.robot.description_assets import robot_description_path
 from dimos.utils.data import LfsPath
 
+_PIPER_DESCRIPTION = robot_description_path("piper_description")
+
 # Pre-built MJCF for Pinocchio FK (xacro not supported by Pinocchio)
-PIPER_FK_MODEL = LfsPath("piper_description/mujoco_model/piper_no_gripper_description.xml")
+PIPER_FK_MODEL = _PIPER_DESCRIPTION / "mujoco_model/piper_no_gripper_description.xml"
 
 # Simulation model path (MJCF)
 PIPER_SIM_PATH = LfsPath("piper/scene.xml")
@@ -59,7 +62,7 @@ def piper(
     """
     defaults: dict[str, Any] = {
         "name": name,
-        "model_path": LfsPath("piper_description") / "urdf/piper_description.xacro",
+        "model_path": _PIPER_DESCRIPTION / "urdf/piper_description.xacro",
         "end_effector_link": "gripper_base",
         "adapter_type": adapter_type,
         "address": address,
@@ -68,8 +71,8 @@ def piper(
         "home_joints": [0.0, 0.0, 0.0, 0.0, 0.0, 0.0],
         "base_pose": [0, y_offset, 0, 0, 0, 0, 1],
         "package_paths": {
-            "piper_description": LfsPath("piper_description"),
-            "piper_gazebo": LfsPath("piper_description"),
+            "piper_description": _PIPER_DESCRIPTION,
+            "piper_gazebo": _PIPER_DESCRIPTION,
         },
         "xacro_args": {},
         "auto_convert_meshes": True,

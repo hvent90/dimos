@@ -20,10 +20,12 @@ import math
 from typing import Any
 
 from dimos.robot.config import GripperConfig, RobotConfig
-from dimos.utils.data import LfsPath
+from dimos.robot.description_assets import robot_description_path
+
+_A750_DESCRIPTION = robot_description_path("a750_description")
 
 # Pre-built MJCF for Pinocchio FK (xacro not supported by Pinocchio)
-A750_FK_MODEL = LfsPath("a750_description/urdf/a750_rev1_no_gripper.urdf")
+A750_FK_MODEL = _A750_DESCRIPTION / "urdf/a750_rev1_no_gripper.urdf"
 
 # A-750 gripper collision exclusions (parallel jaw gripper)
 # The gripper fingers (link7, link8) can touch each other and gripper_base
@@ -71,7 +73,7 @@ def a750(
     """
     defaults: dict[str, Any] = {
         "name": name,
-        "model_path": LfsPath("a750_description") / "urdf/a750_rev1.urdf",
+        "model_path": _A750_DESCRIPTION / "urdf/a750_rev1.urdf",
         "end_effector_link": "gripper_base",
         "adapter_type": adapter_type,
         "address": device_path,
@@ -80,8 +82,8 @@ def a750(
         "home_joints": [0.0, 0.0, -math.radians(90), 0.0, 0.0, 0.0],
         "base_pose": [0, 0, 0, 0, 0, 0, 1],  # base_pose is where the robot sits in the world
         "package_paths": {
-            "a750_description": LfsPath("a750_description"),
-            "a750_gazebo": LfsPath("a750_description"),
+            "a750_description": _A750_DESCRIPTION,
+            "a750_gazebo": _A750_DESCRIPTION,
         },
         "xacro_args": {},
         "auto_convert_meshes": True,

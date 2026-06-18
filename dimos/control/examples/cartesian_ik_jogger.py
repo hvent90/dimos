@@ -39,6 +39,8 @@ from typing import Any
 
 import numpy as np
 
+from dimos.robot.description_assets import robot_description_path
+
 try:
     import pygame
 except ImportError:
@@ -163,9 +165,7 @@ def clamp(value: float, min_val: float, max_val: float) -> float:
 
 def _get_piper_model_path() -> str:
     """Get path to Piper MJCF model."""
-    from dimos.utils.data import get_data
-
-    piper_path = get_data("piper_description")
+    piper_path = robot_description_path("piper_description")
     return str(piper_path / "mujoco_model" / "piper_no_gripper_description.xml")
 
 

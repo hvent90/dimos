@@ -19,11 +19,14 @@ from __future__ import annotations
 from typing import Any
 
 from dimos.robot.config import GripperConfig, RobotConfig
+from dimos.robot.description_assets import robot_description_path
 from dimos.utils.data import LfsPath
 
+_XARM_DESCRIPTION = robot_description_path("xarm_description")
+
 # Pre-built URDFs for Pinocchio FK (xacro not supported by Pinocchio)
-XARM6_FK_MODEL = LfsPath("xarm_description/urdf/xarm6/xarm6.urdf")
-XARM7_FK_MODEL = LfsPath("xarm_description/urdf/xarm7/xarm7.urdf")
+XARM6_FK_MODEL = _XARM_DESCRIPTION / "urdf/xarm6/xarm6.urdf"
+XARM7_FK_MODEL = _XARM_DESCRIPTION / "urdf/xarm7/xarm7.urdf"
 
 # Simulation model paths (MJCF)
 XARM7_SIM_PATH = LfsPath("xarm7/scene.xml")
@@ -76,7 +79,7 @@ def xarm7(
 
     defaults: dict[str, Any] = {
         "name": name,
-        "model_path": LfsPath("xarm_description") / "urdf/xarm_device.urdf.xacro",
+        "model_path": _XARM_DESCRIPTION / "urdf/xarm_device.urdf.xacro",
         "end_effector_link": "link_tcp" if add_gripper else "link7",
         "adapter_type": adapter_type,
         "address": address,
@@ -84,7 +87,7 @@ def xarm7(
         "base_link": "link_base",
         "home_joints": [0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0],
         "base_pose": [x_offset, y_offset, z_offset, 0, 0, 0, 1],
-        "package_paths": {"xarm_description": LfsPath("xarm_description")},
+        "package_paths": {"xarm_description": _XARM_DESCRIPTION},
         "xacro_args": xacro_args,
         "auto_convert_meshes": True,
         "collision_exclusion_pairs": XARM_GRIPPER_COLLISION_EXCLUSIONS if add_gripper else [],
@@ -128,7 +131,7 @@ def xarm6(
 
     defaults: dict[str, Any] = {
         "name": name,
-        "model_path": LfsPath("xarm_description") / "urdf/xarm_device.urdf.xacro",
+        "model_path": _XARM_DESCRIPTION / "urdf/xarm_device.urdf.xacro",
         "end_effector_link": "link_tcp" if add_gripper else "link6",
         "adapter_type": adapter_type,
         "address": address,
@@ -136,7 +139,7 @@ def xarm6(
         "base_link": "link_base",
         "home_joints": [0.0, 0.0, 0.0, 0.0, 0.0, 0.0],
         "base_pose": [x_offset, y_offset, z_offset, 0, 0, 0, 1],
-        "package_paths": {"xarm_description": LfsPath("xarm_description")},
+        "package_paths": {"xarm_description": _XARM_DESCRIPTION},
         "xacro_args": xacro_args,
         "auto_convert_meshes": True,
         "collision_exclusion_pairs": XARM_GRIPPER_COLLISION_EXCLUSIONS if add_gripper else [],

@@ -33,7 +33,7 @@ from dimos.hardware.manipulators.spec import (
     JointLimits,
     ManipulatorInfo,
 )
-from dimos.utils.data import LfsPath
+from dimos.robot.description_assets import robot_description_path
 
 if TYPE_CHECKING:
     from dimos.hardware.manipulators.registry import AdapterRegistry
@@ -50,7 +50,7 @@ def _socketcan_iface_up(name: str) -> bool:
 
 
 # OpenArm v10 BOM — (send_id, MotorType) per joint, derived from the torque
-# column of data/openarm_description/config/arm/v10/joint_limits.yaml.
+# column of openarm_description/config/arm/v10/joint_limits.yaml.
 _OPENARM_V10_ARM_MOTORS: list[tuple[int, MotorType]] = [
     (0x01, MotorType.DM8006),  # joint1
     (0x02, MotorType.DM8006),  # joint2
@@ -83,9 +83,10 @@ _STATE_MAX_AGE_S = 0.1
 class OpenArmAdapter:
     """7-DOF OpenArm on one SocketCAN bus. side=left|right picks URDF + limits."""
 
-    # Per-side URDFs for Pinocchio gravity model (LFS-backed)
-    _URDF_LEFT = LfsPath("openarm_description/urdf/robot/openarm_v10_left.urdf")
-    _URDF_RIGHT = LfsPath("openarm_description/urdf/robot/openarm_v10_right.urdf")
+    # Per-side URDFs for Pinocchio gravity model.
+    _OPENARM_DESCRIPTION = robot_description_path("openarm_description")
+    _URDF_LEFT = _OPENARM_DESCRIPTION / "urdf/robot/openarm_v10_left.urdf"
+    _URDF_RIGHT = _OPENARM_DESCRIPTION / "urdf/robot/openarm_v10_right.urdf"
 
     def __init__(
         self,

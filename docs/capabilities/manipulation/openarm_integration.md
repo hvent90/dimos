@@ -49,7 +49,7 @@ dimos/robot/manipulators/openarm/
     ├── openarm_set_mit_mode.py   # one-time CTRL_MODE=MIT write per motor
     └── ... (diagnostics)
 
-data/openarm_description/          # URDF + meshes (in-tree; may migrate to LFS)
+dimos/robot/descriptions/openarm_description/  # URDF + meshes shipped with DimOS
 └── urdf/robot/
     ├── openarm_v10_bimanual.urdf  # both arms (14 DOF, used by coordinator)
     ├── openarm_v10_left.urdf      # left arm + torso (7 DOF, per-side planning)
@@ -350,7 +350,7 @@ Persistent across power cycles.
 - **Gravity compensation on by default.** Eliminates steady-state position error without needing high kp. Needs Pinocchio + the per-side URDFs.
 - **One adapter per CAN bus, keyed by `address`.** Matches the Piper adapter pattern. Bimanual = two adapters with different `address` values.
 - **Per-side URDFs for Drake planning.** Loading the full 14-DOF bimanual URDF twice (once per robot instance) creates phantom-arm collisions with the "other" arm frozen at zero. The per-side URDFs keep only one arm's links + the torso, avoiding the phantom collisions while matching the bimanual kinematics exactly.
-- **URDF stays in-tree (`data/openarm_description/`) for now.** Can migrate to LFS later — only the path constant in the catalog changes.
+- **URDF and meshes ship with DimOS.** OpenArm's built-in robot description lives under `dimos/robot/descriptions/openarm_description/` and resolves through `robot_description_path("openarm_description")`, not through Git LFS.
 - **CAN bringup stays manual (`sudo`).** Auto-bringup from `connect()` would need sudo-in-a-library or a systemd unit; the explicit script is clearer and testable. For production, add a oneshot systemd unit that runs the script at boot.
 
 ---
@@ -361,16 +361,16 @@ For figuring out which targets are reachable before planning, use the generic wo
 
 ```bash
 # Visualize the left arm's reachable workspace as a point cloud
-python -m dimos.utils.workspace data/openarm_description/urdf/robot/openarm_v10_left.urdf
+python -m dimos.utils.workspace dimos/robot/descriptions/openarm_description/urdf/robot/openarm_v10_left.urdf
 
 # Check if a specific target is reachable
-python -m dimos.utils.workspace data/openarm_description/urdf/robot/openarm_v10_left.urdf query 0.1 0.3 0.5
+python -m dimos.utils.workspace dimos/robot/descriptions/openarm_description/urdf/robot/openarm_v10_left.urdf query 0.1 0.3 0.5
 
 # Get a list of reachable poses near a target, ranked by manipulability
-python -m dimos.utils.workspace data/openarm_description/urdf/robot/openarm_v10_left.urdf suggest 0.1 0.3 0.5
+python -m dimos.utils.workspace dimos/robot/descriptions/openarm_description/urdf/robot/openarm_v10_left.urdf suggest 0.1 0.3 0.5
 
 # Interactive: visualize + type targets to query
-python -m dimos.utils.workspace data/openarm_description/urdf/robot/openarm_v10_left.urdf interactive
+python -m dimos.utils.workspace dimos/robot/descriptions/openarm_description/urdf/robot/openarm_v10_left.urdf interactive
 ```
 
 Points are colored by Yoshikawa manipulability index: green = dexterous, red = near singularity. Avoid planning targets in the red regions.

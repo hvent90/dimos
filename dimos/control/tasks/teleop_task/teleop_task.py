@@ -96,8 +96,8 @@ class TeleopIKTask(BaseControlTask):
     Outputs JointCommandOutput and participates in joint-level arbitration.
 
     Example:
-        >>> from dimos.utils.data import get_data
-        >>> piper_path = get_data("piper_description")
+        >>> from dimos.robot.description_assets import robot_description_path
+        >>> piper_path = robot_description_path("piper_description")
         >>> task = TeleopIKTask(
         ...     name="teleop_arm",
         ...     config=TeleopIKTaskConfig(

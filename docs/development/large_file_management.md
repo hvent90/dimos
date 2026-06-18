@@ -1,6 +1,8 @@
 # Data Loading
 
-The [`get_data`](/dimos/utils/data.py) function provides access to test data and model files, handling Git LFS downloads automatically.
+The [`get_data`](/dimos/utils/data.py) function provides access to large data assets, handling Git LFS downloads automatically.
+
+Robot descriptions are not large-data assets. Built-in URDF, mesh, and SRDF robot descriptions ship inside the Python package under `dimos/robot/descriptions/**` and resolve with `dimos.robot.description_assets.robot_description_path()`. External/custom robot descriptions should be supplied as normal filesystem paths by the caller.
 
 ## Basic Usage
 
@@ -122,7 +124,7 @@ Loaded pointcloud with 63672 points
 
 ## Data Directory Structure
 
-Data files live in `data/` at the repo root. Large files are stored in `data/.lfs/` as `.tar.gz` archives tracked by Git LFS.
+Data files live in `data/` at the repo root. Large non-description files are stored in `data/.lfs/` as `.tar.gz` archives tracked by Git LFS.
 
 <details>
 <summary>Diagram</summary>
@@ -169,7 +171,7 @@ git commit -m "Add test image"
 
 ### Large Files or Directories
 
-Use the LFS workflow:
+Use the LFS workflow for replay data, maps, model checkpoints, recordings, datasets, and other large non-description assets:
 
 ```sh skip
 # 1. Copy data to data/
@@ -199,3 +201,5 @@ When running from:
   - Linux: `~/.local/share/dimos/repo/data/`
   - macOS: `~/Library/Application Support/dimos/repo/data/`
   - Fallback: `/tmp/dimos/repo/data/`
+
+This resolution is intentionally separate from built-in robot descriptions. Supported robot descriptions are package data, so PyPI installs can instantiate supported robot configs without Git, Git LFS, or a cloned DimOS repository.

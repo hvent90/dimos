@@ -1,0 +1,323 @@
+<?xml version='1.0' encoding='UTF-8'?>
+<robot name="a750-rev1">
+  <link name="base_link">
+    <visual>
+      <geometry>
+        <mesh filename="package://a750_description/meshes/a750_rev1/base.stl" scale="0.001 0.001 0.001"/>
+      </geometry>
+      <material name="Plum">
+        <color rgba="0.86666667 0.62745098 0.86666667 1.        "/>
+      </material>
+      <origin xyz="0.0 0.0 0.0" rpy="0.0 -0.0 0.0"/>
+    </visual>
+    <collision>
+      <geometry>
+        <mesh filename="package://a750_description/meshes/a750_rev1/collision_base.stl" scale="0.001 0.001 0.001"/>
+      </geometry>
+      <origin xyz="0.0 0.0 0.0" rpy="0.0 -0.0 0.0"/>
+    </collision>
+  </link>
+  <link name="link1">
+    <inertial>
+      <origin xyz="0.0748068390116358 0.024761244214673732 0.04872059619684632" rpy="0.0 -0.0 0.0"/>
+      <mass value="0.8585205200761918"/>
+      <inertia ixx="0.002419944779833706" ixy="-0.00025620403935700914" ixz="-0.0007185550375820911" iyy="0.0025217135714171476" iyz="1.0831857032229891e-05" izz="0.002019731410894806"/>
+    </inertial>
+    <visual>
+      <geometry>
+        <mesh filename="package://a750_description/meshes/a750_rev1/link1.stl" scale="0.001 0.001 0.001"/>
+      </geometry>
+      <material name="Plum">
+        <color rgba="0.86666667 0.62745098 0.86666667 1.        "/>
+      </material>
+      <origin xyz="0.0 0.0 0.0" rpy="0.0 -0.0 0.0"/>
+    </visual>
+    <collision>
+      <geometry>
+        <mesh filename="package://a750_description/meshes/a750_rev1/collision_link1.stl" scale="0.001 0.001 0.001"/>
+      </geometry>
+      <origin xyz="0.0 0.0 0.0" rpy="0.0 -0.0 0.0"/>
+    </collision>
+  </link>
+  <link name="link2">
+    <inertial>
+      <origin xyz="-0.003737654142209511 0.00011959907091841275 0.22199346018509772" rpy="0.0 -0.0 0.0"/>
+      <mass value="0.855634866219948"/>
+      <inertia ixx="0.01458748867806837" ixy="0.00033903149286754886" ixz="0.0019312859701743755" iyy="0.014649276330077753" iyz="-0.0003358211867203507" izz="0.0017021580949314991"/>
+    </inertial>
+    <visual>
+      <geometry>
+        <mesh filename="package://a750_description/meshes/a750_rev1/link2.stl" scale="0.001 0.001 0.001"/>
+      </geometry>
+      <material name="Plum">
+        <color rgba="0.86666667 0.62745098 0.86666667 1.        "/>
+      </material>
+      <origin xyz="0.0 0.0 0.0" rpy="0.0 -0.0 0.0"/>
+    </visual>
+    <collision>
+      <geometry>
+        <mesh filename="package://a750_description/meshes/a750_rev1/collision_link2.stl" scale="0.001 0.001 0.001"/>
+      </geometry>
+      <origin xyz="0.0 0.0 0.0" rpy="0.0 -0.0 0.0"/>
+    </collision>
+  </link>
+  <link name="link3">
+    <inertial>
+      <origin xyz="0.00526857176860878 -3.438398073658552e-05 0.10998127695756842" rpy="0.0 -0.0 0.0"/>
+      <mass value="0.5577548514954243"/>
+      <inertia ixx="0.0020517566400693786" ixy="-4.1065037517520815e-06" ixz="5.929205307890755e-05" iyy="0.0021906181498202236" iyz="3.511011400287938e-05" izz="0.00046868381046310105"/>
+    </inertial>
+    <visual>
+      <geometry>
+        <mesh filename="package://a750_description/meshes/a750_rev1/link3.stl" scale="0.001 0.001 0.001"/>
+      </geometry>
+      <material name="Plum">
+        <color rgba="0.86666667 0.62745098 0.86666667 1.        "/>
+      </material>
+      <origin xyz="0.0 0.0 0.0" rpy="0.0 -0.0 0.0"/>
+    </visual>
+    <collision>
+      <geometry>
+        <mesh filename="package://a750_description/meshes/a750_rev1/collision_link3.stl" scale="0.001 0.001 0.001"/>
+      </geometry>
+      <origin xyz="0.0 0.0 0.0" rpy="0.0 -0.0 0.0"/>
+    </collision>
+  </link>
+  <link name="link4">
+    <inertial>
+      <origin xyz="0.11376093940867599 -0.006242669379489227 6.7607662151912055e-06" rpy="0.0 -0.0 0.0"/>
+      <mass value="0.5053526719021317"/>
+      <inertia ixx="0.00039686335426533393" ixy="6.642460976789327e-05" ixz="4.3119267930742596e-07" iyy="0.0007610868358860259" iyz="-2.194494539609229e-07" izz="0.0007829643392806407"/>
+    </inertial>
+    <visual>
+      <geometry>
+        <mesh filename="package://a750_description/meshes/a750_rev1/link4.stl" scale="0.001 0.001 0.001"/>
+      </geometry>
+      <material name="Plum">
+        <color rgba="0.86666667 0.62745098 0.86666667 1.        "/>
+      </material>
+      <origin xyz="0.0 0.0 0.0" rpy="0.0 -0.0 0.0"/>
+    </visual>
+    <collision>
+      <geometry>
+        <mesh filename="package://a750_description/meshes/a750_rev1/collision_link4.stl" scale="0.001 0.001 0.001"/>
+      </geometry>
+      <origin xyz="0.0 0.0 0.0" rpy="0.0 -0.0 0.0"/>
+    </collision>
+  </link>
+  <link name="link5">
+    <inertial>
+      <origin xyz="0.02705240410961678 0.00019068487026750958 0.034063810747173386" rpy="0.0 -0.0 0.0"/>
+      <mass value="0.42503045095273195"/>
+      <inertia ixx="0.0003539794788913735" ixy="-1.468932681852184e-07" ixz="-2.1697838711775726e-05" iyy="0.00040767808098635117" iyz="-1.1681166888734056e-06" izz="0.000440945447797824"/>
+    </inertial>
+    <visual>
+      <geometry>
+        <mesh filename="package://a750_description/meshes/a750_rev1/link5.stl" scale="0.001 0.001 0.001"/>
+      </geometry>
+      <material name="Plum">
+        <color rgba="0.86666667 0.62745098 0.86666667 1.        "/>
+      </material>
+      <origin xyz="0.0 0.0 0.0" rpy="0.0 -0.0 0.0"/>
+    </visual>
+    <collision>
+      <geometry>
+        <mesh filename="package://a750_description/meshes/a750_rev1/collision_link5.stl" scale="0.001 0.001 0.001"/>
+      </geometry>
+      <origin xyz="0.0 0.0 0.0" rpy="0.0 -0.0 0.0"/>
+    </collision>
+  </link>
+  <link name="link6">
+    <inertial>
+      <origin xyz="0.044726775095202016 -1.5461357918461755e-05 0.003966103054433393" rpy="0.0 -0.0 0.0"/>
+      <mass value="0.4767489831533607"/>
+      <inertia ixx="0.00045339245045896776" ixy="-2.9138455468778536e-07" ixz="1.4904439883949934e-05" iyy="0.00040763480431961214" iyz="-8.924300353291685e-08" izz="0.00043284190432218755"/>
+    </inertial>
+    <visual>
+      <geometry>
+        <mesh filename="package://a750_description/meshes/a750_rev1/link6.stl" scale="0.001 0.001 0.001"/>
+      </geometry>
+      <material name="Plum">
+        <color rgba="0.86666667 0.62745098 0.86666667 1.        "/>
+      </material>
+      <origin xyz="0.0 0.0 0.0" rpy="0.0 -0.0 0.0"/>
+    </visual>
+    <collision>
+      <geometry>
+        <mesh filename="package://a750_description/meshes/a750_rev1/collision_link6.stl" scale="0.001 0.001 0.001"/>
+      </geometry>
+      <origin xyz="0.0 0.0 0.0" rpy="0.0 -0.0 0.0"/>
+    </collision>
+  </link>
+  <link name="gripper_base"/>
+  <link name="left_finger_link">
+    <inertial>
+      <origin xyz="-0.005434852020996829 -0.000981381913833553 0.020302424537325902" rpy="0.0 -0.0 0.0"/>
+      <mass value="0.04432657029800724"/>
+      <inertia ixx="2.4894812683572916e-05" ixy="-8.157578758324332e-07" ixz="3.1782998967651784e-06" iyy="2.61760843227401e-05" iyz="-9.904381702521315e-07" izz="1.2284988533997069e-05"/>
+    </inertial>
+    <visual>
+      <geometry>
+        <mesh filename="package://a750_description/meshes/a750_rev1/finger.stl" scale="0.001 0.001 0.001"/>
+      </geometry>
+      <material name="Plum">
+        <color rgba="0.86666667 0.62745098 0.86666667 1.        "/>
+      </material>
+      <origin xyz="0.0 0.0 0.0" rpy="0.0 -0.0 0.0"/>
+    </visual>
+    <collision>
+      <geometry>
+        <mesh filename="package://a750_description/meshes/a750_rev1/collision_finger.stl" scale="0.001 0.001 0.001"/>
+      </geometry>
+      <origin xyz="0.0 0.0 0.0" rpy="0.0 -0.0 0.0"/>
+    </collision>
+  </link>
+  <link name="right_finger_link">
+    <inertial>
+      <origin xyz="-0.005434852020996829 -0.000981381913833553 0.020302424537325902" rpy="0.0 -0.0 0.0"/>
+      <mass value="0.04432657029800724"/>
+      <inertia ixx="2.4894812683572916e-05" ixy="-8.157578758324332e-07" ixz="3.1782998967651784e-06" iyy="2.61760843227401e-05" iyz="-9.904381702521315e-07" izz="1.2284988533997069e-05"/>
+    </inertial>
+    <visual>
+      <geometry>
+        <mesh filename="package://a750_description/meshes/a750_rev1/finger.stl" scale="0.001 0.001 0.001"/>
+      </geometry>
+      <material name="Plum">
+        <color rgba="0.86666667 0.62745098 0.86666667 1.        "/>
+      </material>
+      <origin xyz="0.0 0.0 0.0" rpy="0.0 0.0 3.141592653589793"/>
+    </visual>
+    <collision>
+      <geometry>
+        <mesh filename="package://a750_description/meshes/a750_rev1/collision_finger.stl" scale="0.001 0.001 0.001"/>
+      </geometry>
+      <origin xyz="0.0 0.0 0.0" rpy="0.0 0.0 3.141592653589793"/>
+    </collision>
+  </link>
+  <joint name="joint1" type="revolute">
+    <limit effort="100.0" velocity="3.141592653589793" lower="-3.097959422289935" upper="3.097959422289935"/>
+    <parent link="base_link"/>
+    <child link="link1"/>
+    <axis xyz="1. 0. 0."/>
+    <origin xyz="0.0 0.0 0.06520000000000001" rpy="-3.141592653589793 -1.5707963267948966 0.0"/>
+  </joint>
+  <joint name="joint2" type="revolute">
+    <limit effort="100.0" velocity="3.4033920413889427" lower="-1.5707963267948966" upper="2.0943951023931953"/>
+    <parent link="link1"/>
+    <child link="link2"/>
+    <axis xyz="1. 0. 0."/>
+    <origin xyz="0.0978 -0.005 0.07050000000000001" rpy="-1.5707963267948966 -0.0 -1.5707963267948966"/>
+  </joint>
+  <joint name="joint3" type="revolute">
+    <limit effort="100.0" velocity="3.141592653589793" lower="-2.705260340591211" upper="2.705260340591211"/>
+    <parent link="link2"/>
+    <child link="link3"/>
+    <axis xyz="1. 0. 0."/>
+    <origin xyz="-0.0505 0.0 0.322" rpy="0.0 -0.0 3.141592653589793"/>
+  </joint>
+  <joint name="joint4" type="revolute">
+    <limit effort="100.0" velocity="3.9269908169872414" lower="-3.0543261909900767" upper="3.0543261909900767"/>
+    <parent link="link3"/>
+    <child link="link4"/>
+    <axis xyz="1. 0. 0."/>
+    <origin xyz="0.0043 0.0 0.166" rpy="1.5707963267948966 -1.5707963267948966 0.0"/>
+  </joint>
+  <joint name="joint5" type="revolute">
+    <limit effort="100.0" velocity="3.9269908169872414" lower="-2.0943951023931953" upper="2.0943951023931953"/>
+    <parent link="link4"/>
+    <child link="link5"/>
+    <axis xyz="1. 0. 0."/>
+    <origin xyz="0.1275 0.020800000000000003 0.0" rpy="1.5707963267948966 -0.0 1.5707963267948966"/>
+  </joint>
+  <joint name="joint6" type="revolute">
+    <limit effort="100.0" velocity="3.9269908169872414" lower="-3.141592653589793" upper="3.141592653589793"/>
+    <parent link="link5"/>
+    <child link="link6"/>
+    <axis xyz="1. 0. 0."/>
+    <origin xyz="0.029 0.0 0.064" rpy="-1.5707963267948966 -1.5707963267948966 0.0"/>
+  </joint>
+  <joint name="wrist_to_gripper" type="fixed">
+    <parent link="link6"/>
+    <child link="gripper_base"/>
+    <axis xyz="1. 0. 0."/>
+    <origin xyz="0.076 0.0 0.0" rpy="1.5707963267948966 -0.0 1.5707963267948966"/>
+  </joint>
+  <joint name="finger" type="prismatic">
+    <limit effort="100.0" velocity="255.0" lower="0.018" upper="0.06"/>
+    <parent link="gripper_base"/>
+    <child link="left_finger_link"/>
+    <axis xyz="1. 0. 0."/>
+    <origin xyz="0.0 0.0 0.0" rpy="0.0 -0.0 0.0"/>
+  </joint>
+  <joint name="finger_mimic" type="prismatic">
+    <limit effort="100.0" velocity="255.0" lower="0.018" upper="0.06"/>
+    <mimic joint="finger" multiplier="-1.0" offset="0.0"/>
+    <parent link="gripper_base"/>
+    <child link="right_finger_link"/>
+    <axis xyz="1. 0. 0."/>
+    <origin xyz="0.0 0.0 0.0" rpy="0.0 -0.0 0.0"/>
+  </joint>
+  <ros2_control name="A750System" type="system">
+    <hardware>
+      <plugin>$(arg plugin)</plugin>
+      <param name="use_fake_hardware">$(arg use_fake_hardware)</param>
+      <param name="device_path">$(arg device_path)</param>
+    </hardware>
+    <joint name="joint1">
+      <command_interface name="position"/>
+      <command_interface name="velocity"/>
+      <command_interface name="effort"/>
+      <state_interface name="position"/>
+      <state_interface name="velocity"/>
+      <state_interface name="effort"/>
+    </joint>
+    <joint name="joint2">
+      <command_interface name="position"/>
+      <command_interface name="velocity"/>
+      <command_interface name="effort"/>
+      <state_interface name="position"/>
+      <state_interface name="velocity"/>
+      <state_interface name="effort"/>
+    </joint>
+    <joint name="joint3">
+      <command_interface name="position"/>
+      <command_interface name="velocity"/>
+      <command_interface name="effort"/>
+      <state_interface name="position"/>
+      <state_interface name="velocity"/>
+      <state_interface name="effort"/>
+    </joint>
+    <joint name="joint4">
+      <command_interface name="position"/>
+      <command_interface name="velocity"/>
+      <command_interface name="effort"/>
+      <state_interface name="position"/>
+      <state_interface name="velocity"/>
+      <state_interface name="effort"/>
+    </joint>
+    <joint name="joint5">
+      <command_interface name="position"/>
+      <command_interface name="velocity"/>
+      <command_interface name="effort"/>
+      <state_interface name="position"/>
+      <state_interface name="velocity"/>
+      <state_interface name="effort"/>
+    </joint>
+    <joint name="joint6">
+      <command_interface name="position"/>
+      <command_interface name="velocity"/>
+      <command_interface name="effort"/>
+      <state_interface name="position"/>
+      <state_interface name="velocity"/>
+      <state_interface name="effort"/>
+    </joint>
+    <joint name="finger">
+      <command_interface name="position"/>
+      <command_interface name="velocity"/>
+      <command_interface name="effort"/>
+      <state_interface name="position"/>
+      <state_interface name="velocity"/>
+      <state_interface name="effort"/>
+    </joint>
+  </ros2_control>
+</robot>

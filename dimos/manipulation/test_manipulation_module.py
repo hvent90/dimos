@@ -36,7 +36,7 @@ from dimos.msgs.geometry_msgs.PoseStamped import PoseStamped
 from dimos.msgs.geometry_msgs.Quaternion import Quaternion
 from dimos.msgs.geometry_msgs.Vector3 import Vector3
 from dimos.msgs.sensor_msgs.JointState import JointState
-from dimos.utils.data import get_data
+from dimos.robot.description_assets import robot_description_path
 
 pytestmark = pytest.mark.self_hosted
 
@@ -47,7 +47,7 @@ def _drake_available() -> bool:
 
 def _xarm_urdf_available() -> bool:
     try:
-        desc_path = get_data("xarm_description")
+        desc_path = robot_description_path("xarm_description")
         model_path = desc_path / "urdf/xarm_device.urdf.xacro"
         return model_path.exists()
     except Exception:
@@ -56,7 +56,7 @@ def _xarm_urdf_available() -> bool:
 
 def _get_xarm7_config() -> RobotModelConfig:
     """Create XArm7 robot config for testing."""
-    desc_path = get_data("xarm_description")
+    desc_path = robot_description_path("xarm_description")
     return RobotModelConfig(
         name="test_arm",
         model_path=desc_path / "urdf/xarm_device.urdf.xacro",
