@@ -58,6 +58,21 @@ from dimos.utils.path_utils import get_project_root
 DEFAULT_OUT_DIR = get_project_root() / "data" / "characterization"
 
 
+def _next_free_db_path(out_dir: Path, stem: str) -> Path:
+    """First non-colliding ``<stem>.db`` (then ``<stem>_01.db``, ``_02`` ...).
+
+    The date+sha stem isn't unique within a day, so a repeated run would
+    otherwise overwrite or fail on an existing recording. This keeps every
+    run's data under its own readable, ordered name.
+    """
+    candidate = out_dir / f"{stem}.db"
+    index = 1
+    while candidate.exists():
+        candidate = out_dir / f"{stem}_{index:02d}.db"
+        index += 1
+    return candidate
+
+
 class CharacterizationRecorderConfig(RecorderConfig):
     """Same as :class:`RecorderConfig` but with per-session db_path
     resolution from ``out_dir`` + ``robot_id`` + ``tag``. Set ``db_path``
@@ -99,10 +114,8 @@ class CharacterizationRecorder(Recorder):
             else DEFAULT_OUT_DIR / self.config.robot_id
         )
         out_dir.mkdir(parents=True, exist_ok=True)
-        self.config.db_path = (
-            out_dir
-            / f"{self.config.robot_id}_{self.config.tag}_{date.today().isoformat()}_{git_sha()}.db"
-        )
+        stem = f"{self.config.robot_id}_{self.config.tag}_{date.today().isoformat()}_{git_sha()}"
+        self.config.db_path = _next_free_db_path(out_dir, stem)
         super().start()
 
     def _port_to_stream(self, name: str, input_topic: In[Any], stream: Stream[Any]) -> None:
