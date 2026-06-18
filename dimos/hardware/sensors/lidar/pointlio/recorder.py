@@ -24,8 +24,6 @@ map global`` can register the body-frame cloud directly (no ``pose-fill`` pass).
 
 from __future__ import annotations
 
-from pathlib import Path
-
 from dimos.core.stream import In
 from dimos.memory2.module import OnExisting
 from dimos.memory2.tf_recorder import TfRecorder, TfRecorderConfig, pose_setter_for
@@ -40,8 +38,6 @@ class PointlioRecorderConfig(TfRecorderConfig):
     # db stream/table names the Point-LIO outputs are recorded under.
     odom_stream_name: str = "pointlio_odometry"
     lidar_stream_name: str = "pointlio_lidar"
-    # Drop pre-existing odom/lidar streams instead of refusing to overwrite.
-    force: bool = False
     # Append into a populated db (keep other streams); replace only our two.
     on_existing: OnExisting = OnExisting.APPEND
 
@@ -62,16 +58,10 @@ class PointlioRecorder(TfRecorder):
         return port_name
 
     def _prepare_streams(self) -> None:
-        cfg = self.config
-        names = (cfg.odom_stream_name, cfg.lidar_stream_name)
-        existing = sorted(set(self.store.list_streams()) & set(names))
-        if existing and not cfg.force:
-            raise RuntimeError(
-                f"PointlioRecorder: {Path(cfg.db_path).name} already has {existing}; "
-                "set force=True to overwrite"
-            )
-        for name in existing:
-            self.store.delete_stream(name)
+        # Replace only our own streams (keep anything else in the db).
+        for name in (self.config.odom_stream_name, self.config.lidar_stream_name):
+            if name in self.store.list_streams():
+                self.store.delete_stream(name)
 
     @pose_setter_for("odometry")
     def _odom_pose(self, msg: Odometry) -> Pose | None:

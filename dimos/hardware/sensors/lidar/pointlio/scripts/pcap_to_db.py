@@ -237,7 +237,6 @@ def _build_blueprint(
             db_path=str(db_path),
             odom_stream_name=args.odom_stream_name,
             lidar_stream_name=args.lidar_stream_name,
-            force=args.force,
         ),
     ).global_config(n_workers=4, robot_model="mid360_pointlio_pcap_to_db")
 
@@ -381,7 +380,6 @@ def main(argv: list[str]) -> int:
         default=0.0,
         help="stop after N sensor seconds (0 = whole pcap)",
     )
-    parser.add_argument("--force", action="store_true", help="overwrite existing pointlio streams")
     parser.add_argument(
         "--no-rrd",
         action="store_true",
