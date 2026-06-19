@@ -26,7 +26,7 @@ import numpy as np
 from dimos.learning.dataprep.formats._stats import StreamingStats
 
 
-def test_scalar_mean_std_minmax_count():
+def test_scalar_mean_std_minmax_count() -> None:
     s = StreamingStats()
     for v in ([1.0, 10.0], [2.0, 20.0], [3.0, 30.0]):
         s.update("state", np.array(v))
@@ -39,7 +39,7 @@ def test_scalar_mean_std_minmax_count():
     assert out["count"] == 3
 
 
-def test_single_sample_has_zero_std():
+def test_single_sample_has_zero_std() -> None:
     s = StreamingStats()
     s.update("x", np.array([5.0, 7.0]))
     out = s.finalize()["x"]
@@ -47,7 +47,7 @@ def test_single_sample_has_zero_std():
     assert out["count"] == 1
 
 
-def test_lowdim_quantiles_present_and_bounded():
+def test_lowdim_quantiles_present_and_bounded() -> None:
     s = StreamingStats()
     for i in range(100):
         s.update("x", np.array([float(i)]))
@@ -56,7 +56,7 @@ def test_lowdim_quantiles_present_and_bounded():
     assert out["min"][0] <= out["q01"][0] <= out["q99"][0] <= out["max"][0]
 
 
-def test_image_reduced_to_per_channel_no_quantiles():
+def test_image_reduced_to_per_channel_no_quantiles() -> None:
     # image_subsample=1 → every frame counts. Constant per-channel values.
     s = StreamingStats(image_subsample=1)
     img = np.zeros((4, 4, 3), dtype=np.uint8)
@@ -72,7 +72,7 @@ def test_image_reduced_to_per_channel_no_quantiles():
     assert "q01" not in out and "q99" not in out
 
 
-def test_image_subsampling_counts_every_nth_frame():
+def test_image_subsampling_counts_every_nth_frame() -> None:
     s = StreamingStats(image_subsample=10)
     img = np.zeros((2, 2, 3), dtype=np.uint8)
     for _ in range(25):
@@ -81,5 +81,5 @@ def test_image_subsampling_counts_every_nth_frame():
     assert s.finalize()["cam"]["count"] == 3
 
 
-def test_empty_aggregator_finalizes_empty():
+def test_empty_aggregator_finalizes_empty() -> None:
     assert StreamingStats().finalize() == {}

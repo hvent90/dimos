@@ -22,6 +22,7 @@ with `.time_range(t0, t1)`). Keeps these fast and dependency-free.
 from __future__ import annotations
 
 from dataclasses import dataclass
+from pathlib import Path
 from typing import Any
 
 import numpy as np
@@ -85,7 +86,7 @@ def _status(events: list[tuple[float, str, str | None]]) -> list[_Obs]:
 # ── resolve_field ────────────────────────────────────────────────────────────
 
 
-def test_resolve_field_attribute():
+def test_resolve_field_attribute() -> None:
     @dataclass
     class Msg:
         position: list[float]
@@ -95,18 +96,18 @@ def test_resolve_field_attribute():
     np.testing.assert_array_equal(arr, np.array([1.0, 2.0, 3.0]))
 
 
-def test_resolve_field_dict_payload():
+def test_resolve_field_dict_payload() -> None:
     arr = resolve_field({"q": [4, 5]}, StreamField(stream="x", field="q"))
     np.testing.assert_array_equal(arr, np.array([4, 5]))
 
 
-def test_resolve_field_none_passthrough_ndarray():
+def test_resolve_field_none_passthrough_ndarray() -> None:
     src = np.arange(6).reshape(2, 3)
     out = resolve_field(src, StreamField(stream="x", field=None))
     assert out is src  # ndarray passes straight through
 
 
-def test_resolve_field_none_unwraps_data_attr():
+def test_resolve_field_none_unwraps_data_attr() -> None:
     @dataclass
     class Image:
         data: np.ndarray
@@ -119,7 +120,7 @@ def test_resolve_field_none_unwraps_data_attr():
 # ── extract_episodes: episode_status ─────────────────────────────────────────
 
 
-def test_extract_start_save():
+def test_extract_start_save() -> None:
     store = _FakeStore({"status": _status([(1.0, "start", "pick"), (5.0, "save", None)])})
     eps = extract_episodes(store, EpisodeExtractor(status_stream="status"))
     assert len(eps) == 1
@@ -128,14 +129,14 @@ def test_extract_start_save():
     assert eps[0].task_label == "pick"
 
 
-def test_extract_discard_marks_failure():
+def test_extract_discard_marks_failure() -> None:
     store = _FakeStore({"status": _status([(1.0, "start", None), (3.0, "discard", None)])})
     eps = extract_episodes(store, EpisodeExtractor(status_stream="status"))
     assert len(eps) == 1
     assert eps[0].success is False
 
 
-def test_extract_auto_commit_on_restart():
+def test_extract_auto_commit_on_restart() -> None:
     # start, then another start without save → first auto-commits (success=True)
     store = _FakeStore(
         {
@@ -154,13 +155,13 @@ def test_extract_auto_commit_on_restart():
     assert eps[1].start_ts == 4.0 and eps[1].end_ts == 8.0
 
 
-def test_extract_pending_at_eof_dropped():
+def test_extract_pending_at_eof_dropped() -> None:
     store = _FakeStore({"status": _status([(1.0, "start", None)])})
     eps = extract_episodes(store, EpisodeExtractor(status_stream="status"))
     assert eps == []
 
 
-def test_extract_init_and_unknown_are_noops():
+def test_extract_init_and_unknown_are_noops() -> None:
     store = _FakeStore(
         {"status": _status([(0.5, "init", None), (1.0, "start", None), (5.0, "save", None)])}
     )
@@ -168,7 +169,7 @@ def test_extract_init_and_unknown_are_noops():
     assert len(eps) == 1
 
 
-def test_extract_save_without_start_emits_nothing():
+def test_extract_save_without_start_emits_nothing() -> None:
     store = _FakeStore({"status": _status([(2.0, "save", None)])})
     assert extract_episodes(store, EpisodeExtractor(status_stream="status")) == []
 
@@ -176,13 +177,13 @@ def test_extract_save_without_start_emits_nothing():
 # ── extract_episodes: ranges ─────────────────────────────────────────────────
 
 
-def test_extract_ranges():
+def test_extract_ranges() -> None:
     cfg = EpisodeExtractor(extractor="ranges", ranges=[(0.0, 1.0), (2.0, 3.0)])
     eps = extract_episodes(_FakeStore({}), cfg)
     assert [(e.start_ts, e.end_ts) for e in eps] == [(0.0, 1.0), (2.0, 3.0)]
 
 
-def test_extract_ranges_empty():
+def test_extract_ranges_empty() -> None:
     cfg = EpisodeExtractor(extractor="ranges", ranges=None)
     assert extract_episodes(_FakeStore({}), cfg) == []
 
@@ -200,7 +201,7 @@ def _scalar_stream(values: list[tuple[float, float]]) -> list[_Obs]:
     return [_Obs(ts=ts, data=S(position=[v])) for ts, v in values]
 
 
-def test_sync_basic_no_shift():
+def test_sync_basic_no_shift() -> None:
     # obs == action, shift disabled → one sample per anchor target
     store = _FakeStore(
         {
@@ -221,7 +222,7 @@ def test_sync_basic_no_shift():
     np.testing.assert_array_equal(samples[0].observation["state"], samples[0].action["act"])
 
 
-def test_sync_action_shift_next_state():
+def test_sync_action_shift_next_state() -> None:
     store = _FakeStore({"js": _scalar_stream([(0.0, 10.0), (1.0, 11.0), (2.0, 12.0)])})
     ep = Episode(id="ep_0", start_ts=0.0, end_ts=2.0)
     streams = {
@@ -241,7 +242,7 @@ def test_sync_action_shift_next_state():
     np.testing.assert_array_equal(samples[1].action["act"], [12.0])
 
 
-def test_sync_tolerance_skips_unmatched_frame():
+def test_sync_tolerance_skips_unmatched_frame() -> None:
     # anchor ticks every 1s, but the second stream has a big gap around t=1
     store = _FakeStore(
         {
@@ -260,7 +261,7 @@ def test_sync_tolerance_skips_unmatched_frame():
     assert [round(s.ts) for s in samples] == [0, 2]
 
 
-def test_sync_missing_anchor_raises():
+def test_sync_missing_anchor_raises() -> None:
     ep = Episode(id="ep_0", start_ts=0.0, end_ts=1.0)
     streams = {"x": StreamField(stream="x", field="position")}
     sync = SyncConfig(anchor="not_there", rate_hz=1.0, tolerance_ms=10.0)
@@ -268,7 +269,7 @@ def test_sync_missing_anchor_raises():
         list(iter_episode_samples(_FakeStore({}), ep, streams, sync))
 
 
-def test_sync_empty_anchor_yields_nothing():
+def test_sync_empty_anchor_yields_nothing() -> None:
     store = _FakeStore({"a": []})
     ep = Episode(id="ep_0", start_ts=0.0, end_ts=1.0)
     streams = {"a": StreamField(stream="a", field="position")}
@@ -279,23 +280,23 @@ def test_sync_empty_anchor_yields_nothing():
 # ── summarize_lengths ────────────────────────────────────────────────────────
 
 
-def test_summarize_lengths_uniform():
+def test_summarize_lengths_uniform() -> None:
     assert summarize_lengths([5, 5, 5]) == {"min": 5, "max": 5, "mean": 5.0, "uniform": True}
 
 
-def test_summarize_lengths_varied():
+def test_summarize_lengths_varied() -> None:
     s = summarize_lengths([2, 4, 6])
     assert s == {"min": 2, "max": 6, "mean": 4.0, "uniform": False}
 
 
-def test_summarize_lengths_empty():
+def test_summarize_lengths_empty() -> None:
     assert summarize_lengths([]) == {"min": 0, "max": 0, "mean": 0.0, "uniform": True}
 
 
 # ── dimos_meta sidecar ───────────────────────────────────────────────────────
 
 
-def test_dimos_meta_records_sync_and_action_shift(tmp_path):
+def test_dimos_meta_records_sync_and_action_shift(tmp_path: Path) -> None:
     import json
 
     from dimos.learning.dataprep.build import _write_dimos_meta
@@ -315,7 +316,7 @@ def test_dimos_meta_records_sync_and_action_shift(tmp_path):
     assert meta["source"] == "s.db"
 
 
-def test_dimos_meta_beside_file_for_hdf5(tmp_path):
+def test_dimos_meta_beside_file_for_hdf5(tmp_path: Path) -> None:
     """hdf5 writer returns a FILE path; the sidecar must land beside it, not
     inside it (which would treat the .hdf5 file as a directory and crash)."""
     import json

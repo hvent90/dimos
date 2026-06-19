@@ -23,6 +23,7 @@ in the `learning` optional-dependency group).
 from __future__ import annotations
 
 from collections.abc import Iterator
+from pathlib import Path
 
 import numpy as np
 import pytest
@@ -45,7 +46,7 @@ def _samples(n_episodes: int = 2, n_frames: int = 3) -> Iterator[Sample]:
             )
 
 
-def test_hdf5_roundtrip_counts_and_shapes(tmp_path):
+def test_hdf5_roundtrip_counts_and_shapes(tmp_path: Path) -> None:
     out = OutputConfig(
         format="hdf5",
         path=tmp_path / "session",
@@ -68,14 +69,14 @@ def test_hdf5_roundtrip_counts_and_shapes(tmp_path):
     assert info["episode_lengths"] == {"min": 3, "max": 3, "mean": 3.0, "uniform": True}
 
 
-def test_hdf5_extension_appended_when_missing(tmp_path):
+def test_hdf5_extension_appended_when_missing(tmp_path: Path) -> None:
     # path with no suffix → writer appends .hdf5
     out = OutputConfig(format="hdf5", path=tmp_path / "noext")
     path = write(_samples(n_episodes=1, n_frames=2), out)
     assert path.name == "noext.hdf5"
 
 
-def test_hdf5_stats_values_match(tmp_path):
+def test_hdf5_stats_values_match(tmp_path: Path) -> None:
     out = OutputConfig(format="hdf5", path=tmp_path / "s.hdf5")
     path = write(_samples(n_episodes=1, n_frames=3), out)
     with h5py.File(path, "r") as f:

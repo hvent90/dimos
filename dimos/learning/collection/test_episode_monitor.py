@@ -31,10 +31,10 @@ from dimos.learning.collection.episode_monitor import (
     EpisodeStatus,
     KeyPress,
 )
-from dimos.teleop.quest.quest_types import Buttons
+from dimos.teleop.quest.quest_types import BUTTON_ALIASES, Buttons
 
 
-class _CaptureOut:
+class FakeStatusOut:
     """Stand-in for the `status` Out port that records published events."""
 
     def __init__(self) -> None:
@@ -44,7 +44,7 @@ class _CaptureOut:
         self.events.append(status)
 
 
-def _monitor(**config: object) -> tuple[EpisodeMonitorModule, _CaptureOut]:
+def _monitor(**config: object) -> tuple[EpisodeMonitorModule, FakeStatusOut]:
     m = EpisodeMonitorModule.__new__(EpisodeMonitorModule)
     m.config = EpisodeMonitorModuleConfig(**config)  # type: ignore[assignment]
     m._state = "idle"
@@ -53,15 +53,13 @@ def _monitor(**config: object) -> tuple[EpisodeMonitorModule, _CaptureOut]:
     m._last_event = "init"
     m._prev_bits = {}
     m._lock = threading.Lock()
-    out = _CaptureOut()
+    out = FakeStatusOut()
     m.status = out  # type: ignore[assignment]
     return m, out
 
 
 def _press(monitor: EpisodeMonitorModule, alias: str, ts: float) -> None:
     """Rising edge: release-then-press the given Quest button alias."""
-    from dimos.teleop.quest.quest_types import BUTTON_ALIASES
-
     attr = BUTTON_ALIASES[alias]
     released = Buttons()
     pressed = Buttons()

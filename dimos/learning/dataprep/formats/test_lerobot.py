@@ -25,6 +25,7 @@ from __future__ import annotations
 
 from collections.abc import Iterator
 import json
+from pathlib import Path
 
 import numpy as np
 import pytest
@@ -59,7 +60,7 @@ def _image_samples(n: int = 4) -> Iterator[Sample]:
         )
 
 
-def test_lerobot_state_only_layout_and_naming(tmp_path):
+def test_lerobot_state_only_layout_and_naming(tmp_path: Path) -> None:
     out = OutputConfig(
         format="lerobot", path=tmp_path / "ds", metadata={"fps": 10.0, "robot": "xarm7"}
     )
@@ -80,7 +81,7 @@ def test_lerobot_state_only_layout_and_naming(tmp_path):
     assert "action" in info["features"]
 
 
-def test_lerobot_inspect_state_only(tmp_path):
+def test_lerobot_inspect_state_only(tmp_path: Path) -> None:
     out = OutputConfig(format="lerobot", path=tmp_path / "ds", metadata={"fps": 10.0})
     root = write(_state_samples(), out)
     info = inspect(root)
@@ -92,7 +93,7 @@ def test_lerobot_inspect_state_only(tmp_path):
     assert info["has_stats"] is True
 
 
-def test_lerobot_with_images_writes_mp4_and_video_feature(tmp_path):
+def test_lerobot_with_images_writes_mp4_and_video_feature(tmp_path: Path) -> None:
     out = OutputConfig(format="lerobot", path=tmp_path / "ds", metadata={"fps": 10.0})
     try:
         root = write(_image_samples(), out)
