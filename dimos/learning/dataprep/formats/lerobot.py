@@ -236,77 +236,82 @@ def write(samples: Iterator[Sample], output: OutputConfig) -> Path:
         episode_rows.append(row)
         cur_rows.clear()
 
-    for sample in samples:
-        if sample.episode_id != cur_id:
-            _flush_episode()
-            cur_id = sample.episode_id
-            episode_index += 1
-            cur_ep_stats = _stats()
-            if default_task_label not in tasks_index:
-                tasks_index[default_task_label] = len(tasks_index)
+    # try/finally so the parquet footer is written and MP4s are released even if
+    # the drain raises mid-stream — otherwise the data file is unreadable (no
+    # footer) and the videos lose their index.
+    try:
+        for sample in samples:
+            if sample.episode_id != cur_id:
+                _flush_episode()
+                cur_id = sample.episode_id
+                episode_index += 1
+                cur_ep_stats = _stats()
+                if default_task_label not in tasks_index:
+                    tasks_index[default_task_label] = len(tasks_index)
 
-        # Schema discovery + stats (global + per-episode).
-        n_low_dim_obs = sum(1 for v in sample.observation.values() if np.asarray(v).ndim < 3)
-        single_state = n_low_dim_obs == 1
-        for k, arr in sample.observation.items():
-            a = np.asarray(arr)
-            is_image = a.ndim >= 3
-            name = _feature_name("observation", k, is_image, False, single_state=single_state)
-            if name not in feature_shapes:
-                feature_shapes[name] = tuple(a.shape)
-                feature_dtypes[name] = "video" if is_image else str(a.dtype)
-            if is_image:
-                if k not in image_keys:
-                    image_keys.append(k)
-            elif k not in state_keys:
-                state_keys.append(k)
-            global_stats.update(name, a)
-            cur_ep_stats.update(name, a)
-        single_action = len(sample.action) == 1
-        for k, arr in sample.action.items():
-            a = np.asarray(arr)
-            name = _feature_name("action", k, is_image=False, single_action=single_action)
-            if name not in feature_shapes:
-                feature_shapes[name] = tuple(a.shape)
-                feature_dtypes[name] = str(a.dtype)
-            if k not in action_keys:
-                action_keys.append(k)
-            global_stats.update(name, a)
-            cur_ep_stats.update(name, a)
+            # Schema discovery + stats (global + per-episode).
+            n_low_dim_obs = sum(1 for v in sample.observation.values() if np.asarray(v).ndim < 3)
+            single_state = n_low_dim_obs == 1
+            for k, arr in sample.observation.items():
+                a = np.asarray(arr)
+                is_image = a.ndim >= 3
+                name = _feature_name("observation", k, is_image, False, single_state=single_state)
+                if name not in feature_shapes:
+                    feature_shapes[name] = tuple(a.shape)
+                    feature_dtypes[name] = "video" if is_image else str(a.dtype)
+                if is_image:
+                    if k not in image_keys:
+                        image_keys.append(k)
+                elif k not in state_keys:
+                    state_keys.append(k)
+                global_stats.update(name, a)
+                cur_ep_stats.update(name, a)
+            single_action = len(sample.action) == 1
+            for k, arr in sample.action.items():
+                a = np.asarray(arr)
+                name = _feature_name("action", k, is_image=False, single_action=single_action)
+                if name not in feature_shapes:
+                    feature_shapes[name] = tuple(a.shape)
+                    feature_dtypes[name] = str(a.dtype)
+                if k not in action_keys:
+                    action_keys.append(k)
+                global_stats.update(name, a)
+                cur_ep_stats.update(name, a)
 
-        # Append image frames to the per-camera MP4 (RGB→BGR; cv2 is BGR-native).
-        for k, arr in sample.observation.items():
-            a = np.asarray(arr)
-            if a.ndim >= 3:
-                if k not in video_writers:
-                    video_writers[k] = _open_video(k, a)
-                bgr = cv2.cvtColor(a, cv2.COLOR_RGB2BGR) if a.shape[-1] == 3 else a
-                video_writers[k].write(bgr)
-                video_cum_frames[k] = video_cum_frames.get(k, 0) + 1
+            # Append image frames to the per-camera MP4 (RGB→BGR; cv2 is BGR-native).
+            for k, arr in sample.observation.items():
+                a = np.asarray(arr)
+                if a.ndim >= 3:
+                    if k not in video_writers:
+                        video_writers[k] = _open_video(k, a)
+                    bgr = cv2.cvtColor(a, cv2.COLOR_RGB2BGR) if a.shape[-1] == 3 else a
+                    video_writers[k].write(bgr)
+                    video_cum_frames[k] = video_cum_frames.get(k, 0) + 1
 
-        frame_index = len(cur_rows)
-        cur_rows.append(
-            {
-                "timestamp": frame_index / fps,  # relative to this episode
-                "frame_index": frame_index,
-                "episode_index": episode_index,
-                "index": global_index,
-                "task_index": tasks_index[default_task_label],
-                "obs": {
-                    k: np.asarray(v)
-                    for k, v in sample.observation.items()
-                    if np.asarray(v).ndim < 3
-                },
-                "act": {k: np.asarray(v) for k, v in sample.action.items()},
-            }
-        )
-        global_index += 1
+            frame_index = len(cur_rows)
+            cur_rows.append(
+                {
+                    "timestamp": frame_index / fps,  # relative to this episode
+                    "frame_index": frame_index,
+                    "episode_index": episode_index,
+                    "index": global_index,
+                    "task_index": tasks_index[default_task_label],
+                    "obs": {
+                        k: np.asarray(v)
+                        for k, v in sample.observation.items()
+                        if np.asarray(v).ndim < 3
+                    },
+                    "act": {k: np.asarray(v) for k, v in sample.action.items()},
+                }
+            )
+            global_index += 1
 
-    _flush_episode()
-    if data_writer is not None:
-        data_writer.close()
-    for vw in video_writers.values():
-        vw.release()
+        _flush_episode()
+    finally:
+        if data_writer is not None:
+            data_writer.close()
+        for vw in video_writers.values():
+            vw.release()
 
     total_episodes = len(episode_rows)
     total_frames = global_index

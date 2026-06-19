@@ -125,6 +125,38 @@ def test_lerobot_v3_episode_metadata_columns(tmp_path: Path) -> None:
     assert rows[1]["dataset_from_index"] == 3 and rows[1]["dataset_to_index"] == 6
 
 
+def test_lerobot_v3_writer_closed_on_midstream_error(tmp_path: Path) -> None:
+    """If the drain raises after an episode was flushed, the data parquet must
+    still be readable (footer written by the finally), not a headerless stub."""
+    import pyarrow.parquet as pq
+
+    def bad_samples() -> Iterator[Sample]:
+        for i in range(3):  # episode 0
+            yield Sample(
+                ts=float(i),
+                episode_id="ep_000000",
+                observation={"state": np.arange(6, dtype=np.float32)},
+                action={"action": np.full(6, float(i), dtype=np.float32)},
+            )
+        # first frame of episode 1 flushes episode 0 (opens + writes the parquet)…
+        yield Sample(
+            ts=3.0,
+            episode_id="ep_000001",
+            observation={"state": np.arange(6, dtype=np.float32)},
+            action={"action": np.zeros(6, dtype=np.float32)},
+        )
+        raise RuntimeError("boom mid-stream")  # …then blow up before the final flush
+
+    out = OutputConfig(format="lerobot", path=tmp_path / "ds", metadata={"fps": 10.0})
+    with pytest.raises(RuntimeError, match="boom"):
+        write(bad_samples(), out)
+
+    # episode 0's 3 frames were flushed; the file must have a valid footer.
+    data = tmp_path / "ds" / "data" / "chunk-000" / "file-000.parquet"
+    assert data.exists()
+    assert pq.read_table(data).num_rows == 3  # raises ArrowInvalid if footer missing
+
+
 def test_lerobot_v3_inspect_state_only(tmp_path: Path) -> None:
     out = OutputConfig(format="lerobot", path=tmp_path / "ds", metadata={"fps": 10.0})
     root = write(_state_samples(), out)
