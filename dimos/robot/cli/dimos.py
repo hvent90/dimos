@@ -630,6 +630,15 @@ def lcmspy(ctx: typer.Context) -> None:
 
 
 @main.command(context_settings={"allow_extra_args": True, "ignore_unknown_options": True})
+def spy(ctx: typer.Context) -> None:
+    """Transport-agnostic pub/sub traffic spy (LCM or Zenoh)."""
+    from dimos.utils.cli.spy.run_spy import main as spy_main
+
+    sys.argv = ["spy", *ctx.args]
+    spy_main()
+
+
+@main.command(context_settings={"allow_extra_args": True, "ignore_unknown_options": True})
 def agentspy(ctx: typer.Context) -> None:
     """Agent spy tool for monitoring agents."""
     from dimos.utils.cli.agentspy.agentspy import main as agentspy_main

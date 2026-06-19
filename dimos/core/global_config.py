@@ -87,6 +87,13 @@ class GlobalConfig(BaseSettings):
         default=DEFAULT_ZENOH_QOS,
         validation_alias=AliasChoices("DIMOS_ZENOH_QOS", "zenoh_qos"),
     )
+    # NIC for Zenoh multicast scout beacons (e.g. "eth0"). None lets zenoh
+    # auto-select, which can wrongly pick docker0/virtual NICs and break peer
+    # discovery. Set DIMOS_ZENOH_IFACE=eth0 to pin it for every dimos session.
+    zenoh_iface: str | None = Field(
+        default=None,
+        validation_alias=AliasChoices("DIMOS_ZENOH_IFACE", "zenoh_iface"),
+    )
     build_native: bool = DEFAULT_BUILD_NATIVE
     dtop: bool = False
     obstacle_avoidance: bool = True

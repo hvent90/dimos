@@ -33,13 +33,31 @@ class ZenohConfig(BaseConfig):
     mode: str = "peer"
     connect: list[str] = []
     listen: list[str] = []
+    # Pin the NIC for multicast scout beacons (e.g. "eth0"). None = follow
+    # global_config.zenoh_iface. Needed when auto-select picks the wrong
+    # interface (e.g. docker0) and peers fail to discover each other.
+    multicast_iface: str | None = None
     # Per-publisher QoS rules; None = follow global_config.zenoh_qos.
     # Excluded from session_key: sessions are shared, QoS is per-publisher.
     qos: tuple[ZenohQoS, ...] | None = None
 
     @property
     def session_key(self) -> str:
-        return f"{self.mode}|{json.dumps(sorted(self.connect))}|{json.dumps(sorted(self.listen))}"
+        return (
+            f"{self.mode}|{json.dumps(sorted(self.connect))}|"
+            f"{json.dumps(sorted(self.listen))}|{self.multicast_iface or ''}"
+        )
+
+
+def _global_zenoh_iface() -> str | None:
+    """Read the process-wide multicast interface from global_config.
+
+    Deferred import keeps protocol/ free of core/ at import time (same pattern
+    as zenohpubsub._qos_rules).
+    """
+    from dimos.core.global_config import global_config
+
+    return global_config.zenoh_iface
 
 
 class ZenohSessionPool:
@@ -54,6 +72,9 @@ class ZenohSessionPool:
             if key not in self._sessions:
                 zconfig = zenoh.Config()
                 zconfig.insert_json5("mode", json.dumps(config.mode))
+                iface = config.multicast_iface or _global_zenoh_iface()
+                if iface:
+                    zconfig.insert_json5("scouting/multicast/interface", json.dumps(iface))
                 if config.connect:
                     zconfig.insert_json5("connect/endpoints", json.dumps(config.connect))
                 if config.listen:
