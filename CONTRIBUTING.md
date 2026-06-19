@@ -4,7 +4,7 @@ DimOS welcomes community contributions. This guide explains how to start work, c
 
 ## Before you code
 
-Use GitHub for public contribution coordination.
+Choose the path based on the size and risk of the change:
 
 - Small, safe changes can go straight to a pull request.
 - Non-trivial changes should start with a GitHub issue.
