@@ -712,7 +712,7 @@ class TestManipulationPreview:
         module._world_monitor.hide_preview.assert_called_once_with(group_ids)
         module._world_monitor.publish_visualization.assert_called_once_with()
 
-    def test_preview_path_delegates_last_plan_with_default_duration(self):
+    def test_preview_plan_uses_last_plan_with_default_duration(self):
         module = _make_module()
         module._world_monitor = MagicMock()
         module._last_plan = GeneratedPlan(
@@ -721,11 +721,11 @@ class TestManipulationPreview:
             status=PlanningStatus.SUCCESS,
         )
 
-        assert module.preview_path(target_fps=2.0) is True
+        assert module.preview_plan() is True
 
         module._world_monitor.animate_plan.assert_called_once_with(module._last_plan, 3.0)
 
-    def test_preview_path_explicit_duration_overrides_default(self):
+    def test_preview_plan_explicit_duration_overrides_default(self):
         module = _make_module()
         module._world_monitor = MagicMock()
         module._last_plan = GeneratedPlan(
@@ -734,11 +734,11 @@ class TestManipulationPreview:
             status=PlanningStatus.SUCCESS,
         )
 
-        assert module.preview_path(duration=1.5, target_fps=2.0) is True
+        assert module.preview_plan(duration=1.5) is True
 
         module._world_monitor.animate_plan.assert_called_once_with(module._last_plan, 1.5)
 
-    def test_preview_path_respects_robot_filter(self):
+    def test_preview_plan_respects_robot_filter(self):
         module = _make_module()
         module._world_monitor = MagicMock()
         module._world_monitor.world.resolve_planning_groups.return_value = [
@@ -750,11 +750,11 @@ class TestManipulationPreview:
             status=PlanningStatus.SUCCESS,
         )
 
-        assert module.preview_path(robot_name="arm") is True
+        assert module.preview_plan(robot_name="arm") is True
 
         module._world_monitor.animate_plan.assert_called_once_with(module._last_plan, 3.0)
 
-    def test_preview_path_rejects_unaffected_robot_filter(self):
+    def test_preview_plan_rejects_unaffected_robot_filter(self):
         module = _make_module()
         module._world_monitor = MagicMock()
         module._world_monitor.world.resolve_planning_groups.return_value = [
@@ -766,17 +766,17 @@ class TestManipulationPreview:
             status=PlanningStatus.SUCCESS,
         )
 
-        assert module.preview_path(robot_name="other") is False
+        assert module.preview_plan(robot_name="other") is False
 
         module._world_monitor.animate_plan.assert_not_called()
 
-    def test_preview_path_returns_false_for_missing_inputs(self):
+    def test_preview_plan_returns_false_for_missing_inputs(self):
         module = _make_module()
 
-        assert module.preview_path() is False
+        assert module.preview_plan() is False
 
         module._world_monitor = MagicMock()
-        assert module.preview_path() is False
+        assert module.preview_plan() is False
 
 
 class TestGeneratedPlanProjection:
@@ -898,7 +898,7 @@ class TestGeneratedPlanProjection:
         assert module.execute_plan(plan) is False
         module._coordinator_client.task_invoke.assert_not_called()
 
-    def test_preview_path_with_last_plan_animates_generated_plan(self):
+    def test_preview_plan_with_last_plan_animates_generated_plan(self):
         config = _make_robot_config("left", ["j1", "j2"], "task")
         module = _make_module_with_monitor(config)
         module._world_monitor.world.resolve_planning_groups.return_value = [
@@ -913,7 +913,7 @@ class TestGeneratedPlanProjection:
             status=PlanningStatus.SUCCESS,
         )
 
-        assert module.preview_path(robot_name="left", target_fps=0.0) is True
+        assert module.preview_plan(robot_name="left") is True
 
         module._world_monitor.animate_plan.assert_called_once_with(module._last_plan, 3.0)
 

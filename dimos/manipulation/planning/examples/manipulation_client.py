@@ -163,10 +163,9 @@ def plan_pose(
 def preview(
     duration: float | None = None,
     robot_name: str | None = None,
-    target_fps: float = 30.0,
 ) -> bool:
-    """Preview planned path in Meshcat."""
-    return _client.preview_path(duration, robot_name, target_fps)
+    """Preview the last generated plan in Meshcat."""
+    return _client.preview_plan(None, duration, robot_name)
 
 
 def execute(robot_name: str | None = None) -> bool:

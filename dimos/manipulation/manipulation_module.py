@@ -15,7 +15,7 @@
 """Manipulation Module - Motion planning with ControlCoordinator execution.
 
 Base module providing core manipulation infrastructure:
-- @rpc: Low-level building blocks (plan_to_pose, plan_to_joints, preview_path, execute)
+- @rpc: Low-level building blocks (plan_to_pose, plan_to_joints, preview_plan, execute)
 - @skill (short-horizon): Single-step actions (move_to_pose, open_gripper, go_home, go_init)
 
 Subclass PickAndPlaceModule (pick_and_place_module.py) adds perception integration
@@ -691,7 +691,7 @@ class ManipulationModule(Module):
 
     @rpc
     def plan_to_pose(self, pose: Pose, robot_name: RobotName | None = None) -> bool:
-        """Plan motion to pose. Use preview_path() then execute().
+        """Plan motion to pose. Use preview_plan() then execute().
 
         Args:
             pose: Target end-effector pose
@@ -756,7 +756,7 @@ class ManipulationModule(Module):
 
     @rpc
     def plan_to_joints(self, joints: JointState, robot_name: RobotName | None = None) -> bool:
-        """Plan motion to joint config. Use preview_path() then execute().
+        """Plan motion to joint config. Use preview_plan() then execute().
 
         Args:
             joints: Target joint state (names + positions)
@@ -829,23 +829,6 @@ class ManipulationModule(Module):
         animation_duration = duration if duration is not None else 3.0
         self._world_monitor.animate_plan(plan, animation_duration)
         return True
-
-    @rpc
-    def preview_path(
-        self,
-        duration: float | None = None,
-        robot_name: RobotName | None = None,
-        target_fps: float = 30.0,
-    ) -> bool:
-        """Preview the last generated plan in the visualizer.
-
-        Args:
-            duration: Total animation duration in seconds.
-            robot_name: Optional compatibility filter; the stored plan must affect it.
-            target_fps: Deprecated; generated-plan preview timing is backend-owned.
-        """
-        _ = target_fps
-        return self.preview_plan(self._last_plan, duration, robot_name)
 
     @rpc
     def has_planned_path(self) -> bool:
@@ -1385,7 +1368,7 @@ class ManipulationModule(Module):
             preview_duration: Duration to animate the preview in Meshcat (seconds)
         """
         logger.info("Previewing trajectory...")
-        self.preview_path(preview_duration, robot_name)
+        self.preview_plan(duration=preview_duration, robot_name=robot_name)
 
         logger.info("Executing trajectory...")
         if not self.execute(robot_name):
