@@ -38,10 +38,9 @@ pytestmark = pytest.mark.skipif(not WEBRTC_AVAILABLE, reason="aiortc not install
 
 
 @pytest.fixture
-def provider(monkeypatch: pytest.MonkeyPatch) -> BrokerProvider:
+def provider() -> BrokerProvider:
     """BrokerProvider with a mocked open state_reliable_back channel."""
-    monkeypatch.setenv("TELEOP_API_KEY", "dtk_test_key")
-    p = BrokerProvider(BrokerConfig())
+    p = BrokerProvider(BrokerConfig(api_key="dtk_test_key"))
     back = MagicMock()
     back.readyState = "open"
     p._dcs["state_reliable_back"] = back
