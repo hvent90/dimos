@@ -72,6 +72,18 @@ def _global_zenoh_listen() -> list[str]:
     return [e.strip() for e in raw.split(",") if e.strip()] if raw else []
 
 
+def _global_zenoh_connect() -> list[str]:
+    """Read the process-wide Zenoh connect endpoints from global_config.
+
+    Comma-separated env value (DIMOS_ZENOH_CONNECT) becomes a list. Deferred
+    import keeps protocol/ free of core/ at import time.
+    """
+    from dimos.core.global_config import global_config
+
+    raw = global_config.zenoh_connect
+    return [e.strip() for e in raw.split(",") if e.strip()] if raw else []
+
+
 class ZenohSessionPool:
     def __init__(self) -> None:
         self._sessions: dict[str, zenoh.Session] = {}
@@ -87,8 +99,9 @@ class ZenohSessionPool:
                 iface = config.multicast_iface or _global_zenoh_iface()
                 if iface:
                     zconfig.insert_json5("scouting/multicast/interface", json.dumps(iface))
-                if config.connect:
-                    zconfig.insert_json5("connect/endpoints", json.dumps(config.connect))
+                connect = config.connect or _global_zenoh_connect()
+                if connect:
+                    zconfig.insert_json5("connect/endpoints", json.dumps(connect))
                 listen = config.listen or _global_zenoh_listen()
                 if listen:
                     zconfig.insert_json5("listen/endpoints", json.dumps(listen))

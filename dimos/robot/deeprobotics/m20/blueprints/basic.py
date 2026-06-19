@@ -44,13 +44,25 @@ _transports_base = (
 
 
 def _m20_rerun_blueprint() -> Any:
-    """Front + rear wide-angle cameras, side by side."""
+    """Front + rear cameras stacked at left, 3D world view at right."""
+    import rerun as rr
     import rerun.blueprint as rrb
 
     return rrb.Blueprint(
         rrb.Horizontal(
-            rrb.Spatial2DView(origin="world/color_image", name="M20 Front"),
-            rrb.Spatial2DView(origin="world/color_image_rear", name="M20 Rear"),
+            rrb.Vertical(
+                rrb.Spatial2DView(origin="world/color_image", name="M20 Front"),
+                rrb.Spatial2DView(origin="world/color_image_rear", name="M20 Rear"),
+            ),
+            rrb.Spatial3DView(
+                origin="world",
+                name="3D",
+                background=rrb.Background(kind="SolidColor", color=[0, 0, 0]),
+                line_grid=rrb.LineGrid3D(
+                    plane=rr.components.Plane3D.XY.with_distance(0.5),
+                ),
+            ),
+            column_shares=[1, 2],
         ),
         rrb.TimePanel(state="hidden"),
         rrb.SelectionPanel(state="hidden"),
@@ -73,25 +85,22 @@ _with_vis = autoconnect(
     ),
 )
 
-m20_basic = autoconnect(
+m20_api = autoconnect(
     _with_vis,
     M20Connection.blueprint(ip="m20"),
     MovementManager.blueprint(),
 ).global_config(n_workers=3)
 
 
-m20_onboard = autoconnect(
-    vis_module(
-        viewer_backend=global_config.viewer,
-        rerun_config={
-            "max_hz": {"world/grid_map_3d": 1, "world/aligned_points": 1},
-        },
-    ),
+m20_basic = autoconnect(
+    M20Connection.blueprint(ip="m20"),
+    MovementManager.blueprint(),
+    vis_module(viewer_backend=global_config.viewer, rerun_config=rerun_config),
 ).global_config(n_workers=2)
 
 
 __all__ = [
+    "m20_api",
     "m20_basic",
-    "m20_onboard",
     "rerun_config",
 ]

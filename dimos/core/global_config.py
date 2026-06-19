@@ -103,6 +103,14 @@ class GlobalConfig(BaseSettings):
         default=None,
         validation_alias=AliasChoices("DIMOS_ZENOH_LISTEN", "zenoh_listen"),
     )
+    # Endpoints every Zenoh session actively dials (comma-separated, e.g.
+    # "tcp/10.21.41.1:7447"). Needed to reach a router/peer that multicast
+    # scouting won't auto-discover — e.g. a zenoh router on another L2 segment
+    # or across WiFi. None = rely on scouting only.
+    zenoh_connect: str | None = Field(
+        default=None,
+        validation_alias=AliasChoices("DIMOS_ZENOH_CONNECT", "zenoh_connect"),
+    )
     build_native: bool = DEFAULT_BUILD_NATIVE
     dtop: bool = False
     obstacle_avoidance: bool = True

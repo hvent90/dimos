@@ -92,9 +92,13 @@ static std::string chan_to_key(const std::string& chan) {
     return k.substr(i);
 }
 
-// Get or declare the cached reliable publisher for a key. BLOCK congestion
-// control means a momentarily-slow link blocks the sender rather than dropping
-// (publisher reliability already defaults to RELIABLE).
+// Get or declare the cached publisher for a key, with per-key QoS matching
+// dimos's DEFAULT_ZENOH_QOS (see protocol/pubsub/impl/zenohqos.py):
+//   - high-rate clouds/images -> DROP congestion control, so a momentarily-slow
+//     link (e.g. WiFi) drops stale frames instead of building a reliable
+//     in-order backlog that makes every subscriber lag behind realtime.
+//   - everything else (odometry, etc.) -> BLOCK, never drop under congestion.
+// (zenoh-c 1.2 reliability is a no-op on the wire, but we set it for parity.)
 static const z_loaned_publisher_t* get_pub(const std::string& key) {
     std::lock_guard<std::mutex> lk(g_pub_mx);
     auto it = g_pubs.find(key);
@@ -104,9 +108,17 @@ static const z_loaned_publisher_t* get_pub(const std::string& key) {
             fprintf(stderr, "[bridge] bad key expr '%s'\n", key.c_str());
             return nullptr;
         }
+        const bool is_stream = key.find("sensor_msgs.PointCloud2") != std::string::npos ||
+                               key.find("sensor_msgs.Image") != std::string::npos;
         z_publisher_options_t opts;
         z_publisher_options_default(&opts);
-        opts.congestion_control = Z_CONGESTION_CONTROL_BLOCK;
+        if (is_stream) {
+            opts.congestion_control = Z_CONGESTION_CONTROL_DROP;
+            opts.reliability = Z_RELIABILITY_BEST_EFFORT;
+        } else {
+            opts.congestion_control = Z_CONGESTION_CONTROL_BLOCK;
+            opts.reliability = Z_RELIABILITY_RELIABLE;
+        }
         z_owned_publisher_t pub;
         if (z_declare_publisher(z_loan(g_session), &pub, z_loan(ke), &opts) != Z_OK) {
             fprintf(stderr, "[bridge] declare_publisher failed for '%s'\n", key.c_str());
