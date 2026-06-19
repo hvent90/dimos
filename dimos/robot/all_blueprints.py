@@ -67,6 +67,7 @@ all_blueprints = {
     "keyboard-teleop-xarm7": "dimos.robot.manipulators.xarm.blueprints:keyboard_teleop_xarm7",
     "m20-basic": "dimos.robot.deeprobotics.m20.blueprints.basic:m20_basic",
     "m20-dds-rerun": "dimos.robot.deeprobotics.m20.dds.blueprints:m20_dds_rerun",
+    "m20-onboard": "dimos.robot.deeprobotics.m20.blueprints.basic:m20_onboard",
     "mid360": "dimos.hardware.sensors.lidar.livox.livox_blueprints:mid360",
     "mid360-fastlio": "dimos.hardware.sensors.lidar.fastlio2.fastlio_blueprints:mid360_fastlio",
     "mid360-fastlio-ray-trace": "dimos.hardware.sensors.lidar.fastlio2.fastlio_blueprints:mid360_fastlio_ray_trace",

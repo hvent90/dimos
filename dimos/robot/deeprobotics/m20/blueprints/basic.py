@@ -79,7 +79,19 @@ m20_basic = autoconnect(
     MovementManager.blueprint(),
 ).global_config(n_workers=3)
 
+
+m20_onboard = autoconnect(
+    vis_module(
+        viewer_backend=global_config.viewer,
+        rerun_config={
+            "max_hz": {"dimos/grid_map_3d": 1},
+        },
+    ),
+).global_config(n_workers=2)
+
+
 __all__ = [
     "m20_basic",
+    "m20_onboard",
     "rerun_config",
 ]
