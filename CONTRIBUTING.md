@@ -2,29 +2,19 @@
 
 DimOS welcomes community contributions. This guide explains how to start work, communicate scope, and submit a pull request that maintainers can review efficiently.
 
-## Start in the right place
+## Before you code
 
 Use GitHub for public contribution coordination.
 
-- For small, safe changes, you may open a pull request directly. Examples include typo fixes, broken links, small documentation clarifications, and clearly isolated bug fixes.
-- For non-trivial changes, open or comment on a GitHub issue before implementation. This includes new features, behavior changes, new modules, new skills, new blueprints, dependency changes, and larger documentation changes.
-- For core architecture changes, start with a GitHub issue or discussion and wait for maintainer guidance before implementation.
+- Small, safe changes can go straight to a pull request.
+- Non-trivial changes should start with a GitHub issue.
+- Core architecture changes should start with a GitHub issue or discussion before implementation.
 
 New contributors can start with issues labeled `good first issue`.
 
-## Changes that need discussion first
+Core architecture includes modules, streams, transports, blueprints, agents, public APIs, robot/platform support, and major dependency changes.
 
-Please do not open unsolicited pull requests for:
-
-- large rewrites or broad refactors
-- new framework abstractions or public APIs
-- new robot or platform support
-- major dependency changes
-- changes to core module, stream, transport, blueprint, or agent architecture
-
-These changes may still be useful, but they need agreement on direction before code review.
-
-## Pull request shape
+## Pull requests
 
 Before opening a pull request, make sure it is:
 

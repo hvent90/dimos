@@ -6,38 +6,24 @@ body:
     id: motivation
     attributes:
       label: Problem or motivation
-      description: What problem would this solve? Who needs it?
+      description: What do you want and why?
     validations:
       required: true
   - type: textarea
-    id: proposal
+    id: request-or-plan
     attributes:
-      label: Proposed contribution
-      description: What behavior, API, module, skill, blueprint, or documentation change do you propose?
-    validations:
-      required: true
-  - type: textarea
-    id: alternatives
-    attributes:
-      label: Alternatives considered
-      description: What other approaches did you consider?
+      label: Request or implementation plan
+      description: If this is a request, describe the desired behavior. If you plan to implement it, describe your proposed approach.
     validations:
       required: false
-  - type: input
-    id: affected-area
-    attributes:
-      label: Affected area
-      description: Which part of DimOS would this touch?
-      placeholder: e.g. modules, streams, blueprints, agents, skills, navigation, perception, docs
-    validations:
-      required: true
   - type: dropdown
-    id: willing-to-implement
+    id: contribution-intent
     attributes:
-      label: Are you willing to implement this?
+      label: How would you like to help?
       options:
-        - "Yes"
-        - "No"
-        - "Maybe"
+        - "I can implement this"
+        - "I can test or review this"
+        - "Request only"
+        - "Not sure yet"
     validations:
-      required: true
+      required: false
