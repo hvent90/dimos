@@ -16,7 +16,8 @@
 
 from __future__ import annotations
 
-from typing import Any
+from pathlib import Path
+from typing import TypeAlias
 
 from dimos.robot.config import RobotConfig
 from dimos.utils.data import LfsPath
@@ -33,16 +34,32 @@ FRANKA_PANDA_SRDF = _FRANKA_DESCRIPTION_PKG / "srdf/panda.srdf"
 FRANKA_PANDA_JOINT_NAMES = [f"panda_joint{i}" for i in range(1, 8)]
 FRANKA_PANDA_HOME_JOINTS = [0.0, -0.7853981634, 0.0, -2.35619449, 0.0, 1.5707963268, 0.7853981634]
 
+FrankaAdapterKwargs: TypeAlias = dict[str, str | bool | float | Path | LfsPath | list[float] | None]
+FrankaOverrideValue: TypeAlias = (
+    str
+    | bool
+    | int
+    | float
+    | Path
+    | LfsPath
+    | list[str]
+    | list[float]
+    | dict[str, Path | LfsPath]
+    | FrankaAdapterKwargs
+    | None
+)
+
 
 def franka_panda(
     name: str = "panda",
     *,
     adapter_type: str = "mock",
     address: str | None = None,
-    **overrides: Any,
+    **overrides: FrankaOverrideValue,
 ) -> RobotConfig:
     """Franka Panda config for mock-control planning tests and benchmarks."""
-    defaults: dict[str, Any] = {
+    base_adapter_kwargs: FrankaAdapterKwargs = {"srdf_path": FRANKA_PANDA_SRDF}
+    defaults: dict[str, FrankaOverrideValue] = {
         "name": name,
         "model_path": FRANKA_PANDA_MODEL,
         "end_effector_link": "panda_hand",
@@ -58,12 +75,15 @@ def franka_panda(
         "auto_convert_meshes": True,
         "max_velocity": 1.0,
         "max_acceleration": 2.0,
-        "adapter_kwargs": {"srdf_path": FRANKA_PANDA_SRDF},
+        "adapter_kwargs": base_adapter_kwargs,
     }
-    if "adapter_kwargs" in overrides:
+    override_adapter_kwargs = overrides.pop("adapter_kwargs", None)
+    if override_adapter_kwargs is not None:
+        if not isinstance(override_adapter_kwargs, dict):
+            raise TypeError("adapter_kwargs override must be a dictionary")
         defaults["adapter_kwargs"] = {
-            **defaults["adapter_kwargs"],
-            **overrides.pop("adapter_kwargs"),
+            **base_adapter_kwargs,
+            **override_adapter_kwargs,
         }
     defaults.update(overrides)
     return RobotConfig(**defaults)

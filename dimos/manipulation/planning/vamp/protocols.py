@@ -24,33 +24,66 @@ from numpy.typing import NDArray
 
 
 class VampPathProtocol(Protocol):
-    """Path object returned by VAMP bindings."""
+    """Path value returned by VAMP bindings."""
 
     def numpy(self) -> NDArray[np.float64]:
         """Return path waypoints as an array."""
         ...
 
 
+VampPathSource = VampPathProtocol | Sequence[Sequence[float]] | NDArray[np.float64]
+
+
+class VampSphereProtocol(Protocol):
+    """Sphere primitive handle accepted by VAMP environments."""
+
+
+class VampCuboidProtocol(Protocol):
+    """Cuboid primitive handle accepted by VAMP environments."""
+
+
+class VampCylinderProtocol(Protocol):
+    """Cylinder primitive handle accepted by VAMP environments."""
+
+
+class VampPlannerSettingsProtocol(Protocol):
+    """Planner settings handle returned by VAMP."""
+
+
+class VampSimplifySettingsProtocol(Protocol):
+    """Simplification settings handle returned by VAMP."""
+
+
+class VampSamplerProtocol(Protocol):
+    """Sampler handle returned by robot-specific VAMP modules."""
+
+
 class VampPlanningResultProtocol(Protocol):
     """Planning or simplification result returned by VAMP bindings."""
 
     solved: bool
-    path: object
+    path: VampPathSource
     iterations: int
 
 
 class VampEnvironmentProtocol(Protocol):
     """VAMP collision environment."""
 
-    def add_sphere(self, sphere: object) -> None: ...
+    def add_sphere(self, sphere: VampSphereProtocol) -> None: ...
 
-    def add_cuboid(self, cuboid: object) -> None: ...
+    def add_cuboid(self, cuboid: VampCuboidProtocol) -> None: ...
 
-    def add_capsule(self, capsule: object) -> None: ...
+    def add_capsule(self, capsule: VampCylinderProtocol) -> None: ...
 
 
 VampPlannerFunction = Callable[
-    [Sequence[float], Sequence[float], VampEnvironmentProtocol, object, object],
+    [
+        Sequence[float],
+        Sequence[float],
+        VampEnvironmentProtocol,
+        VampPlannerSettingsProtocol,
+        VampSamplerProtocol,
+    ],
     VampPlanningResultProtocol,
 ]
 
@@ -60,7 +93,7 @@ class VampRobotModuleProtocol(Protocol):
 
     __name__: str
 
-    def halton(self) -> object: ...
+    def halton(self) -> VampSamplerProtocol: ...
 
     def validate(
         self,
@@ -81,10 +114,10 @@ class VampRobotModuleProtocol(Protocol):
 
     def simplify(
         self,
-        path: object,
+        path: VampPathSource,
         environment: VampEnvironmentProtocol,
-        settings: object,
-        sampler: object,
+        settings: VampSimplifySettingsProtocol,
+        sampler: VampSamplerProtocol,
     ) -> VampPlanningResultProtocol: ...
 
 
@@ -93,16 +126,21 @@ class VampModuleProtocol(Protocol):
 
     def Environment(self) -> VampEnvironmentProtocol: ...
 
-    def Sphere(self, center: Sequence[float], radius: float) -> object: ...
+    def Sphere(self, center: Sequence[float], radius: float) -> VampSphereProtocol: ...
 
     def Cuboid(
         self, center: Sequence[float], euler_xyz: Sequence[float], half_extents: Sequence[float]
-    ) -> object: ...
+    ) -> VampCuboidProtocol: ...
 
     def Cylinder(
         self, center: Sequence[float], euler_xyz: Sequence[float], radius: float, length: float
-    ) -> object: ...
+    ) -> VampCylinderProtocol: ...
 
     def configure_robot_and_planner_with_kwargs(
         self, robot_name: str, planner_name: str, max_iterations: int
-    ) -> tuple[VampRobotModuleProtocol, VampPlannerFunction, object, object]: ...
+    ) -> tuple[
+        VampRobotModuleProtocol,
+        VampPlannerFunction,
+        VampPlannerSettingsProtocol,
+        VampSimplifySettingsProtocol,
+    ]: ...

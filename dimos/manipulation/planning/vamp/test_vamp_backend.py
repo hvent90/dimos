@@ -17,9 +17,10 @@
 from __future__ import annotations
 
 from collections.abc import Callable
+from dataclasses import dataclass
 from pathlib import Path
 import sys
-from types import ModuleType, SimpleNamespace
+from types import ModuleType
 
 import numpy as np
 from numpy.typing import NDArray
@@ -48,26 +49,62 @@ from dimos.msgs.geometry_msgs.Vector3 import Vector3
 from dimos.msgs.sensor_msgs.JointState import JointState
 
 
+@dataclass(frozen=True)
+class FakeSphere:
+    center: list[float]
+    radius: float
+
+
+@dataclass(frozen=True)
+class FakeCuboid:
+    center: list[float]
+    euler_xyz: list[float]
+    half_extents: list[float]
+
+
+@dataclass(frozen=True)
+class FakeCylinder:
+    center: list[float]
+    euler_xyz: list[float]
+    radius: float
+    length: float
+
+
+@dataclass(frozen=True)
+class FakePlannerSettings:
+    max_iterations: int
+
+
+@dataclass(frozen=True)
+class FakeSimplifySettings:
+    enabled: bool = True
+
+
+@dataclass(frozen=True)
+class FakeSampler:
+    name: str
+
+
 class FakeEnvironment:
     """Small fake VAMP environment that records converted primitives."""
 
     def __init__(self) -> None:
-        self.spheres: list[object] = []
-        self.cuboids: list[object] = []
-        self.capsules: list[object] = []
+        self.spheres: list[FakeSphere] = []
+        self.cuboids: list[FakeCuboid] = []
+        self.capsules: list[FakeCylinder] = []
 
-    def add_sphere(self, sphere: object) -> None:
+    def add_sphere(self, sphere: FakeSphere) -> None:
         self.spheres.append(sphere)
 
-    def add_cuboid(self, cuboid: object) -> None:
+    def add_cuboid(self, cuboid: FakeCuboid) -> None:
         self.cuboids.append(cuboid)
 
-    def add_capsule(self, capsule: object) -> None:
+    def add_capsule(self, capsule: FakeCylinder) -> None:
         self.capsules.append(capsule)
 
 
 class FakePath:
-    """Fake VAMP path object exposing the numpy() method used by bindings."""
+    """Fake VAMP path value exposing the numpy() method used by bindings."""
 
     def __init__(self, waypoints: list[list[float]]) -> None:
         self._waypoints = np.array(waypoints, dtype=np.float64)
@@ -96,8 +133,8 @@ class FakeRobotModule(ModuleType):
         self.valid = True
         self.motion_valid = True
 
-    def halton(self) -> str:
-        return "fake_sampler"
+    def halton(self) -> FakeSampler:
+        return FakeSampler("fake_sampler")
 
     def validate(
         self, configuration: list[float], environment: FakeEnvironment, check_bounds: bool
@@ -128,8 +165,8 @@ class FakeRobotModule(ModuleType):
         self,
         path: FakePath,
         environment: FakeEnvironment,
-        settings: SimpleNamespace,
-        sampler: str,
+        settings: FakeSimplifySettings,
+        sampler: FakeSampler,
     ) -> FakePlanningResult:
         del environment, settings, sampler
         self.simplify_calls.append(path)
@@ -143,11 +180,11 @@ class FakeVampModule(ModuleType):
         super().__init__("vamp")
         self.panda = robot_module
         self.Environment = FakeEnvironment
-        self.Sphere = SimpleNamespace
-        self.Cuboid = SimpleNamespace
-        self.Cylinder = SimpleNamespace
+        self.Sphere = FakeSphere
+        self.Cuboid = FakeCuboid
+        self.Cylinder = FakeCylinder
         self.configure_calls: list[tuple[str, str, int]] = []
-        self.planner_calls: list[tuple[list[float], list[float], str]] = []
+        self.planner_calls: list[tuple[list[float], list[float], FakeSampler]] = []
         self.planner_solved = True
 
     def configure_robot_and_planner_with_kwargs(
@@ -155,10 +192,17 @@ class FakeVampModule(ModuleType):
     ) -> tuple[
         FakeRobotModule,
         Callable[
-            [list[float], list[float], FakeEnvironment, SimpleNamespace, str], FakePlanningResult
+            [
+                list[float],
+                list[float],
+                FakeEnvironment,
+                FakePlannerSettings,
+                FakeSampler,
+            ],
+            FakePlanningResult,
         ],
-        SimpleNamespace,
-        SimpleNamespace,
+        FakePlannerSettings,
+        FakeSimplifySettings,
     ]:
         self.configure_calls.append((robot_name, planner_name, max_iterations))
 
@@ -166,8 +210,8 @@ class FakeVampModule(ModuleType):
             start: list[float],
             goal: list[float],
             environment: FakeEnvironment,
-            settings: SimpleNamespace,
-            sampler: str,
+            settings: FakePlannerSettings,
+            sampler: FakeSampler,
         ) -> FakePlanningResult:
             del environment, settings
             self.planner_calls.append((start, goal, sampler))
@@ -177,7 +221,12 @@ class FakeVampModule(ModuleType):
                 11,
             )
 
-        return self.panda, planner_func, SimpleNamespace(), SimpleNamespace()
+        return (
+            self.panda,
+            planner_func,
+            FakePlannerSettings(max_iterations=max_iterations),
+            FakeSimplifySettings(),
+        )
 
 
 @pytest.fixture
@@ -187,6 +236,10 @@ def fake_vamp_modules(mocker) -> tuple[FakeVampModule, FakeRobotModule]:
     vamp_module = FakeVampModule(robot_module)
     mocker.patch.dict(sys.modules, {"vamp": vamp_module, "vamp.panda": robot_module})
     mocker.patch("dimos.manipulation.planning.vamp.loader._vamp_module", vamp_module)
+    mocker.patch(
+        "dimos.manipulation.planning.vamp.loader._VAMP_OFFICIAL_ROBOT_MODULES",
+        {"panda": robot_module},
+    )
     return vamp_module, robot_module
 
 
@@ -305,7 +358,9 @@ def test_vamp_planner_dispatches_algorithm_simplifies_and_validates(fake_vamp_mo
     assert result.status == PlanningStatus.SUCCESS
     assert [point.position for point in result.path] == [[0.0, 0.0, 0.0], [1.0, 0.5, 0.25]]
     assert vamp_module.configure_calls == [("panda", "prm", 250)]
-    assert vamp_module.planner_calls == [([0.0, 0.0, 0.0], [1.0, 0.5, 0.25], "fake_sampler")]
+    assert vamp_module.planner_calls == [
+        ([0.0, 0.0, 0.0], [1.0, 0.5, 0.25], FakeSampler("fake_sampler"))
+    ]
     assert len(robot_module.simplify_calls) == 1
     assert robot_module.motion_calls == [([0.0, 0.0, 0.0], [1.0, 0.5, 0.25], True)]
 

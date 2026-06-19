@@ -31,9 +31,26 @@ from dimos.manipulation.planning.world.config import (
 )
 
 try:
-    import vamp as _vamp_module
-except ImportError:
+    import vamp as _imported_vamp
+    import vamp.baxter as _vamp_baxter
+    import vamp.fetch as _vamp_fetch
+    import vamp.panda as _vamp_panda
+    import vamp.sphere as _vamp_sphere
+    import vamp.ur5 as _vamp_ur5
+except ImportError as exc:
+    _vamp_import_error: ImportError | None = exc
     _vamp_module = None
+    _VAMP_OFFICIAL_ROBOT_MODULES: dict[str, VampRobotModuleProtocol] = {}
+else:
+    _vamp_import_error = None
+    _vamp_module: VampModuleProtocol | None = cast("VampModuleProtocol", _imported_vamp)
+    _VAMP_OFFICIAL_ROBOT_MODULES = {
+        "baxter": cast("VampRobotModuleProtocol", _vamp_baxter),
+        "fetch": cast("VampRobotModuleProtocol", _vamp_fetch),
+        "panda": cast("VampRobotModuleProtocol", _vamp_panda),
+        "sphere": cast("VampRobotModuleProtocol", _vamp_sphere),
+        "ur5": cast("VampRobotModuleProtocol", _vamp_ur5),
+    }
 
 
 def load_vamp_robot_module(
@@ -41,8 +58,8 @@ def load_vamp_robot_module(
 ) -> tuple[VampModuleProtocol, VampRobotModuleProtocol]:
     """Load the VAMP package and configured robot module."""
     if _vamp_module is None:
-        raise VampDependencyError()
-    vamp_module = cast("VampModuleProtocol", _vamp_module)
+        raise VampDependencyError() from _vamp_import_error
+    vamp_module = _vamp_module
     if isinstance(artifact, OfficialVampArtifactConfig):
         return vamp_module, _load_official_robot_module(vamp_module, artifact.robot)
     if isinstance(artifact, CustomVampArtifactConfig):
@@ -55,12 +72,11 @@ def _load_official_robot_module(
 ) -> VampRobotModuleProtocol:
     del vamp_module
     try:
-        imported = importlib.import_module(f"vamp.{robot}")
-    except ImportError as exc:
+        return _VAMP_OFFICIAL_ROBOT_MODULES[robot]
+    except KeyError as exc:
         raise ValueError(
             f"Installed VAMP package does not expose robot artifact '{robot}'"
         ) from exc
-    return cast("VampRobotModuleProtocol", imported)
 
 
 def _load_custom_robot_module(path: Path) -> VampRobotModuleProtocol:

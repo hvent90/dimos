@@ -21,22 +21,22 @@ from typing import TypeGuard
 import numpy as np
 from numpy.typing import NDArray
 
-from dimos.manipulation.planning.vamp.protocols import VampPathProtocol
+from dimos.manipulation.planning.vamp.protocols import VampPathProtocol, VampPathSource
 from dimos.msgs.sensor_msgs.JointState import JointState
 
 
-def path_to_joint_states(path_source: object, joint_names: list[str]) -> list[JointState]:
-    """Convert a VAMP path object or numeric waypoint array into joint states."""
+def path_to_joint_states(path_source: VampPathSource, joint_names: list[str]) -> list[JointState]:
+    """Convert VAMP path data or numeric waypoints into joint states."""
     path_array = path_to_array(path_source)
     return [JointState(name=joint_names, position=row.astype(float).tolist()) for row in path_array]
 
 
-def path_to_array(path_source: object) -> NDArray[np.float64]:
-    """Convert a VAMP path object or sequence into a float waypoint array."""
+def path_to_array(path_source: VampPathSource) -> NDArray[np.float64]:
+    """Convert VAMP path data into a float waypoint array."""
     if _has_numpy(path_source):
         return np.asarray(path_source.numpy(), dtype=np.float64)
     return np.asarray(path_source, dtype=np.float64)
 
 
-def _has_numpy(path_source: object) -> TypeGuard[VampPathProtocol]:
+def _has_numpy(path_source: VampPathSource) -> TypeGuard[VampPathProtocol]:
     return hasattr(path_source, "numpy")

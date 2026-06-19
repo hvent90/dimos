@@ -28,7 +28,7 @@ from dimos.utils.data import LfsPath
 
 
 def _lfs_filename(path: LfsPath) -> str:
-    filename = object.__getattribute__(path, "_lfs_filename")
+    filename = path.lfs_filename
     assert isinstance(filename, str)
     return filename
 

@@ -49,7 +49,7 @@ if TYPE_CHECKING:
 class _VampContext(Protocol):
     """Typed context shape used by the VAMP world adapter."""
 
-    # TODO: Replace the loose WorldSpec context object with a typed ContextProtocol.
+    # TODO: Replace the loose WorldSpec context payload with a typed ContextProtocol.
     joint_state: JointState
 
 

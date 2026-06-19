@@ -348,6 +348,14 @@ class LfsPath(type(Path())):  # type: ignore[misc]
             object.__setattr__(self, "_lfs_resolved_cache", cache)
         return cache
 
+    @property
+    def lfs_filename(self) -> str | Path:
+        """Return the configured LFS resource without resolving the path."""
+        filename = self._lfs_filename
+        if isinstance(filename, Path):
+            return filename
+        return str(filename)
+
     def __getattribute__(self, name: str) -> object:
         # During Path.__new__(), _lfs_filename hasn't been set yet.
         # Fall through to normal Path behavior until construction is complete.
@@ -357,8 +365,13 @@ class LfsPath(type(Path())):  # type: ignore[misc]
             return object.__getattribute__(self, name)
 
         # After construction, allow access to our internal attributes directly
-        if name in ("_lfs_filename", "_lfs_resolved_cache", "_ensure_downloaded"):
-            return object.__getattribute__(self, name)
+        if name in (
+            "_lfs_filename",
+            "_lfs_resolved_cache",
+            "_ensure_downloaded",
+            "lfs_filename",
+        ):
+            return super().__getattribute__(name)
 
         # For all other attributes, ensure download first then delegate to resolved path
         resolved = object.__getattribute__(self, "_ensure_downloaded")()
