@@ -471,24 +471,18 @@ class ManipulationModule(Module):
         return False
 
     def _begin_planning(
-        self, robot_name: RobotName | None = None
-    ) -> tuple[RobotName, WorldRobotID] | None:
-        """Check state and begin planning. Returns (robot_name, robot_id) or None.
-
-        Args:
-            robot_name: Robot to plan for (required if multiple robots configured)
-        """
+        self, group_ids: Sequence[PlanningGroupID]
+    ) -> tuple[PlanningGroupID, ...] | None:
+        """Check state and begin planning for the selected planning groups."""
         if self._world_monitor is None:
             logger.error("Planning not initialized")
-            return None
-        if (robot := self._get_robot(robot_name)) is None:
             return None
         with self._lock:
             if self._state not in (ManipulationState.IDLE, ManipulationState.COMPLETED):
                 logger.warning(f"Cannot plan: state is {self._state.name}")
                 return None
             self._state = ManipulationState.PLANNING
-        return robot[0], robot[1]
+        return tuple(group_ids)
 
     def _fail(self, msg: str) -> bool:
         """Set FAULT state with error message."""
@@ -827,11 +821,6 @@ class ManipulationModule(Module):
             return False
         if not pose_targets:
             return self._fail("At least one pose target is required")
-        with self._lock:
-            if self._state not in (ManipulationState.IDLE, ManipulationState.COMPLETED):
-                logger.warning(f"Cannot plan: state is {self._state.name}")
-                return False
-            self._state = ManipulationState.PLANNING
 
         stamped_targets = {
             planning_group_id_from_selector(group): PoseStamped(
@@ -843,6 +832,10 @@ class ManipulationModule(Module):
         }
         auxiliary_ids = tuple(planning_group_id_from_selector(group) for group in auxiliary_groups)
         group_ids = tuple(dict.fromkeys((*stamped_targets.keys(), *auxiliary_ids)))
+        planned_group_ids = self._begin_planning(group_ids)
+        if planned_group_ids is None:
+            return False
+        group_ids = planned_group_ids
 
         try:
             start = self._selected_joint_state(group_ids)
@@ -889,13 +882,14 @@ class ManipulationModule(Module):
             return False
         if not joint_targets:
             return self._fail("At least one joint target is required")
-        with self._lock:
-            if self._state not in (ManipulationState.IDLE, ManipulationState.COMPLETED):
-                logger.warning(f"Cannot plan: state is {self._state.name}")
-                return False
-            self._state = ManipulationState.PLANNING
 
-        group_ids = tuple(planning_group_id_from_selector(group) for group in joint_targets)
+        group_ids = tuple(
+            dict.fromkeys(planning_group_id_from_selector(group) for group in joint_targets)
+        )
+        planned_group_ids = self._begin_planning(group_ids)
+        if planned_group_ids is None:
+            return False
+        group_ids = planned_group_ids
         try:
             start = self._selected_joint_state(group_ids)
         except Exception as exc:

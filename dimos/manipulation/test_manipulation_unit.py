@@ -155,19 +155,20 @@ class TestStateMachine:
         module = _make_module()
         module._world_monitor = MagicMock()
         module._robots = {"test_arm": ("robot_id", robot_config, MagicMock())}
+        group_ids = ("test_arm/manipulator",)
 
         # From IDLE - OK
         module._state = ManipulationState.IDLE
-        assert module._begin_planning() == ("test_arm", "robot_id")
+        assert module._begin_planning(group_ids) == group_ids
         assert module._state == ManipulationState.PLANNING
 
         # From COMPLETED - OK
         module._state = ManipulationState.COMPLETED
-        assert module._begin_planning() == ("test_arm", "robot_id")
+        assert module._begin_planning(group_ids) == group_ids
 
         # From EXECUTING - Fail
         module._state = ManipulationState.EXECUTING
-        assert module._begin_planning() is None
+        assert module._begin_planning(group_ids) is None
 
 
 class TestRobotSelection:
