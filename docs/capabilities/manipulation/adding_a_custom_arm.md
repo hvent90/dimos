@@ -138,6 +138,14 @@ class YourArmAdapter:
         """Check if connected."""
         return self._sdk is not None and self._sdk.is_alive()
 
+    def activate(self) -> bool:
+        """Prepare hardware for commanded motion after connect()."""
+        return self.write_enable(True)
+
+    def deactivate(self) -> bool:
+        """Gracefully stop commanded motion before disconnect()."""
+        return self.write_stop()
+
 
     def get_info(self) -> ManipulatorInfo:
         """Get manipulator info (vendor, model, DOF)."""
@@ -442,8 +450,6 @@ from pathlib import Path
 
 from dimos.control.components import HardwareComponent, HardwareType, make_joints
 from dimos.control.coordinator import ControlCoordinator, TaskConfig
-from dimos.core.transport import LCMTransport
-from dimos.msgs.sensor_msgs import JointState
 
 
 # YourArm (6-DOF) — real hardware
@@ -469,10 +475,6 @@ coordinator_yourarm = ControlCoordinator.blueprint(
             priority=10,                              # Higher priority wins arbitration
         ),
     ],
-).transports(
-    {
-        ("joint_state", JointState): LCMTransport("/coordinator/joint_state", JointState),
-    }
 )
 
 
@@ -568,12 +570,11 @@ Add this to your `dimos/robot/yourarm/blueprints.py` alongside the coordinator b
 yourarm_planner = manipulation_module(
     robots=[_make_yourarm_config("arm", joint_prefix="arm_", coordinator_task="traj_arm")],
     planning_timeout=10.0,
-    enable_viz=True,
-).transports(
-    {
-        ("joint_state", JointState): LCMTransport("/coordinator/joint_state", JointState),
-    }
+    visualization={"backend": "meshcat"},
 )
+# The planner's `coordinator_joint_state` input auto-connects to the
+# ControlCoordinator's output on the default `/coordinator_joint_state`
+# topic, so no `.transports(...)` override is needed.
 ```
 
 ### Key config fields
@@ -634,6 +635,8 @@ def mock_adapter():
     adapter.read_joint_velocities.return_value = [0.0] * 6
     adapter.read_joint_efforts.return_value = [0.0] * 6
     adapter.write_joint_positions.return_value = True
+    adapter.activate.return_value = True
+    adapter.deactivate.return_value = True
     adapter.read_enabled.return_value = True
     adapter.is_connected.return_value = True
     return adapter
@@ -676,12 +679,12 @@ positions = adapter.read_joint_positions()
 assert len(positions) == 6
 print(f"Joint positions (rad): {positions}")
 
-# Enable and move
-adapter.write_enable(True)
+# Activate and move
+adapter.activate()
 adapter.write_joint_positions([0.0] * 6)
 
 # Cleanup
-adapter.write_stop()
+adapter.deactivate()
 adapter.disconnect()
 ```
 

@@ -44,6 +44,7 @@ exclude = [
     "**/*.html",
     "**/*.css",
     "**/*.js",
+    "**/*.svg",
     "**/*.tcss",
     "**/*.pyi",
     "rxpy_backpressure/*.txt",
@@ -238,7 +239,7 @@ perception = [
 
 unitree = [
     "dimos[base,mapping]",
-    "unitree-webrtc-connect-leshy>=2.0.7",
+    "unitree-webrtc-connect>=2.1.2",
 ]
 
 unitree-dds = [
@@ -252,6 +253,8 @@ manipulation = [
     # Planning (Drake)
     "drake==1.45.0; sys_platform == 'darwin' and platform_machine != 'aarch64'",
     "drake>=1.40.0; sys_platform != 'darwin' and platform_machine != 'aarch64'",
+    "pin-pink>=4.2.0",
+    "qpsolvers[proxqp]>=4.12.0",
 
     # Hardware SDKs
     "can-motor-control>=0.0.2; sys_platform == 'linux' and platform_machine == 'x86_64'",
@@ -267,13 +270,13 @@ manipulation = [
     # Visualization (Optional)
     "kaleido>=0.2.1",
     "plotly>=5.9.0",
+    "viser[urdf]>=1.0.29",
     "xacro",
 
     # Other
     "matplotlib>=3.7.1",
     "pyyaml>=6.0",
 ]
-
 
 cpu = [
     # CPU inference backends
@@ -396,7 +399,8 @@ tests = [
     "pygame>=2.6.1",
     "python-can>=4",
     "langchain-chroma>=1,<2",
-    "unitree-webrtc-connect-leshy>=2.0.7",
+    "unitree-webrtc-connect>=2.1.2",
+    "viser[urdf]>=1.0.29; sys_platform != 'linux' or platform_machine != 'aarch64'",
 
     {include-group = "project-deps"},
 ]
@@ -562,6 +566,8 @@ module = [
     "turbojpeg",
     "ultralytics.*",
     "unitree_sdk2py.*",
+    "viser",
+    "viser.*",
     "unitree_webrtc_connect.*",
     "websocket",
     "xarm.*",
@@ -613,6 +619,7 @@ ignore = [
     "dimos/dashboard/dimos.rbl",
     "dimos/web/dimos_interface/themes.json",
     "dimos/manipulation/manipulation_module.py",
+    "dimos/manipulation/visualization/viser/test_viser_visualization.py",
     "dimos/navigation/nav_stack/modules/*/main.cpp",
     "dimos/navigation/nav_stack/common/*.hpp",
 ]
