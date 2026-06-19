@@ -41,10 +41,10 @@ teleop_hosted_xarm7 = (
     )
     .transports(
         {
-            ("right_controller_output", PoseStamped): LCMTransport(
+            ("right_controller_output", PoseStamped): LCMTransport.spec(
                 "/coordinator/cartesian_command", PoseStamped
             ),
-            ("buttons", Buttons): LCMTransport("/teleop/buttons", Buttons),
+            ("buttons", Buttons): LCMTransport.spec("/teleop/buttons", Buttons),
         }
     )
     .global_config(rerun_open="none")
@@ -65,15 +65,16 @@ teleop_hosted_go2 = autoconnect(
 # as sent: normalized [-1, 1], no speed rescaling). The camera stream feeds
 # the session's WebRTC video track via CloudflareVideoTransport (same
 # provider/PeerConnection), and robot → operator telemetry can ride
-# CloudflareTransport("state_reliable_back", ...) the same way.
+# CloudflareTransport.spec("state_reliable_back", ...) the same way.
 #
-# Run:  TELEOP_API_KEY=dtk_live_... dimos run teleop-hosted-go2-transport
-#       (robot identity is derived from the key; TELEOP_ROBOT_ID optional)
+# Run:  dimos run teleop-hosted-go2-transport -o transports.broker.api_key=dtk_live_...
+#       (or TRANSPORTS__BROKER__API_KEY=dtk_live_... in env; robot identity is
+#       derived from the key, override with transports.broker.robot_id if needed)
 # then connect from https://teleop.dimensionalos.com (keyboard view).
 teleop_hosted_go2_transport = unitree_go2_basic.transports(
     {
-        ("cmd_vel", Twist): CloudflareTransport("cmd_unreliable", TwistStamped),
-        ("color_image", Image): CloudflareVideoTransport(),
+        ("cmd_vel", Twist): CloudflareTransport.spec("cmd_unreliable", TwistStamped),
+        ("color_image", Image): CloudflareVideoTransport.spec(),
     }
 ).global_config(viewer="none")
 

@@ -25,15 +25,15 @@ from __future__ import annotations
 
 import asyncio
 from collections.abc import Callable
-from dataclasses import dataclass
+import importlib.util
 import threading
 from typing import Any, Protocol, runtime_checkable
+
+from pydantic import BaseModel
 
 from dimos.utils.logging_config import setup_logger
 
 logger = setup_logger()
-
-import importlib.util
 
 # find_spec instead of importing: aiortc takes ~150ms and core.transport pulls
 # this module in everywhere. Providers import aiortc lazily on start().
@@ -70,9 +70,10 @@ _providers: dict[ProviderConfig, Provider] = {}
 _providers_lock = threading.Lock()
 
 
-@dataclass(frozen=True)
-class ProviderConfig:
+class ProviderConfig(BaseModel):
     """Picklable provider factory. Equal configs share one provider per process."""
+
+    model_config = {"frozen": True, "extra": "forbid"}
 
     def _create(self) -> Provider:
         raise NotImplementedError

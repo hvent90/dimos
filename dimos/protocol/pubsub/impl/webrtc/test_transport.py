@@ -17,15 +17,20 @@
 from __future__ import annotations
 
 from collections.abc import Callable
-from dataclasses import dataclass
 import pickle
 import struct
+from typing import get_args
 
+from pydantic import ValidationError
 import pytest
 
+from dimos.core.coordination.blueprints import Blueprint
+from dimos.core.coordination.module_coordinator import _materialize_transports
 from dimos.core.transport import WebRTCTransport
 from dimos.msgs.geometry_msgs.TwistStamped import TwistStamped
-from dimos.protocol.pubsub.impl.webrtc.providers.spec import ProviderConfig
+from dimos.protocol.pubsub.impl.webrtc.providers.broker import BrokerConfig
+from dimos.protocol.pubsub.impl.webrtc.providers.spec import WEBRTC_AVAILABLE, ProviderConfig
+from dimos.protocol.pubsub.impl.webrtc.webrtcpubsub import WebRTCPubSub
 
 # ─── Mock provider ───────────────────────────────────────────────────
 
@@ -63,9 +68,9 @@ class MockProvider:
         return _unsub
 
 
-@dataclass(frozen=True)
 class MockConfig(ProviderConfig):
     name: str = "default"
+    count: int = 0
 
     def _create(self) -> MockProvider:
         return MockProvider()
@@ -201,19 +206,89 @@ def test_provider_singleton_per_config() -> None:
     assert MockConfig(name="a").provider() is not MockConfig(name="b").provider()
 
 
+# ─── ProviderConfig (pydantic frozen) ────────────────────────────────
+
+
+def test_provider_config_is_frozen_and_hashable() -> None:
+    """ProviderConfig must be hashable and frozen — the `_providers` singleton keys on it."""
+    c = MockConfig(name="x")
+    assert hash(c) == hash(MockConfig(name="x"))
+    assert hash(c) != hash(MockConfig(name="y"))
+    with pytest.raises(ValidationError):
+        c.name = "mutated"  # type: ignore[misc]
+    # Unknown fields are forbidden (extra="forbid").
+    with pytest.raises(ValidationError, match="bogus"):
+        MockConfig(bogus=1)  # type: ignore[call-arg]
+
+
+# ─── Blueprint config / transport-override integration ──────────────
+
+
+def test_blueprint_config_exposes_transport_fields() -> None:
+    """Each unique `_config_cls` becomes a `transports.<name>` sub-model on the schema."""
+    bp = Blueprint(blueprints=()).transports({("topic", FakeLCMMsg): MockTransport.spec("topic")})
+    cfg = bp.config()
+    parsed = cfg(transports={"mock": {"name": "override"}})
+    assert parsed.transports.mock.name == "override"
+    # Sub-field name → MockConfig; extra fields and unknown namespaces rejected.
+    with pytest.raises(ValidationError, match="bogus"):
+        cfg(transports={"mock": {"bogus": 1}})
+    with pytest.raises(ValidationError, match="other"):
+        cfg(transports={"other": {}})
+    # Multiple transports sharing one `_config_cls` collapse to one slot.
+    bp_shared = Blueprint(blueprints=()).transports(
+        {
+            ("a", FakeLCMMsg): MockTransport.spec("a"),
+            ("b", FakeLCMMsg): MockTransport.spec("b"),
+        }
+    )
+    inner = next(
+        a
+        for a in get_args(bp_shared.config().model_fields["transports"].annotation)
+        if a is not type(None)
+    )
+    assert set(inner.model_fields.keys()) == {"mock"}
+
+
+def test_transport_overrides_apply_and_survive_pickle() -> None:
+    """Materialization builds each transport with its resolved config; pickle-safe."""
+    bp = Blueprint(blueprints=()).transports({("topic", FakeLCMMsg): MockTransport.spec("topic")})
+
+    transport = _materialize_transports(bp, {"mock": {"name": "overridden"}})[("topic", FakeLCMMsg)]
+
+    assert transport._config.name == "overridden"
+    assert pickle.loads(pickle.dumps(transport))._config.name == "overridden"
+
+    # No override → config built from the spec's defaults.
+    default = _materialize_transports(bp, {})[("topic", FakeLCMMsg)]
+    assert default._config.name == "default"
+
+
+def test_materialize_uses_resolved_config() -> None:
+    """The config reaching the transport is built straight from the overrides,
+    not a default instance that is later mutated."""
+    bp = Blueprint(blueprints=()).transports({("topic", FakeLCMMsg): MockTransport.spec("topic")})
+
+    transport = _materialize_transports(bp, {"mock": {"name": "resolved"}})[("topic", FakeLCMMsg)]
+
+    assert transport._config == MockConfig(name="resolved")
+
+
+def test_transport_overrides_coerce_string_values() -> None:
+    """CLI/env overrides arrive as raw strings; non-str fields must coerce, not pass through."""
+    bp = Blueprint(blueprints=()).transports({("topic", FakeLCMMsg): MockTransport("topic")})
+    new_bp = _apply_transport_overrides(bp, {"mock": {"count": "5"}})
+    assert new_bp.transport_map[("topic", FakeLCMMsg)]._config.count == 5
+
+
 # ─── Broker credential validation ────────────────────────────────────
 
 
-def test_broker_provider_requires_credentials(monkeypatch: pytest.MonkeyPatch) -> None:
-    from dimos.protocol.pubsub.impl.webrtc.providers.broker import BrokerConfig
-    from dimos.protocol.pubsub.impl.webrtc.providers.spec import WEBRTC_AVAILABLE
-
+def test_broker_provider_requires_credentials() -> None:
     if not WEBRTC_AVAILABLE:
         pytest.skip("aiortc not installed")
-    monkeypatch.delenv("TELEOP_API_KEY", raising=False)
-    monkeypatch.delenv("TELEOP_ROBOT_ID", raising=False)
 
-    with pytest.raises(RuntimeError, match="TELEOP_API_KEY"):
+    with pytest.raises(RuntimeError, match="api_key required"):
         BrokerConfig(robot_id="r1")._create()
     # robot_id is optional — the broker derives it from the API key.
     assert BrokerConfig(api_key="key")._create() is not None
@@ -224,8 +299,6 @@ def test_broker_provider_requires_credentials(monkeypatch: pytest.MonkeyPatch) -
 
 def test_subscribe_all_fires_once_per_message() -> None:
     """N subscriptions on one topic must not duplicate subscribe_all delivery."""
-    from dimos.protocol.pubsub.impl.webrtc.webrtcpubsub import WebRTCPubSub
-
     ps = WebRTCPubSub(provider=MockProvider())
     ps.subscribe("t", lambda data, t: None)
     ps.subscribe("t", lambda data, t: None)

@@ -45,6 +45,8 @@ logger = setup_logger()
 if TYPE_CHECKING:
     from collections.abc import Callable
 
+    from dimos.core.coordination.blueprints import TransportSpec
+
 T = TypeVar("T")
 
 # TODO
@@ -73,6 +75,13 @@ class PubSubTransport(Transport[T]):
 
     def __init__(self, topic: Any) -> None:
         self.topic = topic
+
+    @classmethod
+    def spec(cls, *args: Any, **kwargs: Any) -> TransportSpec:
+        """Defer construction: capture ctor args for the coordinator to build later."""
+        from dimos.core.coordination.blueprints import TransportSpec
+
+        return TransportSpec(cls, args, kwargs)
 
     def __str__(self) -> str:
         return (
@@ -364,6 +373,7 @@ class WebRTCTransport(PubSubTransport[M]):
     """
 
     _config_cls: type[ProviderConfig]
+    _config: ProviderConfig
     _started: bool = False
 
     def __init__(
@@ -432,13 +442,14 @@ class CloudflareTransport(WebRTCTransport[M]):
     """WebRTC via the hosted teleop broker + Cloudflare Realtime SFU.
 
     Config kwargs flow into :class:`BrokerConfig`; unset fields fall back to
-    the ``TELEOP_*`` env vars in the process where the transport runs.
+    the blueprint config flow (``-o transports.broker.<field>=...`` or the
+    ``TRANSPORTS__BROKER__<FIELD>=...`` env form).
 
     Blueprint usage::
 
         unitree_go2_hosted = unitree_go2_basic.transports({
-            ("cmd_vel", Twist): CloudflareTransport("cmd_unreliable", TwistStamped),
-            ("color_image", Image): CloudflareVideoTransport(),
+            ("cmd_vel", Twist): CloudflareTransport.spec("cmd_unreliable", TwistStamped),
+            ("color_image", Image): CloudflareVideoTransport.spec(),
         })
     """
 
@@ -461,9 +472,17 @@ class WebRTCVideoTransport(Transport[Any]):
     """
 
     _config_cls: type[ProviderConfig]
+    _config: ProviderConfig
 
     def __init__(self, *, config: ProviderConfig | None = None, **config_kwargs: Any) -> None:
         self._config = config or self._config_cls(**config_kwargs)
+
+    @classmethod
+    def spec(cls, *args: Any, **kwargs: Any) -> TransportSpec:
+        """Defer construction: capture ctor args for the coordinator to build later."""
+        from dimos.core.coordination.blueprints import TransportSpec
+
+        return TransportSpec(cls, args, kwargs)
 
     def start(self) -> None:
         pass  # provider starts lazily on first broadcast
