@@ -36,7 +36,7 @@ def _make_group() -> ResolvedPlanningGroup:
     )
 
 
-def test_normalize_joint_target_accepts_named_global_targets_in_group_order() -> None:
+def test_joint_target_to_global_names_accepts_named_global_targets_in_group_order() -> None:
     group = _make_group()
     target = JointState(name=["left/j3", "left/j1", "left/j2"], position=[3.0, 1.0, 2.0])
 
@@ -46,7 +46,7 @@ def test_normalize_joint_target_accepts_named_global_targets_in_group_order() ->
     assert normalized.position == [1.0, 2.0, 3.0]
 
 
-def test_normalize_joint_target_accepts_named_local_targets_in_group_order() -> None:
+def test_joint_target_to_global_names_accepts_named_local_targets_in_group_order() -> None:
     group = _make_group()
     target = JointState(name=["j2", "j3", "j1"], position=[2.0, 3.0, 1.0])
 
@@ -56,7 +56,7 @@ def test_normalize_joint_target_accepts_named_local_targets_in_group_order() -> 
     assert normalized.position == [1.0, 2.0, 3.0]
 
 
-def test_normalize_joint_target_rejects_mixed_global_and_local_target_names() -> None:
+def test_joint_target_to_global_names_rejects_mixed_global_and_local_target_names() -> None:
     group = _make_group()
     target = JointState(name=["left/j1", "j2", "left/j3"], position=[1.0, 2.0, 3.0])
 

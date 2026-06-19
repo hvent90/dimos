@@ -570,7 +570,7 @@ class ManipulationModule(Module):
 
         return JointState(name=names, position=positions)
 
-    def _normalize_joint_target(
+    def _joint_target_to_global_names(
         self, group_id: PlanningGroupID, target: JointState
     ) -> JointState | None:
         """Convert a group joint target to global joint names in group order."""
@@ -901,11 +901,11 @@ class ManipulationModule(Module):
         goal_positions: list[float] = []
         for group, target in joint_targets.items():
             group_id = planning_group_id_from_selector(group)
-            normalized = self._normalize_joint_target(group_id, target)
-            if normalized is None:
+            target_global = self._joint_target_to_global_names(group_id, target)
+            if target_global is None:
                 return self._fail(f"Invalid joint target for '{group_id}'")
-            goal_names.extend(normalized.name)
-            goal_positions.extend(normalized.position)
+            goal_names.extend(target_global.name)
+            goal_positions.extend(target_global.position)
 
         goal = JointState(name=goal_names, position=goal_positions)
         return self._plan_selected_path(group_ids, start, goal)
