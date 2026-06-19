@@ -357,12 +357,8 @@ class LfsPath(type(Path())):  # type: ignore[misc]
             return object.__getattribute__(self, name)
 
         # After construction, allow access to our internal attributes directly
-        if name in (
-            "_lfs_filename",
-            "_lfs_resolved_cache",
-            "_ensure_downloaded",
-        ):
-            return super().__getattribute__(name)
+        if name in ("_lfs_filename", "_lfs_resolved_cache", "_ensure_downloaded"):
+            return object.__getattribute__(self, name)
 
         # For all other attributes, ensure download first then delegate to resolved path
         resolved = object.__getattribute__(self, "_ensure_downloaded")()
