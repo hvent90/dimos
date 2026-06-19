@@ -1012,4 +1012,39 @@ mod region_tests {
             max_y(&wp_avoid)
         );
     }
+
+    #[test]
+    fn goal_on_subclearance_spur_still_plans() {
+        let mut cfg = test_config();
+        cfg.surface_closing_radius = 0.0;
+        cfg.wall_clearance_m = 0.3;
+        cfg.wall_buffer_m = 0.0;
+        cfg.wall_buffer_weight = 0.0;
+        cfg.node_spacing_m = 0.5;
+
+        let vs = 0.1_f32;
+        let half = vs * 0.5;
+        let mut pts = Vec::new();
+        for ix in 0..10 {
+            for iy in 0..10 {
+                pts.push((ix as f32 * vs + half, iy as f32 * vs + half, half));
+            }
+        }
+        // A 1-wide spur off the open area: every spur cell is wall-adjacent so
+        // none clears the clearance and the penalized Voronoi cannot own them.
+        for ix in 10..16 {
+            pts.push((ix as f32 * vs + half, 5.0 * vs + half, half));
+        }
+
+        let mut p = Planner::default();
+        p.update_global_map(&pts, &cfg);
+
+        let start = (0.45, 0.45, 0.0);
+        let goal = (15.0 * vs + half, 5.0 * vs + half, 0.0);
+        let wp = p
+            .plan(start, goal, &cfg)
+            .expect("goal on a sub-clearance spur still reaches its component node");
+        let last = *wp.last().expect("path has waypoints");
+        assert!((last.0 - goal.0).abs() < 1e-3 && (last.1 - goal.1).abs() < 1e-3);
+    }
 }

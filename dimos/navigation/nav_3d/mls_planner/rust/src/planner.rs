@@ -2,7 +2,7 @@
 // SPDX-License-Identifier: Apache-2.0
 
 use std::cmp::Ordering;
-use std::collections::BinaryHeap;
+use std::collections::{BinaryHeap, VecDeque};
 
 use ahash::{AHashMap, AHashSet};
 
@@ -119,17 +119,22 @@ pub fn plan(
 
     let node_cells: AHashSet<NodeId> = plg.nodes.iter().map(|n| n.cell_id).collect();
 
-    let goal_segment = walk_preds(&plg.cell_state, goal_cell);
-    let Some(&goal_node) = goal_segment.last() else {
-        tracing::warn!(?goal_coord, "plan failed: goal has no predecessor chain");
-        return None;
-    };
+    // The penalized Voronoi cannot own sub-clearance goals, so fall back to the
+    // nearest node by hops. A real failure then reports as disconnected below.
+    let mut goal_segment = walk_preds(&plg.cell_state, goal_cell);
+    let mut goal_node = *goal_segment
+        .last()
+        .expect("walk_preds returns at least the start cell");
     if !node_cells.contains(&goal_node) {
-        tracing::warn!(
-            ?goal_coord,
-            "plan failed: goal region does not reach a graph node"
-        );
-        return None;
+        let Some((node, path)) = nearest_node(&plg.cells, goal_cell, &node_cells) else {
+            tracing::warn!(
+                ?goal_coord,
+                "plan failed: goal's connected component has no graph node"
+            );
+            return None;
+        };
+        goal_node = node;
+        goal_segment = path;
     }
 
     // Rooted at the goal so one pass covers every node's cost-to-go.
@@ -159,7 +164,7 @@ pub fn plan(
             candidates = start_candidates.len().min(MAX_SNAP_ATTEMPTS),
             reachable_nodes = cost_to_go.len(),
             total_nodes = plg.nodes.len(),
-            "plan failed: no start candidate connects to the goal component",
+            "plan failed: start and goal lie on separate connected surface components",
         );
         return None;
     };
@@ -258,6 +263,46 @@ fn robot_search(
         }
     }
     (dist, pred)
+}
+
+/// Nearest node to `from` by hops, ignoring edge cost so it reaches a node
+/// across cells the wall penalty makes impassable. Returns the node and the
+/// path from `from`.
+fn nearest_node(
+    cells: &SurfaceCells,
+    from: CellId,
+    node_cells: &AHashSet<NodeId>,
+) -> Option<(NodeId, Vec<CellId>)> {
+    if node_cells.contains(&from) {
+        return Some((from, vec![from]));
+    }
+    let mut pred: AHashMap<CellId, CellId> = AHashMap::new();
+    let mut seen: AHashSet<CellId> = AHashSet::new();
+    let mut queue: VecDeque<CellId> = VecDeque::new();
+    seen.insert(from);
+    queue.push_back(from);
+
+    while let Some(u) = queue.pop_front() {
+        for edge in cells.neighbors(u) {
+            let v = edge.dest;
+            if !seen.insert(v) {
+                continue;
+            }
+            pred.insert(v, u);
+            if node_cells.contains(&v) {
+                let mut path = vec![v];
+                let mut cur = v;
+                while let Some(&p) = pred.get(&cur) {
+                    cur = p;
+                    path.push(cur);
+                }
+                path.reverse();
+                return Some((v, path));
+            }
+            queue.push_back(v);
+        }
+    }
+    None
 }
 
 /// Walk predecessors back to the search source.

@@ -172,6 +172,10 @@ fn boundary_edge_map(
                         continue;
                     }
                     let cost = du + edge.cost + dv;
+                    // Skip impassable crossings
+                    if !cost.is_finite() {
+                        continue;
+                    }
                     let (key_a, key_b, bu, bv) = if sa < sb {
                         (sa, sb, u, v)
                     } else {
@@ -296,6 +300,50 @@ mod tests {
                 (c((10, 0, 0)), c((17, 0, 0)))
             ]
         );
+    }
+
+    #[test]
+    fn infinite_crossing_is_not_an_edge() {
+        // The only crossing between the two nodes is impassable, so no edge.
+        let surface: Vec<VoxelKey> = (0..6).map(|x| (x, 0, 0)).collect();
+        let mut plg = PlannerGraph::new();
+        build_surface_lookup(&surface, &mut plg.surface_lookup);
+        build_surface_cells(&mut plg.cells, &plg.surface_lookup, VOXEL, 2);
+
+        let c2 = plg.cells.id((2, 0, 0)).unwrap();
+        let c3 = plg.cells.id((3, 0, 0)).unwrap();
+        for e in plg.cells.edges_mut(c2) {
+            if e.dest == c3 {
+                e.cost = f32::INFINITY;
+            }
+        }
+        for e in plg.cells.edges_mut(c3) {
+            if e.dest == c2 {
+                e.cost = f32::INFINITY;
+            }
+        }
+
+        plg.nodes = [(0, 0, 0), (5, 0, 0)]
+            .iter()
+            .map(|&c| NodeData {
+                cell_id: plg.cells.id(c).unwrap(),
+                pos: surface_point_xyz(c.0, c.1, c.2, VOXEL),
+            })
+            .collect();
+        build_node_edges(
+            &plg.cells,
+            &plg.nodes,
+            &mut plg.cell_state,
+            &mut plg.node_edges,
+            &mut plg.node_adj,
+        );
+
+        assert!(
+            plg.node_edges.is_empty(),
+            "an infinite crossing is not an edge"
+        );
+        // Walking boundaries must not panic on an unset boundary cell.
+        edges_to_segments(&plg.cells, &plg.cell_state, &plg.node_edges);
     }
 
     #[test]

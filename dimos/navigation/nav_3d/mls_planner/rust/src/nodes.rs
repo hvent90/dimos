@@ -5,6 +5,8 @@
 //! nodes at local maxima via NMS, and rescale cell-edge costs to push paths
 //! toward corridor centers.
 
+use std::cmp::Ordering;
+
 use ahash::{AHashMap, AHashSet};
 use rayon::prelude::*;
 
@@ -58,6 +60,9 @@ pub fn place_nodes(
         node_spacing_m,
         out_nodes,
     );
+
+    let domain: Vec<CellId> = cells.ids().collect();
+    ensure_node_per_component(cells, &state.dist, voxel_size, &domain, out_nodes);
 
     apply_wall_safe_penalty(
         cells,
@@ -134,6 +139,13 @@ pub fn place_nodes_region(
         node_spacing_m,
         nodes,
     );
+
+    let domain: Vec<CellId> = window
+        .iter()
+        .copied()
+        .filter(|&id| cells.is_live(id))
+        .collect();
+    ensure_node_per_component(cells, &wall_state.dist, voxel_size, &domain, nodes);
 
     apply_wall_safe_penalty_region(
         cells,
@@ -348,6 +360,120 @@ pub(crate) fn penalty_of(d: f32, clearance_m: f32, buffer_m: f32, weight: f32) -
     1.0 + weight * t * t
 }
 
+/// Seed a node in every connected component in `domain` that the clearance
+/// floor left empty, so a thin or sparse component is still reachable. `domain`
+/// is every live cell for a full rebuild, or the window for an incremental one.
+fn ensure_node_per_component(
+    cells: &SurfaceCells,
+    dist: &[f32],
+    voxel_size: f32,
+    domain: &[CellId],
+    out_nodes: &mut Vec<NodeData>,
+) {
+    if domain.is_empty() {
+        return;
+    }
+    let node_cells: AHashSet<CellId> = out_nodes.iter().map(|n| n.cell_id).collect();
+    let in_domain: AHashSet<CellId> = domain.iter().copied().collect();
+
+    let mut uf = UnionFind::default();
+    for &id in domain {
+        uf.make(id);
+    }
+    for &id in domain {
+        for e in cells.neighbors(id) {
+            if in_domain.contains(&e.dest) {
+                uf.union(id, e.dest);
+            }
+        }
+    }
+
+    // Served: the component holds or borders a node, including one outside domain.
+    let mut served: AHashSet<CellId> = AHashSet::new();
+    for &id in domain {
+        let touches_node = node_cells.contains(&id)
+            || cells
+                .neighbors(id)
+                .iter()
+                .any(|e| node_cells.contains(&e.dest));
+        if touches_node {
+            served.insert(uf.find(id));
+        }
+    }
+
+    // Clearest cell per still-unserved component.
+    let mut best: AHashMap<CellId, CellId> = AHashMap::new();
+    for &id in domain {
+        let root = uf.find(id);
+        if served.contains(&root) {
+            continue;
+        }
+        match best.get(&root) {
+            Some(&cur) if !is_clearer(cells, dist, id, cur) => {}
+            _ => {
+                best.insert(root, id);
+            }
+        }
+    }
+
+    out_nodes.reserve(best.len());
+    for &id in best.values() {
+        let (ix, iy, iz) = cells.coord(id);
+        out_nodes.push(NodeData {
+            cell_id: id,
+            pos: surface_point_xyz(ix, iy, iz, voxel_size),
+        });
+    }
+}
+
+/// Better fallback seed: farther from a wall, ties broken by coordinate.
+fn is_clearer(cells: &SurfaceCells, dist: &[f32], a: CellId, b: CellId) -> bool {
+    match dist[a as usize].total_cmp(&dist[b as usize]) {
+        Ordering::Greater => true,
+        Ordering::Less => false,
+        Ordering::Equal => cells.coord(a) < cells.coord(b),
+    }
+}
+
+/// Union-find keyed by CellId so the incremental path pays for the window only.
+#[derive(Default)]
+struct UnionFind {
+    parent: AHashMap<CellId, CellId>,
+}
+
+impl UnionFind {
+    fn make(&mut self, x: CellId) {
+        self.parent.entry(x).or_insert(x);
+    }
+
+    fn find(&mut self, x: CellId) -> CellId {
+        let mut root = x;
+        while let Some(&p) = self.parent.get(&root) {
+            if p == root {
+                break;
+            }
+            root = p;
+        }
+        let mut cur = x;
+        while let Some(&p) = self.parent.get(&cur) {
+            if p == root {
+                break;
+            }
+            self.parent.insert(cur, root);
+            cur = p;
+        }
+        root
+    }
+
+    fn union(&mut self, a: CellId, b: CellId) {
+        let ra = self.find(a);
+        let rb = self.find(b);
+        if ra != rb {
+            self.parent.insert(ra, rb);
+        }
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -403,6 +529,28 @@ mod tests {
             &mut sc, VOXEL, 1.0, 0.0, 0.3, 1.0, 0.0, &mut state, &mut nodes,
         );
         assert!(!nodes.is_empty());
+    }
+
+    #[test]
+    fn each_disconnected_component_gets_a_node() {
+        // Two 1-wide strips far apart: every cell is wall-adjacent so none
+        // clears the 0.5 m clearance floor, yet each disconnected strip must
+        // still get exactly one node.
+        let mut cells_in: Vec<VoxelKey> = (0..8).map(|ix| (ix, 0, 0)).collect();
+        cells_in.extend((0..8).map(|ix| (ix, 20, 0)));
+        let mut sc = build_cells(&cells_in, 2);
+        let mut state = DijkstraState::default();
+        let mut nodes = Vec::new();
+        place_nodes(
+            &mut sc, VOXEL, 1.0, 0.5, 0.3, 1.0, 0.0, &mut state, &mut nodes,
+        );
+        assert_eq!(
+            nodes.len(),
+            2,
+            "each disconnected component needs its own node"
+        );
+        let ys: Vec<i32> = nodes.iter().map(|n| sc.coord(n.cell_id).1).collect();
+        assert!(ys.contains(&0) && ys.contains(&20));
     }
 
     #[test]
