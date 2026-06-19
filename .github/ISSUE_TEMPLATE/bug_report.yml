@@ -46,13 +46,3 @@ body:
         Robot/sim/hardware:
     validations:
       required: true
-  - type: dropdown
-    id: willing-to-fix
-    attributes:
-      label: Are you willing to help fix this?
-      options:
-        - "Yes"
-        - "No"
-        - "Maybe"
-    validations:
-      required: true
