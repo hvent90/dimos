@@ -48,6 +48,10 @@ _Avoid_: Batch planning, independent planning
 An API-level identifier for a planning group, always written as `{robot_name}/{group_name}`. `/` is reserved as the delimiter and is not part of either component.
 _Avoid_: Bare group name, robot ID
 
+**Default Planning Group**:
+The generated fallback planning group used by robot-scoped compatibility APIs when no planning group is specified explicitly. It is not inferred from arbitrary SRDF group uniqueness.
+_Avoid_: Unique planning group, primary planning group
+
 **Planning Group Descriptor**:
 A read-only snapshot returned by query APIs that describes an available planning group and may be used ergonomically as a planning group selector.
 _Avoid_: Live planning group handle, resolved planning group
@@ -71,6 +75,10 @@ _Avoid_: Namespaced local joint state, prefixed joint state
 **Generated Plan**:
 A flat planning result that may contain one or more robots. Joint states in a generated plan require names and use global joint names so the plan remains unambiguous across robot boundaries.
 _Avoid_: Robot-scoped joint plan, local joint plan
+
+**Group-Scoped Preview**:
+A visualization request for a generated plan over a planning group or planning group selection. A visualization backend may render the whole robot when partial-group rendering is not practical, but the API scope remains the generated plan's selected planning groups.
+_Avoid_: Robot-scoped preview API
 
 **Global Joint Name**:
 A boundary-level joint name that mechanically combines a robot name and local model joint name as `{robot_name}/{local_joint_name}` so it is stable and unique in flat joint-state representations, even when the local model joint name is already descriptive. `/` is reserved as the delimiter and is not part of either component.

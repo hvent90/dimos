@@ -210,12 +210,35 @@ class RRTConnectPlanner:
                 "the robot controllable joint set exactly",
             )
 
-        return self.plan_joint_path(
+        local_start = _global_joint_state_to_local(
+            start,
+            robot_config.name,
+            list(robot_config.joint_names),
+            selected_joint_names,
+        )
+        local_goal = _global_joint_state_to_local(
+            goal,
+            robot_config.name,
+            list(robot_config.joint_names),
+            selected_joint_names,
+        )
+        result = self.plan_joint_path(
             world=world,
             robot_id=robot_id,
-            start=_order_joint_state(start, selected_joint_names),
-            goal=_order_joint_state(goal, selected_joint_names),
+            start=local_start,
+            goal=local_goal,
             timeout=timeout,
+        )
+        if not result.is_success():
+            return result
+        return PlanningResult(
+            status=result.status,
+            path=_local_path_to_global(result.path, robot_config.name, selected_joint_names),
+            planning_time=result.planning_time,
+            path_length=result.path_length,
+            iterations=result.iterations,
+            message=result.message,
+            timestamps=result.timestamps,
         )
 
     def _plan_multi_robot_selected_joint_path(
@@ -676,6 +699,44 @@ def _robot_joint_state_from_combined(
         name=[local_joint_name_from_global(robot_name, name) for name in robot_joint_names],
         position=[position_by_name[name] for name in robot_joint_names],
     )
+
+
+def _global_joint_state_to_local(
+    joint_state: JointState,
+    robot_name: str,
+    robot_joint_names: list[str],
+    global_joint_names: list[str],
+) -> JointState:
+    position_by_name = dict(zip(joint_state.name, joint_state.position, strict=True))
+    local_joint_names = [
+        local_joint_name_from_global(robot_name, name) for name in global_joint_names
+    ]
+    if local_joint_names != robot_joint_names:
+        raise ValueError("Global selected joints do not match robot joint order")
+    return JointState(
+        name=robot_joint_names,
+        position=[position_by_name[global_name] for global_name in global_joint_names],
+    )
+
+
+def _local_path_to_global(
+    path: JointPath,
+    robot_name: str,
+    global_joint_names: list[str],
+) -> JointPath:
+    local_joint_names = [
+        local_joint_name_from_global(robot_name, name) for name in global_joint_names
+    ]
+    global_path: JointPath = []
+    for waypoint in path:
+        position_by_name = dict(zip(waypoint.name, waypoint.position, strict=True))
+        global_path.append(
+            JointState(
+                name=global_joint_names,
+                position=[position_by_name[local_name] for local_name in local_joint_names],
+            )
+        )
+    return global_path
 
 
 def _coupled_config_collision_free(

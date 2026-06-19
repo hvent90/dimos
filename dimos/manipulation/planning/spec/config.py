@@ -21,6 +21,7 @@ from pathlib import Path
 from pydantic import Field
 
 from dimos.core.module import ModuleConfig
+from dimos.manipulation.planning.planning_groups import FALLBACK_PLANNING_GROUP_NAME
 from dimos.manipulation.planning.planning_identifiers import (
     assert_local_joint_names,
     assert_valid_robot_name,
@@ -93,3 +94,13 @@ class RobotModelConfig(ModuleConfig):
         """Validate delimiter-based naming constraints."""
         assert_valid_robot_name(self.name)
         assert_local_joint_names(self.joint_names)
+        if not self.planning_groups:
+            self.planning_groups = [
+                PlanningGroupDefinition(
+                    name=FALLBACK_PLANNING_GROUP_NAME,
+                    joint_names=tuple(self.joint_names),
+                    base_link=self.base_link,
+                    tip_link=self.end_effector_link,
+                    source="fallback",
+                )
+            ]

@@ -18,7 +18,7 @@ from __future__ import annotations
 
 import pytest
 
-from dimos.manipulation.planning.planning_group_utils import normalize_joint_target_for_group
+from dimos.manipulation.planning.planning_group_utils import joint_target_to_global_names
 from dimos.manipulation.planning.spec.models import ResolvedPlanningGroup
 from dimos.msgs.sensor_msgs.JointState import JointState
 
@@ -40,7 +40,7 @@ def test_normalize_joint_target_accepts_named_global_targets_in_group_order() ->
     group = _make_group()
     target = JointState(name=["left/j3", "left/j1", "left/j2"], position=[3.0, 1.0, 2.0])
 
-    normalized = normalize_joint_target_for_group(group, target)
+    normalized = joint_target_to_global_names(group, target)
 
     assert normalized.name == ["left/j1", "left/j2", "left/j3"]
     assert normalized.position == [1.0, 2.0, 3.0]
@@ -50,7 +50,7 @@ def test_normalize_joint_target_accepts_named_local_targets_in_group_order() -> 
     group = _make_group()
     target = JointState(name=["j2", "j3", "j1"], position=[2.0, 3.0, 1.0])
 
-    normalized = normalize_joint_target_for_group(group, target)
+    normalized = joint_target_to_global_names(group, target)
 
     assert normalized.name == ["left/j1", "left/j2", "left/j3"]
     assert normalized.position == [1.0, 2.0, 3.0]
@@ -61,4 +61,4 @@ def test_normalize_joint_target_rejects_mixed_global_and_local_target_names() ->
     target = JointState(name=["left/j1", "j2", "left/j3"], position=[1.0, 2.0, 3.0])
 
     with pytest.raises(ValueError, match="mixes global and local joint names"):
-        normalize_joint_target_for_group(group, target)
+        joint_target_to_global_names(group, target)

@@ -35,7 +35,7 @@ from dimos.manipulation.planning.planning_identifiers import (
 from dimos.manipulation.planning.spec.config import RobotModelConfig
 from dimos.manipulation.planning.spec.enums import ObstacleType
 from dimos.manipulation.planning.spec.models import (
-    JointPath,
+    GeneratedPlan,
     Obstacle,
     PlanningGroupDescriptor,
     PlanningGroupID,
@@ -47,7 +47,7 @@ from dimos.manipulation.planning.utils.mesh_utils import prepare_urdf_for_drake
 from dimos.utils.logging_config import setup_logger
 
 if TYPE_CHECKING:
-    from collections.abc import Generator
+    from collections.abc import Generator, Sequence
 
     from numpy.typing import NDArray
 
@@ -803,7 +803,7 @@ class DrakeWorld(WorldSpec, VisualizationSpec):
                 self.publish_visualization()
                 # Hide all preview robots initially
                 for robot_id in self._robots:
-                    self.hide_preview(robot_id)
+                    self._hide_preview_robot(robot_id)
 
     @property
     def is_finalized(self) -> bool:
@@ -1233,8 +1233,18 @@ class DrakeWorld(WorldSpec, VisualizationSpec):
             full_positions[idx] = positions[i]
         self._plant.SetPositions(plant_ctx, full_positions)
 
-    def show_preview(self, robot_id: WorldRobotID) -> None:
-        """Show the preview (yellow ghost) robot in Meshcat."""
+    def _preview_robot_ids_for_groups(
+        self, group_ids: Sequence[PlanningGroupID]
+    ) -> list[WorldRobotID]:
+        """Resolve planning groups to stable preview robot IDs."""
+        robot_ids: list[WorldRobotID] = []
+        for group in self.resolve_planning_groups(tuple(group_ids)):
+            if group.robot_id not in robot_ids:
+                robot_ids.append(group.robot_id)
+        return robot_ids
+
+    def _show_preview_robot(self, robot_id: WorldRobotID) -> None:
+        """Show one preview (yellow ghost) robot in Meshcat."""
         if self._meshcat is None:
             return
         robot_data = self._robots.get(robot_id)
@@ -1243,8 +1253,13 @@ class DrakeWorld(WorldSpec, VisualizationSpec):
         model_name = self._plant.GetModelInstanceName(robot_data.preview_model_instance)
         self._meshcat.SetProperty(f"visualizer/{model_name}", "visible", True)
 
-    def hide_preview(self, robot_id: WorldRobotID) -> None:
-        """Hide the preview (yellow ghost) robot in Meshcat."""
+    def show_preview(self, group_ids: Sequence[PlanningGroupID]) -> None:
+        """Show preview robots affected by planning groups."""
+        for robot_id in self._preview_robot_ids_for_groups(group_ids):
+            self._show_preview_robot(robot_id)
+
+    def _hide_preview_robot(self, robot_id: WorldRobotID) -> None:
+        """Hide one preview (yellow ghost) robot in Meshcat."""
         if self._meshcat is None:
             return
         robot_data = self._robots.get(robot_id)
@@ -1253,32 +1268,63 @@ class DrakeWorld(WorldSpec, VisualizationSpec):
         model_name = self._plant.GetModelInstanceName(robot_data.preview_model_instance)
         self._meshcat.SetProperty(f"visualizer/{model_name}", "visible", False)
 
-    def animate_path(
+    def hide_preview(self, group_ids: Sequence[PlanningGroupID]) -> None:
+        """Hide preview robots affected by planning groups."""
+        for robot_id in self._preview_robot_ids_for_groups(group_ids):
+            self._hide_preview_robot(robot_id)
+
+    def _preview_positions_for_waypoint(
         self,
         robot_id: WorldRobotID,
-        path: JointPath,
-        duration: float = 3.0,
-    ) -> None:
-        """Animate a path using the preview (yellow ghost) robot.
+        selected_positions_by_name: dict[str, float],
+        current_positions: NDArray[np.float64],
+    ) -> NDArray[np.float64]:
+        """Build full local preview positions for one robot from selected globals."""
+        robot_data = self._robots[robot_id]
+        positions = current_positions.copy()
+        for index, local_name in enumerate(robot_data.config.joint_names):
+            global_name = make_global_joint_name(robot_data.config.name, local_name)
+            if global_name in selected_positions_by_name:
+                positions[index] = selected_positions_by_name[global_name]
+        return positions
+
+    def animate_plan(self, plan: GeneratedPlan, duration: float = 3.0) -> None:
+        """Animate a generated plan using preview (yellow ghost) robots.
 
         The preview stays visible after animation completes.
         """
-        if self._meshcat is None or len(path) < 2:
+        if self._meshcat is None or len(plan.path) < 2:
             return
 
-        robot_data = self._robots.get(robot_id)
-        if robot_data is None or robot_data.preview_model_instance is None:
+        robot_ids = [
+            robot_id
+            for robot_id in self._preview_robot_ids_for_groups(plan.group_ids)
+            if self._robots[robot_id].preview_model_instance is not None
+        ]
+        if not robot_ids:
             return
 
         import time
 
-        self.show_preview(robot_id)
-        dt = duration / (len(path) - 1)
-        for joint_state in path:
-            positions = np.array(joint_state.position, dtype=np.float64)
+        self.show_preview(plan.group_ids)
+        dt = duration / (len(plan.path) - 1)
+        for joint_state in plan.path:
+            selected_positions_by_name = dict(
+                zip(joint_state.name, joint_state.position, strict=True)
+            )
             with self._lock:
                 assert self._plant_context is not None
-                self._set_preview_positions(self._plant_context, robot_id, positions)
+                for robot_id in robot_ids:
+                    robot_data = self._robots[robot_id]
+                    current_positions = self._plant.GetPositions(
+                        self._plant_context, robot_data.model_instance
+                    )
+                    positions = self._preview_positions_for_waypoint(
+                        robot_id,
+                        selected_positions_by_name,
+                        np.array(current_positions, dtype=np.float64),
+                    )
+                    self._set_preview_positions(self._plant_context, robot_id, positions)
             self.publish_visualization()
             time.sleep(dt)
 

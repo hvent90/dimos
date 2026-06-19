@@ -110,11 +110,11 @@ def filter_joint_state_to_selected_joints(
     return JointState({"name": list(global_joint_names), "position": selected_positions})
 
 
-def normalize_joint_target_for_group(
+def joint_target_to_global_names(
     group: ResolvedPlanningGroup,
     target: JointState,
 ) -> JointState:
-    """Normalize a group joint target to global joint names in group order.
+    """Convert a group joint target to global joint names in group order.
 
     Named targets may use either the public global planning names or the
     robot-local model names used by legacy robot-scoped callers, but the two

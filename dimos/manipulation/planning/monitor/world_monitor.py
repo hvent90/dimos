@@ -31,7 +31,7 @@ from dimos.msgs.sensor_msgs.JointState import JointState
 from dimos.utils.logging_config import setup_logger
 
 if TYPE_CHECKING:
-    from collections.abc import Generator
+    from collections.abc import Generator, Sequence
 
     import numpy as np
     from numpy.typing import NDArray
@@ -39,6 +39,7 @@ if TYPE_CHECKING:
     from dimos.manipulation.planning.spec.config import RobotModelConfig
     from dimos.manipulation.planning.spec.models import (
         CollisionObjectMessage,
+        GeneratedPlan,
         JointPath,
         Obstacle,
         PlanningGroupID,
@@ -459,25 +460,20 @@ class WorldMonitor:
         if self._visualization is not None:
             self._visualization.publish_visualization()
 
-    def show_preview(self, robot_id: WorldRobotID) -> None:
-        """Show the preview representation for a robot if visualization is available."""
+    def show_preview(self, group_ids: Sequence[PlanningGroupID]) -> None:
+        """Show preview representation for planning groups if visualization is available."""
         if self._visualization is not None:
-            self._visualization.show_preview(robot_id)
+            self._visualization.show_preview(group_ids)
 
-    def hide_preview(self, robot_id: WorldRobotID) -> None:
-        """Hide the preview representation for a robot if visualization is available."""
+    def hide_preview(self, group_ids: Sequence[PlanningGroupID]) -> None:
+        """Hide preview representation for planning groups if visualization is available."""
         if self._visualization is not None:
-            self._visualization.hide_preview(robot_id)
+            self._visualization.hide_preview(group_ids)
 
-    def animate_path(
-        self,
-        robot_id: WorldRobotID,
-        path: JointPath,
-        duration: float = 3.0,
-    ) -> None:
-        """Animate a path if visualization is available."""
+    def animate_plan(self, plan: GeneratedPlan, duration: float = 3.0) -> None:
+        """Animate a generated plan if visualization is available."""
         if self._visualization is not None:
-            self._visualization.animate_path(robot_id, path, duration)
+            self._visualization.animate_plan(plan, duration)
 
     def start_visualization_thread(self, rate_hz: float = 10.0) -> None:
         """Start background thread for visualization updates at given rate."""

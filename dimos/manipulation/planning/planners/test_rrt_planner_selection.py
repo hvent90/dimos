@@ -81,6 +81,8 @@ class _SelectionWorld:
         self._robot_configs = robot_configs
         self._coupled_collision_predicate = coupled_collision_predicate
         self.coupled_collision_checks = 0
+        self.config_collision_names: list[list[str]] = []
+        self.edge_collision_names: list[tuple[list[str], list[str]]] = []
 
     def resolve_planning_groups(
         self, group_ids: tuple[str, ...]
@@ -94,6 +96,7 @@ class _SelectionWorld:
         return list(self._robot_configs)
 
     def check_config_collision_free(self, robot_id: str, joint_state: JointState) -> bool:
+        self.config_collision_names.append(list(joint_state.name))
         return True
 
     def get_joint_limits(self, robot_id: str) -> tuple[np.ndarray, np.ndarray]:
@@ -107,6 +110,7 @@ class _SelectionWorld:
         goal: JointState,
         step_size: float,
     ) -> bool:
+        self.edge_collision_names.append((list(start.name), list(goal.name)))
         return True
 
     def scratch_context(self) -> nullcontext[dict[str, JointState]]:
@@ -186,6 +190,37 @@ def test_plan_selected_joint_path_plans_cross_robot_full_group_selection() -> No
     assert result.path[0].name == ["left/joint1", "right/joint1"]
     assert result.path[-1].position == [0.1, -0.1]
     assert world.coupled_collision_checks > 0
+
+
+def test_plan_selected_joint_path_converts_single_robot_backend_boundary_to_local() -> None:
+    world = _SelectionWorld(
+        groups={
+            "arm/manipulator": _group(
+                "arm/manipulator",
+                "robot_1",
+                "arm",
+                ("arm/joint1", "arm/joint2"),
+            )
+        },
+        robot_configs={"robot_1": _robot_config("arm", ["joint1", "joint2"])},
+    )
+
+    result = RRTConnectPlanner().plan_selected_joint_path(
+        cast("WorldSpec", world),
+        ["arm/manipulator"],
+        start=_joint_state(["arm/joint2", "arm/joint1"], [0.2, 0.1]),
+        goal=_joint_state(["arm/joint1", "arm/joint2"], [0.3, 0.4]),
+    )
+
+    assert result.status == PlanningStatus.SUCCESS
+    assert [waypoint.name for waypoint in result.path] == [
+        ["arm/joint1", "arm/joint2"],
+        ["arm/joint1", "arm/joint2"],
+    ]
+    assert result.path[0].position == [0.1, 0.2]
+    assert result.path[-1].position == [0.3, 0.4]
+    assert world.config_collision_names == [["joint1", "joint2"], ["joint1", "joint2"]]
+    assert world.edge_collision_names == [(["joint1", "joint2"], ["joint1", "joint2"])]
 
 
 def test_plan_selected_joint_path_rejects_cross_robot_coupled_goal_collision() -> None:

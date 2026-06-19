@@ -23,6 +23,7 @@ from __future__ import annotations
 from typing import TYPE_CHECKING, Any, Protocol, runtime_checkable
 
 if TYPE_CHECKING:
+    from collections.abc import Sequence
     from contextlib import AbstractContextManager
 
     import numpy as np
@@ -30,8 +31,8 @@ if TYPE_CHECKING:
 
     from dimos.manipulation.planning.spec.config import RobotModelConfig
     from dimos.manipulation.planning.spec.models import (
+        GeneratedPlan,
         IKResult,
-        JointPath,
         Obstacle,
         PlanningGroupDescriptor,
         PlanningGroupID,
@@ -220,16 +221,16 @@ class VisualizationSpec(Protocol):
         """Publish current state to visualization."""
         ...
 
-    def show_preview(self, robot_id: WorldRobotID) -> None:
-        """Show the preview representation for a robot."""
+    def show_preview(self, group_ids: Sequence[PlanningGroupID]) -> None:
+        """Show preview representations for the selected planning groups."""
         ...
 
-    def hide_preview(self, robot_id: WorldRobotID) -> None:
-        """Hide the preview representation for a robot."""
+    def hide_preview(self, group_ids: Sequence[PlanningGroupID]) -> None:
+        """Hide preview representations for the selected planning groups."""
         ...
 
-    def animate_path(self, robot_id: WorldRobotID, path: JointPath, duration: float = 3.0) -> None:
-        """Animate a path in visualization."""
+    def animate_plan(self, plan: GeneratedPlan, duration: float = 3.0) -> None:
+        """Animate a generated plan in visualization."""
         ...
 
     def close(self) -> None:
