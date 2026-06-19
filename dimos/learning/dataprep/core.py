@@ -272,6 +272,8 @@ def iter_episode_samples(
 
     # Build the sequence of target timestamps for this episode.
     if sync.rate_hz > 0:
+        # Uniform 1/rate_hz grid, phase-locked to the first anchor sample —
+        # what LeRobot expects (it assumes contiguous fixed-fps frames).
         period = 1.0 / sync.rate_hz
         targets: list[float] = []
         t = anchor_ts[0]
@@ -280,6 +282,9 @@ def iter_episode_samples(
             targets.append(t)
             t += period
     else:
+        # rate_hz=0: follow the anchor's own timestamps (no image resampling).
+        # dt is irregular if the camera jitters — fine for hdf5/custom trainers,
+        # but not LeRobot-uniform.
         targets = list(anchor_ts)
 
     def _nearest(key: str, t: float) -> Any | None:
