@@ -15,7 +15,7 @@
 from __future__ import annotations
 
 import argparse
-from collections.abc import Callable
+from collections.abc import Callable, Iterator
 from dataclasses import asdict
 from datetime import date
 import math
@@ -77,6 +77,7 @@ from dimos.utils.characterization.modeling.fopdt import fit_fopdt, fopdt_step_re
 
 _CHANNELS = ("vx", "vy", "wz")
 _SIM_DT = 0.02  # in-process self-test integration step (not robot-specific)
+_FLOOR_CAP_EPS = 1e-9  # float-rounding guard so a cap on a step boundary is probed
 
 REPORTS_DIR = Path(__file__).parent / "reports"
 DEFAULT_OUT_DIR = get_project_root() / "data" / "characterization"
@@ -169,29 +170,49 @@ def _clamp(v: float, lo: float, hi: float) -> float:
 
 
 def _d3_sustained_pass(
+    ts: np.ndarray,
     ys: np.ndarray,
     amp: float,
     motion_threshold: float,
     fractional_threshold: float,
     sustained: int,
-) -> tuple[bool, int]:
+    displacement_threshold: float,
+) -> tuple[bool, int, float]:
+    """D3 floor gate: a probe "moved" iff it genuinely translated.
+
+    AND of two tests on the signed body-frame velocity ``ys`` (sampled at
+    ``ts``), commanded at amplitude ``amp``:
+
+    1. NET signed displacement in the commanded direction exceeds
+       ``displacement_threshold`` (kills net-zero posture wobble whose
+       ``|v|`` spikes but whose integral cancels).
+    2. Signed velocity (in the commanded sign) sustains the motion+fractional
+       thresholds for ``sustained`` consecutive samples.
+
+    Returns ``(passed, longest_run, net_displacement_in_cmd_dir)``.
+    """
     if len(ys) == 0 or amp == 0.0:
-        return False, 0
-    abs_ys = np.abs(ys)
-    pass_mask = (abs_ys > motion_threshold) & (abs_ys > fractional_threshold * abs(amp))
+        return False, 0, 0.0
+    cmd_sign = math.copysign(1.0, amp)
+    net = float(np.trapezoid(ys, ts)) if len(ts) == len(ys) and len(ts) > 1 else 0.0
+    net_in_cmd_dir = cmd_sign * net
+    pass_displacement = net_in_cmd_dir >= displacement_threshold
+
+    signed = cmd_sign * np.asarray(ys, dtype=float)
+    pass_mask = (signed > motion_threshold) & (signed > fractional_threshold * abs(amp))
     longest = 0
     cur = 0
-    passed = False
+    pass_sustained = False
     for v in pass_mask:
         if v:
             cur += 1
             if cur > longest:
                 longest = cur
             if cur >= sustained:
-                passed = True
+                pass_sustained = True
         else:
             cur = 0
-    return passed, longest
+    return (pass_displacement and pass_sustained), longest, net_in_cmd_dir
 
 
 def _pick_linear_regime_fit(fits: list[dict], r2_floor: float = 0.9) -> dict | None:
@@ -207,6 +228,25 @@ def _channel_cap(profile: RobotPlantProfile, channel: str) -> float:
     return profile.wz_max if channel == "wz" else profile.vx_max
 
 
+def _floor_candidate_amplitudes(
+    profile: RobotPlantProfile, channel: str
+) -> Iterator[tuple[float, bool]]:
+    """Yield ascending ``(amp, is_extension)``: first the predefined ladder,
+    then ``last + step`` until the per-channel cap (inclusive). ``is_extension``
+    flags amplitudes generated past the predefined list (for logging)."""
+    ladder = sorted(profile.floor_probe_amplitudes.get(channel, []))
+    for amp in ladder:
+        yield amp, False
+    step = profile.floor_probe_step.get(channel, 0.0)
+    cap = profile.floor_probe_max.get(channel, 0.0)
+    if step <= 0.0:
+        return
+    amp = (ladder[-1] if ladder else 0.0) + step
+    while amp <= cap + _FLOOR_CAP_EPS:
+        yield amp, True
+        amp += step
+
+
 def _envelope_from_channel_results(
     floor_probe: list[dict],
     sweep_fits: list[dict],
@@ -215,9 +255,8 @@ def _envelope_from_channel_results(
     channel: str,
 ) -> ChannelEnvelope:
     cap = _channel_cap(profile, channel)
-    floor, floor_nf = _floor_from_probe(
-        floor_probe, profile.floor_probe_amplitudes.get(channel, [])
-    )
+    probed_amps = [row["amp"] for row in floor_probe]
+    floor, floor_nf = _floor_from_probe(floor_probe, probed_amps)
     all_fits = sweep_fits + probe_fits
     ceiling, ceiling_nf = _output_ceiling(all_fits, cap)
     linear = _pick_linear_regime_fit(sweep_fits or all_fits)
@@ -297,18 +336,27 @@ def _fit_selftest(
 
     for channel in _CHANNELS:
         floor_results[channel] = []
-        for amp in profile.floor_probe_amplitudes.get(channel, []):
-            _, ys = _selftest_step(plant, channel, amp, profile.pre_roll_s, profile.step_s)
-            passed, longest = _d3_sustained_pass(
+        for amp, _is_ext in _floor_candidate_amplitudes(profile, channel):
+            t, ys = _selftest_step(plant, channel, amp, profile.pre_roll_s, profile.step_s)
+            passed, longest, net_disp = _d3_sustained_pass(
+                t,
                 ys,
                 amp,
                 profile.floor_motion_threshold,
                 profile.floor_fractional_threshold,
                 profile.floor_sustained_samples,
+                profile.floor_displacement_threshold.get(channel, 0.0),
             )
             floor_results[channel].append(
-                {"amp": amp, "motion_detected": passed, "sustained_samples": longest}
+                {
+                    "amp": amp,
+                    "motion_detected": passed,
+                    "sustained_samples": longest,
+                    "net_displacement": net_disp,
+                }
             )
+            if passed:
+                break
 
         per_amplitude[channel] = []
         for amp in profile.si_amplitudes[channel]:
@@ -865,26 +913,44 @@ def _fit_hw(
             floor_results[channel] = []
 
             print(f"\n=== [{channel}] floor probe ===")
-            for amp in profile.floor_probe_amplitudes.get(channel, []):
-                r = run_one_step(channel, amp, "FLOOR")
+            for amp, is_ext in _floor_candidate_amplitudes(profile, channel):
+                tag = "FLOOR+" if is_ext else "FLOOR"
+                r = run_one_step(channel, amp, tag)
+                if r["action"] == "skip":
+                    continue
                 if r["action"] != "ok":
                     floor_results[channel].append(
-                        {"amp": amp, "motion_detected": False, "sustained_samples": 0}
+                        {
+                            "amp": amp,
+                            "motion_detected": False,
+                            "sustained_samples": 0,
+                            "net_displacement": 0.0,
+                        }
                     )
                     continue
-                passed, longest = _d3_sustained_pass(
+                passed, longest, net_disp = _d3_sustained_pass(
+                    r["ts_fit"],
                     r["ys_filt"],
                     amp,
                     profile.floor_motion_threshold,
                     profile.floor_fractional_threshold,
                     profile.floor_sustained_samples,
+                    profile.floor_displacement_threshold.get(channel, 0.0),
                 )
                 floor_results[channel].append(
-                    {"amp": amp, "motion_detected": bool(passed), "sustained_samples": int(longest)}
+                    {
+                        "amp": amp,
+                        "motion_detected": bool(passed),
+                        "sustained_samples": int(longest),
+                        "net_displacement": float(net_disp),
+                    }
                 )
                 print(
-                    f"  {channel}@{amp}: motion={'YES' if passed else 'no'} longest_run={longest}"
+                    f"  {channel}@{amp}: motion={'YES' if passed else 'no'} "
+                    f"longest_run={longest} net_disp={net_disp:+.3f}"
                 )
+                if passed:
+                    break
 
             print(f"\n=== [{channel}] sweep ===")
             for amp in profile.si_amplitudes[channel]:

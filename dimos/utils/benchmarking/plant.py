@@ -72,6 +72,7 @@ class FloorProbeResult:
     amp: float
     motion_detected: bool
     sustained_samples: int  # longest contiguous run of passing samples
+    net_displacement: float = 0.0  # signed body-frame displacement in cmd dir
 
 
 @dataclass
@@ -327,6 +328,17 @@ class RobotPlantProfile:
             "wz": [0.05, 0.10, 0.20, 0.30],
         }
     )
+    # Ascending floor search: when the predefined floor_probe_amplitudes
+    # ladder is exhausted without detected motion, keep probing at
+    # last_amp + floor_probe_step[channel] until motion is found or the
+    # amplitude exceeds floor_probe_max[channel] (safety cap). Only when
+    # the cap is reached without motion is floor_not_found set.
+    floor_probe_step: dict[str, float] = field(
+        default_factory=lambda: {"vx": 0.05, "vy": 0.05, "wz": 0.10}
+    )
+    floor_probe_max: dict[str, float] = field(
+        default_factory=lambda: {"vx": 0.5, "vy": 0.5, "wz": 1.0}
+    )
     ceiling_probe_amplitudes: dict[str, list[float]] = field(
         default_factory=lambda: {"vx": [2.5, 3.0], "vy": [1.5, 2.0], "wz": [2.5, 3.0]}
     )
@@ -335,6 +347,12 @@ class RobotPlantProfile:
     floor_motion_threshold: float = 0.02  # m/s (vx/vy) or rad/s (wz)
     floor_fractional_threshold: float = 0.05  # |v_body| > 5% of |amp|
     floor_sustained_samples: int = 5
+    # Minimum NET signed displacement (commanded direction) over the probe
+    # window to count as real translation. Rejects net-zero posture wobble
+    # whose |v| spikes but whose integral cancels. m for vx/vy, rad for wz.
+    floor_displacement_threshold: dict[str, float] = field(
+        default_factory=lambda: {"vx": 0.05, "vy": 0.05, "wz": 0.10}
+    )
     # Ceiling K-sag: |K(amp)| drops below (1 - sag) * K_linear -> saturated.
     ceiling_k_sag_threshold: float = 0.15
     step_s: float = 8.0
@@ -378,7 +396,17 @@ GO2_PLANT_PROFILE = RobotPlantProfile(
         "vy": [0.02, 0.05, 0.10],
         "wz": [0.05, 0.10, 0.20, 0.30],
     },
+    # Go2: vx true floor ~0.2 (ladder tops at 0.15); step past it in 0.05
+    # increments up to 0.5 m/s before declaring floor_not_found. wz in
+    # 0.10 rad/s increments up to 1.0 rad/s.
+    floor_probe_step={"vx": 0.05, "vy": 0.05, "wz": 0.10},
+    floor_probe_max={"vx": 0.5, "vy": 0.5, "wz": 1.0},
     ceiling_probe_amplitudes={"vx": [2.5, 3.0], "vy": [1.5, 2.0], "wz": [2.5, 3.0]},
+    # Net-displacement floor gate. A genuine step at the true Go2 floor
+    # (~0.1 m/s held a couple seconds) covers >=0.2 m. Go2 odom can drift
+    # ~0.07 m over a window with NO real translation, so require 0.10 m /
+    # 0.10 rad net to count as motion (above odom drift, below real travel).
+    floor_displacement_threshold={"vx": 0.20, "vy": 0.10, "wz": 0.10},
     step_s=8.0,
     pre_roll_s=1.0,
     max_dist_m=6.0,

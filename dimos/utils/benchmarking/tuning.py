@@ -247,6 +247,7 @@ class FloorProbeResultDC:
     amp: float
     motion_detected: bool
     sustained_samples: int
+    net_displacement: float = 0.0  # signed body-frame displacement in cmd dir
 
 
 @dataclass
