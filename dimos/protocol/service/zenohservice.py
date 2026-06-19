@@ -60,6 +60,18 @@ def _global_zenoh_iface() -> str | None:
     return global_config.zenoh_iface
 
 
+def _global_zenoh_listen() -> list[str]:
+    """Read the process-wide Zenoh listen endpoints from global_config.
+
+    Comma-separated env value (DIMOS_ZENOH_LISTEN) becomes a list. Deferred
+    import keeps protocol/ free of core/ at import time.
+    """
+    from dimos.core.global_config import global_config
+
+    raw = global_config.zenoh_listen
+    return [e.strip() for e in raw.split(",") if e.strip()] if raw else []
+
+
 class ZenohSessionPool:
     def __init__(self) -> None:
         self._sessions: dict[str, zenoh.Session] = {}
@@ -77,8 +89,9 @@ class ZenohSessionPool:
                     zconfig.insert_json5("scouting/multicast/interface", json.dumps(iface))
                 if config.connect:
                     zconfig.insert_json5("connect/endpoints", json.dumps(config.connect))
-                if config.listen:
-                    zconfig.insert_json5("listen/endpoints", json.dumps(config.listen))
+                listen = config.listen or _global_zenoh_listen()
+                if listen:
+                    zconfig.insert_json5("listen/endpoints", json.dumps(listen))
                 self._sessions[key] = zenoh.open(zconfig)
                 logger.debug(f"Zenoh session opened in {config.mode} mode")
             return self._sessions[key]

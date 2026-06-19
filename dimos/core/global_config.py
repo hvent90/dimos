@@ -94,6 +94,15 @@ class GlobalConfig(BaseSettings):
         default=None,
         validation_alias=AliasChoices("DIMOS_ZENOH_IFACE", "zenoh_iface"),
     )
+    # Endpoints Zenoh listens on / advertises to peers (comma-separated, e.g.
+    # "tcp/127.0.0.1:0"). Pinning to loopback keeps all peer links on lo for
+    # same-host runs, so Zenoh never advertises a VPN NIC like Tailscale (whose
+    # same-host routing black-holes traffic and stalls the session). None = zenoh
+    # default: listen on every interface, which can hand peers a VPN address.
+    zenoh_listen: str | None = Field(
+        default=None,
+        validation_alias=AliasChoices("DIMOS_ZENOH_LISTEN", "zenoh_listen"),
+    )
     build_native: bool = DEFAULT_BUILD_NATIVE
     dtop: bool = False
     obstacle_avoidance: bool = True
