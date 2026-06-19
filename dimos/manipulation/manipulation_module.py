@@ -544,21 +544,25 @@ class ManipulationModule(Module):
         """Collect current state for exactly the selected global joints."""
         assert self._world_monitor is not None
         resolved_groups = self._world_monitor.world.resolve_planning_groups(group_ids)
+
+        robot_names_by_id: dict[WorldRobotID, RobotName] = {}
+        for group in resolved_groups:
+            robot_names_by_id.setdefault(group.robot_id, group.robot_name)
+
+        current_by_robot: dict[WorldRobotID, dict[str, float]] = {}
+        for robot_id, robot_name in robot_names_by_id.items():
+            current = self._world_monitor.get_current_joint_state(robot_id)
+            if current is None:
+                logger.error("No joint state for robot '%s'", robot_name)
+                return None
+            indexed_current = self._current_positions_by_name(robot_name, current)
+            if indexed_current is None:
+                return None
+            current_by_robot[robot_id] = indexed_current
+
         names: list[str] = []
         positions: list[float] = []
-        current_by_robot: dict[WorldRobotID, dict[str, float]] = {}
-
         for group in resolved_groups:
-            if group.robot_id not in current_by_robot:
-                current = self._world_monitor.get_current_joint_state(group.robot_id)
-                if current is None:
-                    logger.error("No joint state for robot '%s'", group.robot_name)
-                    return None
-                indexed_current = self._current_positions_by_name(group.robot_name, current)
-                if indexed_current is None:
-                    return None
-                current_by_robot[group.robot_id] = indexed_current
-
             robot_state = current_by_robot[group.robot_id]
             for resolved_name, local_name in zip(
                 group.joint_names, group.local_joint_names, strict=True
