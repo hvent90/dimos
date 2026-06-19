@@ -20,27 +20,29 @@ import importlib
 import importlib.util
 from pathlib import Path
 import sys
-from types import ModuleType
+from typing import cast
 
 from dimos.manipulation.planning.vamp.errors import VampDependencyError
+from dimos.manipulation.planning.vamp.protocols import VampModuleProtocol, VampRobotModuleProtocol
 from dimos.manipulation.planning.world.config import (
     CustomVampArtifactConfig,
     OfficialVampArtifactConfig,
     VampArtifactConfig,
 )
 
-
-def import_vamp() -> ModuleType:
-    """Import the optional VAMP package only when a VAMP backend is selected."""
-    try:
-        return importlib.import_module("vamp")
-    except ImportError as exc:
-        raise VampDependencyError() from exc
+try:
+    import vamp as _vamp_module
+except ImportError:
+    _vamp_module = None
 
 
-def load_vamp_robot_module(artifact: VampArtifactConfig) -> tuple[ModuleType, ModuleType]:
+def load_vamp_robot_module(
+    artifact: VampArtifactConfig,
+) -> tuple[VampModuleProtocol, VampRobotModuleProtocol]:
     """Load the VAMP package and configured robot module."""
-    vamp_module = import_vamp()
+    if _vamp_module is None:
+        raise VampDependencyError()
+    vamp_module = cast("VampModuleProtocol", _vamp_module)
     if isinstance(artifact, OfficialVampArtifactConfig):
         return vamp_module, _load_official_robot_module(vamp_module, artifact.robot)
     if isinstance(artifact, CustomVampArtifactConfig):
@@ -48,20 +50,20 @@ def load_vamp_robot_module(artifact: VampArtifactConfig) -> tuple[ModuleType, Mo
     raise TypeError(f"Unsupported VAMP artifact config: {type(artifact).__name__}")
 
 
-def _load_official_robot_module(vamp_module: ModuleType, robot: str) -> ModuleType:
-    robot_module = getattr(vamp_module, robot, None)
-    if isinstance(robot_module, ModuleType):
-        return robot_module
+def _load_official_robot_module(
+    vamp_module: VampModuleProtocol, robot: str
+) -> VampRobotModuleProtocol:
+    del vamp_module
     try:
         imported = importlib.import_module(f"vamp.{robot}")
     except ImportError as exc:
         raise ValueError(
             f"Installed VAMP package does not expose robot artifact '{robot}'"
         ) from exc
-    return imported
+    return cast("VampRobotModuleProtocol", imported)
 
 
-def _load_custom_robot_module(path: Path) -> ModuleType:
+def _load_custom_robot_module(path: Path) -> VampRobotModuleProtocol:
     artifact_path = path.expanduser().resolve()
     if not artifact_path.exists():
         raise FileNotFoundError(f"VAMP custom artifact path does not exist: {artifact_path}")
@@ -70,7 +72,7 @@ def _load_custom_robot_module(path: Path) -> ModuleType:
         parent = str(artifact_path.parent)
         if parent not in sys.path:
             sys.path.insert(0, parent)
-        return importlib.import_module(artifact_path.name)
+        return cast("VampRobotModuleProtocol", importlib.import_module(artifact_path.name))
 
     module_name = artifact_path.stem
     spec = importlib.util.spec_from_file_location(module_name, artifact_path)
@@ -79,4 +81,4 @@ def _load_custom_robot_module(path: Path) -> ModuleType:
     module = importlib.util.module_from_spec(spec)
     sys.modules[module_name] = module
     spec.loader.exec_module(module)
-    return module
+    return cast("VampRobotModuleProtocol", module)

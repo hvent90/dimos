@@ -19,6 +19,7 @@ from __future__ import annotations
 from pathlib import Path
 import sys
 from types import ModuleType, SimpleNamespace
+from typing import cast
 
 import numpy as np
 from pydantic import ValidationError
@@ -33,7 +34,7 @@ from dimos.manipulation.planning.vamp.errors import (
     UnsupportedWorldCapabilityError,
     VampDependencyError,
 )
-from dimos.manipulation.planning.vamp.loader import import_vamp, load_vamp_robot_module
+from dimos.manipulation.planning.vamp.loader import load_vamp_robot_module
 from dimos.manipulation.planning.world.config import (
     CustomVampArtifactConfig,
     OfficialVampArtifactConfig,
@@ -177,6 +178,7 @@ def fake_vamp_modules(mocker) -> tuple[FakeVampModule, FakeRobotModule]:
     robot_module = FakeRobotModule()
     vamp_module = FakeVampModule(robot_module)
     mocker.patch.dict(sys.modules, {"vamp": vamp_module, "vamp.panda": robot_module})
+    mocker.patch("dimos.manipulation.planning.vamp.loader._vamp_module", vamp_module)
     return vamp_module, robot_module
 
 
@@ -205,21 +207,15 @@ def finalized_vamp_world() -> VampWorld:
 
 def test_vamp_dependency_error_has_install_guidance(mocker) -> None:
     """Selecting VAMP without the optional package raises an actionable error."""
-    mocker.patch(
-        "dimos.manipulation.planning.vamp.loader.importlib.import_module",
-        side_effect=ImportError("missing vamp"),
-    )
+    mocker.patch("dimos.manipulation.planning.vamp.loader._vamp_module", None)
 
     with pytest.raises(VampDependencyError, match="vamp-planner"):
-        import_vamp()
+        load_vamp_robot_module(OfficialVampArtifactConfig(robot="panda"))
 
 
 def test_non_vamp_planner_creation_does_not_import_vamp(mocker) -> None:
     """Default planner creation stays independent of the optional VAMP package."""
-    mocker.patch(
-        "dimos.manipulation.planning.vamp.loader.import_vamp",
-        side_effect=AssertionError("VAMP import should stay lazy"),
-    )
+    mocker.patch("dimos.manipulation.planning.vamp.loader._vamp_module", None)
 
     planner = create_planner(config=RRTConnectPlannerConfig())
 
@@ -253,7 +249,7 @@ def test_custom_vamp_artifact_loading_uses_explicit_module_path(
     loaded_vamp, loaded_robot = load_vamp_robot_module(CustomVampArtifactConfig(path=artifact_path))
 
     assert loaded_vamp is vamp_module
-    assert loaded_robot.ROBOT_NAME == "custom_panda"
+    assert cast("ModuleType", loaded_robot).ROBOT_NAME == "custom_panda"
 
 
 def test_create_world_and_planner_from_vamp_configs(fake_vamp_modules) -> None:

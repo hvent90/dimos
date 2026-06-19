@@ -19,8 +19,6 @@ from __future__ import annotations
 from dimos.control.components import HardwareType
 from dimos.robot.catalog.franka import (
     FRANKA_PANDA_FK_MODEL,
-    FRANKA_PANDA_JOINT_LIMITS_LOWER,
-    FRANKA_PANDA_JOINT_LIMITS_UPPER,
     FRANKA_PANDA_JOINT_NAMES,
     FRANKA_PANDA_MODEL,
     FRANKA_PANDA_SRDF,
@@ -42,8 +40,6 @@ def test_franka_panda_catalog_defaults_to_mock_control() -> None:
     assert config.joint_names == FRANKA_PANDA_JOINT_NAMES
     assert config.end_effector_link == "panda_hand"
     assert config.base_link == "panda_link0"
-    assert config.joint_limits_lower == FRANKA_PANDA_JOINT_LIMITS_LOWER
-    assert config.joint_limits_upper == FRANKA_PANDA_JOINT_LIMITS_UPPER
 
 
 def test_franka_panda_uses_lfs_backed_model_and_srdf_paths() -> None:
@@ -75,8 +71,6 @@ def test_franka_panda_robot_model_config_preserves_vamp_joint_order() -> None:
     assert model.name == "panda"
     assert _lfs_filename(model.model_path) == _lfs_filename(FRANKA_PANDA_MODEL)
     assert model.joint_names == FRANKA_PANDA_JOINT_NAMES
-    assert model.joint_limits_lower == FRANKA_PANDA_JOINT_LIMITS_LOWER
-    assert model.joint_limits_upper == FRANKA_PANDA_JOINT_LIMITS_UPPER
     assert model.joint_name_mapping == {
         f"panda/{joint}": joint for joint in FRANKA_PANDA_JOINT_NAMES
     }

@@ -21,7 +21,7 @@ from copy import deepcopy
 from dataclasses import dataclass
 from itertools import pairwise
 import time
-from typing import TYPE_CHECKING, Any
+from typing import TYPE_CHECKING, Protocol
 
 import numpy as np
 from scipy.spatial.transform import Rotation as R
@@ -31,8 +31,10 @@ from dimos.manipulation.planning.spec.config import RobotModelConfig
 from dimos.manipulation.planning.spec.enums import ObstacleType, PlanningStatus
 from dimos.manipulation.planning.spec.models import Obstacle, PlanningResult, WorldRobotID
 from dimos.manipulation.planning.spec.protocols import WorldSpec
+from dimos.manipulation.planning.utils.path_utils import compute_path_length
 from dimos.manipulation.planning.vamp.errors import UnsupportedWorldCapabilityError
 from dimos.manipulation.planning.vamp.loader import load_vamp_robot_module
+from dimos.manipulation.planning.vamp.utils import path_to_joint_states
 from dimos.manipulation.planning.world.config import VampWorldConfig
 from dimos.msgs.geometry_msgs.PoseStamped import PoseStamped
 from dimos.msgs.sensor_msgs.JointState import JointState
@@ -44,9 +46,18 @@ if TYPE_CHECKING:
     from numpy.typing import NDArray
 
 
+class _VampContext(Protocol):
+    """Typed context shape used by the VAMP world adapter."""
+
+    # TODO: Replace the loose WorldSpec context object with a typed ContextProtocol.
+    joint_state: JointState
+
+
 @dataclass
-class _VampContext:
-    joint_states: dict[WorldRobotID, JointState]
+class _SingleRobotVampContext(_VampContext):
+    """Concrete VAMP context for the current single-robot backend."""
+
+    joint_state: JointState
 
 
 class VampWorld(WorldSpec):
@@ -57,7 +68,7 @@ class VampWorld(WorldSpec):
         self._vamp_module, self._robot_module = load_vamp_robot_module(config.artifact)
         self._environment = self._vamp_module.Environment()
         self._robots: dict[WorldRobotID, RobotModelConfig] = {}
-        self._live_joint_states: dict[WorldRobotID, JointState] = {}
+        self._live_joint_state: JointState | None = None
         self._obstacles: dict[str, Obstacle] = {}
         self._robot_counter = 0
         self._finalized = False
@@ -72,7 +83,7 @@ class VampWorld(WorldSpec):
         robot_id = f"robot_{self._robot_counter}"
         self._robots[robot_id] = config
         home_positions = config.home_joints or [0.0] * len(config.joint_names)
-        self._live_joint_states[robot_id] = JointState(
+        self._live_joint_state = JointState(
             name=config.joint_names,
             position=home_positions,
         )
@@ -141,30 +152,34 @@ class VampWorld(WorldSpec):
 
     def get_live_context(self) -> _VampContext:
         """Get the live VAMP context."""
-        return _VampContext(self._live_joint_states)
+        return _SingleRobotVampContext(self._require_live_joint_state())
 
     @contextmanager
     def scratch_context(self) -> Generator[_VampContext, None, None]:
         """Get a scratch context with copied joint states."""
-        yield _VampContext(deepcopy(self._live_joint_states))
+        yield _SingleRobotVampContext(deepcopy(self._require_live_joint_state()))
 
     def sync_from_joint_state(self, robot_id: WorldRobotID, joint_state: JointState) -> None:
         """Sync live state from a joint-state message."""
-        self._live_joint_states[robot_id] = self._normalize_joint_state(robot_id, joint_state)
+        self._assert_robot_id(robot_id)
+        self._live_joint_state = self._joint_state_for_robot_order(robot_id, joint_state)
 
     def set_joint_state(
         self, ctx: _VampContext, robot_id: WorldRobotID, joint_state: JointState
     ) -> None:
         """Set robot joint state in a context."""
-        ctx.joint_states[robot_id] = self._normalize_joint_state(robot_id, joint_state)
+        self._assert_robot_id(robot_id)
+        ctx.joint_state = self._joint_state_for_robot_order(robot_id, joint_state)
 
     def get_joint_state(self, ctx: _VampContext, robot_id: WorldRobotID) -> JointState:
         """Get robot joint state from a context."""
-        return ctx.joint_states[robot_id]
+        self._assert_robot_id(robot_id)
+        return ctx.joint_state
 
     def is_collision_free(self, ctx: _VampContext, robot_id: WorldRobotID) -> bool:
         """Check if current configuration is valid according to VAMP."""
-        return self._validate_state(ctx.joint_states[robot_id], check_bounds=True)
+        self._assert_robot_id(robot_id)
+        return self._validate_state(ctx.joint_state, check_bounds=True)
 
     def get_min_distance(self, ctx: _VampContext, robot_id: WorldRobotID) -> float:
         """Minimum distance is not exposed by VAMP's Python API."""
@@ -173,7 +188,7 @@ class VampWorld(WorldSpec):
     def check_config_collision_free(self, robot_id: WorldRobotID, joint_state: JointState) -> bool:
         """Check a joint state using VAMP native validation."""
         return self._validate_state(
-            self._normalize_joint_state(robot_id, joint_state), check_bounds=True
+            self._joint_state_for_robot_order(robot_id, joint_state), check_bounds=True
         )
 
     def check_edge_collision_free(
@@ -185,8 +200,8 @@ class VampWorld(WorldSpec):
     ) -> bool:
         """Check an edge using VAMP native motion validation."""
         del step_size
-        start_state = self._normalize_joint_state(robot_id, start)
-        end_state = self._normalize_joint_state(robot_id, end)
+        start_state = self._joint_state_for_robot_order(robot_id, start)
+        end_state = self._joint_state_for_robot_order(robot_id, end)
         result = self._robot_module.validate_motion(
             list(start_state.position),
             list(end_state.position),
@@ -197,7 +212,8 @@ class VampWorld(WorldSpec):
 
     def get_ee_pose(self, ctx: _VampContext, robot_id: WorldRobotID) -> PoseStamped:
         """Get end-effector pose from VAMP eefk."""
-        joint_state = ctx.joint_states[robot_id]
+        self._assert_robot_id(robot_id)
+        joint_state = ctx.joint_state
         transform = np.asarray(
             self._robot_module.eefk(list(joint_state.position)), dtype=np.float64
         )
@@ -211,7 +227,7 @@ class VampWorld(WorldSpec):
         config = self._robots[robot_id]
         if link_name != config.end_effector_link:
             raise UnsupportedWorldCapabilityError("vamp", f"link pose for '{link_name}'")
-        joint_state = ctx.joint_states[robot_id]
+        joint_state = ctx.joint_state
         return np.asarray(self._robot_module.eefk(list(joint_state.position)), dtype=np.float64)
 
     def get_jacobian(self, ctx: _VampContext, robot_id: WorldRobotID) -> NDArray[np.float64]:
@@ -253,12 +269,12 @@ class VampWorld(WorldSpec):
             plan_settings,
             sampler,
         )
-        if not bool(getattr(result, "solved", False)):
+        if not result.solved:
             return _failure(
                 PlanningStatus.NO_SOLUTION,
                 "VAMP planner did not find a path",
                 planning_time=time.time() - start_time,
-                iterations=int(getattr(result, "iterations", 0)),
+                iterations=result.iterations,
             )
 
         path_source = result.path
@@ -266,10 +282,10 @@ class VampWorld(WorldSpec):
             simplified = robot_module.simplify(
                 path_source, self._environment, simplify_settings, sampler
             )
-            if bool(getattr(simplified, "solved", True)):
+            if simplified.solved:
                 path_source = simplified.path
 
-        path = _path_to_joint_states(
+        path = path_to_joint_states(
             path_source, start.name or self.get_robot_config(robot_id).joint_names
         )
         if planner_config.validate_path and not self._validate_path(robot_id, path):
@@ -282,22 +298,33 @@ class VampWorld(WorldSpec):
             status=PlanningStatus.SUCCESS,
             path=path,
             planning_time=time.time() - start_time,
-            path_length=_path_length(path),
-            iterations=int(getattr(result, "iterations", 0)),
+            path_length=compute_path_length(path),
+            iterations=result.iterations,
             message="VAMP planning succeeded",
         )
 
-    def _normalize_joint_state(self, robot_id: WorldRobotID, joint_state: JointState) -> JointState:
+    def _joint_state_for_robot_order(
+        self, robot_id: WorldRobotID, joint_state: JointState
+    ) -> JointState:
+        """Return a joint state truncated to VAMP's configured robot joint order."""
         config = self._robots[robot_id]
         positions = list(joint_state.position[: len(config.joint_names)])
         names = list(joint_state.name[: len(positions)]) if joint_state.name else config.joint_names
         return JointState(name=names, position=positions)
 
     def _robot_name(self) -> str:
-        robot = getattr(self.config.artifact, "robot", None)
-        if isinstance(robot, str):
-            return robot
+        if self.config.artifact.mode == "official":
+            return self.config.artifact.robot
         return self._robot_module.__name__.split(".")[-1]
+
+    def _assert_robot_id(self, robot_id: WorldRobotID) -> None:
+        if robot_id not in self._robots:
+            raise KeyError(robot_id)
+
+    def _require_live_joint_state(self) -> JointState:
+        if self._live_joint_state is None:
+            raise RuntimeError("VAMP world has no robot joint state")
+        return self._live_joint_state
 
     def _validate_path(self, robot_id: WorldRobotID, path: list[JointState]) -> bool:
         if not path:
@@ -355,28 +382,6 @@ class VampWorld(WorldSpec):
 
 def _timeout_to_iteration_budget(timeout: float) -> int:
     return max(1, int(timeout * 1000))
-
-
-def _path_to_joint_states(path_source: Any, joint_names: list[str]) -> list[JointState]:
-    path_array = _path_to_array(path_source)
-    return [JointState(name=joint_names, position=row.astype(float).tolist()) for row in path_array]
-
-
-def _path_to_array(path_source: Any) -> np.ndarray:
-    if hasattr(path_source, "numpy"):
-        return np.asarray(path_source.numpy(), dtype=np.float64)
-    return np.asarray(path_source, dtype=np.float64)
-
-
-def _path_length(path: list[JointState]) -> float:
-    if len(path) < 2:
-        return 0.0
-    total = 0.0
-    for before, after in pairwise(path):
-        q_before = np.array(before.position, dtype=np.float64)
-        q_after = np.array(after.position, dtype=np.float64)
-        total += float(np.linalg.norm(q_after - q_before))
-    return total
 
 
 def _failure(

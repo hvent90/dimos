@@ -32,8 +32,6 @@ FRANKA_PANDA_SRDF = _FRANKA_DESCRIPTION_PKG / "srdf/panda.srdf"
 
 FRANKA_PANDA_JOINT_NAMES = [f"panda_joint{i}" for i in range(1, 8)]
 FRANKA_PANDA_HOME_JOINTS = [0.0, -0.7853981634, 0.0, -2.35619449, 0.0, 1.5707963268, 0.7853981634]
-FRANKA_PANDA_JOINT_LIMITS_LOWER = [-2.8973, -1.7628, -2.8973, -3.0718, -2.8973, -0.0175, -2.8973]
-FRANKA_PANDA_JOINT_LIMITS_UPPER = [2.8973, 1.7628, 2.8973, -0.0698, 2.8973, 3.7525, 2.8973]
 
 
 def franka_panda(
@@ -53,8 +51,6 @@ def franka_panda(
         "joint_names": FRANKA_PANDA_JOINT_NAMES,
         "base_link": "panda_link0",
         "home_joints": FRANKA_PANDA_HOME_JOINTS,
-        "joint_limits_lower": FRANKA_PANDA_JOINT_LIMITS_LOWER,
-        "joint_limits_upper": FRANKA_PANDA_JOINT_LIMITS_UPPER,
         "package_paths": {
             "franka_description": _FRANKA_DESCRIPTION_PKG,
             "moveit_resources_panda_description": _FRANKA_DESCRIPTION_PKG,
@@ -76,8 +72,6 @@ def franka_panda(
 __all__ = [
     "FRANKA_PANDA_FK_MODEL",
     "FRANKA_PANDA_HOME_JOINTS",
-    "FRANKA_PANDA_JOINT_LIMITS_LOWER",
-    "FRANKA_PANDA_JOINT_LIMITS_UPPER",
     "FRANKA_PANDA_JOINT_NAMES",
     "FRANKA_PANDA_MODEL",
     "FRANKA_PANDA_SRDF",
