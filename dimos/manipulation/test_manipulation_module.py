@@ -151,11 +151,8 @@ class TestManipulationModuleIntegration:
         assert success is True
         assert module._state == ManipulationState.COMPLETED
         assert module.has_planned_path() is True
-
-        assert "test_arm" in module._planned_trajectories
-        traj = module._planned_trajectories["test_arm"]
-        assert len(traj.points) > 1
-        assert traj.duration > 0
+        assert module._last_plan is not None
+        assert len(module._last_plan.path) > 1
 
     def test_add_and_remove_obstacle(self, module, joint_state_zeros):
         """Test adding and removing obstacles."""
@@ -201,8 +198,14 @@ class TestManipulationModuleIntegration:
         success = module.plan_to_joints(JointState(position=[0.05] * 7))
         assert success is True
 
-        traj = module._planned_trajectories["test_arm"]
-        assert traj.joint_names == [f"test_arm/joint{i}" for i in range(1, 8)]
+        mock_client = MagicMock()
+        mock_client.task_invoke.return_value = True
+        module._coordinator_client = mock_client
+
+        assert module.execute() is True
+
+        trajectory = mock_client.task_invoke.call_args.args[2]["trajectory"]
+        assert trajectory.joint_names == [f"test_arm/joint{i}" for i in range(1, 8)]
 
 
 @pytest.mark.skipif(not _drake_available(), reason="Drake not installed")

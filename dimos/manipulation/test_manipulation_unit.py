@@ -100,8 +100,6 @@ def _make_module():
         module._lock = threading.Lock()
         module._error_message = ""
         module._robots = {}
-        module._planned_paths = {}
-        module._planned_trajectories = {}
         module._world_monitor = None
         module._planner = None
         module._kinematics = None
@@ -294,7 +292,6 @@ class TestPlanningInitialization:
 
         assert result is expected
         assert module._state == ManipulationState.COMPLETED
-        assert module._planned_paths == {}
         module._kinematics.solve.assert_called_once()
         _, kwargs = module._kinematics.solve.call_args
         assert kwargs["world"] is module._world_monitor.world
@@ -350,7 +347,6 @@ class TestExecute:
         """Execute fails without planned trajectory."""
         module = _make_module()
         module._robots = {"test_arm": ("id", robot_config, MagicMock())}
-        module._planned_trajectories = {}
 
         assert module.execute() is False
 
@@ -469,21 +465,6 @@ def _make_module_with_monitor(*configs: RobotModelConfig) -> ManipulationModule:
 
 def _make_joint_state(positions: list[float], name: list[str] | None = None) -> JointState:
     return JointState(name=name or [f"j{i}" for i in range(len(positions))], position=positions)
-
-
-def _make_path(*points: list[float]) -> list[JointState]:
-    return [_make_joint_state(list(point)) for point in points]
-
-
-def _make_trajectory(*points: tuple[float, list[float]]) -> JointTrajectory:
-    joint_names = [f"j{i}" for i in range(len(points[0][1]))] if points else []
-    return JointTrajectory(
-        joint_names=joint_names,
-        points=[
-            TrajectoryPoint(time_from_start=time_from_start, positions=positions)
-            for time_from_start, positions in points
-        ],
-    )
 
 
 def _make_robot_config(
@@ -867,12 +848,19 @@ class TestGeneratedPlanProjection:
         assert right_trajectory.joint_names == ["right/j1", "right/j2"]
         assert [point.positions for point in right_trajectory.points] == [[3.0, 8.0], [6.0, 8.0]]
 
-    def test_project_plan_holds_non_selected_joints_from_current_state(self):
+    def test_execute_plan_holds_non_selected_joints_from_current_state(self):
         config = _make_robot_config("left", ["j1", "j2", "j3"], "task")
         module = _make_module_with_monitor(config)
+        generator = _trajectory_generator()
+        module._robots["left"] = ("robot_left", config, generator)
+        module._world_monitor.world.resolve_planning_groups.return_value = [
+            _make_global_group("left", "arm", ["j2"])
+        ]
         module._world_monitor.get_current_joint_state.return_value = JointState(
             name=["j1", "j2", "j3"], position=[10.0, 20.0, 30.0]
         )
+        module._coordinator_client = MagicMock()
+        module._coordinator_client.task_invoke.return_value = True
         plan = GeneratedPlan(
             group_ids=("left/arm",),
             path=[
@@ -882,49 +870,33 @@ class TestGeneratedPlanProjection:
             status=PlanningStatus.SUCCESS,
         )
 
-        projected = module._project_plan_path_for_robot(plan, "left")
+        assert module.execute_plan(plan) is True
 
-        assert [state.name for state in projected] == [["j1", "j2", "j3"], ["j1", "j2", "j3"]]
-        assert [state.position for state in projected] == [[10.0, 2.0, 30.0], [10.0, 3.0, 30.0]]
+        trajectory = module._coordinator_client.task_invoke.call_args.args[2]["trajectory"]
+        assert trajectory.joint_names == ["left/j1", "left/j2", "left/j3"]
+        assert [point.positions for point in trajectory.points] == [
+            [10.0, 2.0, 30.0],
+            [10.0, 3.0, 30.0],
+        ]
 
-    def test_project_plan_rejects_local_waypoint_names(self):
+    def test_execute_plan_rejects_local_waypoint_names(self):
         config = _make_robot_config("left", ["j1", "j2"], "task")
         module = _make_module_with_monitor(config)
+        module._world_monitor.world.resolve_planning_groups.return_value = [
+            _make_global_group("left", "arm", ["j1"])
+        ]
         module._world_monitor.get_current_joint_state.return_value = JointState(
             name=["j1", "j2"], position=[10.0, 20.0]
         )
+        module._coordinator_client = MagicMock()
         plan = GeneratedPlan(
             group_ids=("left/arm",),
             path=[JointState(name=["j1"], position=[1.0])],
             status=PlanningStatus.SUCCESS,
         )
 
-        assert module._project_plan_path_for_robot(plan, "left") == []
-
-    def test_project_plan_uses_global_names_for_robots_with_shared_local_names(self):
-        left_config = _make_robot_config("left", ["j1", "j2"], "left_task")
-        right_config = _make_robot_config("right", ["j1", "j2"], "right_task")
-        module = _make_module_with_monitor(left_config, right_config)
-        module._world_monitor.get_current_joint_state.side_effect = [
-            JointState(name=["j1", "j2"], position=[10.0, 20.0]),
-            JointState(name=["j1", "j2"], position=[30.0, 40.0]),
-        ]
-        plan = GeneratedPlan(
-            group_ids=("left/arm", "right/arm"),
-            path=[
-                JointState(name=["left/j1", "right/j1"], position=[1.0, 3.0]),
-                JointState(name=["left/j1", "right/j1"], position=[2.0, 4.0]),
-            ],
-            status=PlanningStatus.SUCCESS,
-        )
-
-        left_projected = module._project_plan_path_for_robot(plan, "left")
-        right_projected = module._project_plan_path_for_robot(plan, "right")
-
-        assert [state.name for state in left_projected] == [["j1", "j2"], ["j1", "j2"]]
-        assert [state.position for state in left_projected] == [[1.0, 20.0], [2.0, 20.0]]
-        assert [state.name for state in right_projected] == [["j1", "j2"], ["j1", "j2"]]
-        assert [state.position for state in right_projected] == [[3.0, 40.0], [4.0, 40.0]]
+        assert module.execute_plan(plan) is False
+        module._coordinator_client.task_invoke.assert_not_called()
 
     def test_preview_path_with_last_plan_animates_generated_plan(self):
         config = _make_robot_config("left", ["j1", "j2"], "task")
@@ -952,12 +924,7 @@ class TestGeneratedPlanProjection:
             path=[JointState(name=["left/j1"], position=[1.0])],
             status=PlanningStatus.SUCCESS,
         )
-        module._planned_paths = {"left": _make_path([1.0])}
-        module._planned_trajectories = {"left": _make_trajectory((0.0, [1.0]))}
-
         assert module.has_planned_path() is True
         assert module.clear_planned_path() is True
         assert module.has_planned_path() is False
         assert module._last_plan is None
-        assert module._planned_paths == {}
-        assert module._planned_trajectories == {}

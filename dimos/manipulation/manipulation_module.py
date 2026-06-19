@@ -55,7 +55,6 @@ from dimos.manipulation.planning.planning_groups import FALLBACK_PLANNING_GROUP_
 from dimos.manipulation.planning.planning_identifiers import (
     assert_global_joint_names,
     assert_local_joint_names,
-    make_global_joint_name,
     make_global_joint_names,
     make_planning_group_id,
 )
@@ -64,7 +63,6 @@ from dimos.manipulation.planning.spec.enums import IKStatus, ObstacleType
 from dimos.manipulation.planning.spec.models import (
     GeneratedPlan,
     IKResult,
-    JointPath,
     Obstacle,
     PlanningGroupDescriptor,
     PlanningGroupID,
@@ -97,12 +95,6 @@ RobotEntry: TypeAlias = tuple[WorldRobotID, RobotModelConfig, JointTrajectoryGen
 
 RobotRegistry: TypeAlias = dict[RobotName, RobotEntry]
 """Maps robot_name -> RobotEntry"""
-
-PlannedPaths: TypeAlias = dict[RobotName, JointPath]
-"""Maps robot_name -> planned joint path"""
-
-PlannedTrajectories: TypeAlias = dict[RobotName, JointTrajectory]
-"""Maps robot_name -> planned trajectory"""
 
 
 class ManipulationState(Enum):
@@ -161,9 +153,7 @@ class ManipulationModule(Module):
         # Robot registry: maps robot_name -> (world_robot_id, config, trajectory_gen)
         self._robots: RobotRegistry = {}
 
-        # Stored path for plan/preview/execute workflow (per robot)
-        self._planned_paths: PlannedPaths = {}
-        self._planned_trajectories: PlannedTrajectories = {}
+        # Stored generated plan for preview/execute workflow.
         self._last_plan: GeneratedPlan | None = None
 
         # Coordinator integration (lazy initialized)
@@ -582,86 +572,6 @@ class ManipulationModule(Module):
             logger.error(str(exc))
             return None
 
-    def _project_plan_path_for_robot(self, plan: GeneratedPlan, robot_name: RobotName) -> JointPath:
-        """Project combined plan path to one robot in configured local joint order.
-
-        Generated plans only contain selected global joints. Trajectory tasks may
-        still be configured for the robot's full controllable joint set, so
-        non-selected joints are held at their current positions during projection.
-        """
-        robot_id, config, _ = self._robots[robot_name]
-        global_joint_names = [
-            make_global_joint_name(robot_name, joint) for joint in config.joint_names
-        ]
-        current_by_name: dict[str, float] = {}
-        if self._world_monitor is not None:
-            current = self._world_monitor.get_current_joint_state(robot_id)
-            if current is not None:
-                indexed_current = self._current_positions_by_name(robot_name, current)
-                if indexed_current is None:
-                    return []
-                current_by_name = indexed_current
-        projected: JointPath = []
-        for waypoint in plan.path:
-            if len(waypoint.name) != len(waypoint.position):
-                logger.error(
-                    "Cannot project plan for '%s': waypoint has %d names but %d positions",
-                    robot_name,
-                    len(waypoint.name),
-                    len(waypoint.position),
-                )
-                return []
-            try:
-                assert_global_joint_names(waypoint.name)
-            except ValueError as exc:
-                logger.error("Cannot project plan for '%s': %s", robot_name, exc)
-                return []
-            position_by_name = dict(zip(waypoint.name, waypoint.position, strict=True))
-            positions: list[float] = []
-            for local_name, global_name in zip(
-                config.joint_names, global_joint_names, strict=False
-            ):
-                if global_name in position_by_name:
-                    positions.append(position_by_name[global_name])
-                else:
-                    if local_name in current_by_name:
-                        positions.append(current_by_name[local_name])
-                        continue
-                    logger.error(
-                        "Cannot project plan for '%s': missing joint '%s'",
-                        robot_name,
-                        global_name,
-                    )
-                    return []
-            projected.append(
-                JointState(
-                    name=list(config.joint_names),
-                    position=positions,
-                )
-            )
-        return projected
-
-    def _project_plan_to_robot_path_for_execution(
-        self, plan: GeneratedPlan, robot_name: RobotName
-    ) -> JointPath:
-        """Project a generated plan to one robot's local execution path."""
-        return self._project_plan_path_for_robot(plan, robot_name)
-
-    def _trajectory_from_robot_path(
-        self, robot_name: RobotName, path: JointPath
-    ) -> JointTrajectory | None:
-        """Generate a coordinator-facing trajectory from a local robot path."""
-        if len(path) < 2:
-            logger.error("Plan projection for '%s' has fewer than two waypoints", robot_name)
-            return None
-        _, config, traj_gen = self._robots[robot_name]
-        trajectory = traj_gen.generate([list(state.position) for state in path])
-        return JointTrajectory(
-            joint_names=make_global_joint_names(robot_name, config.joint_names),
-            points=trajectory.points,
-            timestamp=trajectory.timestamp,
-        )
-
     def _affected_robot_names(self, plan: GeneratedPlan) -> list[RobotName]:
         """Get stable robot names affected by a generated plan."""
         assert self._world_monitor is not None
@@ -675,7 +585,7 @@ class ManipulationModule(Module):
     def _store_generated_plan(
         self, group_ids: tuple[PlanningGroupID, ...], result: PlanningResult
     ) -> None:
-        """Store canonical generated plan and compatibility per-robot projections."""
+        """Store the canonical generated plan."""
         self._last_plan = GeneratedPlan(
             group_ids=group_ids,
             path=result.path,
@@ -685,17 +595,6 @@ class ManipulationModule(Module):
             iterations=result.iterations,
             message=result.message,
         )
-        self._planned_paths.clear()
-        self._planned_trajectories.clear()
-        for robot_name in self._affected_robot_names(self._last_plan):
-            projected_path = self._project_plan_to_robot_path_for_execution(
-                self._last_plan, robot_name
-            )
-            if projected_path:
-                self._planned_paths[robot_name] = projected_path
-            trajectory = self._trajectory_from_robot_path(robot_name, projected_path)
-            if trajectory is not None:
-                self._planned_trajectories[robot_name] = trajectory
 
     def _plan_selected_path(
         self, group_ids: tuple[PlanningGroupID, ...], start: JointState, goal: JointState
@@ -976,8 +875,6 @@ class ManipulationModule(Module):
             True if cleared
         """
         self._last_plan = None
-        self._planned_paths.clear()
-        self._planned_trajectories.clear()
         return True
 
     @rpc
@@ -1163,6 +1060,7 @@ class ManipulationModule(Module):
         except Exception as exc:
             return self._fail(f"Failed to resolve generated plan: {exc}")
         robot_names = [robot_name] if robot_name is not None else affected
+        assert self._world_monitor is not None
 
         dispatches: list[tuple[RobotName, RobotModelConfig, JointTrajectory]] = []
         for name in robot_names:
@@ -1172,19 +1070,65 @@ class ManipulationModule(Module):
             robot = self._get_robot(name)
             if robot is None:
                 return False
-            resolved_name, _, config, _ = robot
+            resolved_name, robot_id, config, traj_gen = robot
             if not config.coordinator_task_name:
                 logger.error(f"No coordinator_task_name for '{resolved_name}'")
                 return False
-            projected_path = self._project_plan_to_robot_path_for_execution(plan, resolved_name)
-            trajectory = self._trajectory_from_robot_path(resolved_name, projected_path)
-            if trajectory is None:
+
+            current_by_name: dict[str, float] = {}
+            current = self._world_monitor.get_current_joint_state(robot_id)
+            if current is not None:
+                indexed_current = self._current_positions_by_name(resolved_name, current)
+                if indexed_current is None:
+                    return False
+                current_by_name = indexed_current
+
+            global_joint_names = make_global_joint_names(resolved_name, config.joint_names)
+            local_path: list[JointState] = []
+            for waypoint in plan.path:
+                if len(waypoint.name) != len(waypoint.position):
+                    logger.error(
+                        "Cannot execute plan for '%s': waypoint has %d names but %d positions",
+                        resolved_name,
+                        len(waypoint.name),
+                        len(waypoint.position),
+                    )
+                    return False
+                try:
+                    assert_global_joint_names(waypoint.name)
+                except ValueError as exc:
+                    logger.error("Cannot execute plan for '%s': %s", resolved_name, exc)
+                    return False
+                selected_positions = dict(zip(waypoint.name, waypoint.position, strict=True))
+                positions: list[float] = []
+                for local_name, global_name in zip(
+                    config.joint_names, global_joint_names, strict=True
+                ):
+                    if global_name in selected_positions:
+                        positions.append(selected_positions[global_name])
+                    elif local_name in current_by_name:
+                        positions.append(current_by_name[local_name])
+                    else:
+                        logger.error(
+                            "Cannot execute plan for '%s': missing joint '%s'",
+                            resolved_name,
+                            global_name,
+                        )
+                        return False
+                local_path.append(JointState(name=list(config.joint_names), position=positions))
+            if len(local_path) < 2:
+                logger.error("Plan projection for '%s' has fewer than two waypoints", resolved_name)
                 return False
+            local_trajectory = traj_gen.generate([list(state.position) for state in local_path])
+            trajectory = JointTrajectory(
+                joint_names=list(global_joint_names),
+                points=local_trajectory.points,
+                timestamp=local_trajectory.timestamp,
+            )
             dispatches.append((resolved_name, config, trajectory))
 
         self._state = ManipulationState.EXECUTING
-        for name, config, trajectory in dispatches:
-            self._planned_trajectories[name] = trajectory
+        for _name, config, trajectory in dispatches:
             logger.info(
                 "Executing: task='%s', %d pts, %.2fs",
                 config.coordinator_task_name,
@@ -1385,11 +1329,7 @@ class ManipulationModule(Module):
         client = self._get_coordinator_client()
 
         if client is None or not config.coordinator_task_name:
-            # No coordinator — wait for trajectory duration as fallback
-            traj = self._planned_trajectories.get(rname)
-            if traj is not None:
-                logger.info(f"No coordinator status — waiting {traj.duration:.1f}s for trajectory")
-                time.sleep(traj.duration + 0.5)
+            logger.info("No coordinator status available for '%s'", rname)
             return True
 
         # Poll task state via task_invoke
@@ -1410,13 +1350,7 @@ class ManipulationModule(Module):
                     # task_invoke returned None — task not found, assume done
                     return True
             except Exception:
-                # Fallback: wait for trajectory duration
-                traj = self._planned_trajectories.get(rname)
-                if traj is not None:
-                    remaining = traj.duration - (time.time() - start)
-                    if remaining > 0:
-                        logger.info(f"Status poll failed — waiting {remaining:.1f}s for trajectory")
-                        time.sleep(remaining + 0.5)
+                logger.info("Status poll failed for '%s'", rname)
                 return True
             time.sleep(poll_interval)
 
