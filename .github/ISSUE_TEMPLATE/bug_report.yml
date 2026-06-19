@@ -3,22 +3,57 @@ description: Report a bug in DimOS
 labels: ["bug"]
 body:
   - type: textarea
-    id: description
+    id: what-happened
     attributes:
-      label: Description
-      value: |
-        ## System
-        <!-- e.g. Ubuntu 24.04, macOS 15.4 -->
-
-        ## Robot/Sim/Hardware (including firmware version)
-        <!-- e.g. Unitree Go2 EDU 1.1.7, or Unity sim etc -->
-
-        ## Steps to reproduce
-
-        ## DimOS version
-        <!-- branch name or commit: git rev-parse --short HEAD -->
-
-        ## Logs / screenshots
-
+      label: What happened?
+      description: Describe the bug and its impact.
+    validations:
+      required: true
+  - type: textarea
+    id: expected
+    attributes:
+      label: Expected behavior
+      description: What did you expect to happen?
+    validations:
+      required: true
+  - type: textarea
+    id: reproduce
+    attributes:
+      label: Steps to reproduce
+      description: Include commands, blueprint names, robot/sim setup, and any relevant inputs.
+      placeholder: |
+        1.
+        2.
+        3.
+    validations:
+      required: true
+  - type: textarea
+    id: logs
+    attributes:
+      label: Logs or screenshots
+      description: Paste relevant logs, tracebacks, screenshots, or videos.
+      render: shell
+    validations:
+      required: false
+  - type: textarea
+    id: environment
+    attributes:
+      label: Environment
+      description: Include OS, Python version, DimOS branch/commit, robot/sim/hardware, and firmware when relevant.
+      placeholder: |
+        OS:
+        Python:
+        DimOS branch/commit:
+        Robot/sim/hardware:
+    validations:
+      required: true
+  - type: dropdown
+    id: willing-to-fix
+    attributes:
+      label: Are you willing to help fix this?
+      options:
+        - "Yes"
+        - "No"
+        - "Maybe"
     validations:
       required: true

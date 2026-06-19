@@ -3,10 +3,41 @@ description: Suggest a new feature or improvement for DimOS
 labels: ["feature"]
 body:
   - type: textarea
-    id: description
+    id: motivation
     attributes:
-      label: Description
-      description: What do you want and why?
-
+      label: Problem or motivation
+      description: What problem would this solve? Who needs it?
+    validations:
+      required: true
+  - type: textarea
+    id: proposal
+    attributes:
+      label: Proposed contribution
+      description: What behavior, API, module, skill, blueprint, or documentation change do you propose?
+    validations:
+      required: true
+  - type: textarea
+    id: alternatives
+    attributes:
+      label: Alternatives considered
+      description: What other approaches did you consider?
+    validations:
+      required: false
+  - type: input
+    id: affected-area
+    attributes:
+      label: Affected area
+      description: Which part of DimOS would this touch?
+      placeholder: e.g. modules, streams, blueprints, agents, skills, navigation, perception, docs
+    validations:
+      required: true
+  - type: dropdown
+    id: willing-to-implement
+    attributes:
+      label: Are you willing to implement this?
+      options:
+        - "Yes"
+        - "No"
+        - "Maybe"
     validations:
       required: true

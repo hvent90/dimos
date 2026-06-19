@@ -1,21 +1,22 @@
-## Problem
+## Linked issue or discussion
 
-<!-- What feature are you adding, or what is broken/missing/sub-optimal? -->
-<!-- Context, symptoms, motivation. Link the issue. -->
+<!-- Required for non-trivial changes. Small safe fixes may write "N/A". -->
 
-Closes DIM-XXX
+Closes #
 
-## Solution
+## Summary
 
-<!-- What you changed and why this approach -->
-<!-- Key design decisions / tradeoffs -->
-<!-- Keep it high-signal; deep planning belongs in the issue. -->
+<!-- What changed and why? Keep this focused; deeper discussion belongs in the linked issue. -->
 
-## How to Test
+## Validation
 
-<!-- oneliner required to run the actual feature -->
-<!-- blueprint for robot changes, benchmarks for transport changes etc -->
+<!-- What checks did you run? Include commands, relevant output, screenshots, or robot/sim notes when useful. -->
 
-## Contributor License Agreement
+## Checklist
 
+- [ ] This PR is scoped to one issue or clearly stated problem.
+- [ ] I have run the relevant checks for the files I changed.
+- [ ] I have reviewed and understand the changes in this PR.
 - [ ] I have read and approved the [CLA](https://github.com/dimensionalOS/dimos/blob/main/CLA.md).
+
+AI assistance used? <!-- No / Yes, briefly describe -->
