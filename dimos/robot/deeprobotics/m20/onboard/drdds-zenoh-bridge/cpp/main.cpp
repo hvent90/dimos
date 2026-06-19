@@ -54,6 +54,7 @@
 #include <map>
 #include <memory>
 #include <mutex>
+#include <set>
 #include <string>
 #include <thread>
 #include <vector>
@@ -246,6 +247,23 @@ static const PCPortDef PC_PORTS[] = {
     {"locbody", "locbody_topic", "/LOC_BODY_POINTS"},   // body-frame localization cloud
 };
 
+// Subscribe-all prime set. The SHM-only writers (/ALIGNED_POINTS, /LOC_BODY_POINTS:
+// PointCloud2 with unbounded data → FastDDS SHM transport, not data-sharing) only
+// deliver samples to a subscriber that holds the FULL endpoint set; a partial
+// subscription matches (m=1) but receives 0 samples. So when --subscribe_all is on
+// (default), we also open count-and-drop "primer" readers for every candidate topic
+// not already wired, completing the endpoint set. SHM receive is ~zero-copy and these
+// are never forwarded, so the firehoses stay in-box (never hit the network).
+static const char* PRIME_CLOUD_TOPICS[] = {
+    "/LIO_ALIGNED_POINTS", "/CLOUD_REGISTERED_BODY", "/ACCUMULATED_POINTS_MAP", "/grid_map_3d",
+    "/ALIGNED_POINTS", "/LOC_BODY_POINTS", "/DEPTH_POINTS", "/cloud_now_g", "/cloud_local_g",
+    "/cloud_registered", "/full_cloud", "/SLAM_CLOUD_REGISTERED_BODY", "/cloud_nav",
+    "/LIDAR/POINTS", "/LIDAR/POINTS2", "/SEG_CLOUD",
+};
+static const char* PRIME_ODOM_TOPICS[] = {
+    "/LIO_ODOM", "/LIO_ODOM_HIGH_FREQUENCY", "/ODOM", "/fibo_fusion_pose",
+};
+
 int main(int argc, char** argv) {
     dimos::NativeModule mod(argc, argv);
 
@@ -256,6 +274,9 @@ int main(int argc, char** argv) {
     // SHM transport: required for the robot's SHM-only writers (e.g. ALIGNED_POINTS)
     // and harmless for dual-transport topics. Run as root so the SHM segments match.
     const bool shm = mod.arg_bool("shm", true);
+    // Open count-and-drop primer readers for the rest of the candidate topics so the
+    // SHM-only writers (ALIGNED_POINTS / LOC_BODY_POINTS) deliver. Default on.
+    const bool subscribe_all = mod.arg_bool("subscribe_all", true);
 
     std::signal(SIGINT, on_signal);
     std::signal(SIGTERM, on_signal);
@@ -280,6 +301,7 @@ int main(int argc, char** argv) {
     std::vector<std::unique_ptr<DrDDSChannel<sensor_msgs::msg::PointCloud2PubSubType>>> pc_chans;
     std::unique_ptr<DrDDSChannel<sensor_msgs::msg::ImuPubSubType>> imu_chan;
     std::unique_ptr<DrDDSChannel<nav_msgs::msg::OdometryPubSubType>> odom_chan;
+    std::set<std::string> wired_src;  // drdds topics we already subscribe to (forwarded)
 
     for (const auto& def : PC_PORTS) {
         if (!mod.has(def.port)) { continue; }
@@ -292,6 +314,7 @@ int main(int argc, char** argv) {
         pc_chans.push_back(std::make_unique<DrDDSChannel<sensor_msgs::msg::PointCloud2PubSubType>>(
             [pp](const sensor_msgs::msg::PointCloud2* m) { on_pointcloud(m, pp); },
             src, domain, shm, "rt"));
+        wired_src.insert(src);
         fprintf(stderr, "[bridge] %s: rt%s -> %s\n", def.port, src.c_str(), pp->key.c_str());
     }
     if (mod.has("imu")) {
@@ -303,6 +326,7 @@ int main(int argc, char** argv) {
         ports.push_back(std::move(p));
         imu_chan = std::make_unique<DrDDSChannel<sensor_msgs::msg::ImuPubSubType>>(
             [pp](const sensor_msgs::msg::Imu* m) { on_imu(m, pp); }, src, domain, shm, "rt");
+        wired_src.insert(src);
         fprintf(stderr, "[bridge] imu: rt%s -> %s\n", src.c_str(), pp->key.c_str());
     }
     if (mod.has("odometry")) {
@@ -314,12 +338,32 @@ int main(int argc, char** argv) {
         ports.push_back(std::move(p));
         odom_chan = std::make_unique<DrDDSChannel<nav_msgs::msg::OdometryPubSubType>>(
             [pp](const nav_msgs::msg::Odometry* m) { on_odometry(m, pp); }, src, domain, shm, "rt");
+        wired_src.insert(src);
         fprintf(stderr, "[bridge] odometry: rt%s -> %s\n", src.c_str(), pp->key.c_str());
     }
 
     if (ports.empty()) {
         fprintf(stderr, "[bridge] no output ports wired; nothing to bridge\n");
         return 1;
+    }
+
+    // Complete the SHM endpoint set so SHM-only topics deliver: count-and-drop readers
+    // for every candidate topic not already wired (never forwarded to zenoh).
+    std::vector<std::unique_ptr<DrDDSChannel<sensor_msgs::msg::PointCloud2PubSubType>>> prime_pc;
+    std::vector<std::unique_ptr<DrDDSChannel<nav_msgs::msg::OdometryPubSubType>>> prime_od;
+    if (subscribe_all) {
+        for (const char* topic : PRIME_CLOUD_TOPICS) {
+            if (wired_src.count(topic)) { continue; }
+            prime_pc.push_back(std::make_unique<DrDDSChannel<sensor_msgs::msg::PointCloud2PubSubType>>(
+                [](const sensor_msgs::msg::PointCloud2*) {}, topic, domain, shm, "rt"));
+        }
+        for (const char* topic : PRIME_ODOM_TOPICS) {
+            if (wired_src.count(topic)) { continue; }
+            prime_od.push_back(std::make_unique<DrDDSChannel<nav_msgs::msg::OdometryPubSubType>>(
+                [](const nav_msgs::msg::Odometry*) {}, topic, domain, shm, "rt"));
+        }
+        fprintf(stderr, "[bridge] subscribe_all: +%zu primer readers (count+drop) so SHM-only topics deliver\n",
+                prime_pc.size() + prime_od.size());
     }
 
     fprintf(stderr, "[bridge] shm=%d iface=%s bridging domain %d ...\n", shm,
@@ -339,6 +383,8 @@ int main(int argc, char** argv) {
     }
 
     fprintf(stderr, "[bridge] shutting down\n");
+    prime_pc.clear();
+    prime_od.clear();
     pc_chans.clear();
     imu_chan.reset();
     odom_chan.reset();
