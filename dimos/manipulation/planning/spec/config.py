@@ -21,6 +21,10 @@ from pathlib import Path
 from pydantic import Field
 
 from dimos.core.module import ModuleConfig
+from dimos.manipulation.planning.planning_identifiers import (
+    assert_local_joint_names,
+    assert_valid_robot_name,
+)
 from dimos.manipulation.planning.spec.models import PlanningGroupDefinition
 from dimos.msgs.geometry_msgs.PoseStamped import PoseStamped
 
@@ -35,8 +39,8 @@ class RobotModelConfig(ModuleConfig):
         base_pose: Compatibility placement transform used by current Drake
             world loading/welding. Prefer encoding new placement in the robot
             model when possible.
-        joint_names: Ordered list of controllable/coordinator joints in the
-            local model namespace. This is not a planning group.
+        joint_names: Ordered list of controllable joints in the local model
+            namespace. This is not a planning group.
         end_effector_link: Compatibility robot-scoped end-effector link used by
             legacy helpers. New pose-targeted planning should use planning
             group target frames instead.
@@ -53,9 +57,6 @@ class RobotModelConfig(ModuleConfig):
             links may legitimately overlap (e.g., mimic joints).
         max_velocity: Maximum joint velocity for trajectory generation (rad/s)
         max_acceleration: Maximum joint acceleration for trajectory generation (rad/s^2)
-        joint_name_mapping: Maps coordinator joint names to URDF joint names.
-            Example: {"left/joint1": "joint1"} means coordinator's "left/joint1"
-            corresponds to URDF's "joint1". If empty, names are assumed to match.
         coordinator_task_name: Task name for executing trajectories via coordinator RPC.
             If set, trajectories can be executed via execute_trajectory() RPC.
     """
@@ -79,7 +80,6 @@ class RobotModelConfig(ModuleConfig):
     max_velocity: float = 1.0
     max_acceleration: float = 2.0
     # Coordinator integration
-    joint_name_mapping: dict[str, str] = Field(default_factory=dict)
     coordinator_task_name: str | None = None
     gripper_hardware_id: str | None = None
     # TF publishing for extra links (e.g., camera mount)
@@ -89,19 +89,7 @@ class RobotModelConfig(ModuleConfig):
     # Pre-grasp offset distance in meters (along approach direction)
     pre_grasp_offset: float = 0.10
 
-    def get_urdf_joint_name(self, coordinator_name: str) -> str:
-        """Translate coordinator joint name to URDF joint name."""
-        return self.joint_name_mapping.get(coordinator_name, coordinator_name)
-
-    def get_coordinator_joint_name(self, urdf_name: str) -> str:
-        """Translate URDF joint name to coordinator joint name."""
-        for coord_name, u_name in self.joint_name_mapping.items():
-            if u_name == urdf_name:
-                return coord_name
-        return urdf_name
-
-    def get_coordinator_joint_names(self) -> list[str]:
-        """Get joint names in coordinator namespace."""
-        if not self.joint_name_mapping:
-            return self.joint_names
-        return [self.get_coordinator_joint_name(j) for j in self.joint_names]
+    def model_post_init(self, __context: object) -> None:
+        """Validate delimiter-based naming constraints."""
+        assert_valid_robot_name(self.name)
+        assert_local_joint_names(self.joint_names)

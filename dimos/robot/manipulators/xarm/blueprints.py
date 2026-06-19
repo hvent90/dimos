@@ -56,7 +56,7 @@ keyboard_teleop_xarm6 = autoconnect(
     KeyboardTeleopModule.blueprint(
         model_path=XARM6_FK_MODEL,
         ee_joint_id=_xarm6_cfg.dof,
-        joint_names=_xarm6_cfg.coordinator_joint_names,
+        joint_names=_xarm6_cfg.global_joint_names,
     ),
     ControlCoordinator.blueprint(
         tick_rate=100.0,
@@ -90,7 +90,7 @@ keyboard_teleop_xarm7 = autoconnect(
     KeyboardTeleopModule.blueprint(
         model_path=XARM7_FK_MODEL,
         ee_joint_id=_xarm7_cfg.dof,
-        joint_names=_xarm7_cfg.coordinator_joint_names,
+        joint_names=_xarm7_cfg.global_joint_names,
     ),
     ControlCoordinator.blueprint(
         tick_rate=100.0,

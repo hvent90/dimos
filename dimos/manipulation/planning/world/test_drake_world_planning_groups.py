@@ -36,7 +36,6 @@ def _config(
     name: str,
     joint_names: list[str],
     groups: list[PlanningGroupDefinition],
-    joint_name_mapping: dict[str, str] | None = None,
 ) -> RobotModelConfig:
     return RobotModelConfig(
         name=name,
@@ -46,7 +45,6 @@ def _config(
         end_effector_link="tool0",
         base_link="base_link",
         planning_groups=groups,
-        joint_name_mapping=joint_name_mapping or {},
     )
 
 
@@ -76,7 +74,7 @@ def _arm_group(*joint_names: str) -> PlanningGroupDefinition:
     )
 
 
-def test_list_planning_groups_returns_stable_ids_and_resolved_joint_names() -> None:
+def test_list_planning_groups_returns_stable_ids_and_global_joint_names() -> None:
     world = _world(_config("left", ["joint1", "joint2"], [_arm_group("joint1", "joint2")]))
 
     groups = world.list_planning_groups()
@@ -161,29 +159,21 @@ def test_resolve_planning_groups_overlapping_same_robot_groups_raise_value_error
         world.resolve_planning_groups(("left/arm", "left/wrist"))
 
 
-def test_positions_for_robot_state_accepts_resolved_joint_names_in_config_order() -> None:
+def test_positions_for_robot_state_accepts_local_joint_names_in_config_order() -> None:
+    world = _world(_config("left", ["joint1", "joint2"], [_arm_group("joint1", "joint2")]))
+    joint_state = JointState({"name": ["joint2", "joint1"], "position": [2.0, 1.0]})
+
+    positions = world._positions_for_robot_state("robot_1", joint_state)
+
+    np.testing.assert_allclose(positions, np.array([1.0, 2.0]))
+
+
+def test_positions_for_robot_state_rejects_global_joint_names() -> None:
     world = _world(_config("left", ["joint1", "joint2"], [_arm_group("joint1", "joint2")]))
     joint_state = JointState({"name": ["left/joint2", "left/joint1"], "position": [2.0, 1.0]})
 
-    positions = world._positions_for_robot_state("robot_1", joint_state)
-
-    np.testing.assert_allclose(positions, np.array([1.0, 2.0]))
-
-
-def test_positions_for_robot_state_falls_back_to_coordinator_mapping() -> None:
-    world = _world(
-        _config(
-            "left",
-            ["urdf_joint1", "urdf_joint2"],
-            [_arm_group("urdf_joint1", "urdf_joint2")],
-            joint_name_mapping={"coord_joint1": "urdf_joint1", "coord_joint2": "urdf_joint2"},
-        )
-    )
-    joint_state = JointState({"name": ["coord_joint2", "coord_joint1"], "position": [2.0, 1.0]})
-
-    positions = world._positions_for_robot_state("robot_1", joint_state)
-
-    np.testing.assert_allclose(positions, np.array([1.0, 2.0]))
+    with pytest.raises(ValueError, match="Invalid local joint name: 'left/joint2'"):
+        world._positions_for_robot_state("robot_1", joint_state)
 
 
 def test_group_pose_rejects_group_without_target_frame() -> None:

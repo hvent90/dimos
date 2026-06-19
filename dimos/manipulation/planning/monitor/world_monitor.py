@@ -123,7 +123,6 @@ class WorldMonitor:
         self,
         robot_id: WorldRobotID,
         joint_names: list[str] | None = None,
-        joint_name_mapping: dict[str, str] | None = None,
     ) -> None:
         """Start monitoring joint states. Uses config defaults if args are None."""
         with self._lock:
@@ -141,16 +140,11 @@ class WorldMonitor:
                 else:
                     joint_names = config.joint_names
 
-            # Get joint name mapping from config if not provided
-            if joint_name_mapping is None and config.joint_name_mapping:
-                joint_name_mapping = config.joint_name_mapping
-
             monitor = RobotStateMonitor(
                 world=self._world,
                 lock=self._lock,
                 robot_id=robot_id,
                 joint_names=joint_names,
-                joint_name_mapping=joint_name_mapping,
             )
             monitor.start()
             self._state_monitors[robot_id] = monitor

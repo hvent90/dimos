@@ -63,8 +63,8 @@ def robot_config():
 
 
 @pytest.fixture
-def robot_config_with_mapping():
-    """Create a robot config with joint name mapping (dual-arm scenario)."""
+def left_robot_config():
+    """Create a robot config for a scoped left arm."""
     return RobotModelConfig(
         name="left_arm",
         model_path=Path("/path/to/robot.urdf"),
@@ -72,11 +72,6 @@ def robot_config_with_mapping():
         joint_names=["joint1", "joint2", "joint3"],
         end_effector_link="link_tcp",
         base_link="link_base",
-        joint_name_mapping={
-            "left/joint1": "joint1",
-            "left/joint2": "joint2",
-            "left/joint3": "joint3",
-        },
         coordinator_task_name="traj_left",
     )
 
@@ -347,27 +342,6 @@ class TestPlanningInitialization:
         module._world_monitor.get_current_joint_state.assert_not_called()
 
 
-class TestJointNameTranslation:
-    """Test trajectory joint name translation for coordinator."""
-
-    def test_no_mapping_returns_original(self, robot_config, simple_trajectory):
-        """Without mapping, trajectory is returned unchanged."""
-        module = _make_module()
-
-        result = module._translate_trajectory_to_coordinator(simple_trajectory, robot_config)
-        assert result is simple_trajectory  # Same object
-
-    def test_mapping_translates_names(self, robot_config_with_mapping, simple_trajectory):
-        """With mapping, joint names are translated."""
-        module = _make_module()
-
-        result = module._translate_trajectory_to_coordinator(
-            simple_trajectory, robot_config_with_mapping
-        )
-        assert result.joint_names == ["left/joint1", "left/joint2", "left/joint3"]
-        assert len(result.points) == 2  # Points preserved
-
-
 class TestExecute:
     """Test coordinator execution."""
 
@@ -398,7 +372,11 @@ class TestExecute:
         """Successful execute calls coordinator via task_invoke."""
         module = _make_module()
         module._robots = {"test_arm": ("id", robot_config, MagicMock())}
-        module._planned_trajectories = {"test_arm": simple_trajectory}
+        global_trajectory = JointTrajectory(
+            joint_names=["test_arm/joint1", "test_arm/joint2", "test_arm/joint3"],
+            points=simple_trajectory.points,
+        )
+        module._planned_trajectories = {"test_arm": global_trajectory}
 
         mock_client = MagicMock()
         mock_client.task_invoke.return_value = True
@@ -407,7 +385,7 @@ class TestExecute:
         assert module.execute() is True
         assert module._state == ManipulationState.COMPLETED
         mock_client.task_invoke.assert_called_once_with(
-            "traj_arm", "execute", {"trajectory": simple_trajectory}
+            "traj_arm", "execute", {"trajectory": global_trajectory}
         )
 
     def test_execute_rejected(self, robot_config, simple_trajectory):
@@ -422,22 +400,6 @@ class TestExecute:
 
         assert module.execute() is False
         assert module._state == ManipulationState.FAULT
-
-
-class TestRobotModelConfigMapping:
-    """Test RobotModelConfig joint name mapping helpers."""
-
-    def test_bidirectional_mapping(self, robot_config_with_mapping):
-        """Test URDF <-> coordinator name translation."""
-        config = robot_config_with_mapping
-
-        # Coordinator -> URDF
-        assert config.get_urdf_joint_name("left/joint1") == "joint1"
-        assert config.get_urdf_joint_name("unknown") == "unknown"
-
-        # URDF -> Coordinator
-        assert config.get_coordinator_joint_name("joint1") == "left/joint1"
-        assert config.get_coordinator_joint_name("unknown") == "unknown"
 
 
 def _make_module_with_monitor(*configs: RobotModelConfig) -> ManipulationModule:
@@ -473,7 +435,6 @@ def _make_trajectory(*points: tuple[float, list[float]]) -> JointTrajectory:
 def _make_robot_config(
     name: str,
     joints: list[str],
-    coordinator_joints: list[str],
     task_name: str,
 ) -> RobotModelConfig:
     return RobotModelConfig(
@@ -483,12 +444,11 @@ def _make_robot_config(
         joint_names=joints,
         end_effector_link="ee",
         base_link="base",
-        joint_name_mapping=dict(zip(coordinator_joints, joints, strict=True)),
         coordinator_task_name=task_name,
     )
 
 
-def _make_resolved_group(
+def _make_global_group(
     robot_name: str, group_name: str, joints: list[str]
 ) -> ResolvedPlanningGroup:
     return ResolvedPlanningGroup(
@@ -541,12 +501,12 @@ def _make_world_monitor_with_viz(viz: object | None) -> WorldMonitor:
 class TestOnJointState:
     """Test _on_joint_state routing, splitting, and init capture."""
 
-    def test_routes_positions_to_monitor(self, robot_config_with_mapping):
+    def test_routes_positions_to_monitor(self, left_robot_config):
         """Joint positions from aggregated message are routed to the correct monitor."""
-        module = _make_module_with_monitor(robot_config_with_mapping)
+        module = _make_module_with_monitor(left_robot_config)
 
         msg = JointState(
-            name=["left/joint1", "left/joint2", "left/joint3"],
+            name=["left_arm/joint1", "left_arm/joint2", "left_arm/joint3"],
             position=[0.1, 0.2, 0.3],
             velocity=[1.0, 2.0, 3.0],
         )
@@ -556,13 +516,14 @@ class TestOnJointState:
         module._world_monitor.on_joint_state.assert_called_once()
         call_args = module._world_monitor.on_joint_state.call_args
         sub_msg = call_args[0][0]
+        assert sub_msg.name == ["joint1", "joint2", "joint3"]
         assert sub_msg.position == [0.1, 0.2, 0.3]
         assert sub_msg.velocity == [1.0, 2.0, 3.0]
         assert call_args[1]["robot_id"] == "robot_left_arm"
 
-    def test_skips_robot_with_missing_joints(self, robot_config_with_mapping):
+    def test_skips_robot_with_missing_joints(self, left_robot_config):
         """Robots whose joints are absent from the message are skipped."""
-        module = _make_module_with_monitor(robot_config_with_mapping)
+        module = _make_module_with_monitor(left_robot_config)
 
         # Message has none of left_arm's joints
         msg = JointState(
@@ -573,12 +534,12 @@ class TestOnJointState:
 
         module._world_monitor.on_joint_state.assert_not_called()
 
-    def test_captures_init_joints_on_first_call(self, robot_config_with_mapping):
+    def test_captures_init_joints_on_first_call(self, left_robot_config):
         """First joint state is stored as init joints; subsequent calls don't overwrite."""
-        module = _make_module_with_monitor(robot_config_with_mapping)
+        module = _make_module_with_monitor(left_robot_config)
 
         first_msg = JointState(
-            name=["left/joint1", "left/joint2", "left/joint3"],
+            name=["left_arm/joint1", "left_arm/joint2", "left_arm/joint3"],
             position=[0.1, 0.2, 0.3],
         )
         module._on_joint_state(first_msg)
@@ -587,7 +548,7 @@ class TestOnJointState:
 
         # Second call should NOT overwrite
         second_msg = JointState(
-            name=["left/joint1", "left/joint2", "left/joint3"],
+            name=["left_arm/joint1", "left_arm/joint2", "left_arm/joint3"],
             position=[0.9, 0.8, 0.7],
         )
         module._on_joint_state(second_msg)
@@ -602,7 +563,6 @@ class TestOnJointState:
             joint_names=["j1", "j2"],
             end_effector_link="ee",
             base_link="base",
-            joint_name_mapping={"left/j1": "j1", "left/j2": "j2"},
             coordinator_task_name="traj_left",
         )
         right_config = RobotModelConfig(
@@ -612,7 +572,6 @@ class TestOnJointState:
             joint_names=["j1", "j2"],
             end_effector_link="ee",
             base_link="base",
-            joint_name_mapping={"right/j1": "j1", "right/j2": "j2"},
             coordinator_task_name="traj_right",
         )
         module = _make_module_with_monitor(left_config, right_config)
@@ -636,15 +595,15 @@ class TestOnJointState:
         assert calls["robot_left"].velocity == [0.1, 0.2]
         assert calls["robot_right"].velocity == [0.3, 0.4]
 
-    def test_no_monitor_returns_early(self, robot_config_with_mapping):
+    def test_no_monitor_returns_early(self, left_robot_config):
         """When world_monitor is None, _on_joint_state returns without error."""
         module = _make_module()
-        module._robots = {"left_arm": ("id", robot_config_with_mapping, MagicMock())}
+        module._robots = {"left_arm": ("id", left_robot_config, MagicMock())}
         module._world_monitor = None
 
         # Should not raise
         msg = JointState(
-            name=["left/joint1", "left/joint2", "left/joint3"],
+            name=["left_arm/joint1", "left_arm/joint2", "left_arm/joint3"],
             position=[0.1, 0.2, 0.3],
         )
         module._on_joint_state(msg)
@@ -782,10 +741,10 @@ class TestManipulationPreview:
 
 class TestGeneratedPlanProjection:
     def test_selected_joint_state_accepts_local_current_state_names(self):
-        config = _make_robot_config("left", ["j1", "j2"], ["c/j1", "c/j2"], "task")
+        config = _make_robot_config("left", ["j1", "j2"], "task")
         module = _make_module_with_monitor(config)
         module._world_monitor.world.resolve_planning_groups.return_value = [
-            _make_resolved_group("left", "arm", ["j1", "j2"])
+            _make_global_group("left", "arm", ["j1", "j2"])
         ]
         module._world_monitor.get_current_joint_state.return_value = JointState(
             name=["j1", "j2"], position=[1.0, 2.0]
@@ -801,24 +760,21 @@ class TestGeneratedPlanProjection:
         left_config = _make_robot_config(
             "left",
             ["j1", "j2", "j3"],
-            ["left_task/j1", "left_task/j2", "left_task/j3"],
             "left_task",
         )
-        right_config = _make_robot_config(
-            "right", ["j1", "j2"], ["right_task/j1", "right_task/j2"], "right_task"
-        )
+        right_config = _make_robot_config("right", ["j1", "j2"], "right_task")
         module = _make_module_with_monitor(left_config, right_config)
         left_gen = _trajectory_generator()
         right_gen = _trajectory_generator()
         module._robots["left"] = ("robot_left", left_config, left_gen)
         module._robots["right"] = ("robot_right", right_config, right_gen)
         module._world_monitor.world.resolve_planning_groups.return_value = [
-            _make_resolved_group("left", "arm", ["j1", "j2"]),
-            _make_resolved_group("right", "arm", ["j1"]),
+            _make_global_group("left", "arm", ["j1", "j2"]),
+            _make_global_group("right", "arm", ["j1"]),
         ]
         module._world_monitor.get_current_joint_state.side_effect = [
-            JointState(name=["left/j1", "left/j2", "left/j3"], position=[0.0, 0.0, 9.0]),
-            JointState(name=["right/j1", "right/j2"], position=[0.0, 8.0]),
+            JointState(name=["j1", "j2", "j3"], position=[0.0, 0.0, 9.0]),
+            JointState(name=["j1", "j2"], position=[0.0, 8.0]),
         ]
         module._coordinator_client = MagicMock()
         module._coordinator_client.task_invoke.return_value = True
@@ -830,21 +786,21 @@ class TestGeneratedPlanProjection:
         left_call, right_call = module._coordinator_client.task_invoke.call_args_list
         assert left_call.args[0:2] == ("left_task", "execute")
         left_trajectory = left_call.args[2]["trajectory"]
-        assert left_trajectory.joint_names == ["left_task/j1", "left_task/j2", "left_task/j3"]
+        assert left_trajectory.joint_names == ["left/j1", "left/j2", "left/j3"]
         assert [point.positions for point in left_trajectory.points] == [
             [1.0, 2.0, 9.0],
             [4.0, 5.0, 9.0],
         ]
         assert right_call.args[0:2] == ("right_task", "execute")
         right_trajectory = right_call.args[2]["trajectory"]
-        assert right_trajectory.joint_names == ["right_task/j1", "right_task/j2"]
+        assert right_trajectory.joint_names == ["right/j1", "right/j2"]
         assert [point.positions for point in right_trajectory.points] == [[3.0, 8.0], [6.0, 8.0]]
 
     def test_project_plan_holds_non_selected_joints_from_current_state(self):
-        config = _make_robot_config("left", ["j1", "j2", "j3"], ["c/j1", "c/j2", "c/j3"], "task")
+        config = _make_robot_config("left", ["j1", "j2", "j3"], "task")
         module = _make_module_with_monitor(config)
         module._world_monitor.get_current_joint_state.return_value = JointState(
-            name=["left/j1", "left/j2", "left/j3"], position=[10.0, 20.0, 30.0]
+            name=["j1", "j2", "j3"], position=[10.0, 20.0, 30.0]
         )
         plan = GeneratedPlan(
             group_ids=("left/arm",),
@@ -861,14 +817,14 @@ class TestGeneratedPlanProjection:
         assert [state.position for state in projected] == [[10.0, 2.0, 30.0], [10.0, 3.0, 30.0]]
 
     def test_preview_path_with_last_plan_projects_lazily_to_world_monitor(self):
-        config = _make_robot_config("left", ["j1", "j2"], ["c/j1", "c/j2"], "task")
+        config = _make_robot_config("left", ["j1", "j2"], "task")
         module = _make_module_with_monitor(config)
         module._robots["left"] = ("robot_left", config, _trajectory_generator())
         module._world_monitor.world.resolve_planning_groups.return_value = [
-            _make_resolved_group("left", "arm", ["j1"])
+            _make_global_group("left", "arm", ["j1"])
         ]
         module._world_monitor.get_current_joint_state.return_value = JointState(
-            name=["left/j1", "left/j2"], position=[0.0, 7.0]
+            name=["j1", "j2"], position=[0.0, 7.0]
         )
         module._last_plan = GeneratedPlan(
             group_ids=("left/arm",),

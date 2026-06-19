@@ -45,7 +45,7 @@ PlanningGroupID: TypeAlias = str
 LocalModelJointName: TypeAlias = str
 """Joint name as it appears in URDF/SRDF before world binding."""
 
-ResolvedJointName: TypeAlias = str
+GlobalJointName: TypeAlias = str
 """Public joint name of the form {robot_name}/{local_joint_name}."""
 
 JointPath: TypeAlias = "list[JointState]"
@@ -85,14 +85,14 @@ class PlanningGroupDescriptor:
     """Read-only public snapshot for an available planning group.
 
     Descriptors are returned by query APIs. They expose stable public IDs and
-    resolved joint names for callers, but intentionally do not expose backend
+    global joint names for callers, but intentionally do not expose backend
     runtime IDs or mutable world state.
     """
 
     id: PlanningGroupID
     robot_name: RobotName
     group_name: str
-    joint_names: tuple[ResolvedJointName, ...]
+    joint_names: tuple[GlobalJointName, ...]
     local_joint_names: tuple[LocalModelJointName, ...]
     base_link: str
     tip_link: str | None = None
@@ -117,7 +117,7 @@ class ResolvedPlanningGroup:
     robot_id: WorldRobotID
     robot_name: RobotName
     group_name: str
-    joint_names: tuple[ResolvedJointName, ...]
+    joint_names: tuple[GlobalJointName, ...]
     local_joint_names: tuple[LocalModelJointName, ...]
     base_link: str
     tip_link: str | None = None
@@ -133,7 +133,7 @@ class ResolvedPlanningGroup:
 class GeneratedPlan:
     """Canonical generated planning artifact.
 
-    The path uses resolved joint names and contains exactly the selected joints.
+    The path uses global joint names and contains exactly the selected joints.
     Downstream preview/execution projections are computed lazily from this data.
     """
 

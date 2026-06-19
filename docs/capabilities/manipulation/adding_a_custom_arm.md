@@ -533,7 +533,6 @@ def _make_base_pose(x=0.0, y=0.0, z=0.0) -> PoseStamped:
 def _make_yourarm_config(
     name: str = "arm",
     y_offset: float = 0.0,
-    joint_prefix: str = "",
     coordinator_task: str | None = None,
 ) -> RobotModelConfig:
     """Create YourArm robot config for planning.
@@ -541,12 +540,10 @@ def _make_yourarm_config(
     Args:
         name: Robot name in the Drake planning world.
         y_offset: Y-axis offset for multi-arm setups.
-        joint_prefix: Prefix for joint name mapping to coordinator namespace.
         coordinator_task: Coordinator task name for trajectory execution via RPC.
     """
     # These must match the joint names in your URDF
     joint_names = ["joint1", "joint2", "joint3", "joint4", "joint5", "joint6"]
-    joint_mapping = {f"{joint_prefix}{j}": j for j in joint_names} if joint_prefix else {}
 
     return RobotModelConfig(
         name=name,
@@ -569,7 +566,6 @@ def _make_yourarm_config(
         auto_convert_meshes=True,       # Convert DAE/STL meshes for Drake
         max_velocity=1.0,               # Max velocity scaling factor
         max_acceleration=2.0,           # Max acceleration scaling factor
-        joint_name_mapping=joint_mapping,
         coordinator_task_name=coordinator_task,
     )
 ```
@@ -581,7 +577,7 @@ Add this to your `dimos/robot/yourarm/blueprints.py` alongside the coordinator b
 ```python skip
 
 yourarm_planner = manipulation_module(
-    robots=[_make_yourarm_config("arm", joint_prefix="arm_", coordinator_task="traj_arm")],
+    robots=[_make_yourarm_config("arm", coordinator_task="traj_arm")],
     planning_timeout=10.0,
     enable_viz=True,
 ).transports(
@@ -596,12 +592,16 @@ yourarm_planner = manipulation_module(
 | Field | Description |
 |-------|-------------|
 | `model_path` | Path to `.urdf` or `.xacro` file |
-| `joint_names` | Ordered controllable/coordinator joint set (must match URDF); not itself a planning group |
+| `joint_names` | Ordered controllable local model joint set (must match URDF); not itself a planning group |
 | `planning_groups` / `srdf_path` | Explicit planning groups or SRDF source; fallback can generate `{robot_name}/manipulator` for an unambiguous single chain |
 | `package_paths` | Maps `package://` URIs to filesystem paths (for xacro) |
-| `joint_name_mapping` | Maps coordinator names (e.g., `"arm_joint1"`) to URDF names (e.g., `"joint1"`) |
 | `coordinator_task_name` | Must match the `TaskConfig.name` in your coordinator blueprint |
 | `collision_exclusion_pairs` | List of `(link_a, link_b)` tuples for links that may legitimately touch (e.g., gripper fingers) |
+
+Coordinator-facing joint states and trajectories use global joint names derived
+mechanically as `{robot_name}/{local_joint_name}` (for example, `arm/joint1`).
+Keep hardware-native name translation inside the hardware adapter; manipulation
+planning config uses local model joint names.
 
 `base_link`, `base_pose`, and `end_effector_link` are compatibility fields used
 by current placement and robot-scoped helper paths. New planning code should use

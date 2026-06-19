@@ -29,6 +29,7 @@ from pydantic import BaseModel, Field, PrivateAttr
 from dimos.control.components import HardwareComponent, HardwareType
 from dimos.control.coordinator import TaskConfig
 from dimos.manipulation.planning.planning_groups import discover_planning_group_definitions
+from dimos.manipulation.planning.planning_identifiers import make_global_joint_names
 from dimos.manipulation.planning.spec.config import RobotModelConfig
 from dimos.msgs.geometry_msgs.PoseStamped import PoseStamped
 from dimos.msgs.geometry_msgs.Quaternion import Quaternion
@@ -82,8 +83,6 @@ class RobotConfig(BaseModel):
     )
     home_joints: list[float] | None = None
 
-    # Multi-robot / coordinator
-    joint_prefix: str | None = None  # defaults to "{name}_"
     # Compatibility planning placement. Prefer encoding placement in URDF/xacro/MJCF.
     base_pose: list[float] = Field(default_factory=lambda: [0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 1.0])
 
@@ -113,11 +112,6 @@ class RobotConfig(BaseModel):
 
     _parsed: ModelDescription | None = PrivateAttr(default=None)
 
-    def _ensure_prefix(self) -> None:
-        """Ensure joint_prefix is set (no model parsing needed)."""
-        if self.joint_prefix is None:
-            self.joint_prefix = f"{self.name}/"
-
     def _ensure_parsed(self) -> ModelDescription:
         """Parse model lazily on first access."""
         if self._parsed is None:
@@ -127,7 +121,6 @@ class RobotConfig(BaseModel):
                     "joint/link info is unavailable. Set model_path to a URDF/MJCF."
                 )
             self._parsed = parse_model(self.model_path, self.package_paths, self.xacro_args)
-            self._ensure_prefix()
             if self.joint_names is None:
                 self.joint_names = self._parsed.actuated_joint_names
             if self.base_link is None:
@@ -139,7 +132,7 @@ class RobotConfig(BaseModel):
     def _compute_default_home(self) -> list[float]:
         assert self._parsed is not None
         home = []
-        for joint_name in self.resolved_joint_names:
+        for joint_name in self.local_joint_names:
             joint = self._parsed.get_joint(joint_name)
             if (
                 joint is not None
@@ -158,10 +151,14 @@ class RobotConfig(BaseModel):
         return self._ensure_parsed()
 
     @property
-    def resolved_joint_names(self) -> list[str]:
+    def local_joint_names(self) -> list[str]:
         self._ensure_parsed()
         assert self.joint_names is not None
         return self.joint_names
+
+    @property
+    def global_joint_names(self) -> list[str]:
+        return make_global_joint_names(self.name, self.local_joint_names)
 
     @property
     def resolved_base_link(self) -> str:
@@ -173,23 +170,7 @@ class RobotConfig(BaseModel):
     def dof(self) -> int:
         if self.joint_names is not None:
             return len(self.joint_names)
-        return len(self.resolved_joint_names)
-
-    @property
-    def coordinator_joint_names(self) -> list[str]:
-        self._ensure_prefix()
-        names = self.joint_names if self.joint_names is not None else self.resolved_joint_names
-        if not self.joint_prefix:
-            return list(names)
-        return [f"{self.joint_prefix}{j}" for j in names]
-
-    @property
-    def joint_name_mapping(self) -> dict[str, str]:
-        self._ensure_prefix()
-        names = self.joint_names if self.joint_names is not None else self.resolved_joint_names
-        if not self.joint_prefix:
-            return {}
-        return {f"{self.joint_prefix}{j}": j for j in names}
+        return len(self.local_joint_names)
 
     @property
     def coordinator_task_name(self) -> str:
@@ -215,9 +196,7 @@ class RobotConfig(BaseModel):
             exclusions.extend(self.gripper.collision_exclusions)
 
         # Use direct fields when available to avoid triggering model parsing at import time
-        joint_names = (
-            self.joint_names if self.joint_names is not None else self.resolved_joint_names
-        )
+        joint_names = self.joint_names if self.joint_names is not None else self.local_joint_names
         base_link = self.base_link if self.base_link is not None else self.resolved_base_link
         planning_groups = discover_planning_group_definitions(
             robot_name=self.name,
@@ -246,7 +225,6 @@ class RobotConfig(BaseModel):
             auto_convert_meshes=self.auto_convert_meshes,
             max_velocity=self.max_velocity,
             max_acceleration=self.max_acceleration,
-            joint_name_mapping=self.joint_name_mapping,
             coordinator_task_name=self.coordinator_task_name,
             gripper_hardware_id=self.name if self.gripper else None,
             tf_extra_links=self.tf_extra_links,
@@ -256,10 +234,9 @@ class RobotConfig(BaseModel):
 
     def to_hardware_component(self) -> HardwareComponent:
         """Generate HardwareComponent for ControlCoordinator."""
-        self._ensure_prefix()
         gripper_joints: list[str] = []
         if self.gripper and self.gripper.joints:
-            gripper_joints = [f"{self.joint_prefix}{j}" for j in self.gripper.joints]
+            gripper_joints = make_global_joint_names(self.name, self.gripper.joints)
 
         adapter_kwargs = dict(self.adapter_kwargs)
         if self.home_joints is not None:
@@ -268,7 +245,7 @@ class RobotConfig(BaseModel):
         return HardwareComponent(
             hardware_id=self.name,
             hardware_type=HardwareType.MANIPULATOR,
-            joints=self.coordinator_joint_names,
+            joints=self.global_joint_names,
             adapter_type=self.adapter_type,
             address=self.address,
             auto_enable=self.auto_enable,
@@ -300,7 +277,7 @@ class RobotConfig(BaseModel):
         return TaskConfig(
             name=task_name if task_name is not None else self.coordinator_task_name,
             type=task_type if task_type is not None else self.task_type,
-            joint_names=self.coordinator_joint_names,
+            joint_names=self.global_joint_names,
             priority=priority if priority is not None else self.task_priority,
             auto_start=auto_start,
             params=params,

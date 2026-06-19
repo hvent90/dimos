@@ -28,7 +28,7 @@ import numpy as np
 from dimos.manipulation.planning.kinematics.config import PinkKinematicsConfig
 from dimos.manipulation.planning.planning_group_utils import (
     filter_joint_state_to_selected_joints,
-    matching_resolved_joint_name,
+    matching_global_joint_name,
     planning_group_id_from_selector,
 )
 from dimos.manipulation.planning.spec.config import RobotModelConfig
@@ -186,7 +186,7 @@ class PinkIK:
         check_collision: bool = True,
         max_attempts: int = 10,
     ) -> IKResult:
-        """Solve a planning-group pose target and return only selected resolved joints."""
+        """Solve a planning-group pose target and return only selected global joints."""
         if not pose_targets:
             return _failure(IKStatus.NO_SOLUTION, "At least one pose target is required")
 
@@ -502,7 +502,7 @@ def _build_joint_mapping(model: Any, config: RobotModelConfig) -> _JointMapping:
     model_joint_names: list[str] = []
 
     for dimos_name in config.joint_names:
-        model_joint_name = config.get_urdf_joint_name(dimos_name)
+        model_joint_name = dimos_name
         joint_id = _get_joint_id(model, model_joint_name)
         joint = model.joints[joint_id]
         nq = int(getattr(joint, "nq", 1))
@@ -562,9 +562,9 @@ def _seed_positions_for_mapping(seed: JointState, mapping: _JointMapping) -> NDA
             elif model_name in positions_by_name:
                 values.append(float(positions_by_name[model_name]))
             elif (
-                resolved_name := matching_resolved_joint_name(positions_by_name, dimos_name)
+                global_name := matching_global_joint_name(positions_by_name, dimos_name)
             ) is not None:
-                values.append(float(positions_by_name[resolved_name]))
+                values.append(float(positions_by_name[global_name]))
             else:
                 raise ValueError(f"Seed is missing joint '{dimos_name}' (URDF name '{model_name}')")
         return np.array(values, dtype=np.float64)

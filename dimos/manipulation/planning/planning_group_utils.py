@@ -16,11 +16,12 @@
 
 from collections.abc import Mapping, Sequence
 
+from dimos.manipulation.planning.planning_identifiers import assert_local_joint_names
 from dimos.manipulation.planning.spec.models import (
+    GlobalJointName,
     LocalModelJointName,
     PlanningGroupDescriptor,
     PlanningGroupID,
-    ResolvedJointName,
     ResolvedPlanningGroup,
     RobotName,
 )
@@ -61,10 +62,10 @@ def primary_pose_planning_group_id_for_robot(
     return None
 
 
-def matching_resolved_joint_name(
+def matching_global_joint_name(
     positions_by_name: Mapping[str, float], local_joint_name: LocalModelJointName
-) -> ResolvedJointName | None:
-    """Find the unique resolved joint name ending with a local joint name."""
+) -> GlobalJointName | None:
+    """Find the unique global joint name ending with a local joint name."""
     suffix = f"/{local_joint_name}"
     matches = [name for name in positions_by_name if name.endswith(suffix)]
     if len(matches) == 1:
@@ -74,42 +75,42 @@ def matching_resolved_joint_name(
 
 def filter_joint_state_to_selected_joints(
     joint_state: JointState,
-    resolved_joint_names: Sequence[ResolvedJointName],
+    global_joint_names: Sequence[GlobalJointName],
     local_joint_names: Sequence[LocalModelJointName] = (),
 ) -> JointState:
-    """Project a joint state to selected resolved joints.
+    """Project a joint state to selected global joints.
 
-    Values are looked up by resolved name first. When ``local_joint_names`` is
+    Values are looked up by global name first. When ``local_joint_names`` is
     provided, each corresponding local name is used as a fallback.
     """
-    if local_joint_names and len(resolved_joint_names) != len(local_joint_names):
-        raise ValueError("Resolved and local selected joint lists must have the same length")
+    if local_joint_names and len(global_joint_names) != len(local_joint_names):
+        raise ValueError("Global and local selected joint lists must have the same length")
 
     positions_by_name = dict(zip(joint_state.name, joint_state.position, strict=True))
     selected_positions: list[float] = []
     missing: list[str] = []
-    for index, resolved_name in enumerate(resolved_joint_names):
-        if resolved_name in positions_by_name:
-            selected_positions.append(float(positions_by_name[resolved_name]))
+    for index, global_name in enumerate(global_joint_names):
+        if global_name in positions_by_name:
+            selected_positions.append(float(positions_by_name[global_name]))
             continue
         if local_joint_names:
             local_name = local_joint_names[index]
             if local_name in positions_by_name:
                 selected_positions.append(float(positions_by_name[local_name]))
                 continue
-        missing.append(resolved_name)
+        missing.append(global_name)
 
     if missing:
         raise ValueError(f"IK result is missing selected joints: {missing}")
 
-    return JointState({"name": list(resolved_joint_names), "position": selected_positions})
+    return JointState({"name": list(global_joint_names), "position": selected_positions})
 
 
 def normalize_joint_target_for_group(
     group: ResolvedPlanningGroup,
     target: JointState,
 ) -> JointState:
-    """Normalize a group joint target to resolved joint names in group order."""
+    """Normalize a robot-scoped group target to global joint names in group order."""
     if not target.name:
         if len(target.position) != len(group.joint_names):
             raise ValueError(
@@ -118,20 +119,19 @@ def normalize_joint_target_for_group(
             )
         return JointState(name=list(group.joint_names), position=list(target.position))
 
+    assert_local_joint_names(target.name)
     positions_by_name = dict(zip(target.name, target.position, strict=False))
-    resolved_positions: list[float] = []
+    global_positions: list[float] = []
     missing: list[str] = []
-    for resolved_name, local_name in zip(group.joint_names, group.local_joint_names, strict=False):
-        if resolved_name in positions_by_name:
-            resolved_positions.append(positions_by_name[resolved_name])
-        elif local_name in positions_by_name:
-            resolved_positions.append(positions_by_name[local_name])
+    for local_name in group.local_joint_names:
+        if local_name in positions_by_name:
+            global_positions.append(positions_by_name[local_name])
         else:
-            missing.append(resolved_name)
+            missing.append(local_name)
     if missing:
         raise ValueError(f"Target for '{group.id}' is missing joints: {missing}")
 
-    extra = set(target.name) - set(group.joint_names) - set(group.local_joint_names)
+    extra = set(target.name) - set(group.local_joint_names)
     if extra:
         raise ValueError(f"Target for '{group.id}' has extra joints: {sorted(extra)}")
-    return JointState(name=list(group.joint_names), position=resolved_positions)
+    return JointState(name=list(group.joint_names), position=global_positions)

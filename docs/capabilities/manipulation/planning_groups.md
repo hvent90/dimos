@@ -10,13 +10,13 @@ being planned.
 |---------|---------|
 | Planning group | A named serial chain of controllable robot joints. |
 | Planning group ID | Stable API ID in the form `{robot_name}/{group_name}`. |
-| Resolved joint name | World-level joint name in the form `{robot_name}/{local_joint_name}`. |
-| Generated plan | Minimal planning artifact containing selected group IDs and one synchronized resolved-joint path. |
+| Global joint name | Boundary-level joint name in the form `{robot_name}/{local_joint_name}`. |
+| Generated plan | Minimal planning artifact containing selected group IDs and one synchronized global-joint path. |
 | Auxiliary group | A group selected for a pose request without receiving its own pose target. |
 
-Local URDF/SRDF joint names stay inside model parsing and backend internals.
-Public planning states and generated plan paths use resolved joint names so two
-robots can safely have the same local joint names.
+Local URDF/SRDF joint names stay inside robot-scoped APIs, model parsing, and
+backend internals. Flat planning states and generated plan paths require global
+joint names so two robots can safely have the same local joint names.
 
 ## Planning group sources
 
@@ -53,8 +53,8 @@ unique serial target frame.
 ## Fallback behavior
 
 When no SRDF is available, fallback uses `RobotModelConfig.joint_names` as the
-candidate controllable set. This field is the robot's controllable/coordinator
-joint set, not an implicit planning group.
+candidate controllable set. This field is the robot's ordered local model joint
+set, not an implicit planning group.
 
 Fallback succeeds only when those joints form one unambiguous serial chain. It
 allows prismatic joints in the middle of the chain and strips only terminal/tip
@@ -71,7 +71,7 @@ the API normalizes them back to IDs and re-resolves current world state.
 # Joint-space planning for one group.
 manip.plan_to_joint_targets({
     "left_arm/manipulator": JointState(
-        name=["left_arm/joint1", "left_arm/joint2"],
+        name=["joint1", "joint2"],
         position=[0.2, -0.1],
     )
 })
@@ -87,23 +87,24 @@ manip.preview_plan(plan)
 manip.execute_plan(plan)
 ```
 
-For joint-space planning, start and goal joint keys must exactly match the
-selected resolved joints: no missing, extra, or partial joints.
+For robot-scoped joint-space planning, unnamed vectors are interpreted in robot
+model joint order. If names are provided, they must be local model joint names:
+no global names, missing joints, extra joints, or partial joint sets.
 
 ## Generated plans and execution
 
 A `GeneratedPlan` stores:
 
 - selected planning group IDs;
-- a single synchronized path of `JointState` waypoints keyed by resolved joint
+- a single synchronized path of `JointState` waypoints keyed by global joint
   names;
 - status, timing, path length, iteration count, and message metadata.
 
 Preview and execution project this path lazily. Preview sends projected joint
-paths to the world monitor. Execution splits the path by affected coordinator
-trajectory task, orders each trajectory by that task's configured joint order,
-maps resolved/local names to coordinator names at the boundary, and invokes each
-trajectory controller. Controllers remain planning-group agnostic.
+paths to the world monitor. Execution splits the path by affected trajectory
+task, orders each trajectory by the robot's configured local joint order, writes
+global joint names at the coordinator boundary, and invokes each trajectory
+controller. Controllers remain planning-group agnostic.
 
 Multi-task dispatch is not atomic in this change: if one trajectory task accepts
 and a later task rejects, DimOS reports the rejection but does not roll back the
@@ -119,4 +120,4 @@ New planning logic should use model/SRDF structure and planning group base/tip
 links instead.
 
 Robot placement should be encoded in URDF/xacro/MJCF. `joint_names` remains
-supported and should describe the controllable/coordinator joint set.
+supported and should describe the ordered controllable local model joint set.

@@ -79,7 +79,7 @@ class WorldSpec(Protocol):
 
         SRDF/fallback parsing creates model-level definitions before world
         binding. This query returns world-level descriptor snapshots with stable
-        public IDs and resolved joint names.
+        public IDs and global joint names.
         """
         ...
 

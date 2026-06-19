@@ -65,9 +65,6 @@ def openarm_arm(
         "adapter_type": adapter_type,
         "address": address,
         "joint_names": joint_names,
-        # URDF already prefixes joints with "left_"/"right_" in bimanual mode,
-        # so suppress RobotConfig's automatic "{name}_" prefix.
-        "joint_prefix": "",
         "base_link": "openarm_body_link0",
         "home_joints": [0.0] * 7,
         "base_pose": [0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 1.0],
@@ -104,7 +101,6 @@ def openarm_single(
         "adapter_type": adapter_type,
         "address": address,
         "joint_names": [f"openarm_left_joint{i}" for i in range(1, 8)],
-        "joint_prefix": "",
         "base_link": "openarm_body_link0",
         "home_joints": [0.0] * 7,
         "package_paths": {"openarm_description": _OPENARM_PKG},

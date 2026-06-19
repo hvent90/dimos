@@ -53,7 +53,12 @@ from dimos.manipulation.planning.planning_group_utils import (
     primary_pose_planning_group_id_for_robot,
     single_planning_group_id_for_robot,
 )
-from dimos.manipulation.planning.planning_identifiers import make_resolved_joint_name
+from dimos.manipulation.planning.planning_identifiers import (
+    assert_global_joint_names,
+    assert_local_joint_names,
+    make_global_joint_name,
+    make_global_joint_names,
+)
 from dimos.manipulation.planning.spec.config import RobotModelConfig
 from dimos.manipulation.planning.spec.enums import IKStatus, ObstacleType
 from dimos.manipulation.planning.spec.models import (
@@ -281,27 +286,33 @@ class ManipulationModule(Module):
     def _on_joint_state(self, msg: JointState) -> None:
         """Callback when joint state received from driver.
 
-        Splits the aggregated JointState by robot using each robot's
-        coordinator joint names, then routes to the correct monitor.
+        Splits the aggregated global JointState by robot, then routes local
+        robot-scoped states to the correct monitor.
         """
         try:
             if self._world_monitor is None:
                 return
 
+            if not msg.name:
+                raise ValueError("Aggregate joint states must include global joint names")
+            assert_global_joint_names(msg.name)
+
             # Build name → index map once for the whole message
             name_to_idx = {name: i for i, name in enumerate(msg.name)}
 
             for robot_name, (robot_id, config, _) in self._robots.items():
-                coord_names = config.get_coordinator_joint_names()
-                indices = [name_to_idx.get(cn) for cn in coord_names]
+                global_names = make_global_joint_names(robot_name, config.joint_names)
+                indices = [name_to_idx.get(global_name) for global_name in global_names]
                 if any(idx is None for idx in indices):
                     missing = [
-                        cn for cn, idx in zip(coord_names, indices, strict=False) if idx is None
+                        name
+                        for name, idx in zip(global_names, indices, strict=False)
+                        if idx is None
                     ]
                     logger.warning(f"Skipping '{robot_name}': missing joints {missing}")
                     continue
 
-                # Build per-robot sub-message (coordinator namespace)
+                # Build per-robot sub-message (local model namespace)
                 sub_positions = [msg.position[idx] for idx in indices]  # type: ignore[index]
                 sub_velocities = (
                     [msg.velocity[idx] for idx in indices]  # type: ignore[index]
@@ -309,7 +320,7 @@ class ManipulationModule(Module):
                     else []
                 )
                 sub_msg = JointState(
-                    name=list(coord_names),
+                    name=list(config.joint_names),
                     position=sub_positions,
                     velocity=sub_velocities,
                 )
@@ -494,7 +505,7 @@ class ManipulationModule(Module):
         )
 
     def _selected_joint_state(self, group_ids: tuple[PlanningGroupID, ...]) -> JointState | None:
-        """Collect current state for exactly the selected resolved joints."""
+        """Collect current state for exactly the selected global joints."""
         assert self._world_monitor is not None
         resolved_groups = self._world_monitor.world.resolve_planning_groups(group_ids)
         names: list[str] = []
@@ -530,7 +541,7 @@ class ManipulationModule(Module):
     def _normalize_joint_target(
         self, group_id: PlanningGroupID, target: JointState
     ) -> JointState | None:
-        """Normalize a group joint target to resolved joint names in group order."""
+        """Normalize a group joint target to global joint names in group order."""
         assert self._world_monitor is not None
         group = self._world_monitor.world.resolve_planning_groups((group_id,))[0]
         try:
@@ -542,13 +553,13 @@ class ManipulationModule(Module):
     def _project_plan_path_for_robot(self, plan: GeneratedPlan, robot_name: RobotName) -> JointPath:
         """Project combined plan path to one robot in configured local joint order.
 
-        Generated plans only contain selected resolved joints. Trajectory tasks may
+        Generated plans only contain selected global joints. Trajectory tasks may
         still be configured for the robot's full controllable joint set, so
         non-selected joints are held at their current positions during projection.
         """
         robot_id, config, _ = self._robots[robot_name]
-        resolved_joint_names = [
-            make_resolved_joint_name(robot_name, joint) for joint in config.joint_names
+        global_joint_names = [
+            make_global_joint_name(robot_name, joint) for joint in config.joint_names
         ]
         current_by_name: dict[str, float] = {}
         if self._world_monitor is not None:
@@ -559,20 +570,20 @@ class ManipulationModule(Module):
         for waypoint in plan.path:
             position_by_name = dict(zip(waypoint.name, waypoint.position, strict=False))
             positions: list[float] = []
-            for local_name, resolved_name in zip(
-                config.joint_names, resolved_joint_names, strict=False
+            for local_name, global_name in zip(
+                config.joint_names, global_joint_names, strict=False
             ):
-                if resolved_name in position_by_name:
-                    positions.append(position_by_name[resolved_name])
-                elif resolved_name in current_by_name:
-                    positions.append(current_by_name[resolved_name])
+                if global_name in position_by_name:
+                    positions.append(position_by_name[global_name])
+                elif global_name in current_by_name:
+                    positions.append(current_by_name[global_name])
                 elif local_name in current_by_name:
                     positions.append(current_by_name[local_name])
                 else:
                     logger.error(
                         "Cannot project plan for '%s': missing joint '%s'",
                         robot_name,
-                        resolved_name,
+                        global_name,
                     )
                     return []
             projected.append(
@@ -594,7 +605,7 @@ class ManipulationModule(Module):
         _, config, traj_gen = self._robots[robot_name]
         trajectory = traj_gen.generate([list(state.position) for state in projected_path])
         return JointTrajectory(
-            joint_names=list(config.joint_names),
+            joint_names=make_global_joint_names(robot_name, config.joint_names),
             points=trajectory.points,
             timestamp=trajectory.timestamp,
         )
@@ -1125,7 +1136,6 @@ class ManipulationModule(Module):
             "base_link": config.base_link,
             "max_velocity": config.max_velocity,
             "max_acceleration": config.max_acceleration,
-            "has_joint_name_mapping": bool(config.joint_name_mapping),
             "coordinator_task_name": config.coordinator_task_name,
             "home_joints": config.home_joints,
             "pre_grasp_offset": config.pre_grasp_offset,
@@ -1157,12 +1167,45 @@ class ManipulationModule(Module):
         robot = self._get_robot(robot_name)
         if robot is None:
             return False
-        self._init_joints[robot[0]] = joint_state
+        robot_name_resolved, _, config, _ = robot
+        try:
+            normalized = self._local_robot_joint_state(config, joint_state)
+        except ValueError as exc:
+            logger.error(str(exc))
+            return False
+        self._init_joints[robot_name_resolved] = normalized
         logger.info(
-            f"Init joints set for '{robot[0]}': "
-            f"[{', '.join(f'{j:.3f}' for j in joint_state.position)}]"
+            f"Init joints set for '{robot_name_resolved}': "
+            f"[{', '.join(f'{j:.3f}' for j in normalized.position)}]"
         )
         return True
+
+    def _local_robot_joint_state(
+        self, config: RobotModelConfig, joint_state: JointState
+    ) -> JointState:
+        """Normalize a robot-scoped joint state to local model joint order."""
+        if not joint_state.name:
+            if len(joint_state.position) != len(config.joint_names):
+                raise ValueError(
+                    f"JointState has {len(joint_state.position)} positions, "
+                    f"expected {len(config.joint_names)} for robot '{config.name}'"
+                )
+            return JointState(name=list(config.joint_names), position=list(joint_state.position))
+
+        assert_local_joint_names(joint_state.name)
+        positions_by_name = dict(zip(joint_state.name, joint_state.position, strict=False))
+        missing = [name for name in config.joint_names if name not in positions_by_name]
+        if missing:
+            raise ValueError(f"JointState for robot '{config.name}' is missing joints: {missing}")
+        extra = set(joint_state.name) - set(config.joint_names)
+        if extra:
+            raise ValueError(
+                f"JointState for robot '{config.name}' has extra joints: {sorted(extra)}"
+            )
+        return JointState(
+            name=list(config.joint_names),
+            position=[positions_by_name[name] for name in config.joint_names],
+        )
 
     @rpc
     def set_init_joints_to_current(self, robot_name: RobotName | None = None) -> bool:
@@ -1201,36 +1244,6 @@ class ManipulationModule(Module):
             self._coordinator_client = RPCClient(None, ControlCoordinator)
         return self._coordinator_client
 
-    def _translate_trajectory_to_coordinator(
-        self,
-        trajectory: JointTrajectory,
-        robot_config: RobotModelConfig,
-    ) -> JointTrajectory:
-        """Translate trajectory joint names from URDF to coordinator namespace.
-
-        Args:
-            trajectory: Trajectory with URDF joint names
-            robot_config: Robot config with joint name mapping
-
-        Returns:
-            Trajectory with coordinator joint names
-        """
-        if not robot_config.joint_name_mapping:
-            return trajectory  # No translation needed
-
-        # Translate joint names
-        coordinator_names = [
-            robot_config.get_coordinator_joint_name(j) for j in trajectory.joint_names
-        ]
-
-        # Create new trajectory with translated names
-        # Note: duration is computed automatically from points in JointTrajectory.__init__
-        return JointTrajectory(
-            joint_names=coordinator_names,
-            points=trajectory.points,
-            timestamp=trajectory.timestamp,
-        )
-
     @rpc
     def execute(self, robot_name: RobotName | None = None) -> bool:
         """Execute planned trajectory via ControlCoordinator."""
@@ -1252,15 +1265,12 @@ class ManipulationModule(Module):
             logger.error("No coordinator client")
             return False
 
-        translated = self._translate_trajectory_to_coordinator(traj, config)
         logger.info(
-            f"Executing: task='{config.coordinator_task_name}', {len(translated.points)} pts, {translated.duration:.2f}s"
+            f"Executing: task='{config.coordinator_task_name}', {len(traj.points)} pts, {traj.duration:.2f}s"
         )
 
         self._state = ManipulationState.EXECUTING
-        result = client.task_invoke(
-            config.coordinator_task_name, "execute", {"trajectory": translated}
-        )
+        result = client.task_invoke(config.coordinator_task_name, "execute", {"trajectory": traj})
         if result:
             logger.info("Trajectory accepted")
             self._state = ManipulationState.COMPLETED
@@ -1307,15 +1317,14 @@ class ManipulationModule(Module):
         self._state = ManipulationState.EXECUTING
         for name, config, trajectory in dispatches:
             self._planned_trajectories[name] = trajectory
-            translated = self._translate_trajectory_to_coordinator(trajectory, config)
             logger.info(
                 "Executing: task='%s', %d pts, %.2fs",
                 config.coordinator_task_name,
-                len(translated.points),
-                translated.duration,
+                len(trajectory.points),
+                trajectory.duration,
             )
             result = client.task_invoke(
-                config.coordinator_task_name, "execute", {"trajectory": translated}
+                config.coordinator_task_name, "execute", {"trajectory": trajectory}
             )
             if not result:
                 return self._fail("Coordinator rejected trajectory")

@@ -26,6 +26,10 @@ from typing import TYPE_CHECKING
 
 import numpy as np
 
+from dimos.manipulation.planning.planning_identifiers import (
+    local_joint_name_from_global,
+    make_global_joint_names,
+)
 from dimos.manipulation.planning.spec.enums import PlanningStatus
 from dimos.manipulation.planning.spec.models import (
     JointPath,
@@ -196,10 +200,10 @@ class RRTConnectPlanner:
 
         robot_id = next(iter(robot_ids))
         robot_config = world.get_robot_config(robot_id)
-        full_resolved_joint_names = [
-            f"{robot_config.name}/{joint_name}" for joint_name in robot_config.joint_names
-        ]
-        if selected_joint_names != full_resolved_joint_names:
+        full_global_joint_names = make_global_joint_names(
+            robot_config.name, robot_config.joint_names
+        )
+        if selected_joint_names != full_global_joint_names:
             return _create_failure_result(
                 PlanningStatus.UNSUPPORTED,
                 "RRTConnectPlanner currently requires the selected groups to cover "
@@ -636,10 +640,10 @@ def _validate_selected_groups_cover_full_robots(
 ) -> PlanningResult | None:
     for robot_id in robot_order:
         robot_config = world.get_robot_config(robot_id)
-        full_resolved_joint_names = [
-            f"{robot_config.name}/{joint_name}" for joint_name in robot_config.joint_names
-        ]
-        if robot_joint_names[robot_id] != full_resolved_joint_names:
+        full_global_joint_names = make_global_joint_names(
+            robot_config.name, robot_config.joint_names
+        )
+        if robot_joint_names[robot_id] != full_global_joint_names:
             return _create_failure_result(
                 PlanningStatus.UNSUPPORTED,
                 "RRTConnectPlanner currently requires selected groups to cover "
@@ -664,11 +668,12 @@ def _combined_joint_limits(
 def _robot_joint_state_from_combined(
     combined_joint_names: list[str],
     combined_positions: NDArray[np.float64],
+    robot_name: str,
     robot_joint_names: list[str],
 ) -> JointState:
     position_by_name = dict(zip(combined_joint_names, combined_positions.tolist(), strict=True))
     return JointState(
-        name=robot_joint_names,
+        name=[local_joint_name_from_global(robot_name, name) for name in robot_joint_names],
         position=[position_by_name[name] for name in robot_joint_names],
     )
 
@@ -688,6 +693,7 @@ def _coupled_config_collision_free(
                 _robot_joint_state_from_combined(
                     selected_joint_names,
                     q,
+                    world.get_robot_config(robot_id).name,
                     robot_joint_names[robot_id],
                 ),
             )
@@ -725,6 +731,7 @@ def _coupled_edge_collision_free(
                     _robot_joint_state_from_combined(
                         selected_joint_names,
                         q,
+                        world.get_robot_config(robot_id).name,
                         robot_joint_names[robot_id],
                     ),
                 )

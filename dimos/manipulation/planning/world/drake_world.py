@@ -26,10 +26,10 @@ from typing import TYPE_CHECKING, Any
 import numpy as np
 
 from dimos.manipulation.planning.planning_identifiers import (
-    local_joint_name_from_resolved,
+    assert_local_joint_names,
+    make_global_joint_name,
+    make_global_joint_names,
     make_planning_group_id,
-    make_resolved_joint_name,
-    make_resolved_joint_names,
     parse_planning_group_id,
 )
 from dimos.manipulation.planning.spec.config import RobotModelConfig
@@ -360,9 +360,7 @@ class DrakeWorld(WorldSpec, VisualizationSpec):
                         id=make_planning_group_id(config.name, group.name),
                         robot_name=config.name,
                         group_name=group.name,
-                        joint_names=tuple(
-                            make_resolved_joint_names(config.name, group.joint_names)
-                        ),
+                        joint_names=tuple(make_global_joint_names(config.name, group.joint_names)),
                         local_joint_names=group.joint_names,
                         base_link=group.base_link,
                         tip_link=group.tip_link,
@@ -392,14 +390,14 @@ class DrakeWorld(WorldSpec, VisualizationSpec):
             if group is None:
                 raise KeyError(f"Unknown planning group ID: {group_id}")
 
-            resolved_joint_names = tuple(
-                make_resolved_joint_name(robot_name, local_name) for local_name in group.joint_names
+            global_joint_names = tuple(
+                make_global_joint_name(robot_name, local_name) for local_name in group.joint_names
             )
-            for joint_name in resolved_joint_names:
+            for joint_name in global_joint_names:
                 previous_group_id = seen_joints.get(joint_name)
                 if previous_group_id is not None:
                     raise ValueError(
-                        "Selected planning groups overlap on resolved joint "
+                        "Selected planning groups overlap on global joint "
                         f"{joint_name}: {previous_group_id} and {group_id}"
                     )
                 seen_joints[joint_name] = group_id
@@ -410,7 +408,7 @@ class DrakeWorld(WorldSpec, VisualizationSpec):
                     robot_id=robot_data.robot_id,
                     robot_name=robot_name,
                     group_name=group_name,
-                    joint_names=resolved_joint_names,
+                    joint_names=global_joint_names,
                     local_joint_names=group.joint_names,
                     base_link=group.base_link,
                     tip_link=group.tip_link,
@@ -946,9 +944,9 @@ class DrakeWorld(WorldSpec, VisualizationSpec):
         if len(joint_state.name) != len(joint_state.position):
             raise ValueError("JointState name and position lengths must match")
 
+        assert_local_joint_names(joint_state.name)
         for name, position in zip(joint_state.name, joint_state.position, strict=False):
-            local_name = self._state_name_to_local(robot_data.config, name)
-            state_by_local_name[local_name] = float(position)
+            state_by_local_name[name] = float(position)
 
         missing = [name for name in local_joint_names if name not in state_by_local_name]
         if missing:
@@ -956,12 +954,6 @@ class DrakeWorld(WorldSpec, VisualizationSpec):
                 f"JointState for robot {robot_data.config.name} is missing joints: {missing}"
             )
         return np.array([state_by_local_name[name] for name in local_joint_names], dtype=np.float64)
-
-    def _state_name_to_local(self, config: RobotModelConfig, joint_name: str) -> str:
-        try:
-            return local_joint_name_from_resolved(config.name, joint_name)
-        except ValueError:
-            return config.get_urdf_joint_name(joint_name)
 
     def get_joint_state(self, ctx: Context, robot_id: WorldRobotID) -> JointState:
         """Get robot joint state from given context."""
@@ -982,7 +974,7 @@ class DrakeWorld(WorldSpec, VisualizationSpec):
 
         positions = [float(full_positions[idx]) for idx in robot_data.joint_indices]
         return JointState(
-            name=make_resolved_joint_names(robot_data.config.name, robot_data.config.joint_names),
+            name=make_global_joint_names(robot_data.config.name, robot_data.config.joint_names),
             position=positions,
         )
 

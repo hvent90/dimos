@@ -115,6 +115,7 @@ class _SelectionWorld:
     def set_joint_state(
         self, ctx: dict[str, JointState], robot_id: str, joint_state: JointState
     ) -> None:
+        assert joint_state.name == self._robot_configs[robot_id].joint_names
         ctx[robot_id] = joint_state
 
     def is_collision_free(self, ctx: dict[str, JointState], robot_id: str) -> bool:
