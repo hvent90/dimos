@@ -1,20 +1,28 @@
-## Linked issue or discussion
+## Contribution path
 
-<!-- Required for non-trivial changes. Small safe fixes may write "N/A". -->
+<!-- Choose one path. See CONTRIBUTING.md. -->
+
+- [ ] Small, safe change that does not need a tracking issue
+- [ ] Linked issue/discussion: DIM-XXX / #XXX / URL
+
+## Problem
+
+<!-- What motivated this PR? What is broken, missing, confusing, or useful? -->
 
 Closes #
 
-## Summary
+## Solution
 
-<!-- What changed and why? Keep this focused; deeper discussion belongs in the linked issue. -->
+<!-- What approach did you take? Keep this short; the diff shows the details. -->
 
-## Validation
+## How to Test
 
-<!-- What checks did you run? Include commands, relevant output, screenshots, or robot/sim notes when useful. -->
+<!-- Manual reviewer instructions for using the changed feature.
+For docs-only or template-only PRs, this may be blank. -->
 
 ## Checklist
 
-- [ ] I linked the relevant issue or discussion, or this is a small safe fix.
+- [ ] I followed the contribution path above.
 - [ ] This PR is scoped to one issue or clearly stated problem.
 - [ ] I have run the relevant checks for the files I changed.
 - [ ] I have reviewed and understand the changes in this PR.
