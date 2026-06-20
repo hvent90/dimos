@@ -83,8 +83,10 @@ class RobotConfig(BaseModel):
     )
     home_joints: list[float] | None = None
 
-    # Compatibility planning placement. Prefer encoding placement in URDF/xacro/MJCF.
+    # Canonical planning placement. Robot models should describe intrinsic geometry;
+    # instance placement belongs here.
     base_pose: list[float] = Field(default_factory=lambda: [0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 1.0])
+    strip_model_world_joint: bool = False
 
     # Planning
     max_velocity: float = 1.0
@@ -215,6 +217,7 @@ class RobotConfig(BaseModel):
             model_path=self.model_path,
             srdf_path=self.srdf_path,
             base_pose=base_pose,
+            strip_model_world_joint=self.strip_model_world_joint,
             joint_names=joint_names,
             end_effector_link=legacy_end_effector_link,
             base_link=base_link,

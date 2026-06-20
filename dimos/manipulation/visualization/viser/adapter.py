@@ -147,9 +147,13 @@ class InProcessViserAdapter:
         )
         return result
 
-    def evaluate_pose_target(self, pose: Pose, robot_name: RobotName) -> TargetEvaluation:
+    def evaluate_pose_target(
+        self, pose: Pose, robot_name: RobotName, *, check_collision: bool = True
+    ) -> TargetEvaluation:
         """Evaluate a Cartesian target through module/WorldMonitor helper boundaries."""
-        result: TargetEvaluation = {**self._module.evaluate_pose_target(pose, robot_name)}
+        result: TargetEvaluation = {
+            **self._module.evaluate_pose_target(pose, robot_name, check_collision=check_collision)
+        }
         joint_state = result.get("joint_state")
         result["joint_state"] = copy_joint_state(
             joint_state if isinstance(joint_state, JointState) else None
@@ -181,12 +185,14 @@ class InProcessViserAdapter:
         pose_targets: dict[PlanningGroupID, Pose | PoseStamped],
         auxiliary_groups: Sequence[PlanningGroupID] = (),
         seed: JointState | None = None,
+        check_collision: bool = True,
     ) -> TargetSetEvaluation:
         result: TargetSetEvaluation = {
             **self._module.evaluate_pose_target_set(
                 cast("dict[PlanningGroupID | PlanningGroup, Pose | PoseStamped]", pose_targets),
                 auxiliary_groups=auxiliary_groups,
                 seed=copy_joint_state(seed),
+                check_collision=check_collision,
             )
         }
         target_joints = result.get("target_joints")

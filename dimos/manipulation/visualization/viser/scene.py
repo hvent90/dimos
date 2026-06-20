@@ -31,6 +31,7 @@ from dimos.utils.logging_config import setup_logger
 
 try:
     from viser import (
+        FrameHandle,
         GridHandle,
         MeshHandle,
         TransformControlsEvent,
@@ -69,7 +70,7 @@ REFERENCE_GRID_NAME = "/reference_grid"
 REFERENCE_GRID_CELL_COLOR = (44, 54, 58)
 REFERENCE_GRID_SECTION_COLOR = (90, 145, 165)
 
-SceneHandle: TypeAlias = ViserUrdf | TransformControlsHandle | GridHandle | MeshHandle
+SceneHandle: TypeAlias = ViserUrdf | TransformControlsHandle | GridHandle | MeshHandle | FrameHandle
 
 
 class _ColorHandle(Protocol):
@@ -88,6 +89,7 @@ class ViserManipulationScene:
         self._configs_by_id: dict[str, RobotModelConfig] = {}
         self._urdfs: dict[str, ViserUrdf] = {}
         self._handles: dict[str, TransformControlsHandle] = {}
+        self._root_frames: dict[str, FrameHandle] = {}
         self._grid_handle: GridHandle | None = None
         self._grid_visible = True
         self._preview_visible: dict[str, bool] = {}
@@ -255,7 +257,10 @@ class ViserManipulationScene:
             self._grid_handle = None
         for urdf in self._urdfs.values():
             self._remove_scene_handle(urdf)
+        for frame in self._root_frames.values():
+            self._remove_scene_handle(frame)
         self._urdfs.clear()
+        self._root_frames.clear()
         self._configs_by_id.clear()
         self._preview_visible.clear()
         self._target_tracks_current.clear()
@@ -267,11 +272,7 @@ class ViserManipulationScene:
             key = f"{robot_id}:{kind}"
             if key in self._urdfs:
                 continue
-            root_node_name = {
-                "current": f"/robots/{robot_id}/current",
-                "target": f"/targets/{robot_id}/target",
-                "preview": f"/previews/{robot_id}/ghost",
-            }[kind]
+            root_node_name = self._urdf_root_node_name(robot_id, kind, config)
             mesh_color_override = {
                 "current": None,
                 "target": GOAL_ROBOT_MESH_COLOR,
@@ -304,6 +305,64 @@ class ViserManipulationScene:
                 package_paths=package_paths,
                 xacro_args={str(key): str(value) for key, value in config.xacro_args.items()},
                 convert_meshes=bool(config.auto_convert_meshes),
+                strip_world_joint_child_link=str(config.base_link)
+                if bool(getattr(config, "strip_model_world_joint", False))
+                else None,
+            )
+        )
+
+    def _urdf_root_node_name(self, robot_id: str, kind: str, config: RobotModelConfig) -> str:
+        root_node_name = {
+            "current": f"/robots/{robot_id}/current",
+            "target": f"/targets/{robot_id}/target",
+            "preview": f"/previews/{robot_id}/ghost",
+        }[kind]
+        if not self._has_non_identity_base_pose(config):
+            return root_node_name
+        self._ensure_base_pose_frame(robot_id, kind, config)
+        return f"{root_node_name}/base_pose/urdf"
+
+    def _ensure_base_pose_frame(self, robot_id: str, kind: str, config: RobotModelConfig) -> None:
+        key = f"{robot_id}:{kind}:base_pose"
+        if key in self._root_frames:
+            return
+        pose = config.base_pose
+        frame_name = {
+            "current": f"/robots/{robot_id}/current/base_pose",
+            "target": f"/targets/{robot_id}/target/base_pose",
+            "preview": f"/previews/{robot_id}/ghost/base_pose",
+        }[kind]
+        self._root_frames[key] = self.server.scene.add_frame(
+            frame_name,
+            show_axes=False,
+            position=(
+                float(pose.position.x),
+                float(pose.position.y),
+                float(pose.position.z),
+            ),
+            wxyz=(
+                float(pose.orientation.w),
+                float(pose.orientation.x),
+                float(pose.orientation.y),
+                float(pose.orientation.z),
+            ),
+        )
+
+    @staticmethod
+    def _has_non_identity_base_pose(config: RobotModelConfig) -> bool:
+        pose = getattr(config, "base_pose", None)
+        if pose is None:
+            return False
+        return any(
+            abs(value) > 1e-12
+            for value in (
+                float(pose.position.x),
+                float(pose.position.y),
+                float(pose.position.z),
+                float(pose.orientation.x),
+                float(pose.orientation.y),
+                float(pose.orientation.z),
+                float(pose.orientation.w) - 1.0,
             )
         )
 

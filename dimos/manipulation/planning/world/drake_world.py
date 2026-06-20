@@ -285,6 +285,9 @@ class DrakeWorld(WorldSpec, VisualizationSpec):
                 package_paths=config.package_paths,
                 xacro_args=config.xacro_args,
                 convert_meshes=config.auto_convert_meshes,
+                strip_world_joint_child_link=config.base_link
+                if config.strip_model_world_joint
+                else None,
             )
             prepared_path_obj = Path(prepared_path)
 

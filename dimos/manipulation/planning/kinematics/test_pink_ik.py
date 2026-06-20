@@ -32,8 +32,10 @@ from dimos.manipulation.planning.kinematics.pink_ik import (
     PinkIKConfig,
     PinkIKDependencyError,
     _build_joint_mapping,
+    _lock_uncontrolled_model_joints,
     _PinkModules,
     _PinkRobotContext,
+    _seed_for_robot_config,
     _seed_positions_for_mapping,
 )
 from dimos.manipulation.planning.spec.config import RobotModelConfig
@@ -170,6 +172,15 @@ def _robot_config() -> RobotModelConfig:
         joint_names=["joint_a", "joint_b", "joint_c"],
         end_effector_link="tool",
         base_link="base",
+    )
+
+
+def _pose_stamped(x: float, y: float, z: float, yaw: float = 0.0) -> PoseStamped:
+    half_yaw = yaw / 2.0
+    return PoseStamped(
+        frame_id="world",
+        position=Vector3(x, y, z),
+        orientation=Quaternion(0.0, 0.0, float(np.sin(half_yaw)), float(np.cos(half_yaw))),
     )
 
 
@@ -367,12 +378,46 @@ def test_joint_order_mapping_uses_names_not_positions() -> None:
     assert _seed_positions_for_mapping(seed, mapping).tolist() == [10.0, 20.0, 30.0]
 
 
+def test_seed_for_robot_config_uses_complete_global_seed_without_world() -> None:
+    seed = JointState(name=["arm/joint_a", "arm/joint_b", "arm/joint_c"], position=[1.0, 2.0, 3.0])
+
+    result = _seed_for_robot_config(_robot_config(), seed)
+
+    assert result.name == ["joint_a", "joint_b", "joint_c"]
+    assert result.position == [1.0, 2.0, 3.0]
+
+
 def test_mapping_failure_for_missing_joint() -> None:
     config = _robot_config()
     config.joint_names = ["joint_a", "missing", "joint_c"]
 
     with pytest.raises(ValueError, match="missing"):
         _build_joint_mapping(_FakeModel(), config)
+
+
+def test_uncontrolled_urdf_joints_are_locked_out_of_pink_model() -> None:
+    pinocchio = ModuleType("pinocchio")
+    model = _FakeModel()
+    model.names.append("gripper_joint")
+    model.joints.append(_FakeJoint(3))
+    reduced_model = _FakeModel()
+    seen_locked_joint_ids: list[list[int]] = []
+
+    def build_reduced_model(
+        input_model: _FakeModel, locked_joint_ids: list[int], reference: np.ndarray
+    ) -> _FakeModel:
+        assert input_model is model
+        np.testing.assert_allclose(reference, np.zeros(model.nq))
+        seen_locked_joint_ids.append(list(locked_joint_ids))
+        return reduced_model
+
+    pinocchio.neutral = lambda input_model: np.zeros(input_model.nq)  # type: ignore[attr-defined]
+    pinocchio.buildReducedModel = build_reduced_model  # type: ignore[attr-defined]
+
+    result = _lock_uncontrolled_model_joints(pinocchio, model, _robot_config())
+
+    assert result is reduced_model
+    assert seen_locked_joint_ids == [[4]]
 
 
 def test_solve_single_returns_successful_ik_result() -> None:
@@ -544,6 +589,61 @@ def test_solve_pose_targets_same_robot_uses_one_multi_frame_solve(
     assert result.joint_state is not None
     assert result.joint_state.name == ["arm/joint_a", "arm/joint_b", "arm/joint_c"]
     assert result.joint_state.position == [0.1, 0.2, 0.3]
+
+
+def test_target_in_model_frame_converts_world_pose_through_robot_base() -> None:
+    ik = _pink_ik(converge=True)
+    config = _robot_config()
+    config.base_pose = _pose_stamped(1.0, 2.0, 0.0, yaw=np.pi / 2.0)
+    target_world = _pose_stamped(0.8, 2.1, 0.3, yaw=np.pi / 2.0)
+
+    target_model = ik._target_in_model_frame(config, target_world)
+
+    np.testing.assert_allclose(target_model[:3, 3], [0.1, 0.2, 0.3], atol=1e-12)
+    np.testing.assert_allclose(target_model[:3, :3], np.eye(3), atol=1e-12)
+
+
+def test_solve_pose_targets_passes_world_target_to_solver_in_model_frame(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    ik = _pink_ik(converge=True)
+    context = _context()
+    context.frame_name = "wrist_tool"
+    context.frame_id = 1
+    ik._robot_contexts = {"robot:wrist_tool": context}
+    world = _FakeWorld(collision_free=True)
+    world.config.base_pose = _pose_stamped(1.0, 2.0, 0.0, yaw=np.pi / 2.0)
+    seen_target_models: list[np.ndarray] = []
+
+    def fake_solve_single(**kwargs: object) -> IKResult:
+        target_model = cast("np.ndarray", kwargs["target_model"])
+        seen_target_models.append(target_model)
+        return IKResult(
+            status=IKStatus.SUCCESS,
+            joint_state=JointState(
+                name=["joint_a", "joint_b", "joint_c"], position=[0.1, 0.2, 0.3]
+            ),
+            position_error=0.0,
+            orientation_error=0.0,
+            iterations=1,
+        )
+
+    monkeypatch.setattr(ik, "_solve_single", fake_solve_single)
+
+    result = ik.solve_pose_targets(
+        world=cast("Any", world),
+        pose_targets={world.groups["arm/wrist"]: _pose_stamped(0.8, 2.1, 0.3, yaw=np.pi / 2.0)},
+        seed=JointState(
+            {"name": ["arm/joint_a", "arm/joint_b", "arm/joint_c"], "position": [0.0, 0.0, 0.0]}
+        ),
+        check_collision=False,
+        max_attempts=1,
+    )
+
+    assert result.status == IKStatus.SUCCESS
+    assert len(seen_target_models) == 1
+    np.testing.assert_allclose(seen_target_models[0][:3, 3], [0.1, 0.2, 0.3], atol=1e-12)
+    np.testing.assert_allclose(seen_target_models[0][:3, :3], np.eye(3), atol=1e-12)
 
 
 def test_solve_pose_targets_cross_robot_combines_global_joint_names(

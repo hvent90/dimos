@@ -1009,7 +1009,9 @@ class ManipulationModule(Module):
             "joint_state": target,
         }
 
-    def evaluate_pose_target(self, pose: Pose, robot_name: RobotName) -> TargetEvaluation:
+    def evaluate_pose_target(
+        self, pose: Pose, robot_name: RobotName, check_collision: bool = True
+    ) -> TargetEvaluation:
         """Evaluate a Cartesian target for visualization without planning a path."""
         robot_id = self.robot_id_for_name(robot_name)
         if robot_id is None:
@@ -1037,10 +1039,15 @@ class ManipulationModule(Module):
                 "message": "Planning is not initialized or current state is unavailable",
                 "collision_free": False,
             }
-        ik = self._solve_ik_for_pose(robot_id, pose, current, check_collision=True)
+        ik = self._solve_ik_for_pose(robot_id, pose, current, check_collision=check_collision)
         joint_state = JointState(ik.joint_state) if ik.is_success() and ik.joint_state else None
-        collision_free = bool(
-            joint_state is not None and self._world_monitor.is_state_valid(robot_id, joint_state)
+        collision_free = (
+            bool(joint_state is not None)
+            if not check_collision
+            else bool(
+                joint_state is not None
+                and self._world_monitor.is_state_valid(robot_id, joint_state)
+            )
         )
         return {
             "success": joint_state is not None and collision_free,
@@ -1159,6 +1166,7 @@ class ManipulationModule(Module):
         message: str = "Target set is feasible",
         position_error: float = 0.0,
         orientation_error: float = 0.0,
+        check_collision: bool = True,
     ) -> TargetSetEvaluation:
         """Evaluate whole-set collision and pose outputs for global target joints."""
         if self._world_monitor is None:
@@ -1204,15 +1212,22 @@ class ManipulationModule(Module):
         diagnostics: dict[PlanningGroupID, str] = {}
         selection = self._world_monitor.planning_groups.select(group_ids)
         for robot_name, (robot_id, _, local_target) in local_targets.items():
-            robot_collision_free = self._world_monitor.is_state_valid(robot_id, local_target)
+            robot_collision_free = (
+                self._world_monitor.is_state_valid(robot_id, local_target)
+                if check_collision
+                else True
+            )
             collision_free = collision_free and robot_collision_free
             for group in selection.groups:
                 if group.robot_name == robot_name:
-                    diagnostics[group.id] = (
-                        "Target is collision-free"
-                        if robot_collision_free
-                        else "Target is in collision"
-                    )
+                    if not check_collision:
+                        diagnostics[group.id] = "Target collision check skipped"
+                    else:
+                        diagnostics[group.id] = (
+                            "Target is collision-free"
+                            if robot_collision_free
+                            else "Target is in collision"
+                        )
 
         return {
             "success": collision_free,
@@ -1278,6 +1293,7 @@ class ManipulationModule(Module):
         pose_targets: Mapping[PlanningGroupID | PlanningGroup, Pose | PoseStamped],
         auxiliary_groups: Sequence[PlanningGroupID | PlanningGroup] = (),
         seed: JointState | None = None,
+        check_collision: bool = True,
     ) -> TargetSetEvaluation:
         """Evaluate pose targets for a whole planning target set using configured IK."""
         if self._world_monitor is None or self._kinematics is None:
@@ -1353,6 +1369,7 @@ class ManipulationModule(Module):
             message=ik.message,
             position_error=ik.position_error,
             orientation_error=ik.orientation_error,
+            check_collision=check_collision,
         )
 
     @rpc

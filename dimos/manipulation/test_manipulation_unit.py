@@ -964,6 +964,35 @@ class TestTargetSetEvaluation:
         assert kwargs["seed"].name == ["left/j1", "left/j2"]
         assert kwargs["seed"].position == [0.1, 0.2]
 
+    def test_evaluate_pose_target_set_can_skip_collision_checking(self):
+        config = _make_robot_config("left", ["j1"], "task")
+        group = _make_global_group("left", "arm", ["j1"])
+        module = _make_module_with_monitor(config)
+        module._world_monitor.planning_groups = _FakePlanningGroups([group])
+        module._world_monitor.get_current_joint_state.return_value = JointState(
+            name=["j1"], position=[0.0]
+        )
+        module._world_monitor.is_state_valid.return_value = False
+        module._world_monitor.get_group_pose.return_value = PoseStamped(
+            position=Vector3(x=1.0), orientation=Quaternion()
+        )
+        module._kinematics = MagicMock()
+        module._kinematics.solve_pose_targets.return_value = IKResult(
+            status=IKStatus.SUCCESS,
+            joint_state=JointState(name=["left/j1"], position=[1.0]),
+            message="solved",
+        )
+
+        result = module.evaluate_pose_target_set(
+            {"left/arm": Pose(position=Vector3(x=0.5), orientation=Quaternion())},
+            check_collision=False,
+        )
+
+        assert result["success"] is True
+        assert result["collision_free"] is True
+        assert result["group_diagnostics"] == {"left/arm": "Target collision check skipped"}
+        module._world_monitor.is_state_valid.assert_not_called()
+
 
 class TestGeneratedPlanProjection:
     def test_selected_joint_state_accepts_local_current_state_names(self):

@@ -262,13 +262,17 @@ class ViserPanelGui:
                 continue
             if group_id in self.state.auxiliary_group_ids:
                 continue
+            handle_key = f"ee_control:{group_id}"
+            handle_exists = handle_key in self._handles
             ee_control = self.scene.ensure_target_controls(
                 group_id,
                 lambda target, gid=group_id: self._on_transform_update(gid, target),
             )
             if ee_control is not None:
-                self._handles[f"ee_control:{group_id}"] = ee_control
-            pose = self.state.group_poses.get(group_id) or self.state.pose_targets.get(group_id)
+                self._handles[handle_key] = ee_control
+            if handle_exists:
+                continue
+            pose = self.state.pose_targets.get(group_id)
             if pose is not None:
                 self._suppress_target_callbacks = True
                 try:
@@ -653,6 +657,7 @@ class ViserPanelGui:
                 group_ids=self.state.selected_group_ids,
                 auxiliary_group_ids=self.state.auxiliary_group_ids,
                 pose_targets=dict(self.state.pose_targets),
+                check_collision=self.config.target_evaluation_check_collision,
             )
         )
         self.refresh()
@@ -706,6 +711,7 @@ class ViserPanelGui:
                 request.pose_targets,
                 auxiliary_groups=request.auxiliary_group_ids,
                 seed=self.state.last_valid_target_joints,
+                check_collision=request.check_collision,
             )
         if not request.joint_targets:
             return {"success": False, "status": "INVALID", "message": "No joint target"}
@@ -738,6 +744,8 @@ class ViserPanelGui:
                 for group_id, pose in group_poses.items()
                 if isinstance(pose, Pose)
             }
+        if request.source == "joints" and success and collision_free:
+            self._sync_pose_targets_from_group_poses()
         group_diagnostics = result.get("group_diagnostics", {})
         if isinstance(group_diagnostics, dict):
             self.state.group_diagnostics = {
@@ -759,6 +767,34 @@ class ViserPanelGui:
         # control here. The gizmo is the source of truth for Cartesian edits;
         # programmatic pose writes from delayed IK results can fight fast user
         # dragging and make the gizmo jump back.
+
+    def _sync_pose_targets_from_group_poses(self) -> None:
+        groups = self._group_info_by_id()
+        updated_group_ids: list[PlanningGroupID] = []
+        for group_id, pose in self.state.group_poses.items():
+            group = groups.get(group_id)
+            if group is None or not bool(group["has_pose_target"]):
+                continue
+            if group_id in self.state.auxiliary_group_ids:
+                continue
+            self.state.pose_targets[group_id] = pose
+            updated_group_ids.append(group_id)
+        first_group_id = next(iter(self.state.selected_group_ids), None)
+        if first_group_id is not None:
+            self.state.cartesian_target = self.state.pose_targets.get(first_group_id)
+        self._sync_scene_target_pose_controls(updated_group_ids)
+
+    def _sync_scene_target_pose_controls(self, group_ids: list[PlanningGroupID]) -> None:
+        if self.scene is None:
+            return
+        self._suppress_target_callbacks = True
+        try:
+            for group_id in group_ids:
+                pose = self.state.pose_targets.get(group_id)
+                if pose is not None:
+                    self.scene.set_target_pose(group_id, pose)
+        finally:
+            self._suppress_target_callbacks = False
 
     def _update_status_text(self) -> None:
         current = self.state.current_joints

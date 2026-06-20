@@ -226,6 +226,7 @@ class TargetEvaluationRequest:
     pose_targets: dict[PlanningGroupID, Pose] = field(default_factory=dict)
     joints: JointState | None = None
     joint_targets: dict[PlanningGroupID, JointState] = field(default_factory=dict)
+    check_collision: bool = True
 
 
 class TargetEvaluationWorker:

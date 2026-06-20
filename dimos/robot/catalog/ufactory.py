@@ -16,6 +16,7 @@
 
 from __future__ import annotations
 
+import math
 from typing import Any
 
 from dimos.robot.config import GripperConfig, RobotConfig
@@ -51,6 +52,13 @@ XARM_GRIPPER_COLLISION_EXCLUSIONS: list[tuple[str, str]] = [
 ]
 
 
+def _base_pose_from_offsets(
+    x_offset: float, y_offset: float, z_offset: float, pitch: float
+) -> list[float]:
+    half_pitch = pitch / 2.0
+    return [x_offset, y_offset, z_offset, 0.0, math.sin(half_pitch), 0.0, math.cos(half_pitch)]
+
+
 def xarm7(
     name: str = "arm",
     *,
@@ -68,8 +76,8 @@ def xarm7(
     xacro_args: dict[str, str] = {
         "dof": "7",
         "limited": "true",
-        "attach_xyz": f"{x_offset} {y_offset} {z_offset}",
-        "attach_rpy": f"0 {pitch} 0",
+        "attach_xyz": "0 0 0",
+        "attach_rpy": "0 0 0",
     }
     if add_gripper:
         xacro_args["add_gripper"] = "true"
@@ -83,7 +91,8 @@ def xarm7(
         "joint_names": [f"joint{i}" for i in range(1, 8)],
         "base_link": "link_base",
         "home_joints": [0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0],
-        "base_pose": [x_offset, y_offset, z_offset, 0, 0, 0, 1],
+        "base_pose": _base_pose_from_offsets(x_offset, y_offset, z_offset, pitch),
+        "strip_model_world_joint": True,
         "package_paths": {"xarm_description": LfsPath("xarm_description")},
         "xacro_args": xacro_args,
         "auto_convert_meshes": True,
@@ -120,8 +129,8 @@ def xarm6(
     xacro_args: dict[str, str] = {
         "dof": "6",
         "limited": "true",
-        "attach_xyz": f"{x_offset} {y_offset} {z_offset}",
-        "attach_rpy": f"0 {pitch} 0",
+        "attach_xyz": "0 0 0",
+        "attach_rpy": "0 0 0",
     }
     if add_gripper:
         xacro_args["add_gripper"] = "true"
@@ -135,7 +144,8 @@ def xarm6(
         "joint_names": [f"joint{i}" for i in range(1, 7)],
         "base_link": "link_base",
         "home_joints": [0.0, 0.0, 0.0, 0.0, 0.0, 0.0],
-        "base_pose": [x_offset, y_offset, z_offset, 0, 0, 0, 1],
+        "base_pose": _base_pose_from_offsets(x_offset, y_offset, z_offset, pitch),
+        "strip_model_world_joint": True,
         "package_paths": {"xarm_description": LfsPath("xarm_description")},
         "xacro_args": xacro_args,
         "auto_convert_meshes": True,

@@ -40,8 +40,9 @@ class RobotModelConfig(ModuleConfig):
         model_path: Path to robot model file (.urdf, .xacro, or .xml/MJCF)
         srdf_path: Optional path to SRDF file containing planning group definitions
         base_pose: Compatibility placement transform used by current Drake
-            world loading/welding. Prefer encoding new placement in the robot
-            model when possible.
+            world loading/welding. This is the canonical world placement for
+            robot instances; model-authored world/base attach joints are
+            stripped when strip_model_world_joint is true.
         joint_names: Ordered list of controllable joints in the local model
             namespace. This is not a planning group.
         end_effector_link: Compatibility robot-scoped end-effector link used by
@@ -68,6 +69,7 @@ class RobotModelConfig(ModuleConfig):
     model_path: Path
     srdf_path: Path | None = None
     base_pose: PoseStamped = Field(default_factory=PoseStamped)
+    strip_model_world_joint: bool = False
     joint_names: list[str]
     end_effector_link: str | None = None
     base_link: str = "base_link"

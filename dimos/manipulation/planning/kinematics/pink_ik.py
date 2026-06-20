@@ -85,6 +85,10 @@ class _PinkRobotContext:
     mapping: _JointMapping
 
 
+class _CurrentStateRequiredError(ValueError):
+    """Raised when normalizing a seed requires the world's current state."""
+
+
 class PinkIK:
     """Pink task/QP IK solver implementing the planning ``KinematicsSpec`` contract.
 
@@ -221,7 +225,7 @@ class PinkIK:
                     world=world,
                     robot_id=robot_id,
                     pose_targets={group: pose_targets[group] for group in robot_pose_groups},
-                    seed=_seed_for_robot(world, robot_id, seed),
+                    seed=_seed_for_robot_with_world_fallback(world, robot_id, seed),
                     position_tolerance=position_tolerance,
                     orientation_tolerance=orientation_tolerance,
                     check_collision=check_collision,
@@ -232,7 +236,7 @@ class PinkIK:
             else:
                 result = IKResult(
                     status=IKStatus.SUCCESS,
-                    joint_state=_seed_for_robot(world, robot_id, seed),
+                    joint_state=_seed_for_robot_with_world_fallback(world, robot_id, seed),
                     message="Auxiliary group retained seed state",
                 )
             joint_state = result.joint_state
@@ -544,8 +548,12 @@ class PinkIK:
                 package_paths=config.package_paths,
                 xacro_args=config.xacro_args,
                 convert_meshes=config.auto_convert_meshes,
+                strip_world_joint_child_link=config.base_link
+                if config.strip_model_world_joint
+                else None,
             )
             model = pinocchio.buildModelFromUrdf(str(prepared_path))
+        model = _lock_uncontrolled_model_joints(pinocchio, model, config)
 
         data = model.createData()
         target_frame = frame_name or config.end_effector_link
@@ -669,6 +677,30 @@ def _build_joint_mapping(model: Any, config: RobotModelConfig) -> _JointMapping:
     )
 
 
+def _lock_uncontrolled_model_joints(
+    pinocchio: ModuleType, model: Any, config: RobotModelConfig
+) -> Any:
+    """Return a Pinocchio model reduced to the joints controlled by config."""
+    controlled_joint_names = set(config.joint_names)
+    lock_joint_ids: list[int] = []
+    for joint_id, model_joint_name in enumerate(model.names):
+        if joint_id == 0 or model_joint_name in controlled_joint_names:
+            continue
+        joint = model.joints[joint_id]
+        if int(getattr(joint, "nq", 1)) > 0:
+            lock_joint_ids.append(joint_id)
+
+    if not lock_joint_ids:
+        return model
+
+    logger.debug(
+        "Reducing Pink IK model '%s' by locking uncontrolled joints: %s",
+        config.name,
+        [model.names[joint_id] for joint_id in lock_joint_ids],
+    )
+    return pinocchio.buildReducedModel(model, lock_joint_ids, pinocchio.neutral(model))
+
+
 def _get_joint_id(model: Any, joint_name: str) -> int:
     if hasattr(model, "existJointName") and not model.existJointName(joint_name):
         raise ValueError(_missing_joint_message(model, joint_name))
@@ -772,15 +804,16 @@ def _collision_failure(result: IKResult) -> IKResult:
     )
 
 
-def _seed_for_robot(
-    world: WorldSpec, robot_id: WorldRobotID, seed: JointState | None
+def _seed_for_robot_config(
+    config: RobotModelConfig,
+    seed: JointState | None,
+    current_state: JointState | None = None,
 ) -> JointState:
     """Return a full local seed state for one robot from local/global seed input."""
-    config = world.get_robot_config(robot_id)
-    with world.scratch_context() as ctx:
-        current = world.get_joint_state(ctx, robot_id)
     if seed is None:
-        return JointState(current)
+        if current_state is None:
+            raise _CurrentStateRequiredError("Current joint state is required when seed is absent")
+        return JointState(current_state)
     if not seed.name:
         if len(seed.position) == len(config.joint_names):
             return JointState({"name": list(config.joint_names), "position": list(seed.position)})
@@ -791,19 +824,45 @@ def _seed_for_robot(
     if len(seed.name) != len(seed.position):
         raise ValueError(f"Seed has {len(seed.name)} names but {len(seed.position)} positions")
     seed_by_name = dict(zip(seed.name, seed.position, strict=True))
-    current_by_name = dict(zip(current.name, current.position, strict=True))
     positions: list[float] = []
+    missing_local_names: list[str] = []
     for local_name in config.joint_names:
         global_name = make_global_joint_name(config.name, local_name)
         if local_name in seed_by_name:
             positions.append(float(seed_by_name[local_name]))
         elif global_name in seed_by_name:
             positions.append(float(seed_by_name[global_name]))
-        elif local_name in current_by_name:
-            positions.append(float(current_by_name[local_name]))
         else:
-            raise ValueError(f"Seed/current state is missing joint '{local_name}'")
+            positions.append(0.0)
+            missing_local_names.append(local_name)
+    if missing_local_names:
+        if current_state is None:
+            missing = ", ".join(repr(name) for name in missing_local_names)
+            raise _CurrentStateRequiredError(
+                f"Current joint state is required for missing joints: {missing}"
+            )
+        current = current_state
+        current_by_name = dict(zip(current.name, current.position, strict=True))
+        for index, local_name in enumerate(config.joint_names):
+            if local_name not in missing_local_names:
+                continue
+            if local_name not in current_by_name:
+                raise ValueError(f"Seed/current state is missing joint '{local_name}'")
+            positions[index] = float(current_by_name[local_name])
     return JointState({"name": list(config.joint_names), "position": positions})
+
+
+def _seed_for_robot_with_world_fallback(
+    world: WorldSpec, robot_id: WorldRobotID, seed: JointState | None
+) -> JointState:
+    """Normalize a robot seed, reading world state only when the seed is incomplete."""
+    config = world.get_robot_config(robot_id)
+    try:
+        return _seed_for_robot_config(config, seed)
+    except _CurrentStateRequiredError:
+        with world.scratch_context() as ctx:
+            current = world.get_joint_state(ctx, robot_id)
+        return _seed_for_robot_config(config, seed, current)
 
 
 def _robot_ids_by_name(

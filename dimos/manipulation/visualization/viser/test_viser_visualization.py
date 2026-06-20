@@ -47,6 +47,9 @@ from dimos.manipulation.visualization.viser.state import (
 )
 from dimos.manipulation.visualization.viser.theme import _dimos_logo_data_url, apply_dimos_theme
 from dimos.msgs.geometry_msgs.Pose import Pose
+from dimos.msgs.geometry_msgs.PoseStamped import PoseStamped
+from dimos.msgs.geometry_msgs.Quaternion import Quaternion
+from dimos.msgs.geometry_msgs.Vector3 import Vector3
 from dimos.msgs.sensor_msgs.JointState import JointState
 
 GuiCallback = Callable[[SimpleNamespace], None]
@@ -167,7 +170,7 @@ class FakeHandle:
         self.visible: object | None = None
         self.removed = False
         self.name = ""
-        self.kwargs: dict[str, float | bool] = {}
+        self.kwargs: dict[str, object] = {}
 
     def remove(self) -> None:
         self.removed = True
@@ -207,11 +210,20 @@ class FakeServer:
     def __init__(self) -> None:
         self.scene = SimpleNamespace()
         self.scene.add_transform_controls = self.add_transform_controls
+        self.scene.add_frame = self.add_frame
+        self.frames = []
 
     def add_transform_controls(self, path: str, *, scale: float) -> FakeTransformHandle:
         handle = FakeTransformHandle()
         handle.path = path
         handle.scale = scale
+        return handle
+
+    def add_frame(self, name: str, **kwargs: object) -> FakeHandle:
+        handle = FakeHandle()
+        handle.name = name
+        handle.kwargs = kwargs
+        self.frames.append(handle)
         return handle
 
 
@@ -224,7 +236,7 @@ class FakeGridServer(FakeServer):
     def add_grid(self, name: str, **kwargs: float | bool) -> FakeHandle:
         handle = FakeHandle()
         handle.name = name
-        handle.kwargs = kwargs
+        handle.kwargs = dict(kwargs)
         handle.visible = kwargs.get("visible")
         self.grids.append(handle)
         return handle
@@ -439,13 +451,35 @@ class FakeManipulationModule(SimpleNamespace):
             "joint_state": joints,
         }
 
-    def evaluate_pose_target(self, _pose: Pose, _robot_name: str) -> TargetEvaluation:
+    def evaluate_pose_target(
+        self, _pose: Pose, _robot_name: str, *, check_collision: bool = True
+    ) -> TargetEvaluation:
         return {
             "success": False,
             "joint_state": None,
             "status": "UNAVAILABLE",
             "message": "No fake pose IK",
             "collision_free": False,
+        }
+
+    def evaluate_pose_target_set(
+        self,
+        pose_targets: dict[str, Pose],
+        auxiliary_groups: Sequence[str] = (),
+        seed: JointState | None = None,
+        check_collision: bool = True,
+    ) -> TargetSetEvaluation:
+        target = JointState({"name": ["arm/j1", "arm/j2"], "position": [0.1, 0.2]})
+        return {
+            "success": True,
+            "status": "FEASIBLE",
+            "message": "Target collision check skipped"
+            if not check_collision
+            else "Target is collision-free",
+            "collision_free": True,
+            "target_joints": target,
+            "group_ids": tuple(pose_targets) + tuple(auxiliary_groups),
+            "group_poses": dict(pose_targets),
         }
 
     def evaluate_joint_target_set(
@@ -821,6 +855,48 @@ def test_target_ghost_is_visible_and_tracks_current_until_target_moves_it() -> N
     assert current.cfg == [0.1]
     assert target.cfg == [0.8]
     assert preview.cfg is None
+
+
+def test_scene_parents_urdfs_under_base_pose_frame() -> None:
+    server = FakeServer()
+    root_node_names: list[str] = []
+
+    def make_urdf(*_: object, **kwargs: object) -> FakeViserUrdfWithMeshes:
+        root_node_names.append(str(kwargs["root_node_name"]))
+        return FakeViserUrdfWithMeshes(("joint1",))
+
+    scene = ViserManipulationScene(server, make_urdf, preview_fps=10.0)
+    scene.prepared_urdf_path = lambda config: "dummy.urdf"
+    config = SimpleNamespace(
+        name="arm",
+        model_path="/tmp/arm.urdf",
+        package_paths={},
+        xacro_args={},
+        auto_convert_meshes=False,
+        joint_names=["joint1"],
+        base_pose=PoseStamped(
+            position=Vector3(1.0, 2.0, 3.0),
+            orientation=Quaternion(0.0, 0.0, 0.0, 1.0),
+        ),
+    )
+
+    scene.register_robot("robot1", config)
+
+    assert [frame.name for frame in server.frames] == [
+        "/robots/robot1/current/base_pose",
+        "/targets/robot1/target/base_pose",
+        "/previews/robot1/ghost/base_pose",
+    ]
+    assert [frame.kwargs["position"] for frame in server.frames] == [
+        (1.0, 2.0, 3.0),
+        (1.0, 2.0, 3.0),
+        (1.0, 2.0, 3.0),
+    ]
+    assert root_node_names == [
+        "/robots/robot1/current/base_pose/urdf",
+        "/targets/robot1/target/base_pose/urdf",
+        "/previews/robot1/ghost/base_pose/urdf",
+    ]
 
 
 def test_preview_animation_uses_separate_colored_ghost_and_hides_after_playback() -> None:
@@ -1346,12 +1422,14 @@ def test_gui_moves_joint_target_immediately_and_stores_evaluated_joint_solution(
     assert gui.state.target_joints is not None
     assert list(gui.state.target_joints.position) == [0.25, 0.75]
 
+    joint_bar_pose = Pose({"position": [0.4, 0.5, 0.6], "orientation": [0.0, 0.0, 0.0, 1.0]})
     gui._apply_target_evaluation_result(
         fresh_request,
         {
             "success": True,
             "collision_free": True,
             "target_joints": adapter.joints_from_values(["arm/j1", "arm/j2"], [1.0, 2.0]),
+            "group_poses": {DEFAULT_GROUP_ID: joint_bar_pose},
         },
     )
     assert gui.state.target_status == TargetStatus.FEASIBLE
@@ -1360,6 +1438,7 @@ def test_gui_moves_joint_target_immediately_and_stores_evaluated_joint_solution(
     assert list(gui.state.target_joints.position) == [1.0, 2.0]
     assert [gui._joint_sliders[name].value for name in ("arm/j1", "arm/j2")] == [0.25, 0.75]
     assert target_updates[-1] == ("robot-1", ["j1", "j2"], [0.25, 0.75])
+    assert target_pose_updates[-1] == (DEFAULT_GROUP_ID, joint_bar_pose)
 
 
 def test_gui_cartesian_ik_result_does_not_rewrite_active_gizmo(
@@ -1379,15 +1458,18 @@ def test_gui_cartesian_ik_result_does_not_rewrite_active_gizmo(
     target_pose_updates = []
     scene = SimpleNamespace(
         has_reference_grid=lambda: False,
-        ensure_target_controls=lambda *args: None,
+        ensure_target_controls=lambda *args: object(),
         set_target_joints=lambda *args: target_joint_updates.append(args) or True,
         set_target_pose=lambda *args: target_pose_updates.append(args),
         set_target_visual_state=lambda *args: None,
     )
     gui = make_panel(FakeGuiServer(), adapter, ViserVisualizationConfig(panel_enabled=True), scene)
-    gui.state.cartesian_target = Pose(
-        {"position": [0.1, 0.2, 0.3], "orientation": [0.0, 0.0, 0.0, 1.0]}
-    )
+    gui._handles[f"ee_control:{DEFAULT_GROUP_ID}"] = object()
+    dragged_pose = Pose({"position": [0.1, 0.2, 0.3], "orientation": [0.0, 0.0, 0.0, 1.0]})
+    solved_pose = Pose({"position": [0.4, 0.5, 0.6], "orientation": [0.0, 0.0, 0.0, 1.0]})
+    gui.state.cartesian_target = dragged_pose
+    gui.state.pose_targets[DEFAULT_GROUP_ID] = dragged_pose
+    target_pose_updates.clear()
     request = TargetEvaluationRequest(
         sequence_id=1, source="cartesian", group_ids=(DEFAULT_GROUP_ID,)
     )
@@ -1399,6 +1481,7 @@ def test_gui_cartesian_ik_result_does_not_rewrite_active_gizmo(
             "success": True,
             "collision_free": True,
             "target_joints": adapter.joints_from_values(["arm/j1", "arm/j2"], [1.0, 2.0]),
+            "group_poses": {DEFAULT_GROUP_ID: solved_pose},
         },
     )
 
@@ -1406,6 +1489,55 @@ def test_gui_cartesian_ik_result_does_not_rewrite_active_gizmo(
     assert [gui._joint_sliders[name].value for name in ("arm/j1", "arm/j2")] == [1.0, 2.0]
     assert target_joint_updates[-1] == ("robot-1", ["j1", "j2"], [1.0, 2.0])
     assert target_pose_updates == []
+    assert gui.state.pose_targets[DEFAULT_GROUP_ID] is dragged_pose
+    assert gui.state.group_poses[DEFAULT_GROUP_ID] is solved_pose
+
+
+def test_gui_can_disable_collision_check_for_cartesian_target_evaluation(
+    make_panel: Callable[..., ViserPanelGui],
+) -> None:
+    current = FakeJointState(["j1", "j2"], position=[0.0, 0.0])
+    config = make_robot_config(joint_names=["j1", "j2"], home_joints=[0.0, 0.0])
+    module = FakeManipulationModule(_robots={"arm": ("robot-1", config, None)})
+    world_monitor = SimpleNamespace(
+        get_current_joint_state=lambda robot_id: current,
+        is_state_stale=lambda robot_id, max_age=1.0: False,
+        is_state_valid=lambda robot_id, joint_state: False,
+        get_ee_pose=lambda robot_id, joint_state=None: Pose(
+            {"position": [0.0, 0.0, 0.0], "orientation": [0.0, 0.0, 0.0, 1.0]}
+        ),
+    )
+    adapter = InProcessViserAdapter(world_monitor=world_monitor, manipulation_module=module)
+    scene = SimpleNamespace(
+        has_reference_grid=lambda: False,
+        ensure_target_controls=lambda *args: None,
+        set_target_joints=lambda *args: True,
+        set_target_pose=lambda *args: None,
+        set_target_visual_state=lambda *args: None,
+    )
+    gui = make_panel(
+        FakeGuiServer(),
+        adapter,
+        ViserVisualizationConfig(panel_enabled=True, target_evaluation_check_collision=False),
+        scene,
+    )
+    request = TargetEvaluationRequest(
+        sequence_id=1,
+        source="cartesian",
+        group_ids=(DEFAULT_GROUP_ID,),
+        pose_targets={
+            DEFAULT_GROUP_ID: Pose(
+                {"position": [0.1, 0.2, 0.3], "orientation": [0.0, 0.0, 0.0, 1.0]}
+            )
+        },
+        check_collision=False,
+    )
+
+    result = gui._handle_target_evaluation_request(request)
+
+    assert result["success"] is True
+    assert result["collision_free"] is True
+    assert result["message"] == "Target collision check skipped"
 
 
 def test_gui_collision_evaluation_marks_target_infeasible_and_colors_scene(
