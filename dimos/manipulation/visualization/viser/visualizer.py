@@ -20,6 +20,10 @@ from typing import TYPE_CHECKING
 
 from dimos.manipulation.planning.planning_identifiers import make_global_joint_name
 from dimos.manipulation.visualization.viser.adapter import InProcessViserAdapter
+from dimos.manipulation.visualization.viser.animation import (
+    GroupPreviewAnimation,
+    PreviewTrack,
+)
 from dimos.manipulation.visualization.viser.config import ViserVisualizationConfig
 from dimos.manipulation.visualization.viser.gui import ViserPanelGui
 from dimos.manipulation.visualization.viser.runtime import (
@@ -179,16 +183,42 @@ class ViserManipulationVisualizer:
         self._ensure_started()
         if self._adapter is None or self._scene is None:
             return
+        preview = self._build_group_preview_animation(plan)
+        if preview is not None:
+            self._scene.animate_preview(preview, duration)
+
+    def _build_group_preview_animation(self, plan: GeneratedPlan) -> GroupPreviewAnimation | None:
+        if self._adapter is None:
+            return None
         selection = self._world_monitor.planning_groups.select(plan.group_ids)
+        tracks: list[PreviewTrack] = []
         for robot_name in selection.robot_names:
             robot_id = self._adapter.robot_id_for_name(robot_name)
             config = self._adapter.get_robot_config(robot_name)
             current = self._adapter.get_current_joint_state(robot_name)
             if robot_id is None or config is None or current is None:
-                continue
+                logger.warning(
+                    "Cannot build group preview for robot '%s': missing id, config, or state",
+                    robot_name,
+                )
+                return None
             path = self._robot_path_for_plan(robot_name, config, current, plan)
-            if path:
-                self._scene.animate_path(str(robot_id), path, duration)
+            if not path:
+                logger.warning("Cannot project generated plan for robot '%s'", robot_name)
+                return None
+            tracks.append(
+                PreviewTrack(
+                    robot_id=str(robot_id),
+                    group_ids=tuple(
+                        group.id for group in selection.groups if group.robot_name == robot_name
+                    ),
+                    joint_names=tuple(config.joint_names),
+                    path=tuple(path),
+                )
+            )
+        if not tracks:
+            return None
+        return GroupPreviewAnimation(group_ids=plan.group_ids, tracks=tuple(tracks))
 
     def _robot_ids_for_groups(self, group_ids: Sequence[PlanningGroupID]) -> list[str]:
         if self._adapter is None:

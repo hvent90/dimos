@@ -29,6 +29,7 @@ from dimos.manipulation.visualization.viser import (
     visualizer as visualizer_module,
 )
 from dimos.manipulation.visualization.viser.adapter import InProcessViserAdapter
+from dimos.manipulation.visualization.viser.animation import GroupPreviewAnimation
 from dimos.manipulation.visualization.viser.config import ViserVisualizationConfig
 from dimos.manipulation.visualization.viser.runtime import ViserRuntime
 from dimos.manipulation.visualization.viser.visualizer import ViserManipulationVisualizer
@@ -408,10 +409,12 @@ def test_visualizer_publish_preview_and_close_paths(
         def hide_preview(self, robot_id: str) -> None:
             calls.append(("hide", robot_id))
 
-        def animate_path(self, robot_id: str, path: list[JointState], duration: float) -> None:
-            assert path == [current]
+        def animate_preview(self, preview: GroupPreviewAnimation, duration: float) -> None:
+            assert preview.group_ids == ("arm/manipulator",)
+            assert len(preview.tracks) == 1
+            assert preview.tracks[0].path == (current,)
             assert duration == 1.5
-            calls.append(("animate", robot_id))
+            calls.append(("animate", preview.tracks[0].robot_id))
 
         def close(self) -> None:
             calls.append(("scene", "close"))
@@ -419,7 +422,10 @@ def test_visualizer_publish_preview_and_close_paths(
     world_monitor = SimpleNamespace(
         get_current_joint_state=lambda _robot_id: current,
         planning_groups=SimpleNamespace(
-            select=lambda _group_ids: SimpleNamespace(robot_names=("arm",))
+            select=lambda _group_ids: SimpleNamespace(
+                groups=(SimpleNamespace(id="arm/manipulator", robot_name="arm"),),
+                robot_names=("arm",),
+            )
         ),
     )
     robot_config = fake_robot_config("arm")
@@ -459,3 +465,86 @@ def test_visualizer_publish_preview_and_close_paths(
         ("scene", "close"),
         ("runtime", "close"),
     ]
+
+
+def test_visualizer_animates_multi_robot_plan_as_one_group_preview(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    previews: list[GroupPreviewAnimation] = []
+
+    class FakeRuntime:
+        url = "http://localhost:8095"
+
+        def __init__(self, config: ViserVisualizationConfig) -> None:
+            self.config = config
+
+        def start(self) -> FakeServer:
+            return FakeServer()
+
+        def close(self) -> None:
+            pass
+
+    class FakeScene:
+        def __init__(
+            self,
+            server: FakeServer,
+            viser_urdf: type[FakeViserUrdf],
+            *,
+            preview_fps: float,
+        ) -> None:
+            pass
+
+        def animate_preview(self, preview: GroupPreviewAnimation, duration: float) -> None:
+            assert duration == 2.0
+            previews.append(preview)
+
+        def close(self) -> None:
+            pass
+
+    groups = (
+        SimpleNamespace(id="left/arm", robot_name="left"),
+        SimpleNamespace(id="right/arm", robot_name="right"),
+    )
+    world_monitor = SimpleNamespace(
+        get_current_joint_state=lambda robot_id: JointState(
+            {"name": ["joint1"], "position": [0.0 if robot_id == "left-id" else 10.0]}
+        ),
+        planning_groups=SimpleNamespace(
+            select=lambda _group_ids: SimpleNamespace(groups=groups, robot_names=("left", "right"))
+        ),
+    )
+    configs = {"left": fake_robot_config("left"), "right": fake_robot_config("right")}
+    manipulation_module = SimpleNamespace(
+        robot_id_for_name=lambda robot_name: f"{robot_name}-id" if robot_name in configs else None,
+        get_robot_config=lambda robot_name: configs.get(robot_name),
+    )
+    monkeypatch.setattr(visualizer_module, "ViserRuntime", FakeRuntime)
+    monkeypatch.setattr(visualizer_module, "ViserUrdf", FakeViserUrdf)
+    monkeypatch.setattr(visualizer_module, "ViserManipulationScene", FakeScene)
+    visualizer = ViserManipulationVisualizer(
+        world_monitor=world_monitor,
+        manipulation_module=manipulation_module,
+        config=ViserVisualizationConfig(panel_enabled=False),
+    )
+
+    visualizer.animate_plan(
+        GeneratedPlan(
+            group_ids=("left/arm", "right/arm"),
+            path=[
+                JointState(name=["left/joint1", "right/joint1"], position=[0.0, 10.0]),
+                JointState(name=["left/joint1", "right/joint1"], position=[1.0, 11.0]),
+            ],
+            status=PlanningStatus.SUCCESS,
+        ),
+        duration=2.0,
+    )
+
+    assert len(previews) == 1
+    preview = previews[0]
+    assert preview.group_ids == ("left/arm", "right/arm")
+    assert [(track.robot_id, track.group_ids) for track in preview.tracks] == [
+        ("left-id", ("left/arm",)),
+        ("right-id", ("right/arm",)),
+    ]
+    assert [tuple(point.position) for point in preview.tracks[0].path] == [(0.0,), (1.0,)]
+    assert [tuple(point.position) for point in preview.tracks[1].path] == [(10.0,), (11.0,)]

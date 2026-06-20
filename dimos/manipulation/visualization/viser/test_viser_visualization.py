@@ -26,9 +26,12 @@ import pytest
 pytest.importorskip("viser", reason="Viser optional dependency is not installed")
 
 from dimos.manipulation.visualization.types import RobotInfo, TargetEvaluation, TargetSetEvaluation
+from dimos.manipulation.visualization.viser import scene as scene_module
 from dimos.manipulation.visualization.viser.adapter import InProcessViserAdapter
 from dimos.manipulation.visualization.viser.animation import (
+    GroupPreviewAnimation,
     PreviewAnimator,
+    PreviewTrack,
     interpolate_joint_path,
     sampled_joint_path_frames,
 )
@@ -962,6 +965,73 @@ def test_preview_animation_uses_separate_colored_ghost_and_hides_after_playback(
     assert preview.cfg == [1.0]
     assert all(mesh.visible is False for mesh in preview._meshes)
     assert all(mesh.visible is False for mesh in target._meshes)
+
+
+def test_group_preview_animation_updates_all_tracks_on_shared_frame_clock(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    server = FakeServer()
+    scene = ViserManipulationScene(
+        server, lambda *args, **kwargs: FakeUrdf(("joint1",)), preview_fps=10.0
+    )
+    scene.prepared_urdf_path = lambda config: "dummy.urdf"
+    config = SimpleNamespace(
+        name="arm",
+        model_path="/tmp/arm.urdf",
+        package_paths={},
+        xacro_args={},
+        auto_convert_meshes=False,
+        joint_names=["joint1"],
+    )
+    scene.register_robot("left", config)
+    scene.register_robot("right", config)
+    updates: list[tuple[str, tuple[str, ...], tuple[float, ...]]] = []
+    sleep_calls: list[float] = []
+
+    def record_preview_joints(
+        robot_id: str, joint_names: Sequence[str], joints: Sequence[float]
+    ) -> None:
+        updates.append((robot_id, tuple(joint_names), tuple(joints)))
+
+    monkeypatch.setattr(scene, "_set_preview_ghost_joints", record_preview_joints)
+    monkeypatch.setattr(scene_module.time, "sleep", sleep_calls.append)
+
+    ok = scene.animate_preview(
+        GroupPreviewAnimation(
+            group_ids=("left/arm", "right/arm"),
+            tracks=(
+                PreviewTrack(
+                    robot_id="left",
+                    group_ids=("left/arm",),
+                    joint_names=("joint1",),
+                    path=(
+                        FakeJointState(["joint1"], position=[0.0]),
+                        FakeJointState(["joint1"], position=[1.0]),
+                    ),
+                ),
+                PreviewTrack(
+                    robot_id="right",
+                    group_ids=("right/arm",),
+                    joint_names=("joint1",),
+                    path=(
+                        FakeJointState(["joint1"], position=[10.0]),
+                        FakeJointState(["joint1"], position=[11.0]),
+                    ),
+                ),
+            ),
+        ),
+        duration=0.0,
+    )
+
+    assert ok is True
+    assert updates == [
+        ("left", ("joint1",), (0.0,)),
+        ("right", ("joint1",), (10.0,)),
+        ("left", ("joint1",), (1.0,)),
+        ("right", ("joint1",), (11.0,)),
+    ]
+    assert sleep_calls == [0.0]
+    assert scene._preview_visible == {"left": False, "right": False}
 
 
 def test_scene_target_helpers_handle_missing_robot_and_pose() -> None:

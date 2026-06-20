@@ -15,9 +15,29 @@
 from __future__ import annotations
 
 from collections.abc import Callable, Sequence
+from dataclasses import dataclass
 import time
 
+from dimos.manipulation.planning.spec.models import PlanningGroupID
 from dimos.msgs.sensor_msgs.JointState import JointState
+
+
+@dataclass(frozen=True)
+class PreviewTrack:
+    """One render track owned by one or more planning groups."""
+
+    robot_id: str
+    group_ids: tuple[PlanningGroupID, ...]
+    joint_names: tuple[str, ...]
+    path: tuple[JointState, ...]
+
+
+@dataclass(frozen=True)
+class GroupPreviewAnimation:
+    """Group-native preview transaction for a generated plan."""
+
+    group_ids: tuple[PlanningGroupID, ...]
+    tracks: tuple[PreviewTrack, ...]
 
 
 def interpolate_joint_path(
@@ -92,7 +112,8 @@ class PreviewAnimator:
         if not frames:
             return False
         step_delay = duration / max(len(frames) - 1, 1) if duration > 0.0 else 0.0
-        for joints in frames:
+        for index, joints in enumerate(frames):
             self._set_joints(joints)
-            self._sleep(step_delay)
+            if index < len(frames) - 1:
+                self._sleep(step_delay)
         return True

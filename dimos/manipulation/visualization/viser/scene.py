@@ -16,11 +16,16 @@ from __future__ import annotations
 
 from collections.abc import Callable, Sequence
 from pathlib import Path
+import time
 from typing import Protocol, TypeAlias, cast
 
 from dimos.manipulation.planning.spec.config import RobotModelConfig
 from dimos.manipulation.planning.utils.mesh_utils import prepare_urdf_for_drake
-from dimos.manipulation.visualization.viser.animation import PreviewAnimator
+from dimos.manipulation.visualization.viser.animation import (
+    GroupPreviewAnimation,
+    PreviewTrack,
+    sampled_joint_path_frames,
+)
 from dimos.manipulation.visualization.viser.runtime import (
     VISER_INSTALL_HINT,
     VISER_URDF_INSTALL_HINT,
@@ -197,13 +202,63 @@ class ViserManipulationScene:
         config = self._configs_by_id.get(robot_id)
         if config is None:
             return False
-        self.show_preview(robot_id)
+        preview = GroupPreviewAnimation(
+            group_ids=(),
+            tracks=(
+                PreviewTrack(
+                    robot_id=robot_id,
+                    group_ids=(),
+                    joint_names=tuple(config.joint_names),
+                    path=tuple(path),
+                ),
+            ),
+        )
+        return self.animate_preview(preview, duration)
+
+    def animate_preview(self, preview: GroupPreviewAnimation, duration: float) -> bool:
+        """Animate all preview tracks with one shared group-native frame clock."""
+        if not preview.tracks:
+            return False
+        frames_by_robot: dict[str, list[list[float]]] = {}
+        joint_names_by_robot: dict[str, tuple[str, ...]] = {}
+        for track in preview.tracks:
+            if track.robot_id not in self._configs_by_id:
+                return False
+            frames = sampled_joint_path_frames(track.path, duration, self.preview_fps)
+            if not frames:
+                return False
+            frames_by_robot[track.robot_id] = frames
+            joint_names_by_robot[track.robot_id] = track.joint_names
+
+        frame_count = max(len(frames) for frames in frames_by_robot.values())
+        if frame_count <= 0:
+            return False
+        step_delay = duration / max(frame_count - 1, 1) if duration > 0.0 else 0.0
+
+        robot_ids = tuple(frames_by_robot)
+        for robot_id in robot_ids:
+            self.show_preview(robot_id)
         try:
-            return PreviewAnimator(
-                lambda joints: self._set_preview_ghost_joints(robot_id, config.joint_names, joints)
-            ).animate(path, duration, self.preview_fps)
+            for frame_index in range(frame_count):
+                for robot_id in robot_ids:
+                    frames = frames_by_robot[robot_id]
+                    joints = self._frame_at_shared_index(frames, frame_index, frame_count)
+                    self._set_preview_ghost_joints(robot_id, joint_names_by_robot[robot_id], joints)
+                if frame_index < frame_count - 1:
+                    time.sleep(step_delay)
+            return True
         finally:
-            self.hide_preview(robot_id)
+            for robot_id in robot_ids:
+                self.hide_preview(robot_id)
+
+    @staticmethod
+    def _frame_at_shared_index(
+        frames: Sequence[list[float]], frame_index: int, frame_count: int
+    ) -> list[float]:
+        if frame_count <= 1 or len(frames) == 1:
+            return frames[-1]
+        source_index = round(frame_index * (len(frames) - 1) / (frame_count - 1))
+        return frames[source_index]
 
     def set_target_joints(
         self, robot_id: str, joint_names: Sequence[str], joints: Sequence[float]
