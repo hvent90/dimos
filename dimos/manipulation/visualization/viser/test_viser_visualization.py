@@ -36,7 +36,12 @@ from dimos.manipulation.visualization.viser.animation import (
     sampled_joint_path_frames,
 )
 from dimos.manipulation.visualization.viser.config import ViserVisualizationConfig
-from dimos.manipulation.visualization.viser.gui import ViserPanelGui
+from dimos.manipulation.visualization.viser.gui import (
+    ACTIVE_GROUP_COLOR,
+    INACTIVE_GROUP_COLOR,
+    PRIMARY_ACTION_COLOR,
+    ViserPanelGui,
+)
 from dimos.manipulation.visualization.viser.scene import ViserManipulationScene
 from dimos.manipulation.visualization.viser.state import (
     ActionStatus,
@@ -127,6 +132,7 @@ class GuiDropdownHandle:
 class GuiButtonHandle:
     label: str
     disabled: bool = False
+    color: tuple[int, int, int] | None = None
     click_callback: GuiCallback | None = None
     removed: bool = False
 
@@ -330,8 +336,16 @@ class FakeGuiServer:
         handle = GuiDropdownHandle(label=label, options=list(options), value=initial_value)
         return handle
 
-    def add_button(self, label: str, *, disabled: bool = False) -> GuiButtonHandle:
-        handle = GuiButtonHandle(label=label, disabled=disabled)
+    def add_button(
+        self,
+        label: str,
+        *,
+        disabled: bool = False,
+        color: tuple[int, int, int] | None = None,
+        hint: str | None = None,
+    ) -> GuiButtonHandle:
+        _ = hint
+        handle = GuiButtonHandle(label=label, disabled=disabled, color=color)
         self.buttons[label] = handle
         return handle
 
@@ -599,14 +613,38 @@ def test_gui_builds_controls_in_manipulation_panel_folder(
     assert "target_summary" in gui._handles
     assert "actions_heading" in gui._handles
     assert "plan" in gui._handles
+    assert "select_all_manipulators" not in gui._handles
+    assert "clear_group_selection" not in gui._handles
+    assert "plan_controls_heading" in gui._handles
+    assert "actions_folder" not in gui._handles
+    assert "joint_control_folder" in gui._handles
     handle_order = list(gui._handles)
     assert handle_order.index(f"group:{DEFAULT_GROUP_ID}") < handle_order.index("plan")
     assert handle_order.index("target_summary") < handle_order.index("plan")
-    assert handle_order.index("plan") < handle_order.index("actions_folder")
+    assert handle_order.index("plan") < handle_order.index("plan_controls_heading")
+    assert handle_order.index("plan_controls_heading") < handle_order.index("preview")
+    assert handle_order.index("preview") < handle_order.index("execute")
+    assert handle_order.index("clear") < handle_order.index("joint_control_folder")
     assert isinstance(gui._handles["status"], GuiMarkdownHandle)
     assert "Starting" not in gui._handles["status"].value
     assert isinstance(gui._handles["target_summary"], GuiMarkdownHandle)
-    assert "Primary:" in gui._handles["target_summary"].value
+    assert "Feasibility:" in gui._handles["target_summary"].value
+    assert "Primary:" not in gui._handles["target_summary"].value
+    assert "Auxiliary:" not in gui._handles["target_summary"].value
+    assert "Ghosts:" not in gui._handles["target_summary"].value
+    assert isinstance(gui._handles["plan_controls_heading"], GuiMarkdownHandle)
+    assert "Plan controls" in gui._handles["plan_controls_heading"].value
+    plan_button = gui._handles["plan"]
+    assert isinstance(plan_button, GuiButtonHandle)
+    assert plan_button.color == PRIMARY_ACTION_COLOR
+    group_button = gui._handles[f"group:{DEFAULT_GROUP_ID}"]
+    assert isinstance(group_button, GuiButtonHandle)
+    assert group_button.label == "arm"
+    assert group_button.color == ACTIVE_GROUP_COLOR
+    joint_folder = gui._handles["joint_control_folder"]
+    assert isinstance(joint_folder, FakeFolder)
+    assert joint_folder.label == "Joint Control"
+    assert joint_folder.kwargs == {"expand_by_default": False}
     assert gui._operation_worker._timeout_seconds is None
 
 
@@ -690,12 +728,12 @@ def test_dimos_theme_configures_supported_viser_chrome() -> None:
 
     assert apply_dimos_theme(server) is True
     assert server.theme_kwargs is not None
-    assert server.theme_kwargs["brand_color"] == (22, 130, 163)
+    assert server.theme_kwargs["brand_color"] == (0, 153, 255)
     assert server.theme_kwargs["dark_mode"] is True
     assert server.theme_kwargs["show_logo"] is False
     assert server.theme_kwargs["show_share_button"] is False
-    assert server.theme_kwargs["control_layout"] == "collapsible"
-    assert server.theme_kwargs["control_width"] == "medium"
+    assert server.theme_kwargs["control_layout"] == "fixed"
+    assert server.theme_kwargs["control_width"] == "large"
 
 
 def test_dimos_theme_configures_titlebar_when_supported(monkeypatch: pytest.MonkeyPatch) -> None:
@@ -1400,17 +1438,23 @@ def test_gui_group_selector_derives_primary_and_auxiliary_groups(
     server = FakeGuiServer()
 
     gui = make_panel(server, adapter, ViserVisualizationConfig(panel_enabled=True), scene)
-    aux_label = "Aux: arm gripper"
     assert "robot" not in gui._handles
-    assert server.checkboxes["Pose: arm"].value is True
-    assert server.checkboxes[aux_label].value is False
+    pose_button = gui._handles["group:arm:manipulator"]
+    aux_button = gui._handles["group:arm:gripper"]
+    assert isinstance(pose_button, GuiButtonHandle)
+    assert isinstance(aux_button, GuiButtonHandle)
+    assert pose_button.label == "arm"
+    assert pose_button.color == ACTIVE_GROUP_COLOR
+    assert aux_button.label == "arm gripper"
+    assert aux_button.color == INACTIVE_GROUP_COLOR
 
-    server.checkboxes[aux_label].update_callback(
-        SimpleNamespace(target=SimpleNamespace(value=True))
-    )
+    assert aux_button.click_callback is not None
+    aux_button.click_callback(SimpleNamespace(target=aux_button))
 
     assert gui.state.selected_group_ids == ("arm:manipulator", "arm:gripper")
     assert gui.state.auxiliary_group_ids == ("arm:gripper",)
+    assert aux_button.label == "arm gripper"
+    assert aux_button.color == ACTIVE_GROUP_COLOR
     assert [call[0] for call in target_controls] == ["arm:manipulator"]
 
 

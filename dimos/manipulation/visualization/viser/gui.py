@@ -73,6 +73,9 @@ PanelHandle: TypeAlias = (
 
 # Fallback joint-slider range (radians) when a robot config omits joint limits.
 DEFAULT_JOINT_LIMITS = (-3.14, 3.14)
+PRIMARY_ACTION_COLOR = (0, 102, 179)
+ACTIVE_GROUP_COLOR = PRIMARY_ACTION_COLOR
+INACTIVE_GROUP_COLOR = (52, 52, 52)
 
 
 class ViserPanelGui:
@@ -165,18 +168,12 @@ class ViserPanelGui:
             self._build_panel_controls(gui)
 
     def _build_panel_controls(self, gui: GuiApi) -> None:
-        self._handles["status"] = gui.add_markdown("**Status:** Ready")
+        self._handles["status"] = gui.add_markdown("### Status\n**State:** Ready")
         self._build_scene_controls(gui)
         self._handles["planning_groups_heading"] = gui.add_markdown(
-            "### Planning Groups\nChoose active target groups."
+            "### Planning Groups\nActive MoveIt group for pose goal, planning, and joint edits."
         )
         self._sync_group_selector(self.adapter.list_planning_groups())
-        select_all_button = gui.add_button("Select all")
-        select_all_button.on_click(lambda _: self._select_all_manipulators())
-        self._handles["select_all_manipulators"] = select_all_button
-        clear_selection_button = gui.add_button("Clear selection")
-        clear_selection_button.on_click(lambda _: self._clear_group_selection())
-        self._handles["clear_group_selection"] = clear_selection_button
         self._handles["target_heading"] = gui.add_markdown("### Target")
         preset_dropdown = gui.add_dropdown(
             "Preset",
@@ -185,26 +182,28 @@ class ViserPanelGui:
         )
         preset_dropdown.on_update(lambda event: self._apply_preset(event.target.value))
         self._handles["preset"] = preset_dropdown
-        self._handles["target_summary"] = gui.add_markdown("Select a group to define a target.")
+        self._handles["target_summary"] = gui.add_markdown(
+            f"Feasibility: `{self.state.feasibility.status.value}`"
+        )
         self._handles["actions_heading"] = gui.add_markdown("### Actions")
-        plan_button = gui.add_button("Plan", disabled=True)
+        plan_button = gui.add_button("Plan", disabled=True, color=PRIMARY_ACTION_COLOR)
         plan_button.on_click(lambda _: self._submit_plan())
         self._handles["plan"] = plan_button
-        more_actions = gui.add_folder("Plan controls", expand_by_default=False)
-        self._handles["actions_folder"] = more_actions
-        with more_actions:
-            preview_button = gui.add_button("Preview", disabled=True)
-            preview_button.on_click(lambda _: self._submit_preview())
-            self._handles["preview"] = preview_button
-            execute_button = gui.add_button("Execute", disabled=True)
-            execute_button.on_click(lambda _: self._submit_execute())
-            self._handles["execute"] = execute_button
-            cancel_button = gui.add_button("Cancel")
-            cancel_button.on_click(lambda _: self._submit_cancel())
-            self._handles["cancel"] = cancel_button
-            clear_button = gui.add_button("Clear plan")
-            clear_button.on_click(lambda _: self._submit_clear())
-            self._handles["clear"] = clear_button
+        self._handles["plan_controls_heading"] = gui.add_markdown("**Plan controls**")
+        preview_button = gui.add_button("Preview", disabled=True)
+        preview_button.on_click(lambda _: self._submit_preview())
+        self._handles["preview"] = preview_button
+        execute_button = gui.add_button("Execute", disabled=True)
+        execute_button.on_click(lambda _: self._submit_execute())
+        self._handles["execute"] = execute_button
+        cancel_button = gui.add_button("Cancel")
+        cancel_button.on_click(lambda _: self._submit_cancel())
+        self._handles["cancel"] = cancel_button
+        clear_button = gui.add_button("Clear plan")
+        clear_button.on_click(lambda _: self._submit_clear())
+        self._handles["clear"] = clear_button
+        joint_controls = gui.add_folder("Joint Control", expand_by_default=False)
+        self._handles["joint_control_folder"] = joint_controls
         self._build_joint_sliders()
 
     def _build_scene_controls(self, gui: GuiApi) -> None:
@@ -283,6 +282,14 @@ class ViserPanelGui:
         self._clear_joint_sliders()
         if not self.state.selected_group_ids:
             return
+        joint_folder = self._handles.get("joint_control_folder")
+        if joint_folder is not None:
+            with joint_folder:
+                self._build_joint_slider_handles(gui)
+            return
+        self._build_joint_slider_handles(gui)
+
+    def _build_joint_slider_handles(self, gui: GuiApi) -> None:
         groups = self._group_info_by_id()
         target_by_name: dict[str, float] = {}
         if self.state.target_joints is not None:
@@ -386,17 +393,21 @@ class ViserPanelGui:
             key = f"group:{group_id}"
             seen_keys.add(key)
             handle = self._handles.get(key)
-            label = self._group_selector_label(group)
+            is_selected = group_id in selected
+            label = self._group_selector_label(group, selected=is_selected)
             if handle is None:
-                handle = self.server.gui.add_checkbox(label, initial_value=group_id in selected)
-                handle.on_update(
-                    lambda event, gid=group_id: self._set_group_selected(
-                        gid, bool(event.target.value)
-                    )
+                handle = self.server.gui.add_button(
+                    label,
+                    color=self._group_selector_color(is_selected),
+                    hint="Click to toggle this planning group in the target set.",
                 )
+                handle.on_click(lambda _event, gid=group_id: self._toggle_group_selected(gid))
                 self._handles[key] = handle
-            elif hasattr(handle, "value"):
-                self._set_optional_handle_attr(handle, "value", group_id in selected)
+            else:
+                self._set_optional_handle_attr(handle, "label", label)
+                self._set_optional_handle_attr(
+                    handle, "color", self._group_selector_color(is_selected)
+                )
 
         for key in [key for key in self._handles if key.startswith("group:")]:
             if key not in seen_keys:
@@ -406,9 +417,13 @@ class ViserPanelGui:
                     remove()
 
     @staticmethod
-    def _group_selector_label(group: PlanningGroupInfo) -> str:
-        role = "Pose" if bool(group["has_pose_target"]) else "Aux"
-        return f"{role}: {ViserPanelGui._group_display_name(group)}"
+    def _group_selector_label(group: PlanningGroupInfo, *, selected: bool = False) -> str:
+        _ = selected
+        return ViserPanelGui._group_display_name(group)
+
+    @staticmethod
+    def _group_selector_color(selected: bool) -> tuple[int, int, int] | None:
+        return ACTIVE_GROUP_COLOR if selected else INACTIVE_GROUP_COLOR
 
     @staticmethod
     def _group_display_name(group: PlanningGroupInfo) -> str:
@@ -429,6 +444,9 @@ class ViserPanelGui:
         self.state.mark_plan_stale()
         self._build_joint_sliders()
         self.refresh()
+
+    def _toggle_group_selected(self, group_id: PlanningGroupID) -> None:
+        self._set_group_selected(group_id, group_id not in self.state.selected_group_ids)
 
     def _select_all_manipulators(self) -> None:
         groups = self.adapter.list_planning_groups()
@@ -857,7 +875,8 @@ class ViserPanelGui:
         current = self.state.current_joints
         status_label = self.state.error or self.state.module_state
         status = [
-            f"**Status:** {status_label}",
+            "### Status",
+            f"**State:** {status_label}",
             f"Target: `{self.state.target_status.value}` · Plan: `{self.state.plan_state.status.value}`",
         ]
         if self.state.selected_robot is not None:
@@ -871,31 +890,9 @@ class ViserPanelGui:
         self._set_handle_value("status", "\n\n".join(status))
 
     def _update_target_summary(self) -> None:
-        primary_groups = self._selected_pose_group_ids()
-        auxiliary_groups = self._selected_auxiliary_group_ids()
-        ghost_groups = list(primary_groups)
-        lines = [
-            f"Primary: `{self._summary_group_names(primary_groups)}`",
-            f"Auxiliary: `{self._summary_group_names(auxiliary_groups)}`",
-            f"Ghosts: `{self._summary_group_names(tuple(ghost_groups))}`",
-            f"Feasibility: `{self.state.feasibility.status.value}`",
-        ]
-        if not self.state.selected_group_ids:
-            lines = ["Select a planning group to define a target."]
-        elif not primary_groups and auxiliary_groups:
-            lines.append("Auxiliary-only selection: no pose target ghost will be shown.")
-        self._set_handle_value("target_summary", "\n\n".join(lines))
-
-    def _summary_group_names(self, group_ids: tuple[PlanningGroupID, ...]) -> list[str]:
-        groups = self._group_info_by_id()
-        names: list[str] = []
-        for group_id in group_ids:
-            group = groups.get(group_id)
-            if group is None:
-                names.append(str(group_id))
-                continue
-            names.append(self._group_display_name(group))
-        return names
+        self._set_handle_value(
+            "target_summary", f"Feasibility: `{self.state.feasibility.status.value}`"
+        )
 
     def _update_control_state(self) -> None:
         self._set_disabled("plan", not self.state.can_plan())
@@ -1122,7 +1119,7 @@ class ViserPanelGui:
 
     def _set_disabled(self, key: str, disabled: bool) -> None:
         handle = self._handles.get(key)
-        if isinstance(handle, GuiButtonHandle):
+        if handle is not None and hasattr(handle, "disabled"):
             self._set_optional_handle_attr(handle, "disabled", disabled)
 
     def _set_visible(self, key: str, visible: bool) -> None:
