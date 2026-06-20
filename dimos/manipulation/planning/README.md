@@ -139,7 +139,7 @@ accepted.
 |-----------|-------------|
 | `xarm6_planner_only` | XArm 6-DOF standalone (no coordinator) |
 | `xarm7-planner-coordinator` | XArm 7-DOF with coordinator |
-| `dual-xarm6-planner` | Dual XArm 6-DOF |
+| `dual-xarm6-planner-coordinator` | Dual XArm 6-DOF with coordinator |
 | `xarm-perception-sim` | XArm 7-DOF simulation perception stack |
 
 ## Directory Structure

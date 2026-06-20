@@ -15,7 +15,6 @@
 """Dual-arm coordinator blueprints with trajectory control.
 
 Usage:
-    dimos run coordinator-dual-mock      # Mock 7+6 DOF arms
     dimos run coordinator-dual-xarm      # XArm7 left + XArm6 right
     dimos run coordinator-piper-xarm     # XArm6 + Piper
 """
@@ -27,18 +26,6 @@ from dimos.core.global_config import global_config
 from dimos.robot.catalog.piper import piper as _catalog_piper
 from dimos.robot.catalog.ufactory import xarm6 as _catalog_xarm6, xarm7 as _catalog_xarm7
 
-# Dual mock arms (7-DOF left, 6-DOF right)
-_mock_left = _catalog_xarm7(name="left_arm")
-_mock_right = _catalog_xarm6(name="right_arm", add_gripper=False)
-
-coordinator_dual_mock = ControlCoordinator.blueprint(
-    hardware=[_mock_left.to_hardware_component(), _mock_right.to_hardware_component()],
-    tasks=[
-        _mock_left.to_task_config(task_name="traj_left"),
-        _mock_right.to_task_config(task_name="traj_right"),
-    ],
-)
-
 # Dual XArm (XArm7 left, XArm6 right)
 _xarm7_left = _catalog_xarm7(name="left_arm", adapter_type="xarm", address=global_config.xarm7_ip)
 _xarm6_right = _catalog_xarm6(
@@ -48,8 +35,8 @@ _xarm6_right = _catalog_xarm6(
 coordinator_dual_xarm = ControlCoordinator.blueprint(
     hardware=[_xarm7_left.to_hardware_component(), _xarm6_right.to_hardware_component()],
     tasks=[
-        _xarm7_left.to_task_config(task_name="traj_left"),
-        _xarm6_right.to_task_config(task_name="traj_right"),
+        _xarm7_left.to_task_config(),
+        _xarm6_right.to_task_config(),
     ],
 )
 
@@ -71,7 +58,6 @@ coordinator_piper_xarm = ControlCoordinator.blueprint(
 
 
 __all__ = [
-    "coordinator_dual_mock",
     "coordinator_dual_xarm",
     "coordinator_piper_xarm",
 ]

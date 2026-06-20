@@ -274,6 +274,29 @@ class TestJointTrajectoryTask:
         assert trajectory_task.is_active()
         assert trajectory_task.get_state() == TrajectoryState.EXECUTING
 
+    def test_execute_rejects_mismatched_joint_names(self, trajectory_task):
+        trajectory = JointTrajectory(
+            joint_names=["other/joint1", "other/joint2", "other/joint3"],
+            points=[
+                TrajectoryPoint(
+                    positions=[0.0, 0.0, 0.0],
+                    velocities=[0.0, 0.0, 0.0],
+                    time_from_start=0.0,
+                ),
+                TrajectoryPoint(
+                    positions=[1.0, 0.5, 0.25],
+                    velocities=[0.0, 0.0, 0.0],
+                    time_from_start=1.0,
+                ),
+            ],
+        )
+
+        result = trajectory_task.execute(trajectory)
+
+        assert result is False
+        assert not trajectory_task.is_active()
+        assert trajectory_task.get_state() == TrajectoryState.IDLE
+
     def test_compute_during_trajectory(self, trajectory_task, simple_trajectory, coordinator_state):
         t_start = time.perf_counter()
         trajectory_task.execute(simple_trajectory)
@@ -529,6 +552,28 @@ class TestTickLoop:
         tick_loop.stop()
 
         assert mock_task.compute.call_count > 0
+
+    def test_write_all_hardware_logs_rejected_command(self, mocker):
+        hardware = {"arm": MagicMock()}
+        hardware["arm"].write_command.return_value = False
+        log_error = mocker.patch("dimos.control.tick_loop.logger.error")
+        tick_loop = TickLoop(
+            tick_rate=100.0,
+            hardware=hardware,
+            hardware_lock=threading.Lock(),
+            tasks={},
+            task_lock=threading.Lock(),
+            joint_to_hardware={},
+        )
+
+        tick_loop._write_all_hardware({"arm": ({"arm/joint1": 0.5}, ControlMode.SERVO_POSITION)})
+
+        hardware["arm"].write_command.assert_called_once_with(
+            {"arm/joint1": 0.5}, ControlMode.SERVO_POSITION
+        )
+        log_error.assert_called_once_with(
+            "Hardware %s rejected %d %s command(s)", "arm", 1, "SERVO_POSITION"
+        )
 
 
 class TestIntegration:

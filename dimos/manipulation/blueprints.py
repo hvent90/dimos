@@ -63,8 +63,7 @@ xarm6_planner_only = ManipulationModule.blueprint(
 )
 
 
-# Dual XArm6 planner with coordinator integration
-# Usage: Start with coordinator_dual_mock, then plan/execute via RPC
+# Dual XArm6 planner + coordinator with Viser execution UI.
 _left_arm_cfg = _catalog_xarm6(
     name="left_arm",
     adapter_type="xarm" if global_config.xarm6_ip else "mock",
@@ -78,13 +77,32 @@ _right_arm_cfg = _catalog_xarm6(
     y_offset=-0.5,
 )
 
-dual_xarm6_planner = ManipulationModule.blueprint(
-    robots=[
-        _left_arm_cfg.to_robot_model_config(),
-        _right_arm_cfg.to_robot_model_config(),
-    ],
-    planning_timeout=10.0,
-    visualization={"backend": "meshcat"},
+dual_xarm6_planner_coordinator = autoconnect(
+    ManipulationModule.blueprint(
+        robots=[
+            _left_arm_cfg.to_robot_model_config(),
+            _right_arm_cfg.to_robot_model_config(),
+        ],
+        planning_timeout=10.0,
+        visualization={"backend": "viser", "allow_plan_execute": True},
+    ),
+    ControlCoordinator.blueprint(
+        tick_rate=100.0,
+        publish_joint_state=True,
+        joint_state_frame_id="coordinator",
+        hardware=[
+            _left_arm_cfg.to_hardware_component(),
+            _right_arm_cfg.to_hardware_component(),
+        ],
+        tasks=[
+            _left_arm_cfg.to_task_config(),
+            _right_arm_cfg.to_task_config(),
+        ],
+    ),
+).transports(
+    {
+        ("joint_state", JointState): LCMTransport("/coordinator/joint_state", JointState),
+    }
 )
 
 
@@ -135,7 +153,7 @@ dual_xarm7_planner_coordinator = autoconnect(
             _right_xarm7_cfg.to_robot_model_config(),
         ],
         planning_timeout=10.0,
-        enable_viz=True,
+        visualization={"backend": "viser", "allow_plan_execute": True},
     ),
     ControlCoordinator.blueprint(
         tick_rate=100.0,
@@ -362,7 +380,7 @@ xarm_perception_sim_agent = autoconnect(
 
 
 __all__ = [
-    "dual_xarm6_planner",
+    "dual_xarm6_planner_coordinator",
     "dual_xarm7_planner_coordinator",
     "xarm6_planner_only",
     "xarm7_planner_coordinator",

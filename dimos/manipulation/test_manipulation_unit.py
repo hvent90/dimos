@@ -483,6 +483,48 @@ class TestExecute:
         assert module.execute() is False
         assert module._state == ManipulationState.FAULT
 
+    def test_execute_times_out_when_coordinator_rpc_does_not_respond(
+        self, robot_config, simple_trajectory
+    ):
+        """Coordinator RPC timeout fails execution instead of hanging silently."""
+        module = _make_module_with_monitor(robot_config)
+        module.config.coordinator_rpc_timeout = 0.01
+        generator = MagicMock()
+        generator.generate.return_value = simple_trajectory
+        module._robots = {"test_arm": ("id", robot_config, generator)}
+        module._world_monitor.planning_groups = _FakePlanningGroups(
+            [_make_global_group("test_arm", "manipulator", ["joint1", "joint2", "joint3"])]
+        )
+        module._world_monitor.get_current_joint_state.return_value = JointState(
+            name=["joint1", "joint2", "joint3"], position=[0.0, 0.0, 0.0]
+        )
+        module._last_plan = GeneratedPlan(
+            group_ids=("test_arm/manipulator",),
+            path=[
+                JointState(
+                    name=["test_arm/joint1", "test_arm/joint2", "test_arm/joint3"],
+                    position=[0.0, 0.0, 0.0],
+                ),
+                JointState(
+                    name=["test_arm/joint1", "test_arm/joint2", "test_arm/joint3"],
+                    position=[0.5, 0.5, 0.5],
+                ),
+            ],
+            status=PlanningStatus.SUCCESS,
+        )
+        mock_client = MagicMock()
+        mock_client.remote_name = "ControlCoordinator"
+        mock_client._unsub_fns = []
+        mock_client.rpc.call_sync.side_effect = TimeoutError("no response")
+        module._coordinator_client = mock_client
+
+        assert module.execute() is False
+
+        assert module._state == ManipulationState.FAULT
+        assert "timed out" in module._error_message
+        mock_client.rpc.call_sync.assert_called_once()
+        mock_client.task_invoke.assert_not_called()
+
 
 def _make_module_with_monitor(*configs: RobotModelConfig) -> ManipulationModule:
     """Create a ManipulationModule with a mocked world monitor and robots configured."""

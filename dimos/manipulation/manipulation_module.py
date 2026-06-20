@@ -125,6 +125,7 @@ class ManipulationModuleConfig(ModuleConfig):
     # to prevent the planner from routing trajectories below this height.
     # Set to None to disable.
     floor_z: float | None = None
+    coordinator_rpc_timeout: float = 3.0
 
 
 class ManipulationModule(Module):
@@ -630,7 +631,13 @@ class ManipulationModule(Module):
         if not result.is_success():
             return self._fail(f"Planning failed: {result.status.name}")
 
-        logger.info("Path: %d waypoints", len(result.path))
+        path_joints = list(result.path[-1].name) if result.path else []
+        logger.info(
+            "Path: %d waypoints, groups=%s, joints=%s",
+            len(result.path),
+            group_ids,
+            path_joints,
+        )
         self._store_generated_plan(group_ids, result)
         self._state = ManipulationState.COMPLETED
         return True
@@ -1460,6 +1467,29 @@ class ManipulationModule(Module):
             self._coordinator_client = RPCClient(None, ControlCoordinator)
         return self._coordinator_client
 
+    def _invoke_coordinator_task(
+        self,
+        client: RPCClient,
+        task_name: str,
+        method: str,
+        kwargs: dict[str, Any],
+    ) -> Any:
+        """Invoke a ControlCoordinator task with an execution-specific timeout."""
+        remote_name = getattr(client, "remote_name", None)
+        rpc_client = getattr(client, "rpc", None)
+        call_sync = getattr(rpc_client, "call_sync", None)
+        if isinstance(remote_name, str) and callable(call_sync):
+            result, unsub_fn = call_sync(
+                f"{remote_name}/task_invoke",
+                ([task_name, method, kwargs], {}),
+                rpc_timeout=self.config.coordinator_rpc_timeout,
+            )
+            unsub_fns = getattr(client, "_unsub_fns", None)
+            if isinstance(unsub_fns, list):
+                unsub_fns.append(unsub_fn)
+            return result
+        return client.task_invoke(task_name, method, kwargs)
+
     @rpc
     def execute(self, robot_name: RobotName | None = None) -> bool:
         """Execute planned trajectory via ControlCoordinator."""
@@ -1482,6 +1512,12 @@ class ManipulationModule(Module):
             affected = self._affected_robot_names(plan)
         except Exception as exc:
             return self._fail(f"Failed to resolve generated plan: {exc}")
+        logger.info(
+            "Execute plan: groups=%s, affected=%s, requested_robot=%s",
+            plan.group_ids,
+            affected,
+            robot_name,
+        )
         robot_names = [robot_name] if robot_name is not None else affected
         assert self._world_monitor is not None
 
@@ -1558,8 +1594,25 @@ class ManipulationModule(Module):
                 len(trajectory.points),
                 trajectory.duration,
             )
-            result = client.task_invoke(
-                config.coordinator_task_name, "execute", {"trajectory": trajectory}
+            try:
+                result = self._invoke_coordinator_task(
+                    client,
+                    config.coordinator_task_name,
+                    "execute",
+                    {"trajectory": trajectory},
+                )
+            except TimeoutError as exc:
+                return self._fail(
+                    f"Coordinator RPC timed out for task '{config.coordinator_task_name}': {exc}"
+                )
+            except Exception as exc:
+                return self._fail(
+                    f"Coordinator RPC failed for task '{config.coordinator_task_name}': {exc}"
+                )
+            logger.info(
+                "Coordinator execute result: task='%s', result=%r",
+                config.coordinator_task_name,
+                result,
             )
             if not result:
                 return self._fail("Coordinator rejected trajectory")

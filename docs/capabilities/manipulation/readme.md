@@ -166,8 +166,7 @@ uv run dimos run xarm7-planner-coordinator \
 Dual-arm mock Viser example:
 
 ```bash
-uv run dimos run dual-xarm6-planner \
-  -o manipulationmodule.visualization.backend=viser
+uv run dimos run dual-xarm6-planner-coordinator
 ```
 
 External manipulation visualizers are initialized from a backend-neutral planning-scene snapshot
@@ -221,7 +220,7 @@ visualization backend.
 | `keyboard-teleop-xarm7` | XArm7 7-DOF keyboard teleop with Drake viz |
 | `xarm6-planner-only` | XArm6 standalone planner (no coordinator) |
 | `xarm7-planner-coordinator` | XArm7 planner with coordinator integration |
-| `dual-xarm6-planner` | Dual XArm6 planning |
+| `dual-xarm6-planner-coordinator` | Dual XArm6 planning and execution with Viser |
 | `xarm-perception` | XArm7 + RealSense camera for perception |
 | `xarm-perception-agent` | XArm7 perception + LLM agent |
 | `xarm-perception-sim` | XArm7 simulation perception stack |
