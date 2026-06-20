@@ -1,6 +1,6 @@
 // Go2 teleop cockpit — big video left, control column right.
 //
-// LAYOUT ONLY for now. The posture/action/body-height controls and the
+// LAYOUT ONLY for now. The posture/action controls and the
 // telemetry/battery readouts are wired to a local placeholder state so the
 // view is demonstrable, but nothing talks to the robot yet — functionality
 // gets added one piece at a time (commands over state_reliable, real telemetry
@@ -20,19 +20,19 @@ const POSTURE = [
     { name: 'BalanceStand', label: 'Balance' },
     { name: 'RecoveryStand', label: 'Recovery' },
 ];
+// Only commands verified working on the robot's firmware (probe_commands.py).
+// Stretch/Pose/gaits excluded — they 3203/3202 on >=V1.1.6.
 const ACTIONS = [
-    { name: 'Hello', label: 'Hello' },
-    { name: 'Stretch', label: 'Stretch' },
+    { name: 'Hello', label: 'Hello 👋' },
     { name: 'Sit', label: 'Sit' },
-    { name: 'Pose', label: 'Pose' },
+    { name: 'Damp', label: 'Relax' },
 ];
 
-// Local UI state. Posture/estop are still placeholder; body-height + battery
-// are now wired to the real state_reliable / state_reliable_back channels.
+// Local UI state. Posture/estop still placeholder; battery is wired to real
+// telemetry. (Body-height shelved — firmware 3203.)
 const ui = {
     posture: 'StandUp',
     estopped: false,
-    bodyHeight: 0,
     nonce: 0,                 // monotonic command id for ack matching
     pending: new Map(),       // nonce -> {el, timer}
 };
@@ -131,13 +131,10 @@ export function renderGo2(c) {
                     <div class="grid grid-cols-2 gap-2">${ACTIONS.map(btn).join('')}</div>
                 </section>
 
-                <!-- Body height -->
-                <section class="bg-bg-950 border border-[#2a2a2a] rounded-xl p-4 shrink-0">
-                    <label class="flex items-center justify-between text-xs text-gray-400 mb-1">
-                        <span class="term-caps text-gray-500">Body height</span><span id="bh-val" class="text-dim-400">0.00</span>
-                    </label>
-                    <input id="body-height" type="range" min="-0.18" max="0.03" step="0.01" value="0" class="w-full accent-dim-500">
-                </section>
+                <!-- Body height: SHELVED for v1 — the api_id (1013) is rejected
+                     with status 3203 "unknown api" on firmware >=V1.1.6, which
+                     renumbered the sport-command IDs. Re-add once the new
+                     BodyHeight mechanism is found. -->
 
                 <!-- E-STOP -->
                 <section class="mt-auto bg-bg-950 border border-[#2a2a2a] rounded-xl p-4 shrink-0">
@@ -188,32 +185,14 @@ function wireGo2() {
         refreshControls();
     });
 
-    const bh = document.getElementById('body-height');
-    // 'input' = continuous while dragging → update the label only (cheap, local).
-    bh.addEventListener('input', () => {
-        ui.bodyHeight = +bh.value;
-        document.getElementById('bh-val').textContent = ui.bodyHeight.toFixed(2);
-    });
-    // 'change' = on release → send ONE command. Robot clamps + acks; no flood.
-    bh.addEventListener('change', () => {
-        sendBodyHeight(+bh.value, bh);
-    });
+    // Body-height slider shelved for v1 (firmware 3203 unknown-api). The
+    // command send/ack infra below stays — posture buttons will use it next.
 
     // Resolve command acks coming back on state_reliable_back (via webrtc.js).
     state.onCmdAck = onCmdAck;
 }
 
-// ── command send + ack (state_reliable ↔ state_reliable_back) ────────
-function sendBodyHeight(value, el) {
-    if (!cmdReady()) return;
-    const nonce = ++ui.nonce;
-    el.classList.add('cmd-sending');                 // optional visual hook
-    state.stateChannel.send(JSON.stringify({ type: 'body_height', value, nonce }));
-    // Watchdog: clear pending if no ack in 3s (e.g. session split swallowed it).
-    const timer = setTimeout(() => resolveAck(nonce, false), 3000);
-    ui.pending.set(nonce, { el, timer });
-}
-
+// ── command ack (state_reliable_back) — shared by all nonce'd commands ──
 function onCmdAck(msg) {
     resolveAck(msg.nonce, !!msg.ok);
 }
@@ -223,26 +202,27 @@ function resolveAck(nonce, ok) {
     if (!p) return;
     clearTimeout(p.timer);
     ui.pending.delete(nonce);
-    p.el.classList.remove('cmd-sending');
-    // brief confirm/reject flash on the slider container
-    p.el.classList.add(ok ? 'cmd-ok' : 'cmd-err');
-    setTimeout(() => p.el.classList.remove('cmd-ok', 'cmd-err'), 600);
+    const btn = p.el;
+    // Track posture optimistically on a confirmed posture command.
+    if (ok && p.name && POSTURE.some((x) => x.name === p.name)) ui.posture = p.name;
+    btn.dataset.status = ok ? 'done' : 'error';
+    setTimeout(() => {
+        btn.dataset.status = 'idle';
+        refreshControls();
+    }, 700);
+    refreshControls();
 }
 
-// Placeholder command: locally flips status so the UI is demonstrable. The real
-// version sends a nonce envelope on state_reliable and resolves on cmd_ack.
+// Posture/gesture button → {type:sport_cmd, name, nonce} on state_reliable.
+// Robot allow-lists + dispatches, then acks on state_reliable_back (→ resolveAck).
 function sendCommand(name, btn) {
-    if (ui.estopped) return;
+    if (!cmdReady()) return;
+    const nonce = ++ui.nonce;
     btn.dataset.status = 'pending';
-    setTimeout(() => {
-        if (POSTURE.some((p) => p.name === name)) ui.posture = name;
-        btn.dataset.status = 'done';
-        setTimeout(() => {
-            btn.dataset.status = 'idle';
-            refreshControls();
-        }, 700);
-        refreshControls();
-    }, 350);
+    state.stateChannel.send(JSON.stringify({ type: 'sport_cmd', name, nonce }));
+    // Watchdog: if no ack in 3s, mark error and clear pending.
+    const timer = setTimeout(() => resolveAck(nonce, false), 3000);
+    ui.pending.set(nonce, { el: btn, name, timer });
 }
 
 function refreshControls() {
