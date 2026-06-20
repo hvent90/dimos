@@ -27,6 +27,7 @@ Usage::
 
 from __future__ import annotations
 
+import ipaddress
 from typing import TYPE_CHECKING
 
 from dimos.core.core import rpc
@@ -47,6 +48,10 @@ from dimos.hardware.sensors.lidar.livox.ports import (
 from dimos.msgs.sensor_msgs.Imu import Imu
 from dimos.msgs.sensor_msgs.PointCloud2 import PointCloud2
 from dimos.spec import perception
+from dimos.utils.generic import get_local_ips
+from dimos.utils.logging_config import setup_logger
+
+_logger = setup_logger()
 
 
 class Mid360Config(NativeModuleConfig):
@@ -90,11 +95,47 @@ class Mid360(NativeModule, perception.Lidar, perception.IMU):
 
     @rpc
     def start(self) -> None:
+        self._correct_host_ip()
         super().start()
 
     @rpc
     def stop(self) -> None:
         super().stop()
+
+    def _correct_host_ip(self) -> None:
+        """Auto-correct ``host_ip`` to a local interface on the lidar's subnet.
+
+        The native driver binds to ``host_ip``; if it is not an address on this
+        machine the bind fails and the process dies. Mirrors FastLio2 so both
+        agree on the host address regardless of which machine runs the stack.
+        """
+        host_ip = self.config.host_ip
+        lidar_ip = self.config.lidar_ip
+        local_ips = [ip for ip, _iface in get_local_ips()]
+        if host_ip in local_ips:
+            return
+        try:
+            lidar_net = ipaddress.IPv4Network(f"{lidar_ip}/24", strict=False)
+            same_subnet = [ip for ip in local_ips if ipaddress.IPv4Address(ip) in lidar_net]
+        except (ValueError, TypeError):
+            same_subnet = []
+        if not same_subnet:
+            _logger.warning(
+                f"Mid360: host_ip={host_ip!r} not assigned locally and no interface shares "
+                f"the lidar subnet ({lidar_ip}); bind will likely fail.",
+                local_ips=local_ips,
+            )
+            return
+        picked = same_subnet[0]
+        _logger.warning(
+            f"Mid360: host_ip={host_ip!r} not found locally. "
+            f"Auto-correcting to {picked!r} (same subnet as lidar {lidar_ip}).",
+            configured_ip=host_ip,
+            corrected_ip=picked,
+            lidar_ip=lidar_ip,
+            local_ips=local_ips,
+        )
+        self.config.host_ip = picked
 
 
 # Verify protocol port compliance (mypy will flag missing ports)

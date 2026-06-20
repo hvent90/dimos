@@ -530,6 +530,7 @@ module = [
     "mcap",
     "mcap.*",
     "mujoco",
+    "hid",
     "mujoco_playground.*",
     "nav_msgs.*",
     "open_clip",

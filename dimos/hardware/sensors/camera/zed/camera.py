@@ -14,7 +14,7 @@
 
 from __future__ import annotations
 
-import atexit
+import math
 import threading
 import time
 
@@ -24,11 +24,11 @@ import pyzed.sl as sl
 import reactivex as rx
 
 from dimos.constants import DEFAULT_THREAD_JOIN_TIMEOUT
+from dimos.core.coordination.blueprints import autoconnect
 from dimos.core.coordination.module_coordinator import ModuleCoordinator
 from dimos.core.core import rpc
 from dimos.core.module import Module, ModuleConfig
 from dimos.core.stream import Out
-from dimos.core.transport import LCMTransport
 from dimos.hardware.sensors.camera.spec import (
     OPTICAL_ROTATION,
     DepthCameraConfig,
@@ -39,9 +39,11 @@ from dimos.msgs.geometry_msgs.Transform import Transform
 from dimos.msgs.geometry_msgs.Vector3 import Vector3
 from dimos.msgs.sensor_msgs.CameraInfo import CameraInfo
 from dimos.msgs.sensor_msgs.Image import Image, ImageFormat
+from dimos.msgs.sensor_msgs.Imu import Imu
 from dimos.msgs.sensor_msgs.PointCloud2 import PointCloud2
 from dimos.spec import perception
 from dimos.utils.reactive import backpressure
+from dimos.visualization.vis_module import vis_module
 
 
 def default_base_transform() -> Transform:
@@ -61,6 +63,7 @@ class ZEDCameraConfig(ModuleConfig, DepthCameraConfig):
     base_transform: Transform | None = Field(default_factory=default_base_transform)
     align_depth_to_color: bool = True
     enable_depth: bool = True
+    enable_imu: bool = True
     enable_pointcloud: bool = False
     pointcloud_fps: float = 5.0
     camera_info_fps: float = 1.0
@@ -81,6 +84,7 @@ class ZEDCamera(DepthCameraHardware, Module, perception.DepthCamera):
     config: ZEDCameraConfig
     color_image: Out[Image]
     depth_image: Out[Image]
+    imu: Out[Imu]
     pointcloud: Out[PointCloud2]
     camera_info: Out[CameraInfo]
     depth_camera_info: Out[CameraInfo]
@@ -88,6 +92,10 @@ class ZEDCamera(DepthCameraHardware, Module, perception.DepthCamera):
     @property
     def _camera_link(self) -> str:
         return f"{self.config.camera_name}_link"
+
+    @property
+    def _imu_frame(self) -> str:
+        return f"{self.config.camera_name}_imu_link"
 
     @property
     def _color_frame(self) -> str:
@@ -121,6 +129,8 @@ class ZEDCamera(DepthCameraHardware, Module, perception.DepthCamera):
         self._pointcloud_lock = threading.Lock()
         self._image_left: sl.Mat | None = None
         self._depth_map: sl.Mat | None = None
+        self._sensors_data: sl.SensorsData | None = None
+        self._has_imu = False
         self._pose: sl.Pose | None = None
         self._tracking_enabled = False
         self._stream_width = self.config.width
@@ -166,11 +176,16 @@ class ZEDCamera(DepthCameraHardware, Module, perception.DepthCamera):
         self._image_left = sl.Mat()
         self._depth_map = sl.Mat()
         self._pose = sl.Pose()
+        self._sensors_data = sl.SensorsData()
 
         self._sl_camera_info = self._zed.get_camera_information()
         if self._sl_camera_info is not None:
             self._stream_width = self._sl_camera_info.camera_configuration.resolution.width
             self._stream_height = self._sl_camera_info.camera_configuration.resolution.height
+            sensors_config = self._sl_camera_info.sensors_configuration
+            self._has_imu = self.config.enable_imu and sensors_config.is_sensor_available(
+                sl.SENSOR_TYPE.ACCELEROMETER
+            )
 
         self._build_camera_info()
         self._get_extrinsics()
@@ -330,7 +345,32 @@ class ZEDCamera(DepthCameraHardware, Module, perception.DepthCamera):
                     self._latest_color_img = color_img
                     self._latest_depth_img = depth_img
 
+            if self._has_imu:
+                self._publish_imu(ts)
+
             self._publish_tf(ts)
+
+    def _publish_imu(self, ts: float) -> None:
+        if self._zed is None or self._sensors_data is None:
+            return
+        if (
+            self._zed.get_sensors_data(self._sensors_data, sl.TIME_REFERENCE.IMAGE)
+            != sl.ERROR_CODE.SUCCESS
+        ):
+            return
+        imu_data = self._sensors_data.get_imu_data()
+        angular_velocity_deg = imu_data.get_angular_velocity()
+        linear_acceleration = imu_data.get_linear_acceleration()
+        orientation = imu_data.get_pose().get_orientation().get()
+        self.imu.publish(
+            Imu(
+                angular_velocity=Vector3(*(math.radians(v) for v in angular_velocity_deg)),
+                linear_acceleration=Vector3(*linear_acceleration),
+                orientation=Quaternion(*orientation),
+                frame_id=self._imu_frame,
+                ts=ts,
+            )
+        )
 
     def _tracking_transform(self, ts: float) -> Transform | None:
         if not self._tracking_enabled or self._zed is None or self._pose is None:
@@ -471,6 +511,8 @@ class ZEDCamera(DepthCameraHardware, Module, perception.DepthCamera):
         self._latest_depth_img = None
         self._image_left = None
         self._depth_map = None
+        self._sensors_data = None
+        self._has_imu = False
         self._pose = None
         self._sl_camera_info = None
         self._tracking_enabled = False
@@ -490,33 +532,13 @@ class ZEDCamera(DepthCameraHardware, Module, perception.DepthCamera):
 
 
 def main() -> None:
-    dimos = ModuleCoordinator()
-    dimos.start()
+    from dimos.core.global_config import global_config
 
-    camera = dimos.deploy(ZEDCamera, enable_pointcloud=True, pointcloud_fps=5.0)
-    camera.color_image.transport = LCMTransport("/camera/color", Image)
-    camera.depth_image.transport = LCMTransport("/camera/depth", Image)
-    camera.pointcloud.transport = LCMTransport("/camera/pointcloud", PointCloud2)
-    camera.camera_info.transport = LCMTransport("/camera/color_info", CameraInfo)
-    camera.depth_camera_info.transport = LCMTransport("/camera/depth_info", CameraInfo)
-
-    def cleanup() -> None:
-        try:
-            dimos.stop()
-        except Exception:
-            pass
-
-    atexit.register(cleanup)
-    dimos.start_all_modules()
-
-    try:
-        while True:
-            time.sleep(0.1)
-    except (KeyboardInterrupt, SystemExit):
-        pass
-    finally:
-        atexit.unregister(cleanup)
-        cleanup()
+    blueprint = autoconnect(
+        ZEDCamera.blueprint(enable_pointcloud=True, pointcloud_fps=5.0),
+        vis_module(global_config.viewer),
+    )
+    ModuleCoordinator.build(blueprint).loop()
 
 
 if __name__ == "__main__":
