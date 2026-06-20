@@ -333,3 +333,18 @@ def test_dimos_meta_beside_file_for_hdf5(tmp_path: Path) -> None:
     sidecar = tmp_path / "session.dimos_meta.json"
     assert sidecar.exists()  # beside the file, not session.hdf5/dimos_meta.json
     assert json.loads(sidecar.read_text())["format"] == "hdf5"
+
+
+def test_run_dataprep_rejects_shared_obs_action_key() -> None:
+    """A name in both obs and action would silently drop the obs feature when the
+    two maps merge; run_dataprep must reject it before opening the store."""
+    from dimos.learning.dataprep.build import run_dataprep
+    from dimos.learning.dataprep.core import DataPrepConfig, StreamField
+
+    cfg = DataPrepConfig(
+        source="nonexistent.db",  # never reached — the check runs first
+        observation={"joints": StreamField(stream="joint_state", field="position")},
+        action={"joints": StreamField(stream="joint_state", field="position")},
+    )
+    with pytest.raises(ValueError, match="share feature name"):
+        run_dataprep(cfg)

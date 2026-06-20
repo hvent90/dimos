@@ -80,6 +80,13 @@ def run_dataprep(config: DataPrepConfig) -> Path:
     """
     from dimos.memory2.store.sqlite import SqliteStore
 
+    shared = set(config.observation) & set(config.action)
+    if shared:
+        raise ValueError(
+            f"observation and action share feature name(s) {sorted(shared)}; "
+            f"give each a distinct key (they may still map to the same stream)."
+        )
+
     logger.info(
         "[dataprep] starting build  source=%s  extractor=%s  output=%s",
         config.source,
@@ -110,9 +117,9 @@ def run_dataprep(config: DataPrepConfig) -> Path:
                 f"extractor='ranges' with explicit (start, end) tuples."
             )
 
-        streams = {**config.observation, **config.action}
         obs_keys = set(config.observation)
         action_keys = set(config.action)
+        streams = {**config.observation, **config.action}
         logger.info(
             "[dataprep] obs streams=%s  action streams=%s  sync=%s",
             sorted(obs_keys),
