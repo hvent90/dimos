@@ -111,11 +111,14 @@ function buildTwist() {
 
     const fwdScale = shift ? 2.0 : (ctrl ? 0.5 : 1.0);
     const lrScale  = shift ? 2.0 : 1.0;
+    // Speed-bar multiplier (go2 cockpit): Normal 0.5 / High 1.0 / Rage 1.0.
+    // Linear scaled by lin, angular by ang. Defaults to 1 for the keyboard view.
+    const sp = state.speedScale || { lin: 1.0, ang: 1.0 };
     return {
-        linear_x:  fwd * fwdScale,
-        linear_y:  ctrl ? lr : 0,
+        linear_x:  fwd * fwdScale * sp.lin,
+        linear_y:  (ctrl ? lr : 0) * sp.lin,
         linear_z:  0,
-        angular_z: ctrl ? 0  : lr * lrScale,
+        angular_z: (ctrl ? 0 : lr * lrScale) * sp.ang,
     };
 }
 

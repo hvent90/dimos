@@ -33,6 +33,10 @@ export const state = {
     kbInterval: null,
     kbKeys: new Set(),
 
+    // Speed bar (go2 cockpit): {lin, ang} multipliers applied in buildTwist.
+    // Normal 0.5 / High 1.0 m/s envelope; Rage uses firmware mode + full scale.
+    speedScale: { lin: 0.5, ang: 0.5 },
+
     // Live metrics — single source of truth for the browser HUD + VR quad.
     // Nothing here is sent anywhere; pure local display state.
     liveStats: {

@@ -28,11 +28,21 @@ const ACTIONS = [
     { name: 'Hello', label: 'Hello 👋' },
 ];
 
+// Speed bar. Normal/High = browser-side velocity scale (lin m/s-ish, ang).
+// Rage = firmware Rage Mode (set_mode RPC) + full scale. mode is sent to the
+// robot; scale is applied locally in buildTwist via state.speedScale.
+const SPEEDS = [
+    { mode: 'normal', label: 'Normal', scale: { lin: 0.5, ang: 0.5 } },
+    { mode: 'high', label: 'High', scale: { lin: 1.0, ang: 1.0 } },
+    { mode: 'rage', label: 'Rage', scale: { lin: 1.0, ang: 1.0 } },
+];
+
 // Local UI state. Posture/estop still placeholder; battery is wired to real
 // telemetry. (Body-height shelved — firmware 3203.)
 const ui = {
     posture: 'StandReady',  // robot auto-stands+balances on blueprint start
     estopped: false,
+    speedMode: 'normal',      // speed bar selection
     nonce: 0,                 // monotonic command id for ack matching
     pending: new Map(),       // nonce -> {el, timer}
 };
@@ -57,6 +67,7 @@ export function renderGo2(c) {
                 <span class="text-gray-300 text-sm">${escHtml(state.activeRobot?.robot_name || 'go2')}</span>
             </div>
             <div class="flex items-center gap-3">
+                <span class="text-sm text-gray-400">🔋 <span id="batt-pct" class="font-semibold text-dim-400">—%</span></span>
                 <span id="link-pill" class="pill pill-good"><span class="dot"></span><span>LINK OK</span></span>
                 <button id="disconnectBtn" class="term-caps px-3 py-1.5 text-xs text-gray-400 hover:text-white border border-[#2a2a2a] rounded">[ disconnect ]</button>
             </div>
@@ -98,17 +109,7 @@ export function renderGo2(c) {
             <!-- RIGHT: control column -->
             <aside class="flex flex-col gap-3 min-h-0 overflow-y-auto pr-1">
                 <div id="blocked" class="hidden blocked-banner rounded-lg px-3 py-2 text-xs term-caps shrink-0"></div>
-
-                <!-- Battery -->
-                <section class="bg-bg-950 border border-[#2a2a2a] rounded-xl p-4 shrink-0">
-                    <div class="flex items-center justify-between mb-2">
-                        <span class="term-caps text-xs text-gray-500">Battery</span>
-                        <span id="batt-pct" class="text-sm font-semibold text-dim-400">—%</span>
-                    </div>
-                    <div class="h-2.5 w-full bg-[#1f1f1f] rounded-full overflow-hidden">
-                        <div id="batt-bar" class="h-full rounded-full transition-all duration-500" style="width:0%;background:#b0e1f0;"></div>
-                    </div>
-                </section>
+                <!-- Battery is in the header (just the %, no bar). -->
 
                 <!-- Telemetry -->
                 <section class="bg-bg-950 border border-[#2a2a2a] rounded-xl p-4 shrink-0">
@@ -129,6 +130,12 @@ export function renderGo2(c) {
                 <section class="bg-bg-950 border border-[#2a2a2a] rounded-xl p-4 shrink-0">
                     <div class="term-caps text-xs text-gray-500 mb-3">Actions</div>
                     <div class="grid grid-cols-2 gap-2">${ACTIONS.map(btn).join('')}</div>
+                </section>
+
+                <!-- Speed bar: Normal / High / Rage -->
+                <section class="bg-bg-950 border border-[#2a2a2a] rounded-xl p-4 shrink-0">
+                    <div class="term-caps text-xs text-gray-500 mb-3">Speed</div>
+                    <div class="grid grid-cols-3 gap-2" id="speed-bar"></div>
                 </section>
 
                 <!-- Body height: SHELVED for v1 — the api_id (1013) is rejected
@@ -159,6 +166,14 @@ export function renderGo2(c) {
 // ── interaction (placeholder — no robot calls yet) ──────────────────
 function wireGo2() {
     document.getElementById('disconnectBtn').onclick = disconnect;
+
+    // Speed bar: render 3 segments, select current, wire selection.
+    const bar = document.getElementById('speed-bar');
+    bar.innerHTML = SPEEDS.map((s) =>
+        `<button class="cmd-btn" data-speed="${s.mode}" data-status="idle"><span>${s.label}</span></button>`
+    ).join('');
+    bar.querySelectorAll('[data-speed]').forEach((b) =>
+        b.addEventListener('click', () => selectSpeed(b.dataset.speed)));
 
     // Video: webrtc.js sets srcObject + display:block on ontrack, but doesn't
     // know about our placeholder. Hide the dog+status overlay once frames flow
@@ -196,6 +211,26 @@ function wireGo2() {
 
     // Resolve command acks coming back on state_reliable_back (via webrtc.js).
     state.onCmdAck = onCmdAck;
+
+    selectSpeed(ui.speedMode, /*sendToRobot=*/ false);  // reflect default selection
+}
+
+// ── speed bar ────────────────────────────────────────────────────────
+function selectSpeed(mode, sendToRobot = true) {
+    const spec = SPEEDS.find((s) => s.mode === mode);
+    if (!spec) return;
+    ui.speedMode = mode;
+    // Apply the velocity scale locally NOW (buildTwist reads state.speedScale).
+    state.speedScale = spec.scale;
+    // Highlight the active segment.
+    document.querySelectorAll('#speed-bar [data-speed]').forEach((b) =>
+        b.classList.toggle('is-active', b.dataset.speed === mode));
+    // Only rage crossing changes the robot FSM; the robot ignores normal<->high
+    // (browser scale handles those). Send set_mode regardless — robot no-ops if
+    // already in the right FSM, and acks.
+    if (sendToRobot && state.stateChannel && state.stateChannel.readyState === 'open') {
+        state.stateChannel.send(JSON.stringify({ type: 'set_mode', mode, nonce: ++ui.nonce }));
+    }
 }
 
 // ── command ack (state_reliable_back) — shared by all nonce'd commands ──
@@ -265,20 +300,16 @@ function refreshControls() {
 
 function renderBattery() {
     const pct = document.getElementById('batt-pct');
-    const bar = document.getElementById('batt-bar');
-    if (!pct || !bar) return;
+    if (!pct) return;
     // Real SOC from robot_telemetry (state_reliable_back); null until first push.
     const soc = state.liveStats?.soc;
     if (soc == null) {
         pct.textContent = '—%';
-        bar.style.width = '0%';
         pct.style.color = '#6b7280';
         return;
     }
     const p = Math.max(0, Math.min(100, soc));
     pct.textContent = `${p}%`;
-    bar.style.width = `${p}%`;
-    bar.style.background = p > 40 ? '#b0e1f0' : p > 15 ? '#eab308' : '#d97777';
     pct.style.color = p > 40 ? '#c4e7f3' : p > 15 ? '#eab308' : '#f3b4b4';
 }
 
