@@ -269,6 +269,10 @@ export function stopVideoStats() {
 export function handleStateMessage(data) {
     let msg;
     try { msg = JSON.parse(data); } catch (_) { return; }
+    // TEMP diagnostic: log non-pong back-channel messages so we can see whether
+    // robot_telemetry (battery) actually reaches the browser. Remove once battery
+    // is confirmed working.
+    if (msg.type !== 'pong') console.log('[state-msg]', msg.type, msg);
     if (msg.type === 'pong') applyPong(msg);
     // Robot-measured command-plane health (latency/jitter/loss) — what
     // actually arrived, which the operator can't see from its send side.
