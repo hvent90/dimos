@@ -44,6 +44,7 @@ exclude = [
     "**/*.html",
     "**/*.css",
     "**/*.js",
+    "**/*.svg",
     "**/*.tcss",
     "**/*.pyi",
     "rxpy_backpressure/*.txt",
@@ -245,7 +246,7 @@ perception = [
 
 unitree = [
     "dimos[base,mapping]",
-    "unitree-webrtc-connect-leshy>=2.0.7",
+    "unitree-webrtc-connect>=2.1.2",
 ]
 
 unitree-dds = [
@@ -275,6 +276,7 @@ manipulation = [
     # Visualization (Optional)
     "kaleido>=0.2.1",
     "plotly>=5.9.0",
+    "viser[urdf]>=1.0.29",
     "xacro",
 
     # Other
@@ -403,7 +405,8 @@ tests = [
     "pygame>=2.6.1",
     "python-can>=4",
     "langchain-chroma>=1,<2",
-    "unitree-webrtc-connect-leshy>=2.0.7",
+    "unitree-webrtc-connect>=2.1.2",
+    "viser[urdf]>=1.0.29; sys_platform != 'linux' or platform_machine != 'aarch64'",
 
     {include-group = "project-deps"},
 ]
@@ -573,6 +576,8 @@ module = [
     "turbojpeg",
     "ultralytics.*",
     "unitree_sdk2py.*",
+    "viser",
+    "viser.*",
     "unitree_webrtc_connect.*",
     "websocket",
     "xarm.*",
@@ -624,6 +629,7 @@ ignore = [
     "dimos/dashboard/dimos.rbl",
     "dimos/web/dimos_interface/themes.json",
     "dimos/manipulation/manipulation_module.py",
+    "dimos/manipulation/visualization/viser/test_viser_visualization.py",
     "dimos/navigation/nav_stack/modules/*/main.cpp",
     "dimos/navigation/nav_stack/common/*.hpp",
 ]
