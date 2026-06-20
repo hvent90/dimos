@@ -42,7 +42,7 @@ def _truth() -> TwistBasePlantParams:
     )
 
 
-def test_pose_domain_recovers_truth_at_least_as_well(tmp_path: Path) -> None:
+def test_pose_domain_recovers_gain(tmp_path: Path) -> None:
     truth = _truth()
     db = synthesize_recording(
         truth, db_path=tmp_path / "sim.db", segments=_EXCITATION, seed=0
@@ -50,9 +50,8 @@ def test_pose_domain_recovers_truth_at_least_as_well(tmp_path: Path) -> None:
     comp = compare_recording(db, label="sim", truth=truth, noise_std=None)
 
     vx = comp.axes["vx"]
-    pose_err = abs(vx.pose_tau - truth.vx.tau) / truth.vx.tau
-    assert pose_err < 0.15  # pose-domain recovers tau within 15%
-    assert vx.pose_r2 > 0.99  # near-perfect pose fit on clean sim
+    # Pose-domain recovers the steady-state GAIN (tau/L are nominal, not fit).
+    assert abs(vx.pose_k - truth.vx.K) / truth.vx.K < 0.05
     # truth carried through for the report
     assert vx.true_tau == truth.vx.tau
 

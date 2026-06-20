@@ -14,18 +14,21 @@
 
 """Offline re-fit of a stored recording into a plant model + tuning artifact.
 
-This is the pose-domain pipeline end to end, with no robot: load a recording,
-segment it, estimate deadtime L per axis (decoupled from tau), fit (K, tau) on
-the raw pose, and emit the standard ``TuningConfig`` artifact plus a fit-quality
-sidecar (r_squared/RMSE on pose + the plausibility verdict). The existing
-``characterization --mode re-derive`` only re-applies the envelope; it does NOT
-re-fit the dynamics. This does.
+No robot: load a recording, gate-segment it into SI steps, drop sub-floor probes,
+and measure the steady-state GAIN K per axis directly (settled velocity / amp).
+tau/L are reported as bounded nominals -- 16 Hz pose cannot identify them, and a
+FOPDT fit that tries only ends up biasing K (the gain and deadtime trade off), so
+we don't. Emits the standard ``TuningConfig`` artifact + a quality sidecar
+(per-amplitude K, gain spread, tau/L-nominal flag) and gain-envelope/step PNGs.
+
+The existing ``characterization --mode re-derive`` only re-applies the envelope;
+it does NOT re-derive the gain from the recording. This does.
 """
 
 from __future__ import annotations
 
 import argparse
-from dataclasses import dataclass, field
+from dataclasses import dataclass
 from datetime import date
 import json
 from pathlib import Path
@@ -35,13 +38,6 @@ import numpy as np
 
 from dimos.utils.benchmarking.plant import FopdtChannelParams, TwistBasePlantParams
 from dimos.utils.benchmarking.tuning import Provenance, derive_config, git_sha
-from dimos.utils.characterization.modeling.pose_fopdt import (
-    PoseFopdtParams,
-    estimate_deadtime,
-    fit_pose_fopdt,
-    fit_pose_fopdt_multi,
-    pose_step_response,
-)
 from dimos.utils.characterization.recording_io import (
     Recording,
     StepSpan,
@@ -51,11 +47,15 @@ from dimos.utils.characterization.recording_io import (
 )
 
 _AXES = ("vx", "vy", "wz")
-# Nominal deadtime if an axis can't be estimated (mid-range of the Go2 bound).
+# Nominal tau/L: 16 Hz pose cannot resolve them (documented), so we do NOT fit
+# them -- we report these bounded nominals and flag them as un-identified.
+_NOMINAL_TAU_S = 0.30
 _NOMINAL_L_S = 0.15
+# Fraction of a step treated as transient; the steady-state gain is measured on
+# the remaining settled tail.
+_SETTLE_FRAC = 0.4
 # Minimum net step displacement (m for vx/vy, rad for wz) to count as real
-# motion. Floor-probe steps (commanded below the floor) move ~0 and produce
-# meaningless fits -- they are excluded from fitting AND plotting.
+# motion. Floor-probe steps (commanded below the floor) move ~0 and are excluded.
 _MOTION_MIN = 0.3
 
 
@@ -70,32 +70,58 @@ def _moving_spans(recording: Recording, spans: list[StepSpan]) -> list[StepSpan]
     return [s for s in spans if _net_motion(recording, s) >= _MOTION_MIN]
 
 
+def _steady_gain(t_rel: np.ndarray, p_meas: np.ndarray, amp: float) -> tuple[float, float]:
+    """Directly-measured steady-state gain ``K = v_ss / amp`` and the line r^2.
+
+    At steady state the FOPDT output velocity is exactly ``K * amp``, so a linear
+    fit of the SETTLED tail of the pose channel gives K with no dependence on
+    tau/L (which 16 Hz pose can't resolve and which otherwise bias K). Returns
+    ``(K, r2)`` of that line fit, or ``(nan, nan)`` if the step is too short.
+    """
+    if t_rel.size < 4 or abs(amp) < 1e-9:
+        return float("nan"), float("nan")
+    duration = float(t_rel[-1] - t_rel[0])
+    settled = (t_rel - t_rel[0]) >= _SETTLE_FRAC * duration
+    if int(np.count_nonzero(settled)) < 3:
+        return float("nan"), float("nan")
+    tt, pp = t_rel[settled], p_meas[settled]
+    slope, intercept = np.polyfit(tt, pp, 1)
+    pred = slope * tt + intercept
+    ss_res = float(np.sum((pp - pred) ** 2))
+    ss_tot = float(np.sum((pp - np.mean(pp)) ** 2))
+    r2 = 1.0 - ss_res / ss_tot if ss_tot > 0 else float("nan")
+    return float(slope) / amp, r2
+
+
 @dataclass
 class AxisFit:
-    """Per-axis pose-domain result aggregated over that axis's step segments."""
+    """Per-axis result: directly-measured steady-state gain + nominal tau/L.
+
+    ``K`` is the steady-state gain measured from each step's settled tail (no
+    FOPDT fit, so no tau/L coupling). ``tau``/``L`` are NOMINAL -- 16 Hz pose
+    cannot identify them, so ``tau_l_identified`` is always False and records the
+    limit. ``r_squared`` is the median settled-line fit quality (how linear the
+    settled region is), NOT a dynamics score.
+    """
 
     axis: str
     K: float
     tau: float
     L: float
-    l_estimates: list[float]  # per-segment L estimates (Phase 3 spread)
-    r_squared: float
-    rmse: float
+    k_by_amp: list[tuple[float, float]]  # (|amplitude|, measured K) -- the gain envelope
+    k_spread: float  # std of K across amplitudes (trust indicator)
+    r_squared: float  # median settled-line r^2
+    tau_l_identified: bool
     valid: bool
-    segment_fits: list[PoseFopdtParams] = field(default_factory=list)
 
 
 @dataclass
 class PoseDomainFit:
-    """Whole-recording pose-domain fit: per-axis results + assembled plant."""
+    """Whole-recording fit: per-axis results + assembled plant."""
 
     plant: TwistBasePlantParams
     axes: dict[str, AxisFit]
     per_amplitude: dict[str, list[dict[str, float]]]
-
-
-def _median(values: list[float]) -> float:
-    return float(np.median(values)) if values else float("nan")
 
 
 def _fit_axis(
@@ -103,60 +129,51 @@ def _fit_axis(
     axis: str,
     spans: list[StepSpan],
     *,
-    estimate_l: bool,
-    l_fixed: float | None,
-    tau_bounds: tuple[float, float],
-    l_bounds: tuple[float, float],
+    l_fixed: float | None = None,
 ) -> AxisFit:
-    """Estimate L (decoupled), then fit (K, tau) per segment and aggregate."""
-    channels = [(span, *step_pose_channel(recording, span)) for span in spans]
-    channels = [
-        (span, t, p)
-        for span, t, p in channels
-        if t.size >= 4 and abs(float(p[-1] - p[0])) >= _MOTION_MIN
-    ]
+    """Measure steady-state gain K per amplitude; tau/L are reported nominal.
 
-    if not channels:
+    Only real-motion steps are used. K for each step = settled velocity / amp;
+    repeats at one amplitude are medianed, and the axis K is the median across
+    distinct amplitudes (robust to floor sag and high-amp saturation).
+    """
+    nominal_l = l_fixed if l_fixed is not None else _NOMINAL_L_S
+    by_amp: dict[float, list[float]] = {}
+    r2s: list[float] = []
+    for span in _moving_spans(recording, spans):
+        t_rel, p_meas = step_pose_channel(recording, span)
+        gain, r2 = _steady_gain(t_rel, p_meas, span.amplitude)
+        if np.isfinite(gain) and gain > 0.0:
+            by_amp.setdefault(round(abs(span.amplitude), 3), []).append(gain)
+            if np.isfinite(r2):
+                r2s.append(r2)
+
+    if not by_amp:
         return AxisFit(
-            axis=axis,
-            K=float("nan"),
-            tau=float("nan"),
-            L=l_fixed if l_fixed is not None else _NOMINAL_L_S,
-            l_estimates=[],
-            r_squared=float("nan"),
-            rmse=float("nan"),
-            valid=False,
+            axis,
+            float("nan"),
+            _NOMINAL_TAU_S,
+            nominal_l,
+            [],
+            float("nan"),
+            float("nan"),
+            False,
+            False,
         )
 
-    l_estimates: list[float] = []
-    if estimate_l:
-        for span, t_rel, p_meas in channels:
-            best_l, _, _ = estimate_deadtime(
-                t_rel, p_meas, span.amplitude, l_bounds=l_bounds, tau_bounds=tau_bounds
-            )
-            l_estimates.append(best_l)
-        axis_l = _median(l_estimates)
-    else:
-        axis_l = l_fixed if l_fixed is not None else _NOMINAL_L_S
-
-    # Joint fit across all amplitudes (shared K/tau/drift) -- breaks the
-    # steady-slope vs drift collinearity that biases single-segment K.
-    joint = fit_pose_fopdt_multi(
-        [(t_rel, p_meas, span.amplitude) for span, t_rel, p_meas in channels],
-        axis_l,
-        tau_bounds=tau_bounds,
-        l_bounds=l_bounds,
-    )
+    k_by_amp = sorted((amp, float(np.median(ks))) for amp, ks in by_amp.items())
+    distinct_k = [k for _, k in k_by_amp]
+    k_axis = float(np.median(distinct_k))
     return AxisFit(
         axis=axis,
-        K=joint.K,
-        tau=joint.tau,
-        L=axis_l,
-        l_estimates=l_estimates,
-        r_squared=joint.r_squared,
-        rmse=joint.rmse,
-        valid=joint.valid,
-        segment_fits=[joint],
+        K=k_axis,
+        tau=_NOMINAL_TAU_S,
+        L=nominal_l,
+        k_by_amp=k_by_amp,
+        k_spread=float(np.std(distinct_k)),
+        r_squared=float(np.median(r2s)) if r2s else float("nan"),
+        tau_l_identified=False,
+        valid=bool(0.0 < k_axis < 5.0),
     )
 
 
@@ -168,7 +185,12 @@ def fit_recording_pose_domain(
     tau_bounds: tuple[float, float] = (0.03, 0.6),
     l_bounds: tuple[float, float] = (0.05, 0.30),
 ) -> PoseDomainFit:
-    """Fit a recording with the pose-domain (output-error) method, per axis."""
+    """Measure per-axis steady-state gain K (tau/L nominal) from the SI steps.
+
+    ``estimate_l``/``tau_bounds``/``l_bounds`` are accepted for call-site
+    compatibility but unused -- K is measured directly, tau/L are nominal.
+    ``l_by_axis`` pins L per axis if supplied from a higher-rate source.
+    """
     spans = segment_steps(recording)
     by_axis: dict[str, list[StepSpan]] = {a: [] for a in _AXES}
     for span in spans:
@@ -177,15 +199,7 @@ def fit_recording_pose_domain(
     axes: dict[str, AxisFit] = {}
     for axis in _AXES:
         l_fixed = None if l_by_axis is None else l_by_axis.get(axis)
-        axes[axis] = _fit_axis(
-            recording,
-            axis,
-            by_axis[axis],
-            estimate_l=estimate_l and l_fixed is None,
-            l_fixed=l_fixed,
-            tau_bounds=tau_bounds,
-            l_bounds=l_bounds,
-        )
+        axes[axis] = _fit_axis(recording, axis, by_axis[axis], l_fixed=l_fixed)
 
     # vy often has no excitation on Go2 (no native strafe) -> fall back to vx.
     if np.isnan(axes["vy"].K) and not np.isnan(axes["vx"].K):
@@ -194,9 +208,10 @@ def fit_recording_pose_domain(
             K=axes["vx"].K,
             tau=axes["vx"].tau,
             L=axes["vx"].L,
-            l_estimates=[],
+            k_by_amp=[],
+            k_spread=float("nan"),
             r_squared=float("nan"),
-            rmse=float("nan"),
+            tau_l_identified=False,
             valid=False,
         )
 
@@ -207,35 +222,27 @@ def fit_recording_pose_domain(
     )
     per_amplitude: dict[str, list[dict[str, float]]] = {}
     for axis in _AXES:
-        axis_k = axes[axis].K
-        if np.isnan(axis_k):
-            continue
-        rows = [
-            {"amplitude": abs(span.amplitude), "K": axis_k}
-            for span in _moving_spans(recording, by_axis[axis])
-        ]
+        rows = [{"amplitude": amp, "K": k} for amp, k in axes[axis].k_by_amp]
         if rows:
             per_amplitude[axis] = rows
     return PoseDomainFit(plant=plant, axes=axes, per_amplitude=per_amplitude)
 
 
+_AXIS_UNIT = {"vx": "m", "vy": "m", "wz": "rad"}
+_AXIS_CMD_UNIT = {"vx": "m/s", "vy": "m/s", "wz": "rad/s"}
+
+
 def _write_pose_plots(
-    recording: Recording,
-    fit: PoseDomainFit,
-    out_dir: Path,
-    stem: str,
-    *,
-    tau_bounds: tuple[float, float],
-    l_bounds: tuple[float, float],
+    recording: Recording, fit: PoseDomainFit, out_dir: Path, stem: str
 ) -> list[Path]:
-    """Pose-domain diagnostic PNGs: per-step measured-vs-model overlay
-    (``_steps.png``) and a per-amplitude K/tau envelope (``_envelope.png``)."""
+    """Diagnostic PNGs: per-step measured pose + the measured steady-state gain
+    line (``_steps.png``), and the gain envelope K vs amplitude (``_envelope.png``).
+    Only real-motion steps; tau/L are not plotted (nominal, un-identifiable)."""
     import matplotlib
 
     matplotlib.use("Agg")
     import matplotlib.pyplot as plt
 
-    # Only real-motion SI steps -- floor probes (sub-floor, ~0 motion) are dropped.
     by_axis: dict[str, list[StepSpan]] = {
         a: _moving_spans(recording, [s for s in segment_steps(recording) if s.axis == a])
         for a in _AXES
@@ -248,7 +255,6 @@ def _write_pose_plots(
         nrows = len(active)
         fig, axes = plt.subplots(nrows, ncols, figsize=(4 * ncols, 3 * nrows), squeeze=False)
         for row, (axis, spans) in enumerate(active.items()):
-            axis_fit = fit.axes[axis]
             for col in range(ncols):
                 ax = axes[row][col]
                 if col >= len(spans):
@@ -260,64 +266,51 @@ def _write_pose_plots(
                     ax.axis("off")
                     continue
                 ax.plot(t_rel, p_meas, "k.", ms=4, label="measured")
-                panel_r2 = float("nan")
-                if np.isfinite(axis_fit.K):
-                    model = float(p_meas[0]) + pose_step_response(
-                        t_rel, axis_fit.K, axis_fit.tau, axis_fit.L, span.amplitude
+                gain, _ = _steady_gain(t_rel, p_meas, span.amplitude)
+                duration = float(t_rel[-1] - t_rel[0])
+                settled = (t_rel - t_rel[0]) >= _SETTLE_FRAC * duration
+                if int(np.count_nonzero(settled)) >= 3:
+                    slope, intercept = np.polyfit(t_rel[settled], p_meas[settled], 1)
+                    ax.plot(
+                        t_rel,
+                        slope * t_rel + intercept,
+                        "-",
+                        lw=2,
+                        color="tab:green",
+                        label="steady-state gain",
                     )
-                    ax.plot(t_rel, model, "-", lw=2, color="tab:green", label="pose-domain")
-                    # Honest PER-PANEL r^2 of the axis model against THIS step.
-                    ss_res = float(np.sum((p_meas - model) ** 2))
-                    ss_tot = float(np.sum((p_meas - np.mean(p_meas)) ** 2))
-                    panel_r2 = 1.0 - ss_res / ss_tot if ss_tot > 0 else float("nan")
-                ax.set_title(f"{axis} @ {span.amplitude:g}  (panel r²={panel_r2:.3f})", fontsize=9)
+                ax.set_title(f"{axis} @ {span.amplitude:g}  (K={gain:.2f})", fontsize=9)
                 if row == nrows - 1:
                     ax.set_xlabel("t since cmd (s)")
                 if col == 0:
-                    ax.set_ylabel("displacement (m / rad)")
+                    ax.set_ylabel(f"displacement ({_AXIS_UNIT[axis]})")
                 if row == 0 and col == 0:
                     ax.legend(fontsize=7)
-        fig.suptitle(f"{stem} — measured pose vs pose-domain fit (real-motion steps only)")
+        fig.suptitle(f"{stem} — measured pose + steady-state gain (real-motion steps)")
         fig.tight_layout()
         steps_path = out_dir / f"{stem}_steps.png"
         fig.savefig(steps_path, dpi=110)
         plt.close(fig)
         written.append(steps_path)
 
-    fig, axes = plt.subplots(2, len(_AXES), figsize=(4 * len(_AXES), 6), squeeze=False)
+    fig, axes = plt.subplots(1, len(_AXES), figsize=(4 * len(_AXES), 3.5), squeeze=False)
     for col, axis in enumerate(_AXES):
         axis_fit = fit.axes[axis]
-        amps, ks, taus = [], [], []
-        for span in by_axis[axis]:
-            t_rel, p_meas = step_pose_channel(recording, span)
-            if t_rel.size < 4:
-                continue
-            single = fit_pose_fopdt(
-                t_rel, p_meas, span.amplitude, axis_fit.L, tau_bounds=tau_bounds, l_bounds=l_bounds
+        ax = axes[0][col]
+        if axis_fit.k_by_amp:
+            ax.scatter(
+                [a for a, _ in axis_fit.k_by_amp],
+                [k for _, k in axis_fit.k_by_amp],
+                color="tab:blue",
+                s=35,
             )
-            if single.converged:
-                amps.append(abs(span.amplitude))
-                ks.append(single.K)
-                taus.append(single.tau)
-        amps_arr = np.asarray(amps, dtype=float)
-        order = np.argsort(amps_arr)
-        # Scatter (NOT connected lines) -- repeats at one amplitude are points, not a zigzag.
-        axes[0][col].scatter(amps_arr[order], np.asarray(ks)[order], color="tab:blue", s=30)
-        axes[1][col].scatter(amps_arr[order], np.asarray(taus)[order], color="tab:orange", s=30)
         if np.isfinite(axis_fit.K):
-            axes[0][col].axhline(
-                axis_fit.K, ls="--", color="gray", label=f"joint K={axis_fit.K:.2f}"
-            )
-        if np.isfinite(axis_fit.tau):
-            axes[1][col].axhline(
-                axis_fit.tau, ls="--", color="gray", label=f"joint τ={axis_fit.tau:.2f}"
-            )
-        axes[0][col].set_title(f"{axis}: K vs amp", fontsize=9)
-        axes[0][col].legend(fontsize=7)
-        axes[1][col].set_title(f"{axis}: tau vs amp", fontsize=9)
-        axes[1][col].set_xlabel("commanded amplitude")
-        axes[1][col].legend(fontsize=7)
-    fig.suptitle(f"{stem} — per-amplitude envelope")
+            ax.axhline(axis_fit.K, ls="--", color="gray", label=f"axis K={axis_fit.K:.2f}")
+        ax.set_title(f"{axis}: gain K vs amplitude", fontsize=9)
+        ax.set_xlabel(f"commanded amplitude ({_AXIS_CMD_UNIT[axis]})")
+        ax.set_ylabel("K = v_ss / amp")
+        ax.legend(fontsize=7)
+    fig.suptitle(f"{stem} — gain envelope (tau/L nominal: not identifiable at 16 Hz)")
     fig.tight_layout()
     env_path = out_dir / f"{stem}_envelope.png"
     fig.savefig(env_path, dpi=110)
@@ -341,32 +334,23 @@ def reprocess(
     l_bounds: tuple[float, float] = (0.05, 0.30),
     plots: bool = True,
 ) -> Path:
-    """Re-fit ``db_path`` with the pose-domain method and write a TuningConfig.
+    """Re-fit ``db_path`` and write a TuningConfig.
 
-    ``tau_bounds``/``l_bounds`` are the per-robot plausibility bounds; widen them
-    for a robot whose true dynamics legitimately sit near the default Go2 edge.
-    Note a fit pinned exactly at a bound is a red flag (poor excitation), not a
-    reason to widen -- widening then hides the bad fit instead of flagging it.
-
-    Returns the artifact path. Also writes a ``*_posefit_quality.json`` sidecar
-    with per-axis r_squared/RMSE (on pose) and the plausibility verdict, and
-    warns loudly if any axis fit is implausible.
+    K is the directly-measured steady-state gain per axis; tau/L are reported as
+    bounded nominals (16 Hz pose cannot identify them). ``l_by_axis`` pins L per
+    axis if you have it from a higher-rate source. Returns the artifact path and
+    writes a ``*_quality.json`` sidecar (per-amplitude K, gain spread, and the
+    tau/L = nominal flag). Warns if an axis has no usable (real-motion) steps.
     """
     db_path = Path(db_path)
     recording = load_recording(db_path)
-    fit = fit_recording_pose_domain(
-        recording,
-        estimate_l=estimate_l,
-        l_by_axis=l_by_axis,
-        tau_bounds=tau_bounds,
-        l_bounds=l_bounds,
-    )
+    fit = fit_recording_pose_domain(recording, l_by_axis=l_by_axis)
 
     implausible = [a for a, f in fit.axes.items() if not f.valid]
     if implausible:
         warnings.warn(
-            f"{db_path.name}: pose-domain fit implausible on {implausible} "
-            f"(outside physical bounds) -- artifact marked not-for-tuning",
+            f"{db_path.name}: no usable steady-state gain on {implausible} "
+            f"(no real-motion steps) -- artifact marked not-for-tuning",
             stacklevel=2,
         )
 
@@ -390,19 +374,22 @@ def reprocess(
     quality = {
         axis: {
             "K": f.K,
+            "K_by_amplitude": [{"amplitude": a, "K": k} for a, k in f.k_by_amp],
+            "K_spread": f.k_spread,
             "tau": f.tau,
             "L": f.L,
-            "r_squared": f.r_squared,
-            "rmse": f.rmse,
+            "tau_L_identified": f.tau_l_identified,
+            "settled_line_r2": f.r_squared,
             "valid": f.valid,
-            "l_estimates": f.l_estimates,
+            "note": "K measured directly (steady-state); tau/L are nominal "
+            "(not identifiable from 16 Hz pose).",
         }
         for axis, f in fit.axes.items()
     }
     (out_dir / f"{stem}_quality.json").write_text(json.dumps(quality, indent=2))
 
     if plots:
-        _write_pose_plots(recording, fit, out_dir, stem, tau_bounds=tau_bounds, l_bounds=l_bounds)
+        _write_pose_plots(recording, fit, out_dir, stem)
     return artifact_path
 
 
@@ -478,13 +465,14 @@ def main() -> None:
     quality = json.loads((artifact.parent / f"{artifact.stem}_quality.json").read_text())
     print(f"\nartifact: {artifact}")
     print(f"quality:  {artifact.parent / (artifact.stem + '_quality.json')}\n")
-    print(f"{'axis':5s} {'K':>8s} {'tau(s)':>8s} {'L(s)':>8s} {'r²':>7s}  valid")
+    print("K = measured steady-state gain;  tau/L = NOMINAL (not identifiable at 16 Hz)\n")
+    print(f"{'axis':5s} {'K':>8s} {'K_spread':>9s} {'tau*':>6s} {'L*':>6s}  valid")
     for axis in _AXES:
         q = quality[axis]
         print(
-            f"{axis:5s} {q['K']:8.3f} {q['tau']:8.3f} {q['L']:8.3f} "
-            f"{q['r_squared']:7.3f}  {q['valid']}"
+            f"{axis:5s} {q['K']:8.3f} {q['K_spread']:9.3f} {q['tau']:6.2f} {q['L']:6.2f}  {q['valid']}"
         )
+    print("\n* tau/L are nominal placeholders, not measured. Trust K.")
 
 
 __all__ = [

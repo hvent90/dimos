@@ -27,13 +27,17 @@ import pytest
 from dimos.utils.benchmarking.plant import FopdtChannelParams, TwistBasePlantParams
 from dimos.utils.benchmarking.tuning import TuningConfig
 from dimos.utils.characterization.recording_io import load_recording, segment_steps
-from dimos.utils.characterization.reprocess import fit_recording_pose_domain, reprocess
+from dimos.utils.characterization.reprocess import (
+    _NOMINAL_L_S,
+    _NOMINAL_TAU_S,
+    fit_recording_pose_domain,
+    reprocess,
+)
 from dimos.utils.characterization.sim_ground_truth import (
     multistep_excitation,
     synthesize_recording,
 )
 
-_SAMPLE_DT = 1.0 / 18.0
 _EXCITATION = multistep_excitation(
     vx_amps=(0.3, 0.6), vy_amps=(), wz_amps=(0.5, 1.0), hold_s=4.0, settle_s=2.0
 )
@@ -61,22 +65,23 @@ def test_segmentation_finds_the_commanded_steps(tmp_path: Path) -> None:
 
 
 @pytest.mark.parametrize(("tau", "dead_time"), _REGIMES)
-def test_pose_domain_recovers_injected_params(tau: float, dead_time: float, tmp_path: Path) -> None:
-    k_ok, tau_ok, l_ok = [], [], []
+def test_recovers_steady_state_gain(tau: float, dead_time: float, tmp_path: Path) -> None:
+    # K (steady-state gain) is recoverable regardless of tau/L; tau/L themselves
+    # are NOT identifiable from 16 Hz pose, so we report them as nominal, not fit.
+    k_ok = []
     for seed in range(3):
         plant = _plant(tau, dead_time)
         rec = synthesize_recording(
             plant, db_path=tmp_path / f"r{seed}.db", segments=_EXCITATION, seed=seed
         )
-        fit = fit_recording_pose_domain(load_recording(rec.db_path), estimate_l=True)
+        fit = fit_recording_pose_domain(load_recording(rec.db_path))
         for axis, true in (("vx", plant.vx), ("wz", plant.wz)):
             f = fit.axes[axis]
             k_ok.append(abs(f.K - true.K) / abs(true.K))
-            tau_ok.append(abs(f.tau - true.tau) / true.tau)
-            l_ok.append(abs(f.L - true.L))
-    assert max(k_ok) < 0.05  # K within ~5%
-    assert max(tau_ok) < 0.15  # tau within ~15%
-    assert max(l_ok) <= _SAMPLE_DT  # L within one odom sample
+            assert f.tau == _NOMINAL_TAU_S  # nominal, not fit
+            assert f.L == _NOMINAL_L_S
+            assert f.tau_l_identified is False
+    assert max(k_ok) < 0.05  # K within ~5% across regimes/seeds
 
 
 def test_reprocess_writes_artifact_and_quality_sidecar(tmp_path: Path) -> None:
@@ -88,10 +93,10 @@ def test_reprocess_writes_artifact_and_quality_sidecar(tmp_path: Path) -> None:
     )
     assert artifact.exists()
     config = TuningConfig.from_json(artifact)
-    assert config.plant.vx.tau == pytest.approx(0.3, rel=0.15)
+    assert config.plant.vx.K == pytest.approx(0.92, rel=0.05)  # gain recovered
 
     quality = json.loads((artifact.parent / f"{artifact.stem}_quality.json").read_text())
-    assert "vx" in quality and "r_squared" in quality["vx"]
     assert quality["vx"]["valid"] is True
-    # pose-domain r^2 on a clean sim recording should be high.
-    assert quality["vx"]["r_squared"] > 0.99
+    assert quality["vx"]["tau_L_identified"] is False  # honest: not identified
+    assert quality["vx"]["K_by_amplitude"]  # per-amplitude gain recorded
+    assert quality["vx"]["settled_line_r2"] > 0.99  # settled region is clean & linear
