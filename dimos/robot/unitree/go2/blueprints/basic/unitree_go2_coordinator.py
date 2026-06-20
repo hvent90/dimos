@@ -34,6 +34,8 @@ Usage:
 
 from __future__ import annotations
 
+import os
+
 from dimos.control.components import HardwareComponent, HardwareType, make_twist_base_joints
 from dimos.control.coordinator import ControlCoordinator, TaskConfig
 from dimos.core.coordination.blueprints import autoconnect
@@ -48,12 +50,12 @@ _go2_joints = make_twist_base_joints("go2")
 
 # Default Go2 characterization artifact (TuningConfig JSON). Both the
 # precision_follower and the trajectory_tracker load their plant model +
-# envelope from it. Task params are NOT reachable by `dimos run -o` (that
-# only overrides module config fields, not the baked-in task list) — so to
-# use a fresh fit, update this constant. The holonomic trajectory_tracker
-# needs an artifact with a REAL vy fit (lateral axis excited), which the
-# standard `unitree-go2-characterization` run produces.
-_GO2_ARTIFACT = str(
+# envelope from it. Task params are NOT reachable by `dimos run -o` (that only
+# overrides module config fields, not the baked-in task list), so to drive with
+# a fresh fit set the GO2_ARTIFACT env var to its path before `dimos run`:
+#     export GO2_ARTIFACT=/abs/path/to/<...>_posedomain.json
+# Falls back to the vendored 2026-06-15 artifact when unset.
+_GO2_ARTIFACT = os.environ.get("GO2_ARTIFACT") or str(
     get_project_root()
     / "data"
     / "characterization"
