@@ -34,7 +34,12 @@ const ACTIONS = [
 const SPEEDS = [
     { mode: 'normal', label: 'Normal', scale: { lin: 0.5, ang: 0.5 } },
     { mode: 'high', label: 'High', scale: { lin: 1.0, ang: 1.0 } },
-    { mode: 'rage', label: 'Rage', scale: { lin: 1.0, ang: 1.0 } },
+    // Rage: firmware widens the envelope to ~2.5 m/s, but you only reach it by
+    // pushing the stick HARDER. At lin=1.0 rage feels identical to High. The
+    // working rage keyboard blueprint sends linear_speed=1.25; we go further to
+    // actually exploit the wider envelope. (Note: buildTwist's Shift adds ×2 on
+    // top, so effective max can exceed this.)
+    { mode: 'rage', label: 'Rage', scale: { lin: 2.0, ang: 1.5 } },
 ];
 
 // Local UI state. Posture/estop still placeholder; battery is wired to real
@@ -67,7 +72,7 @@ export function renderGo2(c) {
                 <span class="text-gray-300 text-sm">${escHtml(state.activeRobot?.robot_name || 'go2')}</span>
             </div>
             <div class="flex items-center gap-3">
-                <span class="text-sm text-gray-400">🔋 <span id="batt-pct" class="font-semibold text-dim-400">—%</span></span>
+                <span class="text-sm text-gray-400">🔋 Battery <span id="batt-pct" class="font-semibold text-dim-400">—%</span></span>
                 <span id="link-pill" class="pill pill-good"><span class="dot"></span><span>LINK OK</span></span>
                 <button id="disconnectBtn" class="term-caps px-3 py-1.5 text-xs text-gray-400 hover:text-white border border-[#2a2a2a] rounded">[ disconnect ]</button>
             </div>
