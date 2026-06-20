@@ -23,7 +23,7 @@ constant amplitude, which is how the sweep excites the plant one axis at a time.
 
 from __future__ import annotations
 
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 from itertools import pairwise
 from pathlib import Path
 
@@ -32,9 +32,13 @@ import numpy as np
 from dimos.memory2.store.sqlite import SqliteStore
 from dimos.msgs.geometry_msgs.PoseStamped import PoseStamped
 from dimos.msgs.geometry_msgs.Twist import Twist
+from dimos.msgs.std_msgs.Int8 import Int8
 
 _CMD_EPS = 1e-6  # command magnitude below this is treated as zero
 _MIN_STEP_SAMPLES = 3  # commanded intervals shorter than this are ignored
+# A real SI step's command starts within this long after the operator's gate
+# (ENTER) event; anything not following a gate is repositioning teleop, not a step.
+_GATE_WINDOW_S = 3.0
 
 
 @dataclass
@@ -45,6 +49,7 @@ class Recording:
     cmd: np.ndarray  # (n, 3) = vx, vy, wz
     odom_t: np.ndarray
     odom: np.ndarray  # (m, 3) = x, y, yaw
+    gate_t: np.ndarray = field(default_factory=lambda: np.empty(0))  # operator gate event times
 
 
 @dataclass(frozen=True)
@@ -73,6 +78,11 @@ def load_recording(db_path: str | Path) -> Recording:
             (obs.ts, obs.data.x, obs.data.y, obs.data.yaw)
             for obs in store.stream("odom", PoseStamped)
         ]
+        # Gate (operator advance) events — read only if the stream exists, so we
+        # don't create an empty table on recordings that never had one.
+        gate_rows = (
+            [obs.ts for obs in store.stream("gate", Int8)] if "gate" in store.list_streams() else []
+        )
     finally:
         store.stop()
     if not cmd_rows or not odom_rows:
@@ -85,16 +95,29 @@ def load_recording(db_path: str | Path) -> Recording:
         cmd=cmd_arr[:, 1:4],
         odom_t=odom_arr[:, 0],
         odom=odom_arr[:, 1:4],
+        gate_t=np.asarray(gate_rows, dtype=float),
     )
 
 
-def segment_steps(recording: Recording, *, min_samples: int = _MIN_STEP_SAMPLES) -> list[StepSpan]:
-    """Split the command stream into single-axis constant-amplitude steps.
+def segment_steps(
+    recording: Recording,
+    *,
+    min_samples: int = _MIN_STEP_SAMPLES,
+    gated_only: bool = True,
+    gate_window_s: float = _GATE_WINDOW_S,
+) -> list[StepSpan]:
+    """Split the command stream into single-axis constant-amplitude SI steps.
 
     A step is a maximal interval over which the command vector is constant and
-    exactly one axis is non-zero. Constant-input intervals are found from
-    command change points, so this is robust to variable command rates and to
-    back-to-back amplitudes (a change in amplitude starts a new step).
+    exactly one axis is non-zero. Constant-input intervals are found from command
+    change points, so this is robust to variable command rates and back-to-back
+    amplitudes (an amplitude change starts a new step).
+
+    When the recording has a ``gate`` stream and ``gated_only`` is set (default),
+    only steps that START within ``gate_window_s`` after an operator gate (ENTER)
+    event are kept -- this drops operator repositioning teleop and any other
+    ``/cmd_vel`` traffic that is not an actual SI step. Recordings with no gate
+    stream return every single-axis interval (legacy behavior).
     """
     cmd_t = recording.cmd_t
     cmd = recording.cmd
@@ -104,6 +127,7 @@ def segment_steps(recording: Recording, *, min_samples: int = _MIN_STEP_SAMPLES)
 
     changed = np.any(np.abs(np.diff(cmd, axis=0)) > _CMD_EPS, axis=1)
     boundaries = [0, *(np.flatnonzero(changed) + 1).tolist(), n]
+    use_gate = gated_only and recording.gate_t.size > 0
 
     spans: list[StepSpan] = []
     for start, end in pairwise(boundaries):
@@ -113,16 +137,25 @@ def segment_steps(recording: Recording, *, min_samples: int = _MIN_STEP_SAMPLES)
         active = np.flatnonzero(np.abs(level) > _CMD_EPS)
         if active.size != 1:
             continue  # zero (rest) or multi-axis -- not a clean single-axis step
+        t_start = float(cmd_t[start])
+        if use_gate and not _follows_gate(t_start, recording.gate_t, gate_window_s):
+            continue  # not a gated SI step -> operator repositioning, skip
         axis_idx = int(active[0])
         spans.append(
             StepSpan(
                 axis=_AXIS_NAMES[axis_idx],
                 amplitude=float(level[axis_idx]),
-                t_start=float(cmd_t[start]),
+                t_start=t_start,
                 t_end=float(cmd_t[end - 1]),
             )
         )
     return spans
+
+
+def _follows_gate(t_start: float, gate_t: np.ndarray, window_s: float) -> bool:
+    """True if a gate event occurred just before ``t_start`` (step starts after gate)."""
+    dt = t_start - gate_t
+    return bool(np.any((dt >= -0.5) & (dt <= window_s)))
 
 
 def step_pose_channel(recording: Recording, span: StepSpan) -> tuple[np.ndarray, np.ndarray]:
