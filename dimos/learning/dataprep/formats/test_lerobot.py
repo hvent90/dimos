@@ -157,6 +157,39 @@ def test_lerobot_v3_writer_closed_on_midstream_error(tmp_path: Path) -> None:
     assert pq.read_table(data).num_rows == 3  # raises ArrowInvalid if footer missing
 
 
+def test_lerobot_v3_per_episode_task_labels(tmp_path: Path) -> None:
+    """Episodes with distinct task_labels must produce distinct tasks + task_index
+    (multi-task recordings must not collapse to one task)."""
+    import pandas as pd
+    import pyarrow.parquet as pq
+
+    def samples() -> Iterator[Sample]:
+        for ep, task in ((0, "pick"), (1, "place")):
+            for i in range(3):
+                yield Sample(
+                    ts=float(ep * 3 + i),
+                    episode_id=f"ep_{ep:06d}",
+                    observation={"state": np.arange(6, dtype=np.float32)},
+                    action={"action": np.zeros(6, dtype=np.float32)},
+                    task_label=task,
+                )
+
+    out = OutputConfig(format="lerobot", path=tmp_path / "ds", metadata={"fps": 10.0})
+    root = write(samples(), out)
+
+    tasks = pd.read_parquet(root / "meta" / "tasks.parquet")
+    assert set(tasks.index) == {"pick", "place"}
+
+    ep = pq.read_table(root / "meta" / "episodes" / "chunk-000" / "file-000.parquet").to_pylist()
+    assert ep[0]["tasks"] == ["pick"]
+    assert ep[1]["tasks"] == ["place"]
+
+    data = pq.read_table(root / "data" / "chunk-000" / "file-000.parquet")
+    ti = data.column("task_index").to_pylist()
+    assert ti[:3] == [0, 0, 0]  # episode 0 → task 0 (pick)
+    assert ti[3:] == [1, 1, 1]  # episode 1 → task 1 (place)
+
+
 def test_lerobot_v3_inspect_state_only(tmp_path: Path) -> None:
     out = OutputConfig(format="lerobot", path=tmp_path / "ds", metadata={"fps": 10.0})
     root = write(_state_samples(), out)

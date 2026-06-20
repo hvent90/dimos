@@ -117,6 +117,7 @@ class Sample(BaseModel):
     episode_id: str
     observation: dict[str, np.ndarray]
     action: dict[str, np.ndarray]
+    task_label: str | None = None  # carried from the episode for multi-task datasets
 
 
 # ─────────────────────────────────────────────────────────────────────────────
@@ -320,7 +321,13 @@ def iter_episode_samples(
                     obs_dict[key] = arr
             if skip:
                 continue
-            yield Sample(ts=t, episode_id=episode.id, observation=obs_dict, action=act_dict)
+            yield Sample(
+                ts=t,
+                episode_id=episode.id,
+                observation=obs_dict,
+                action=act_dict,
+                task_label=episode.task_label,
+            )
 
     shift = max(0, sync.action_shift)
     if shift == 0 or not action_keys:
@@ -337,6 +344,7 @@ def iter_episode_samples(
             episode_id=cur.episode_id,
             observation=cur.observation,
             action=nxt.action,
+            task_label=cur.task_label,
         )
 
 

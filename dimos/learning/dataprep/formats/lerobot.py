@@ -171,6 +171,7 @@ def write(samples: Iterator[Sample], output: OutputConfig) -> Path:
     cur_id: str | None = None
     cur_rows: list[dict[str, Any]] = []
     cur_ep_stats = _stats()
+    cur_task = default_task_label  # actual label for the in-progress episode
 
     def _video_path(image_key: str) -> Path:
         feat = _feature_name("observation", image_key, is_image=True, single_action=False)
@@ -246,8 +247,10 @@ def write(samples: Iterator[Sample], output: OutputConfig) -> Path:
                 cur_id = sample.episode_id
                 episode_index += 1
                 cur_ep_stats = _stats()
-                if default_task_label not in tasks_index:
-                    tasks_index[default_task_label] = len(tasks_index)
+                # Per-episode task label (falls back to the config default).
+                cur_task = sample.task_label or default_task_label
+                if cur_task not in tasks_index:
+                    tasks_index[cur_task] = len(tasks_index)
 
             # Schema discovery + stats (global + per-episode).
             n_low_dim_obs = sum(1 for v in sample.observation.values() if np.asarray(v).ndim < 3)
@@ -295,7 +298,7 @@ def write(samples: Iterator[Sample], output: OutputConfig) -> Path:
                     "frame_index": frame_index,
                     "episode_index": episode_index,
                     "index": global_index,
-                    "task_index": tasks_index[default_task_label],
+                    "task_index": tasks_index[cur_task],
                     "obs": {
                         k: np.asarray(v)
                         for k, v in sample.observation.items()

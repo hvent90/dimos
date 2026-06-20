@@ -69,6 +69,7 @@ def write(samples: Iterator[Sample], output: OutputConfig) -> Path:
     # Per-episode buffers — flushed at episode boundary.
     cur_id: str | None = None
     cur_idx = 0
+    cur_task = default_task_label  # actual label for the in-progress episode
     cur_start_ts: float | None = None
     buf_ts: list[float] = []
     buf_obs: dict[str, list[np.ndarray]] = {}
@@ -85,7 +86,7 @@ def write(samples: Iterator[Sample], output: OutputConfig) -> Path:
             ep = episodes_g.create_group(f"episode_{cur_idx:06d}")
             ep.attrs["length"] = len(buf_ts)
             ep.attrs["start_ts"] = float(cur_start_ts or 0.0)
-            ep.attrs["task_index"] = tasks_index[default_task_label]
+            ep.attrs["task_index"] = tasks_index[cur_task]
             ep.create_dataset("timestamp", data=np.asarray(buf_ts, dtype=np.float32))
             for k, frames in buf_obs.items():
                 arr = np.stack(frames, axis=0)
@@ -108,8 +109,9 @@ def write(samples: Iterator[Sample], output: OutputConfig) -> Path:
                     cur_idx += 1
                 cur_id = sample.episode_id
                 cur_start_ts = float(sample.ts)
-                if default_task_label not in tasks_index:
-                    tasks_index[default_task_label] = len(tasks_index)
+                cur_task = sample.task_label or default_task_label
+                if cur_task not in tasks_index:
+                    tasks_index[cur_task] = len(tasks_index)
 
             buf_ts.append(float(sample.ts) - (cur_start_ts or 0.0))
             for k, v in sample.observation.items():
