@@ -33,6 +33,10 @@ pytest.importorskip("pyarrow")
 pytest.importorskip("pandas")
 cv2 = pytest.importorskip("cv2")
 
+# Below the importorskip guards above; used to read back v3.0 meta/parquet.
+import pandas as pd
+import pyarrow.parquet as pq
+
 from dimos.learning.dataprep.core import OutputConfig, Sample
 from dimos.learning.dataprep.formats.lerobot import inspect, write
 
@@ -98,8 +102,6 @@ def test_lerobot_v3_state_only_layout_and_naming(tmp_path: Path) -> None:
 
 
 def test_lerobot_v3_episode_metadata_columns(tmp_path: Path) -> None:
-    import pyarrow.parquet as pq
-
     out = OutputConfig(format="lerobot", path=tmp_path / "ds", metadata={"fps": 10.0})
     # two episodes so dataset_from/to_index advance
     root = write(_two_episode_samples(), out)
@@ -128,7 +130,6 @@ def test_lerobot_v3_episode_metadata_columns(tmp_path: Path) -> None:
 def test_lerobot_v3_writer_closed_on_midstream_error(tmp_path: Path) -> None:
     """If the drain raises after an episode was flushed, the data parquet must
     still be readable (footer written by the finally), not a headerless stub."""
-    import pyarrow.parquet as pq
 
     def bad_samples() -> Iterator[Sample]:
         for i in range(3):  # episode 0
@@ -160,8 +161,6 @@ def test_lerobot_v3_writer_closed_on_midstream_error(tmp_path: Path) -> None:
 def test_lerobot_v3_per_episode_task_labels(tmp_path: Path) -> None:
     """Episodes with distinct task_labels must produce distinct tasks + task_index
     (multi-task recordings must not collapse to one task)."""
-    import pandas as pd
-    import pyarrow.parquet as pq
 
     def samples() -> Iterator[Sample]:
         for ep, task in ((0, "pick"), (1, "place")):

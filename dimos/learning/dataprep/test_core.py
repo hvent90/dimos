@@ -22,15 +22,19 @@ with `.time_range(t0, t1)`). Keeps these fast and dependency-free.
 from __future__ import annotations
 
 from dataclasses import dataclass
+import json
 from pathlib import Path
 from typing import Any
 
 import numpy as np
 import pytest
 
+from dimos.learning.dataprep.build import _write_dimos_meta, run_dataprep
 from dimos.learning.dataprep.core import (
+    DataPrepConfig,
     Episode,
     EpisodeExtractor,
+    OutputConfig,
     StreamField,
     SyncConfig,
     extract_episodes,
@@ -297,11 +301,6 @@ def test_summarize_lengths_empty() -> None:
 
 
 def test_dimos_meta_records_sync_and_action_shift(tmp_path: Path) -> None:
-    import json
-
-    from dimos.learning.dataprep.build import _write_dimos_meta
-    from dimos.learning.dataprep.core import DataPrepConfig, OutputConfig, StreamField
-
     cfg = DataPrepConfig(
         source="s.db",
         observation={"state": StreamField(stream="js", field="position")},
@@ -319,11 +318,6 @@ def test_dimos_meta_records_sync_and_action_shift(tmp_path: Path) -> None:
 def test_dimos_meta_beside_file_for_hdf5(tmp_path: Path) -> None:
     """hdf5 writer returns a FILE path; the sidecar must land beside it, not
     inside it (which would treat the .hdf5 file as a directory and crash)."""
-    import json
-
-    from dimos.learning.dataprep.build import _write_dimos_meta
-    from dimos.learning.dataprep.core import DataPrepConfig, OutputConfig
-
     ds_file = tmp_path / "session.hdf5"
     ds_file.write_bytes(b"\x89HDF\r\n")  # stand-in for a real .hdf5
     cfg = DataPrepConfig(source="s.db", output=OutputConfig(format="hdf5", path=ds_file))
@@ -338,9 +332,6 @@ def test_dimos_meta_beside_file_for_hdf5(tmp_path: Path) -> None:
 def test_run_dataprep_rejects_shared_obs_action_key() -> None:
     """A name in both obs and action would silently drop the obs feature when the
     two maps merge; run_dataprep must reject it before opening the store."""
-    from dimos.learning.dataprep.build import run_dataprep
-    from dimos.learning.dataprep.core import DataPrepConfig, StreamField
-
     cfg = DataPrepConfig(
         source="nonexistent.db",  # never reached — the check runs first
         observation={"joints": StreamField(stream="joint_state", field="position")},
