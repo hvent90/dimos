@@ -26,6 +26,7 @@ from unittest.mock import MagicMock
 
 import pytest
 
+from dimos.manipulation.blueprints import _XARM_MODEL_PATH, _XARM_PACKAGE_PATHS
 from dimos.manipulation.manipulation_module import (
     ManipulationModule,
     ManipulationState,
@@ -36,7 +37,6 @@ from dimos.msgs.geometry_msgs.PoseStamped import PoseStamped
 from dimos.msgs.geometry_msgs.Quaternion import Quaternion
 from dimos.msgs.geometry_msgs.Vector3 import Vector3
 from dimos.msgs.sensor_msgs.JointState import JointState
-from dimos.robot.catalog.ufactory import _XARM_MODEL_PATH, _XARM_PACKAGE_PATHS
 
 pytestmark = pytest.mark.self_hosted
 

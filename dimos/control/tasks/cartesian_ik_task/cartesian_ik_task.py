@@ -86,7 +86,7 @@ class CartesianIKTask(BaseControlTask):
     outputs JointCommandOutput and participates in joint-level arbitration.
 
     Example:
-        >>> from dimos.robot.catalog.piper import PIPER_FK_MODEL
+        >>> from dimos.control.blueprints._hardware import PIPER_FK_MODEL
         >>> task = CartesianIKTask(
         ...     name="cartesian_arm",
         ...     config=CartesianIKTaskConfig(
@@ -321,12 +321,6 @@ class CartesianIKTask(BaseControlTask):
             End-effector pose as SE3
         """
         return self._ik.forward_kinematics(joint_positions)
-
-
-__all__ = [
-    "CartesianIKTask",
-    "CartesianIKTaskConfig",
-]
 
 
 class CartesianIKTaskParams(BaseConfig):

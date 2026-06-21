@@ -96,7 +96,7 @@ class TeleopIKTask(BaseControlTask):
     Outputs JointCommandOutput and participates in joint-level arbitration.
 
     Example:
-        >>> from dimos.robot.catalog.piper import PIPER_FK_MODEL
+        >>> from dimos.control.blueprints._hardware import PIPER_FK_MODEL
         >>> task = TeleopIKTask(
         ...     name="teleop_arm",
         ...     config=TeleopIKTaskConfig(
@@ -351,12 +351,6 @@ class TeleopIKTask(BaseControlTask):
         with self._lock:
             self._active = False
         logger.info(f"TeleopIKTask {self._name} stopped")
-
-
-__all__ = [
-    "TeleopIKTask",
-    "TeleopIKTaskConfig",
-]
 
 
 class TeleopIKTaskParams(BaseConfig):

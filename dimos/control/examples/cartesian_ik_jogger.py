@@ -163,7 +163,7 @@ def clamp(value: float, min_val: float, max_val: float) -> float:
 
 def _get_piper_model_path() -> str:
     """Get path to Piper FK model."""
-    from dimos.robot.catalog.piper import PIPER_FK_MODEL
+    from dimos.control.blueprints._hardware import PIPER_FK_MODEL
 
     return str(PIPER_FK_MODEL)
 
