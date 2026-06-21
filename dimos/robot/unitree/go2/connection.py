@@ -30,9 +30,9 @@ from dimos.constants import (
 from dimos.core.coordination.module_coordinator import ModuleCoordinator
 from dimos.core.core import rpc
 from dimos.core.global_config import GlobalConfig
-from dimos.core.module import Module, ModuleConfig
 from dimos.core.resource import CompositeResource
 from dimos.core.stream import In, Out
+from dimos.core.tf_module import TfModule, TfModuleConfig
 from dimos.core.transport import LCMTransport, pSHMTransport
 from dimos.spec.perception import Camera, Pointcloud
 from dimos.utils.logging_config import setup_logger
@@ -64,7 +64,7 @@ class Go2Mode(str, Enum):
     RAGE = "rage"
 
 
-class ConnectionConfig(ModuleConfig):
+class ConnectionConfig(TfModuleConfig):
     ip: str = Field(default_factory=lambda m: m["g"].robot_ip)
     mode: Go2Mode = Go2Mode.DEFAULT
     frame_mapping: dict[str, str] = Field(
@@ -183,7 +183,7 @@ class ReplayConnection(UnitreeWebRTCConnection, CompositeResource):
 _Config = TypeVar("_Config", bound=ConnectionConfig, default=ConnectionConfig)
 
 
-class GO2Connection(Module, Camera, Pointcloud):
+class GO2Connection(TfModule, Camera, Pointcloud):
     dedicated_worker = True
 
     config: ConnectionConfig

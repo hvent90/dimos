@@ -21,7 +21,7 @@ import time
 from pydantic import Field
 import pytest
 
-from dimos.core.module import Module, ModuleConfig
+from dimos.core.tf_module import TfModule, TfModuleConfig
 from dimos.msgs.geometry_msgs.PoseStamped import PoseStamped
 from dimos.msgs.geometry_msgs.Quaternion import Quaternion
 from dimos.msgs.geometry_msgs.Transform import Transform
@@ -811,7 +811,7 @@ class TestMultiTBuffer:
 
 class TestStaticTransforms:
     LCM_PROPAGATION_DELAY = 2
-    MODULE_START_DELAY = 2
+    MODULE_START_DELAY = 0.05
     STRICT_TOLERANCE = 0.001
     STALE_AGE = 1000
     FAR_FUTURE_OFFSET = 9999
@@ -925,9 +925,9 @@ class TestStaticTransforms:
         receiver.stop()
 
     def test_module_publishes_static_transforms(self) -> None:
-        """A Module with static_transforms config should publish them via tf."""
+        """A TfModule with static_transforms config should publish them via tf."""
 
-        class TestConfig(ModuleConfig):
+        class TestConfig(TfModuleConfig):
             frame_mapping: dict[str, str] = Field(
                 default_factory=lambda: dict(
                     body="base_link",
@@ -946,7 +946,7 @@ class TestStaticTransforms:
                 }
             )
 
-        class TestModule(Module):
+        class TestModule(TfModule):
             config: TestConfig
 
         module = TestModule()
