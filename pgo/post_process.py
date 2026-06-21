@@ -516,8 +516,6 @@ if WHAT in ("lidar", "both"):
     print(f"wrote {name}: {n} scans in {time.time() - t0:.0f}s", flush=True)
 
     if WRITE_LCM:
-        import lcm
-
         if buf_xyz:  # flush remainder
             dx, di = collapse(buf_xyz, buf_i if have_inten else [], LCM_VOXEL)
             agg_xyz.append(dx)
@@ -541,11 +539,7 @@ if WHAT in ("lidar", "both"):
         merged = PointCloud2.from_numpy(merged_xyz, frame_id="odom", intensities=merged_inten)
         merged.ts = float(fo_ts[0])
         lcm_path = REC / f"{name}.pc2.lcm"
-        if lcm_path.exists():
-            lcm_path.unlink()
-        lcm_log = lcm.EventLog(str(lcm_path), "w", overwrite=True)
-        lcm_log.write_event(int(merged.ts * 1e6), name, merged.lcm_encode())
-        lcm_log.close()
+        lcm_path.write_bytes(merged.lcm_encode())
         print(
             f"wrote {lcm_path}: 1 aggregated cloud, {len(merged_xyz):,} pts "
             f"(voxel {LCM_VOXEL} m, outlier nn={LCM_OUTLIER_NN}/std={LCM_OUTLIER_STD})",
