@@ -18,17 +18,16 @@ from __future__ import annotations
 
 from collections.abc import Mapping, Sequence
 from dataclasses import dataclass
-import importlib
 from pathlib import Path
-from types import ModuleType
 from typing import TYPE_CHECKING, Any
 
 import numpy as np
 
+from dimos.manipulation.planning.groups.identifiers import make_global_joint_name
 from dimos.manipulation.planning.groups.models import PlanningGroup, PlanningGroupSelection
+from dimos.manipulation.planning.groups.registry import PlanningGroupRegistry
 from dimos.manipulation.planning.groups.utils import matching_global_joint_name
 from dimos.manipulation.planning.kinematics.config import PinkKinematicsConfig
-from dimos.manipulation.planning.planning_identifiers import make_global_joint_name
 from dimos.manipulation.planning.spec.config import RobotModelConfig
 from dimos.manipulation.planning.spec.enums import IKStatus
 from dimos.manipulation.planning.spec.models import (
@@ -59,8 +58,8 @@ PinkIKConfig = PinkKinematicsConfig
 
 @dataclass(frozen=True)
 class _PinkModules:
-    pink: ModuleType
-    pinocchio: ModuleType
+    pink: Any
+    pinocchio: Any
 
 
 _MANIPULATION_EXTRA_HINT = "Install manipulation dependencies with: uv sync --extra manipulation."
@@ -120,61 +119,22 @@ class PinkIK:
         seed: JointState | None = None,
         position_tolerance: float = 0.001,
         orientation_tolerance: float = 0.01,
-        check_collision: bool = True,
         max_attempts: int = 10,
     ) -> IKResult:
         """Solve IK with Pink, returning the standard planning ``IKResult``."""
-        if not world.is_finalized:
-            return _failure(IKStatus.NO_SOLUTION, "World must be finalized before IK")
-
         try:
-            robot_context = self._get_robot_context(world, robot_id)
-        except (FileNotFoundError, ImportError, ValueError) as exc:
-            return _failure(IKStatus.NO_SOLUTION, f"Pink IK model setup failed: {exc}")
-
-        if seed is None:
-            with world.scratch_context() as ctx:
-                seed = world.get_joint_state(ctx, robot_id)
-
-        lower_limits, upper_limits = world.get_joint_limits(robot_id)
-        target_model = self._target_in_model_frame(world.get_robot_config(robot_id), target_pose)
-
-        fallback_result: IKResult | None = None
-
-        for attempt in range(max_attempts):
-            try:
-                q0 = self._initial_q(robot_context, seed, lower_limits, upper_limits, attempt)
-                result = self._solve_single(
-                    robot_context=robot_context,
-                    target_model=target_model,
-                    seed_q=q0,
-                    lower_limits=lower_limits,
-                    upper_limits=upper_limits,
-                    position_tolerance=position_tolerance,
-                    orientation_tolerance=orientation_tolerance,
-                )
-            except ValueError as exc:
-                return _failure(IKStatus.NO_SOLUTION, f"Pink IK mapping failed: {exc}")
-            except Exception as exc:
-                return _failure(IKStatus.NO_SOLUTION, f"Pink IK solver failed: {exc}")
-
-            if not result.is_success() or result.joint_state is None:
-                if fallback_result is None:
-                    fallback_result = result
-                continue
-
-            if check_collision and not world.check_config_collision_free(
-                robot_id, result.joint_state
-            ):
-                fallback_result = _collision_failure(result)
-                continue
-
-            return result
-
-        if fallback_result is not None:
-            return fallback_result
-
-        return _failure(IKStatus.NO_SOLUTION, f"Pink IK failed after {max_attempts} attempts")
+            config = world.get_robot_config(robot_id)
+            group = _single_pose_group_for_robot(world, config.name)
+        except (KeyError, ValueError) as exc:
+            return _failure(IKStatus.NO_SOLUTION, str(exc))
+        return self.solve_pose_targets(
+            world=world,
+            pose_targets={group: target_pose},
+            seed=seed,
+            position_tolerance=position_tolerance,
+            orientation_tolerance=orientation_tolerance,
+            max_attempts=max_attempts,
+        )
 
     def solve_pose_targets(
         self,
@@ -184,7 +144,6 @@ class PinkIK:
         seed: JointState | None = None,
         position_tolerance: float = 0.001,
         orientation_tolerance: float = 0.01,
-        check_collision: bool = True,
         max_attempts: int = 10,
     ) -> IKResult:
         """Solve planning-group pose targets and return selected global joints."""
@@ -225,7 +184,6 @@ class PinkIK:
                     seed=_seed_for_robot_with_world_fallback(world, robot_id, seed),
                     position_tolerance=position_tolerance,
                     orientation_tolerance=orientation_tolerance,
-                    check_collision=check_collision,
                     max_attempts=max_attempts,
                 )
                 if not result.is_success() or result.joint_state is None:
@@ -278,7 +236,6 @@ class PinkIK:
         seed: JointState,
         position_tolerance: float,
         orientation_tolerance: float,
-        check_collision: bool,
         max_attempts: int,
     ) -> IKResult:
         """Solve one robot's one-or-more frame targets."""
@@ -329,11 +286,6 @@ class PinkIK:
             if not result.is_success() or result.joint_state is None:
                 if fallback_result is None:
                     fallback_result = result
-                continue
-            if check_collision and not world.check_config_collision_free(
-                robot_id, result.joint_state
-            ):
-                fallback_result = _collision_failure(result)
                 continue
             return result
 
@@ -616,20 +568,27 @@ class PinkIK:
 
 
 def _load_optional_dependencies(solver: str) -> _PinkModules:
-    pink = _import_required_module(
-        "pink",
-        "Pink IK backend requires Pink. "
-        f"{_MANIPULATION_EXTRA_HINT} PyPI package: pin-pink; import name: pink.",
-    )
-    pinocchio = _import_required_module(
-        "pinocchio",
-        f"Pink IK backend requires Pinocchio (import name 'pinocchio'). {_MANIPULATION_EXTRA_HINT}",
-    )
-    qpsolvers = _import_required_module(
-        "qpsolvers",
-        "Pink IK backend requires qpsolvers plus a QP backend such as proxqp. "
-        f"{_MANIPULATION_EXTRA_HINT}",
-    )
+    try:
+        import pink
+    except ImportError as exc:
+        raise PinkIKDependencyError(
+            "Pink IK backend requires Pink. "
+            f"{_MANIPULATION_EXTRA_HINT} PyPI package: pin-pink; import name: pink."
+        ) from exc
+    try:
+        import pinocchio
+    except ImportError as exc:
+        raise PinkIKDependencyError(
+            "Pink IK backend requires Pinocchio (import name 'pinocchio'). "
+            f"{_MANIPULATION_EXTRA_HINT}"
+        ) from exc
+    try:
+        import qpsolvers
+    except ImportError as exc:
+        raise PinkIKDependencyError(
+            "Pink IK backend requires qpsolvers plus a QP backend such as proxqp. "
+            f"{_MANIPULATION_EXTRA_HINT}"
+        ) from exc
 
     available_solvers = set(getattr(qpsolvers, "available_solvers", []))
     if solver not in available_solvers:
@@ -641,13 +600,6 @@ def _load_optional_dependencies(solver: str) -> _PinkModules:
         )
 
     return _PinkModules(pink=pink, pinocchio=pinocchio)
-
-
-def _import_required_module(name: str, message: str) -> ModuleType:
-    try:
-        return importlib.import_module(name)
-    except ImportError as exc:
-        raise PinkIKDependencyError(message) from exc
 
 
 def _build_joint_mapping(model: Any, config: RobotModelConfig) -> _JointMapping:
@@ -674,9 +626,7 @@ def _build_joint_mapping(model: Any, config: RobotModelConfig) -> _JointMapping:
     )
 
 
-def _lock_uncontrolled_model_joints(
-    pinocchio: ModuleType, model: Any, config: RobotModelConfig
-) -> Any:
+def _lock_uncontrolled_model_joints(pinocchio: Any, model: Any, config: RobotModelConfig) -> Any:
     """Return a Pinocchio model reduced to the joints controlled by config."""
     controlled_joint_names = set(config.joint_names)
     lock_joint_ids: list[int] = []
@@ -753,7 +703,7 @@ def _seed_positions_for_mapping(seed: JointState, mapping: _JointMapping) -> NDA
     return np.array(seed.position, dtype=np.float64)
 
 
-def _matrix_to_se3(pinocchio: ModuleType, matrix: NDArray[np.float64]) -> Any:
+def _matrix_to_se3(pinocchio: Any, matrix: NDArray[np.float64]) -> Any:
     return pinocchio.SE3(matrix[:3, :3], matrix[:3, 3])
 
 
@@ -788,17 +738,6 @@ def _success(
 
 def _failure(status: IKStatus, message: str, iterations: int = 0) -> IKResult:
     return IKResult(status=status, joint_state=None, iterations=iterations, message=message)
-
-
-def _collision_failure(result: IKResult) -> IKResult:
-    return IKResult(
-        status=IKStatus.COLLISION,
-        joint_state=None,
-        position_error=result.position_error,
-        orientation_error=result.orientation_error,
-        iterations=result.iterations,
-        message="Pink IK solution rejected by collision check",
-    )
 
 
 def _seed_for_robot_config(
@@ -878,6 +817,19 @@ def _robot_ids_by_name(
             raise ValueError(f"Robot name '{robot_name}' is not unique in planning world")
         robot_ids_by_name[robot_name] = matches[0]
     return robot_ids_by_name
+
+
+def _single_pose_group_for_robot(world: WorldSpec, robot_name: RobotName) -> PlanningGroup:
+    configs = [world.get_robot_config(robot_id) for robot_id in world.get_robot_ids()]
+    registry = PlanningGroupRegistry(configs)
+    pose_groups = [
+        group for group in registry.groups_for_robot(robot_name) if group.has_pose_target
+    ]
+    if len(pose_groups) != 1:
+        raise ValueError(
+            f"Robot '{robot_name}' has {len(pose_groups)} pose-targetable planning groups"
+        )
+    return pose_groups[0]
 
 
 __all__ = ["PinkIK", "PinkIKConfig", "PinkIKDependencyError"]

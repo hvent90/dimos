@@ -118,7 +118,6 @@ class JacobianIK:
         seed: JointState | None = None,
         position_tolerance: float = 0.001,
         orientation_tolerance: float = 0.01,
-        check_collision: bool = True,
         max_attempts: int = 10,
     ) -> IKResult:
         """Solve IK with multiple random restarts.
@@ -133,7 +132,6 @@ class JacobianIK:
             seed: Initial guess (uses current state if None)
             position_tolerance: Required position accuracy (meters)
             orientation_tolerance: Required orientation accuracy (radians)
-            check_collision: Whether to check collision of solution
             max_attempts: Maximum random restart attempts
 
         Returns:
@@ -176,11 +174,6 @@ class JacobianIK:
             )
 
             if result.is_success() and result.joint_state is not None:
-                # Check collision if requested
-                if check_collision:
-                    if not world.check_config_collision_free(robot_id, result.joint_state):
-                        continue  # Try another seed
-
                 # Check error
                 total_error = result.position_error + result.orientation_error
                 if total_error < best_error:
@@ -210,7 +203,6 @@ class JacobianIK:
         seed: JointState | None = None,
         position_tolerance: float = 0.001,
         orientation_tolerance: float = 0.01,
-        check_collision: bool = True,
         max_attempts: int = 10,
     ) -> IKResult:
         """Solve pose targets keyed by planning group with request-scoped auxiliaries.
@@ -263,7 +255,6 @@ class JacobianIK:
             seed=full_seed,
             position_tolerance=position_tolerance,
             orientation_tolerance=orientation_tolerance,
-            check_collision=check_collision,
             max_attempts=max_attempts,
         )
         if not result.is_success() or result.joint_state is None:

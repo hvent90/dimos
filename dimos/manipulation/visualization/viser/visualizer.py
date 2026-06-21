@@ -18,7 +18,7 @@ from collections.abc import Sequence
 from contextlib import suppress
 from typing import TYPE_CHECKING
 
-from dimos.manipulation.planning.planning_identifiers import make_global_joint_name
+from dimos.manipulation.planning.groups.identifiers import make_global_joint_name
 from dimos.manipulation.visualization.viser.adapter import InProcessViserAdapter
 from dimos.manipulation.visualization.viser.animation import (
     GroupPreviewAnimation,

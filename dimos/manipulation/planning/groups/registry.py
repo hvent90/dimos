@@ -20,11 +20,11 @@ from collections.abc import Iterable
 from typing import TYPE_CHECKING
 
 from dimos.manipulation.planning.groups.discovery import FALLBACK_PLANNING_GROUP_NAME
-from dimos.manipulation.planning.groups.models import PlanningGroup, PlanningGroupSelection
-from dimos.manipulation.planning.planning_identifiers import (
+from dimos.manipulation.planning.groups.identifiers import (
     make_global_joint_names,
     make_planning_group_id,
 )
+from dimos.manipulation.planning.groups.models import PlanningGroup, PlanningGroupSelection
 from dimos.manipulation.planning.spec.models import PlanningGroupID, RobotName
 
 if TYPE_CHECKING:

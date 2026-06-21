@@ -26,11 +26,11 @@ from typing import TYPE_CHECKING
 
 import numpy as np
 
-from dimos.manipulation.planning.groups.models import PlanningGroup, PlanningGroupSelection
-from dimos.manipulation.planning.planning_identifiers import (
+from dimos.manipulation.planning.groups.identifiers import (
     local_joint_name_from_global,
     make_global_joint_names,
 )
+from dimos.manipulation.planning.groups.models import PlanningGroup, PlanningGroupSelection
 from dimos.manipulation.planning.spec.enums import PlanningStatus
 from dimos.manipulation.planning.spec.models import (
     JointPath,

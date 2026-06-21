@@ -34,6 +34,7 @@ from dimos.manipulation.planning.monitor.world_monitor import WorldMonitor
 from dimos.manipulation.planning.spec.config import RobotModelConfig
 from dimos.manipulation.planning.spec.enums import IKStatus, PlanningStatus
 from dimos.manipulation.planning.spec.models import (
+    CollisionCheckResult,
     GeneratedPlan,
     IKResult,
     PlanningSceneInfo,
@@ -300,11 +301,9 @@ class TestPlanningInitialization:
         assert config.kinematics.dt == 0.02
         assert config.kinematics.posture_cost == 0.0
 
-    def test_solve_ik_rpc_calls_configured_backend(self, robot_config):
-        """solve_ik returns the backend IKResult without path planning."""
-        module = _make_module()
-        module._robots = {"test_arm": ("robot_id", robot_config, MagicMock())}
-        module._world_monitor = MagicMock()
+    def test_inverse_kinematics_single_calls_configured_backend(self, robot_config):
+        """inverse_kinematics_single returns the backend IKResult without path planning."""
+        module = _make_module_with_monitor(robot_config)
         module._world_monitor.world = MagicMock()
         current = JointState(name=robot_config.joint_names, position=[0.0, 0.0, 0.0])
         module._world_monitor.get_current_joint_state.return_value = current
@@ -317,43 +316,42 @@ class TestPlanningInitialization:
             message="ok",
         )
         module._kinematics = MagicMock()
-        module._kinematics.solve.return_value = expected
+        module._kinematics.solve_pose_targets.return_value = expected
 
         pose = Pose(position=Vector3(x=0.45, y=0.0, z=0.25), orientation=Quaternion())
-        result = module.solve_ik(pose)
+        result = module.inverse_kinematics_single(pose)
 
         assert result is expected
-        assert module._state == ManipulationState.COMPLETED
-        module._kinematics.solve.assert_called_once()
-        _, kwargs = module._kinematics.solve.call_args
+        module._kinematics.solve_pose_targets.assert_called_once()
+        _, kwargs = module._kinematics.solve_pose_targets.call_args
         assert kwargs["world"] is module._world_monitor.world
-        assert kwargs["robot_id"] == "robot_id"
-        assert kwargs["seed"] is current
-        assert kwargs["check_collision"] is True
-        assert kwargs["target_pose"].frame_id == "world"
-        assert kwargs["target_pose"].position.x == 0.45
+        assert kwargs["seed"].name == [
+            "test_arm/joint1",
+            "test_arm/joint2",
+            "test_arm/joint3",
+        ]
+        assert kwargs["seed"].position == current.position
+        target_group, target_pose = next(iter(kwargs["pose_targets"].items()))
+        assert target_group.id == "test_arm/manipulator"
+        assert target_pose.frame_id == "world"
+        assert target_pose.position.x == 0.45
 
-    def test_solve_ik_rpc_returns_failure_without_joint_state(self, robot_config):
-        """solve_ik reports a failed IKResult when no seed state is available."""
-        module = _make_module()
-        module._robots = {"test_arm": ("robot_id", robot_config, MagicMock())}
-        module._world_monitor = MagicMock()
+    def test_inverse_kinematics_single_returns_failure_without_joint_state(self, robot_config):
+        """inverse_kinematics_single reports failure when no seed state is available."""
+        module = _make_module_with_monitor(robot_config)
         module._world_monitor.get_current_joint_state.return_value = None
         module._kinematics = MagicMock()
 
         pose = Pose(position=Vector3(x=0.45, y=0.0, z=0.25), orientation=Quaternion())
-        result = module.solve_ik(pose)
+        result = module.inverse_kinematics_single(pose)
 
         assert result.status == IKStatus.NO_SOLUTION
         assert result.message == "No joint state"
-        assert module._state == ManipulationState.IDLE
-        module._kinematics.solve.assert_not_called()
+        module._kinematics.solve_pose_targets.assert_not_called()
 
-    def test_solve_ik_rpc_uses_explicit_seed(self, robot_config):
-        """solve_ik initializes the backend from an explicit seed when provided."""
-        module = _make_module()
-        module._robots = {"test_arm": ("robot_id", robot_config, MagicMock())}
-        module._world_monitor = MagicMock()
+    def test_inverse_kinematics_single_uses_explicit_seed(self, robot_config):
+        """inverse_kinematics_single initializes the backend from an explicit seed."""
+        module = _make_module_with_monitor(robot_config)
         module._world_monitor.world = MagicMock()
         module._world_monitor.get_current_joint_state.return_value = JointState(
             name=robot_config.joint_names, position=[0.0, 0.0, 0.0]
@@ -361,15 +359,48 @@ class TestPlanningInitialization:
         explicit_seed = JointState(name=robot_config.joint_names, position=[0.2, 0.1, 0.0])
         expected = IKResult(status=IKStatus.SUCCESS, joint_state=explicit_seed)
         module._kinematics = MagicMock()
-        module._kinematics.solve.return_value = expected
+        module._kinematics.solve_pose_targets.return_value = expected
 
         pose = Pose(position=Vector3(x=0.45, y=0.0, z=0.25), orientation=Quaternion())
-        result = module.solve_ik(pose, seed=explicit_seed)
+        result = module.inverse_kinematics_single(pose, seed=explicit_seed)
 
         assert result is expected
-        _, kwargs = module._kinematics.solve.call_args
+        _, kwargs = module._kinematics.solve_pose_targets.call_args
         assert kwargs["seed"] is explicit_seed
         module._world_monitor.get_current_joint_state.assert_not_called()
+
+    def test_forward_kinematics_accepts_extra_global_joints_and_requires_group_joints(
+        self, robot_config
+    ):
+        """forward_kinematics is group-centric and ignores non-group target joints."""
+        module = _make_module_with_monitor(robot_config)
+        group = _make_global_group("test_arm", "wrist", ["joint1"])
+        module._world_monitor.planning_groups = _FakePlanningGroups([group])
+        module._world_monitor.get_state_monitor.return_value = MagicMock(
+            is_state_stale=lambda max_age: False
+        )
+        module._world_monitor.get_current_joint_state.return_value = JointState(
+            name=["joint1", "joint2", "joint3"], position=[0.0, 2.0, 3.0]
+        )
+        pose = PoseStamped(position=Vector3(x=1.0), orientation=Quaternion())
+        module._world_monitor.get_group_pose.return_value = pose
+
+        result = module.forward_kinematics(
+            "test_arm/wrist",
+            JointState(name=["test_arm/joint1", "test_arm/joint2"], position=[1.0, 9.0]),
+        )
+
+        assert result.status == "VALID"
+        assert result.pose is pose
+        resolved_state = module._world_monitor.get_group_pose.call_args.args[1]
+        assert resolved_state.name == ["joint1", "joint2", "joint3"]
+        assert resolved_state.position == [1.0, 9.0, 3.0]
+
+        missing = module.forward_kinematics(
+            "test_arm/wrist", JointState(name=["test_arm/joint2"], position=[9.0])
+        )
+        assert missing.status == "INVALID"
+        assert "missing group joints" in missing.message
 
 
 class TestExecute:
@@ -540,6 +571,35 @@ def _make_module_with_monitor(*configs: RobotModelConfig) -> ManipulationModule:
             for config in configs
         ]
     )
+    module._world_monitor.is_state_valid.return_value = True
+
+    def current_global_joint_state(max_age: float = 1.0) -> JointState | None:
+        del max_age
+        names: list[str] = []
+        positions: list[float] = []
+        for config in configs:
+            current = module._world_monitor.get_current_joint_state(f"robot_{config.name}")
+            if current is None:
+                return None
+            current_by_name = dict(zip(current.name, current.position, strict=True))
+            for local_name in config.joint_names:
+                if local_name not in current_by_name:
+                    return None
+                names.append(f"{config.name}/{local_name}")
+                positions.append(float(current_by_name[local_name]))
+        return JointState(name=names, position=positions)
+
+    def check_collision(target_joints: JointState, max_age: float = 1.0) -> CollisionCheckResult:
+        del target_joints, max_age
+        collision_free = bool(module._world_monitor.is_state_valid.return_value)
+        return CollisionCheckResult(
+            status="VALID" if collision_free else "COLLISION",
+            collision_free=collision_free,
+            message="Target is collision-free" if collision_free else "Target is in collision",
+        )
+
+    module._world_monitor.current_global_joint_state.side_effect = current_global_joint_state
+    module._world_monitor.check_collision.side_effect = check_collision
     return module
 
 
@@ -911,7 +971,7 @@ class TestManipulationPreview:
 
 
 class TestTargetSetEvaluation:
-    def test_evaluate_joint_target_set_projects_selected_targets_to_full_robot_states(self):
+    def test_evaluate_joint_target_set_checks_selected_global_target(self):
         left_config = _make_robot_config("left", ["j1", "j2"], "left_task")
         right_config = _make_robot_config("right", ["j1", "j2"], "right_task")
         module = _make_module_with_monitor(left_config, right_config)
@@ -942,12 +1002,9 @@ class TestTargetSetEvaluation:
         assert result["target_joints"] is not None
         assert result["target_joints"].name == ["left/j1", "right/j2"]
         assert result["target_joints"].position == [1.0, 2.0]
-        left_target = module._world_monitor.is_state_valid.call_args_list[0].args[1]
-        right_target = module._world_monitor.is_state_valid.call_args_list[1].args[1]
-        assert left_target.name == ["j1", "j2"]
-        assert left_target.position == [1.0, 9.0]
-        assert right_target.name == ["j1", "j2"]
-        assert right_target.position == [8.0, 2.0]
+        checked_target = module._world_monitor.check_collision.call_args.args[0]
+        assert checked_target.name == ["left/j1", "right/j2"]
+        assert checked_target.position == [1.0, 2.0]
         assert result["group_poses"] == {"left/arm": left_pose, "right/arm": right_pose}
 
     def test_evaluate_joint_target_set_reports_collision_per_group(self):
@@ -966,7 +1023,7 @@ class TestTargetSetEvaluation:
         assert result["success"] is False
         assert result["status"] == "COLLISION"
         assert result["collision_free"] is False
-        assert result["message"] == "Target set is in collision"
+        assert result["message"] == "Target is in collision"
         assert result["group_diagnostics"] == {"left/manipulator": "Target is in collision"}
 
     def test_evaluate_pose_target_set_uses_whole_set_seed_and_auxiliary_groups(self):

@@ -25,11 +25,11 @@ from typing import TYPE_CHECKING, Any
 
 import numpy as np
 
-from dimos.manipulation.planning.groups.registry import PlanningGroupRegistry
-from dimos.manipulation.planning.planning_identifiers import (
+from dimos.manipulation.planning.groups.identifiers import (
     assert_local_joint_names,
     make_global_joint_name,
 )
+from dimos.manipulation.planning.groups.registry import PlanningGroupRegistry
 from dimos.manipulation.planning.spec.config import RobotModelConfig
 from dimos.manipulation.planning.spec.enums import ObstacleType
 from dimos.manipulation.planning.spec.models import (

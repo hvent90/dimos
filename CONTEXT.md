@@ -25,8 +25,12 @@ The model-level declaration of a planning group before it is bound to a concrete
 _Avoid_: Runtime group, robot ID
 
 **End-Effector Association**:
-Separate metadata used for pose-targeted operations. For a planning group defined by a chain, the end-effector link is the chain tip. For a planning group defined only by joints, there is no end-effector link.
-_Avoid_: Planning group definition
+Separate metadata used for pose-targeted operations. For a planning group defined by a chain, the end-effector link is the chain tip. For a planning group defined only by joints, there is no end-effector link. Documentation should use group end-effector language for this pose-target frame; operation names may use standard robotics terms such as forward kinematics and inverse kinematics when the planning-group scope is explicit in the parameters.
+_Avoid_: Planning group definition, group target-frame pose
+
+**Group Forward Kinematics**:
+A group-centric query that computes the end-effector pose for one pose-targetable planning group. Only that planning group's joints affect the result; other planning-world joints do not need to be supplied or filled.
+_Avoid_: Planning-world FK, collision-state projection
 
 **Planning Group Selection**:
 The set of one or more planning groups chosen for a planning request.
@@ -59,6 +63,14 @@ _Avoid_: Robot-scoped planner, groupless API
 **Joint State**:
 A joint-name-keyed robot state that can represent any set of joints and is not inherently coupled to a robot, planning group, planning group selection, or joint-name scope. At flat multi-robot or coordinator boundaries, joint names are required and are global joint names. Robot identity and local-vs-global meaning are provided by the API boundary or containing type, not by extra fields on the generic joint state.
 _Avoid_: Planning-group-scoped state
+
+**Collision Target Joint State**:
+A partial joint state used as input to planning-world collision checking. Its joint names are required and must be global joint names. Unmentioned joints are filled from the current planning-world state before collision is checked on the resulting full world configuration. It has no planning-group semantics.
+_Avoid_: Full state, group-scoped collision state
+
+**Current Planning-World Joint State**:
+A flat snapshot of fresh monitored controllable joint positions for all robots in the planning world. Joint names are global joint names. It is the source used to fill unmentioned joints when applying a collision target joint state; fallback/default backend states are not current planning-world joint state.
+_Avoid_: Internal state, selected-group state, default model state
 
 **Robot Model Joint Names**:
 The ordered controllable joints of a robot model in the model's local namespace. This usually aligns with the model's actuated joints, but is not itself a planning group.

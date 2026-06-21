@@ -190,7 +190,15 @@ def _strip_transmission_blocks(urdf_content: str) -> str:
 
 
 def _strip_fixed_world_joint(urdf_content: str, child_link: str) -> str:
-    """Remove a fixed world-to-base joint so base_pose can own placement."""
+    """Remove a fixed world-to-base joint so base_pose can own placement.
+
+    ``RobotModelConfig.base_pose`` is the canonical planning-world placement.
+    Some URDF/xacro models also include a fixed ``world -> base`` joint; if Drake
+    loads that joint and the caller applies ``base_pose``, placement can be
+    double-applied or constrained by a model-authored weld. Strip only the fixed
+    world joint to the configured child link and then remove an unreferenced
+    ``world`` link.
+    """
     try:
         root = ET.fromstring(urdf_content)
     except ET.ParseError:

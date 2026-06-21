@@ -29,21 +29,56 @@ from dimos.manipulation.planning.spec.models import (
 from dimos.msgs.geometry_msgs.PoseStamped import PoseStamped
 from dimos.msgs.geometry_msgs.Quaternion import Quaternion
 from dimos.msgs.geometry_msgs.Vector3 import Vector3
+from dimos.msgs.sensor_msgs.JointState import JointState
+
+
+class _VectorLike(list[float]):
+    def tolist(self) -> list[float]:
+        return list(self)
+
+
+class _FakeStateMonitor:
+    def __init__(self, positions: Sequence[float], stale: bool = False) -> None:
+        self._positions = _VectorLike(float(position) for position in positions)
+        self._stale = stale
+
+    def get_current_positions(self) -> _VectorLike:
+        return self._positions
+
+    def get_current_velocities(self) -> None:
+        return None
+
+    def is_state_stale(self, max_age: float) -> bool:
+        del max_age
+        return self._stale
+
+
+class _ScratchContext:
+    def __enter__(self) -> str:
+        return "scratch"
+
+    def __exit__(self, exc_type: object, exc: object, traceback: object) -> bool:
+        return False
 
 
 class FakeWorld:
     def __init__(self) -> None:
-        self.calls: list[tuple[str, Any]] = []
+        self.calls: list[tuple[Any, ...]] = []
+        self.configs: dict[str, RobotModelConfig] = {}
+        self.collision_free_by_robot: dict[str, bool] = {}
 
     def add_robot(self, config):
+        robot_id = f"robot-{len(self.configs) + 1}"
+        self.configs[robot_id] = config
+        self.collision_free_by_robot[robot_id] = True
         self.calls.append(("add_robot", config))
-        return "robot-1"
+        return robot_id
 
     def get_robot_ids(self):
-        return []
+        return list(self.configs)
 
     def get_robot_config(self, robot_id):
-        return None
+        return self.configs[robot_id]
 
     def get_joint_limits(self, robot_id):
         return ([], [])
@@ -71,22 +106,27 @@ class FakeWorld:
         return True
 
     def get_live_context(self):
+        self.calls.append(("get_live_context", None))
         return None
 
     def scratch_context(self):
-        return self
+        self.calls.append(("scratch_context", None))
+        return _ScratchContext()
 
     def sync_from_joint_state(self, robot_id, joint_state) -> None:
         return None
 
     def set_joint_state(self, ctx, robot_id, joint_state) -> None:
+        self.calls.append(("set_joint_state", ctx, robot_id, joint_state))
         return None
 
     def get_joint_state(self, ctx, robot_id):
+        self.calls.append(("get_joint_state", ctx, robot_id))
         return None
 
     def is_collision_free(self, ctx, robot_id):
-        return True
+        self.calls.append(("is_collision_free", ctx, robot_id))
+        return self.collision_free_by_robot[robot_id]
 
     def get_min_distance(self, ctx, robot_id):
         return 0.0
@@ -165,6 +205,17 @@ def _robot_config() -> RobotModelConfig:
     )
 
 
+def _robot_config_named(name: str, joint_names: list[str]) -> RobotModelConfig:
+    return RobotModelConfig(
+        name=name,
+        model_path=Path(f"/tmp/{name}.urdf"),
+        base_pose=PoseStamped(position=Vector3(), orientation=Quaternion([0, 0, 0, 1])),
+        joint_names=joint_names,
+        end_effector_link="ee",
+        base_link="base",
+    )
+
+
 def test_world_monitor_add_robot_records_scene_without_visualization_probe() -> None:
     fake_world = FakeWorld()
     fake_viz = FakeViz()
@@ -209,3 +260,70 @@ def test_create_planning_specs_wraps_existing_world(monkeypatch) -> None:
     assert planning_specs.world_monitor.visualization is None
     assert planning_specs.kinematics is fake_kinematics
     assert planning_specs.planner is fake_planner
+
+
+def test_current_global_joint_state_uses_fresh_monitored_state_only() -> None:
+    fake_world = FakeWorld()
+    monitor = world_monitor_module.WorldMonitor(world=fake_world)  # type: ignore[arg-type]
+    robot_id = monitor.add_robot(_robot_config_named("arm", ["j1", "j2"]))
+    monitor._state_monitors[robot_id] = _FakeStateMonitor([0.1, 0.2])  # pyright: ignore[reportPrivateUsage]
+
+    current = monitor.current_global_joint_state(max_age=0.5)
+
+    assert current is not None
+    assert current.name == ["arm/j1", "arm/j2"]
+    assert current.position == [0.1, 0.2]
+
+    monitor._state_monitors[robot_id] = _FakeStateMonitor([0.1, 0.2], stale=True)  # pyright: ignore[reportPrivateUsage]
+    fake_world.calls.clear()
+
+    assert monitor.current_global_joint_state(max_age=0.5) is None
+    assert not any(call[0] in {"get_live_context", "get_joint_state"} for call in fake_world.calls)
+
+
+def test_check_collision_fills_unmentioned_joints_in_one_world_context() -> None:
+    fake_world = FakeWorld()
+    monitor = world_monitor_module.WorldMonitor(world=fake_world)  # type: ignore[arg-type]
+    left_id = monitor.add_robot(_robot_config_named("left", ["j1", "j2"]))
+    right_id = monitor.add_robot(_robot_config_named("right", ["j3"]))
+    monitor._state_monitors[left_id] = _FakeStateMonitor([0.0, 9.0])  # pyright: ignore[reportPrivateUsage]
+    monitor._state_monitors[right_id] = _FakeStateMonitor([8.0])  # pyright: ignore[reportPrivateUsage]
+
+    result = monitor.check_collision(JointState(name=["left/j1"], position=[1.0]))
+
+    assert result.status == "VALID"
+    set_joint_calls = [call for call in fake_world.calls if call[0] == "set_joint_state"]
+    assert len(set_joint_calls) == 2
+    assert {call[1] for call in set_joint_calls} == {"scratch"}
+    left_state = set_joint_calls[0][3]
+    right_state = set_joint_calls[1][3]
+    assert left_state.name == ["j1", "j2"]
+    assert left_state.position == [1.0, 9.0]
+    assert right_state.name == ["j3"]
+    assert right_state.position == [8.0]
+
+
+def test_check_collision_reports_expected_statuses() -> None:
+    fake_world = FakeWorld()
+    monitor = world_monitor_module.WorldMonitor(world=fake_world)  # type: ignore[arg-type]
+    robot_id = monitor.add_robot(_robot_config_named("arm", ["j1"]))
+    monitor._state_monitors[robot_id] = _FakeStateMonitor([0.0])  # pyright: ignore[reportPrivateUsage]
+
+    duplicate = monitor.check_collision(JointState(name=["arm/j1", "arm/j1"], position=[1.0, 2.0]))
+    assert duplicate.status == "INVALID"
+
+    local_name = monitor.check_collision(JointState(name=["j1"], position=[1.0]))
+    assert local_name.status == "INVALID"
+
+    unknown = monitor.check_collision(JointState(name=["arm/missing"], position=[1.0]))
+    assert unknown.status == "INVALID"
+
+    monitor._state_monitors[robot_id] = _FakeStateMonitor([0.0], stale=True)  # pyright: ignore[reportPrivateUsage]
+    stale = monitor.check_collision(JointState(name=["arm/j1"], position=[1.0]))
+    assert stale.status == "STALE_STATE"
+
+    monitor._state_monitors[robot_id] = _FakeStateMonitor([0.0])  # pyright: ignore[reportPrivateUsage]
+    fake_world.collision_free_by_robot[robot_id] = False
+    collision = monitor.check_collision(JointState(name=["arm/j1"], position=[1.0]))
+    assert collision.status == "COLLISION"
+    assert collision.collision_free is False

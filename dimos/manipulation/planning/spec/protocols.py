@@ -227,7 +227,7 @@ class VisualizationSpec(Protocol):
 
 @runtime_checkable
 class KinematicsSpec(Protocol):
-    """Protocol for inverse kinematics solvers. Stateless, uses WorldSpec for FK/collision."""
+    """Protocol for inverse kinematics solvers. Stateless and IK-only."""
 
     def solve(
         self,
@@ -237,10 +237,9 @@ class KinematicsSpec(Protocol):
         seed: JointState | None = None,
         position_tolerance: float = 0.001,
         orientation_tolerance: float = 0.01,
-        check_collision: bool = True,
         max_attempts: int = 10,
     ) -> IKResult:
-        """Solve IK with optional collision checking."""
+        """Solve a single robot-scoped IK target."""
         ...
 
     def solve_pose_targets(
@@ -251,7 +250,6 @@ class KinematicsSpec(Protocol):
         seed: JointState | None = None,
         position_tolerance: float = 0.001,
         orientation_tolerance: float = 0.01,
-        check_collision: bool = True,
         max_attempts: int = 10,
     ) -> IKResult:
         """Solve pose targets over planning groups plus request-scoped auxiliaries."""

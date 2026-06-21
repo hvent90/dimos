@@ -40,8 +40,14 @@ from dimos.core.core import rpc
 from dimos.core.module import Module, ModuleConfig
 from dimos.core.stream import In
 from dimos.manipulation.planning.factory import create_planning_specs, create_world
+from dimos.manipulation.planning.groups.identifiers import (
+    assert_global_joint_names,
+    assert_local_joint_names,
+    make_global_joint_names,
+)
 from dimos.manipulation.planning.groups.models import PlanningGroup
 from dimos.manipulation.planning.groups.utils import (
+    filter_joint_state_to_selected_joints,
     joint_target_to_global_names,
     planning_group_id_from_selector,
 )
@@ -50,14 +56,11 @@ from dimos.manipulation.planning.kinematics.config import (
     PinkKinematicsConfig,
 )
 from dimos.manipulation.planning.monitor.world_monitor import WorldMonitor
-from dimos.manipulation.planning.planning_identifiers import (
-    assert_global_joint_names,
-    assert_local_joint_names,
-    make_global_joint_names,
-)
 from dimos.manipulation.planning.spec.config import RobotModelConfig
 from dimos.manipulation.planning.spec.enums import IKStatus, ObstacleType
 from dimos.manipulation.planning.spec.models import (
+    CollisionCheckResult,
+    ForwardKinematicsResult,
     GeneratedPlan,
     IKResult,
     Obstacle,
@@ -549,7 +552,19 @@ class ManipulationModule(Module):
         """Collect current state for exactly the selected global joints."""
         assert self._world_monitor is not None
         selection = self._world_monitor.planning_groups.select(group_ids)
+        current = self._world_monitor.current_global_joint_state()
+        if isinstance(current, JointState):
+            try:
+                return filter_joint_state_to_selected_joints(current, selection.joint_names)
+            except ValueError as exc:
+                logger.error("Current state missing selected joints: %s", exc)
+                return None
+        if current is None:
+            logger.error("No fresh planning-world joint state")
+            return None
 
+        # Compatibility for older tests/mocks that provide only robot-local
+        # get_current_joint_state() behavior instead of the new primitive.
         robot_ids_by_name: dict[RobotName, WorldRobotID] = {}
         for robot_name in selection.robot_names:
             try:
@@ -557,32 +572,26 @@ class ManipulationModule(Module):
             except KeyError:
                 logger.error("Robot '%s' is not registered", robot_name)
                 return None
-
-        current_by_robot: dict[RobotName, dict[str, float]] = {}
-        for robot_name, robot_id in robot_ids_by_name.items():
-            current = self._world_monitor.get_current_joint_state(robot_id)
-            if current is None:
-                logger.error("No joint state for robot '%s'", robot_name)
-                return None
-            indexed_current = self._current_positions_by_name(robot_name, current)
-            if indexed_current is None:
-                return None
-            current_by_robot[robot_name] = indexed_current
-
         names: list[str] = []
         positions: list[float] = []
         for group in selection.groups:
-            robot_state = current_by_robot[group.robot_name]
-            for resolved_name, local_name in zip(
+            current_local = self._world_monitor.get_current_joint_state(
+                robot_ids_by_name[group.robot_name]
+            )
+            if current_local is None:
+                logger.error("No joint state for robot '%s'", group.robot_name)
+                return None
+            current_by_name = self._current_positions_by_name(group.robot_name, current_local)
+            if current_by_name is None:
+                return None
+            for global_name, local_name in zip(
                 group.joint_names, group.local_joint_names, strict=True
             ):
-                if local_name not in robot_state:
-                    logger.error("Current state missing selected joint '%s'", resolved_name)
+                if local_name not in current_by_name:
+                    logger.error("Current state missing selected joint '%s'", global_name)
                     return None
-                position = robot_state[local_name]
-                names.append(resolved_name)
-                positions.append(position)
-
+                names.append(global_name)
+                positions.append(float(current_by_name[local_name]))
         return JointState(name=names, position=positions)
 
     def _joint_target_to_global_names(
@@ -649,71 +658,218 @@ class ManipulationModule(Module):
         self._world_monitor.hide_preview(group_ids)
         self._world_monitor.publish_visualization()
 
-    def _solve_ik_for_pose(
+    @rpc
+    def check_collision(
         self,
-        robot_id: WorldRobotID,
-        pose: Pose,
-        seed: JointState,
-        check_collision: bool,
-    ) -> IKResult:
-        """Run the configured kinematics backend for a world-frame pose."""
-        assert self._world_monitor and self._kinematics
+        target_joints: JointState,
+        max_age: float = 1.0,
+    ) -> CollisionCheckResult:
+        """Check a partial global joint target against the planning world."""
+        if self._world_monitor is None:
+            return CollisionCheckResult(
+                status="UNAVAILABLE",
+                collision_free=None,
+                message="Planning is not initialized",
+            )
+        return self._world_monitor.check_collision(target_joints, max_age=max_age)
 
+    def list_planning_groups(self) -> list[PlanningGroup]:
+        """Return all planning groups in stable registry order."""
+        if self._world_monitor is None:
+            return []
+        return list(self._world_monitor.planning_groups.list())
+
+    def get_current_joint_state(self, robot_name: RobotName) -> JointState | None:
+        """Return the named robot's current local joint state with names."""
+        if self._world_monitor is None:
+            return None
+        robot_id = self.robot_id_for_name(robot_name)
+        if robot_id is None:
+            return None
+        return self._world_monitor.get_current_joint_state(robot_id)
+
+    @rpc
+    def forward_kinematics(
+        self,
+        group_id: PlanningGroupID,
+        target_joints: JointState | None = None,
+        max_age: float = 1.0,
+    ) -> ForwardKinematicsResult:
+        """Compute the selected planning group's end-effector pose."""
+        if self._world_monitor is None:
+            return ForwardKinematicsResult(
+                status="UNAVAILABLE",
+                pose=None,
+                message="Planning is not initialized",
+            )
+        try:
+            group = self._world_monitor.planning_groups.get(group_id)
+        except KeyError as exc:
+            return ForwardKinematicsResult(status="INVALID", pose=None, message=str(exc))
+        if not group.has_pose_target:
+            return ForwardKinematicsResult(
+                status="INVALID",
+                pose=None,
+                message=f"Planning group '{group_id}' has no pose target frame",
+            )
+        robot = self._robots.get(group.robot_name)
+        if robot is None:
+            return ForwardKinematicsResult(
+                status="INVALID",
+                pose=None,
+                message=f"Robot '{group.robot_name}' is not registered",
+            )
+        robot_id, config, _ = robot
+
+        if target_joints is None:
+            monitor = self._world_monitor.get_state_monitor(robot_id)
+            if monitor is None or monitor.is_state_stale(max_age):
+                return ForwardKinematicsResult(
+                    status="STALE_STATE",
+                    pose=None,
+                    message="Fresh monitored robot joint state is unavailable",
+                )
+            joint_state = self._world_monitor.get_current_joint_state(robot_id)
+            if joint_state is None:
+                return ForwardKinematicsResult(
+                    status="STALE_STATE",
+                    pose=None,
+                    message="Fresh monitored robot joint state is unavailable",
+                )
+        else:
+            if len(target_joints.name) != len(target_joints.position):
+                return ForwardKinematicsResult(
+                    status="INVALID",
+                    pose=None,
+                    message="FK target name and position lengths must match",
+                )
+            if len(set(target_joints.name)) != len(target_joints.name):
+                return ForwardKinematicsResult(
+                    status="INVALID",
+                    pose=None,
+                    message="FK target contains duplicate joint names",
+                )
+            try:
+                assert_global_joint_names(target_joints.name)
+            except ValueError as exc:
+                return ForwardKinematicsResult(status="INVALID", pose=None, message=str(exc))
+            positions_by_global_name = dict(
+                zip(target_joints.name, target_joints.position, strict=True)
+            )
+            missing = [name for name in group.joint_names if name not in positions_by_global_name]
+            if missing:
+                return ForwardKinematicsResult(
+                    status="INVALID",
+                    pose=None,
+                    message=f"FK target missing group joints: {missing}",
+                )
+            current = self._world_monitor.get_current_joint_state(robot_id)
+            current_by_local_name = (
+                self._current_positions_by_name(group.robot_name, current)
+                if current is not None
+                else {}
+            )
+            positions: list[float] = []
+            for local_name, global_name in zip(
+                config.joint_names,
+                make_global_joint_names(group.robot_name, config.joint_names),
+                strict=True,
+            ):
+                if global_name in positions_by_global_name:
+                    positions.append(float(positions_by_global_name[global_name]))
+                else:
+                    positions.append(float((current_by_local_name or {}).get(local_name, 0.0)))
+            joint_state = JointState(name=list(config.joint_names), position=positions)
+
+        try:
+            pose = self._world_monitor.get_group_pose(group_id, joint_state)
+        except Exception as exc:
+            return ForwardKinematicsResult(
+                status="UNAVAILABLE",
+                pose=None,
+                message=f"Forward kinematics failed: {exc}",
+            )
+        return ForwardKinematicsResult(
+            status="VALID", pose=pose, message="Forward kinematics solved"
+        )
+
+    @rpc
+    def inverse_kinematics(
+        self,
+        pose_targets: Mapping[PlanningGroupID, PoseStamped],
+        auxiliary_group_ids: Sequence[PlanningGroupID] = (),
+        seed: JointState | None = None,
+    ) -> IKResult:
+        """Solve planning-group pose targets without collision filtering."""
+        if self._kinematics is None or self._world_monitor is None:
+            return IKResult(status=IKStatus.NO_SOLUTION, message="Planning not initialized")
+        if not pose_targets:
+            return IKResult(
+                status=IKStatus.NO_SOLUTION, message="At least one pose target is required"
+            )
+        group_ids = tuple(dict.fromkeys((*pose_targets.keys(), *auxiliary_group_ids)))
+        try:
+            target_groups = {
+                self._world_monitor.planning_groups.get(group_id): pose
+                for group_id, pose in pose_targets.items()
+            }
+            auxiliary_groups = tuple(
+                self._world_monitor.planning_groups.get(group_id)
+                for group_id in auxiliary_group_ids
+            )
+            seed_state = seed or self._selected_joint_state(group_ids)
+        except (KeyError, ValueError) as exc:
+            return IKResult(status=IKStatus.NO_SOLUTION, message=str(exc))
+        if seed_state is None:
+            return IKResult(status=IKStatus.NO_SOLUTION, message="No joint state")
+        return self._kinematics.solve_pose_targets(
+            world=self._world_monitor.world,
+            pose_targets=target_groups,
+            auxiliary_groups=auxiliary_groups,
+            seed=seed_state,
+        )
+
+    @rpc
+    def inverse_kinematics_single(
+        self,
+        pose: Pose,
+        robot_name: RobotName | None = None,
+        seed: JointState | None = None,
+    ) -> IKResult:
+        """Solve IK for one robot's primary pose-targetable planning group.
+
+        Args:
+            pose: Target end-effector pose
+            robot_name: Robot to solve for (required if multiple robots configured).
+            seed: Optional joint state to initialize local IK. Uses current state when omitted.
+        """
+        if self._world_monitor is None:
+            return IKResult(status=IKStatus.NO_SOLUTION, message="Planning not initialized")
+        robot = self._get_robot(robot_name)
+        if robot is None:
+            return IKResult(status=IKStatus.NO_SOLUTION, message="Robot not found")
+        selected_robot_name, _, _, _ = robot
+        group_id = self._primary_pose_group_id_for_robot(selected_robot_name)
+        if group_id is None:
+            return IKResult(
+                status=IKStatus.NO_SOLUTION, message="No pose-targetable planning group"
+            )
         target_pose = PoseStamped(
             frame_id="world",
             position=pose.position,
             orientation=pose.orientation,
         )
-
-        return self._kinematics.solve(
-            world=self._world_monitor.world,
-            robot_id=robot_id,
-            target_pose=target_pose,
-            seed=seed,
-            check_collision=check_collision,
-        )
+        return self.inverse_kinematics({group_id: target_pose}, seed=seed)
 
     @rpc
     def solve_ik(
         self,
         pose: Pose,
         robot_name: RobotName | None = None,
-        check_collision: bool = True,
         seed: JointState | None = None,
     ) -> IKResult:
-        """Solve IK for a pose without planning a joint path.
-
-        Args:
-            pose: Target end-effector pose
-            robot_name: Robot to solve for (required if multiple robots configured)
-            check_collision: Whether to reject IK candidates in collision
-            seed: Optional joint state to initialize local IK. Uses current state when omitted.
-        """
-        if self._kinematics is None or self._world_monitor is None:
-            return IKResult(status=IKStatus.NO_SOLUTION, message="Planning not initialized")
-        robot = self._get_robot(robot_name)
-        if robot is None:
-            return IKResult(status=IKStatus.NO_SOLUTION, message="Robot not found")
-
-        with self._lock:
-            if self._state not in (ManipulationState.IDLE, ManipulationState.COMPLETED):
-                return IKResult(
-                    status=IKStatus.NO_SOLUTION,
-                    message=f"Cannot solve IK while state is {self._state.name}",
-                )
-            self._state = ManipulationState.PLANNING
-
-        _, robot_id, _, _ = robot
-        seed_state = seed or self._world_monitor.get_current_joint_state(robot_id)
-        if seed_state is None:
-            self._state = ManipulationState.IDLE
-            return IKResult(status=IKStatus.NO_SOLUTION, message="No joint state")
-
-        result = self._solve_ik_for_pose(robot_id, pose, seed_state, check_collision)
-        self._state = ManipulationState.COMPLETED if result.is_success() else ManipulationState.IDLE
-        if result.is_success():
-            logger.info(f"IK solved, error: {result.position_error:.4f}m")
-        return result
+        """Compatibility wrapper for inverse_kinematics_single()."""
+        return self.inverse_kinematics_single(pose, robot_name=robot_name, seed=seed)
 
     @rpc
     def plan_to_pose(self, pose: Pose, robot_name: RobotName | None = None) -> bool:
@@ -732,10 +888,10 @@ class ManipulationModule(Module):
         group_id = self._default_group_id_for_robot(selected_robot_name)
         if group_id is None:
             return False
-        return self.plan_to_poses({group_id: pose})
+        return self.plan_to_pose_targets({group_id: pose})
 
     @rpc
-    def plan_to_poses(
+    def plan_to_pose_targets(
         self,
         pose_targets: Mapping[PlanningGroupID | PlanningGroup, Pose],
         auxiliary_groups: Sequence[PlanningGroupID | PlanningGroup] = (),
@@ -768,17 +924,10 @@ class ManipulationModule(Module):
         if start is None:
             return self._fail("No joint state")
 
-        ik = self._kinematics.solve_pose_targets(
-            world=self._world_monitor.world,
-            pose_targets={
-                self._world_monitor.planning_groups.get(group_id): pose
-                for group_id, pose in stamped_targets.items()
-            },
-            auxiliary_groups=tuple(
-                self._world_monitor.planning_groups.get(group_id) for group_id in auxiliary_ids
-            ),
+        ik = self.inverse_kinematics(
+            pose_targets=stamped_targets,
+            auxiliary_group_ids=auxiliary_ids,
             seed=start,
-            check_collision=True,
         )
         if not ik.is_success() or ik.joint_state is None:
             return self._fail(f"IK failed: {ik.status.name}")
@@ -1037,30 +1186,20 @@ class ManipulationModule(Module):
                 "message": "Planning is not initialized or current state is unavailable",
                 "collision_free": False,
             }
-        current = self._world_monitor.get_current_joint_state(robot_id)
-        if current is None:
-            return {
-                "success": False,
-                "joint_state": None,
-                "status": "UNAVAILABLE",
-                "message": "Planning is not initialized or current state is unavailable",
-                "collision_free": False,
-            }
-        ik = self._solve_ik_for_pose(robot_id, pose, current, check_collision=check_collision)
+        ik = self.inverse_kinematics_single(pose, robot_name=robot_name)
         joint_state = JointState(ik.joint_state) if ik.is_success() and ik.joint_state else None
-        collision_free = (
-            bool(joint_state is not None)
-            if not check_collision
-            else bool(
-                joint_state is not None
-                and self._world_monitor.is_state_valid(robot_id, joint_state)
+        collision = self.check_collision(joint_state) if joint_state is not None else None
+        collision_free = bool(
+            joint_state is not None
+            and (
+                not check_collision or (collision is not None and collision.collision_free is True)
             )
         )
         return {
             "success": joint_state is not None and collision_free,
             "joint_state": joint_state,
             "status": ik.status.name,
-            "message": ik.message,
+            "message": ik.message if collision is None else collision.message,
             "position_error": ik.position_error,
             "orientation_error": ik.orientation_error,
             "collision_free": collision_free,
@@ -1215,31 +1354,26 @@ class ManipulationModule(Module):
                 "target_joints": None,
             }
 
-        collision_free = True
+        collision = self.check_collision(target_joints) if check_collision else None
+        collision_free = True if collision is None else collision.collision_free is True
         diagnostics: dict[PlanningGroupID, str] = {}
         selection = self._world_monitor.planning_groups.select(group_ids)
-        for robot_name, (robot_id, _, local_target) in local_targets.items():
-            robot_collision_free = (
-                self._world_monitor.is_state_valid(robot_id, local_target)
-                if check_collision
-                else True
-            )
-            collision_free = collision_free and robot_collision_free
-            for group in selection.groups:
-                if group.robot_name == robot_name:
-                    if not check_collision:
-                        diagnostics[group.id] = "Target collision check skipped"
-                    else:
-                        diagnostics[group.id] = (
-                            "Target is collision-free"
-                            if robot_collision_free
-                            else "Target is in collision"
-                        )
+        for group in selection.groups:
+            if not check_collision:
+                diagnostics[group.id] = "Target collision check skipped"
+            else:
+                diagnostics[group.id] = (
+                    collision.message if collision is not None else "Target checked"
+                )
 
         return {
             "success": collision_free,
-            "status": status if collision_free else "COLLISION",
-            "message": message if collision_free else "Target set is in collision",
+            "status": status
+            if collision_free
+            else (collision.status if collision is not None else "COLLISION"),
+            "message": message
+            if collision_free
+            else (collision.message if collision is not None else "Target set is in collision"),
             "collision_free": collision_free,
             "group_ids": group_ids,
             "target_joints": JointState(target_joints),
@@ -1334,19 +1468,10 @@ class ManipulationModule(Module):
         auxiliary_ids = tuple(planning_group_id_from_selector(group) for group in auxiliary_groups)
         group_ids = tuple(dict.fromkeys((*stamped_targets.keys(), *auxiliary_ids)))
         try:
-            target_groups = {
-                self._world_monitor.planning_groups.get(group_id): pose
-                for group_id, pose in stamped_targets.items()
-            }
-            auxiliary = tuple(
-                self._world_monitor.planning_groups.get(group_id) for group_id in auxiliary_ids
-            )
-            ik = self._kinematics.solve_pose_targets(
-                world=self._world_monitor.world,
-                pose_targets=target_groups,
-                auxiliary_groups=auxiliary,
+            ik = self.inverse_kinematics(
+                pose_targets=stamped_targets,
+                auxiliary_group_ids=auxiliary_ids,
                 seed=seed or self._selected_joint_state(group_ids),
-                check_collision=False,
             )
         except (KeyError, ValueError) as exc:
             return {

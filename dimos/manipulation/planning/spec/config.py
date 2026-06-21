@@ -22,11 +22,11 @@ from pydantic import Field
 
 from dimos.core.module import ModuleConfig
 from dimos.manipulation.planning.groups.discovery import FALLBACK_PLANNING_GROUP_NAME
-from dimos.manipulation.planning.groups.models import PlanningGroupDefinition
-from dimos.manipulation.planning.planning_identifiers import (
+from dimos.manipulation.planning.groups.identifiers import (
     assert_local_joint_names,
     assert_valid_robot_name,
 )
+from dimos.manipulation.planning.groups.models import PlanningGroupDefinition
 from dimos.msgs.geometry_msgs.PoseStamped import PoseStamped
 
 

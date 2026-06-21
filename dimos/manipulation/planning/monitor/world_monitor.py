@@ -21,10 +21,14 @@ import threading
 from typing import TYPE_CHECKING, Any
 
 from dimos.constants import DEFAULT_THREAD_JOIN_TIMEOUT
+from dimos.manipulation.planning.groups.identifiers import (
+    is_global_joint_name,
+    make_global_joint_names,
+)
 from dimos.manipulation.planning.groups.registry import PlanningGroupRegistry
 from dimos.manipulation.planning.monitor.robot_state_monitor import RobotStateMonitor
 from dimos.manipulation.planning.monitor.world_obstacle_monitor import WorldObstacleMonitor
-from dimos.manipulation.planning.spec.models import PlanningSceneInfo
+from dimos.manipulation.planning.spec.models import CollisionCheckResult, PlanningSceneInfo
 from dimos.manipulation.planning.spec.protocols import VisualizationSpec, WorldSpec
 from dimos.msgs.geometry_msgs.PoseStamped import PoseStamped
 from dimos.msgs.geometry_msgs.Quaternion import Quaternion
@@ -303,6 +307,34 @@ class WorldMonitor:
             ctx = self._world.get_live_context()
             return self._world.get_joint_state(ctx, robot_id)
 
+    def current_global_joint_state(self, max_age: float = 1.0) -> JointState | None:
+        """Return fresh monitored state for every robot using global joint names.
+
+        This method is intentionally stricter than ``get_current_joint_state``:
+        it never falls back to backend live/default state. Callers use it when
+        stale or absent telemetry should stop a planning-world operation.
+        """
+        names: list[str] = []
+        positions: list[float] = []
+        for robot_id, config in self._robot_configs.items():
+            monitor = self._state_monitors.get(robot_id)
+            if monitor is None or monitor.is_state_stale(max_age):
+                return None
+            current = self.get_current_joint_state(robot_id)
+            if current is None or len(current.name) != len(current.position):
+                return None
+            positions_by_local_name = dict(zip(current.name, current.position, strict=True))
+            for local_name, global_name in zip(
+                config.joint_names,
+                make_global_joint_names(config.name, config.joint_names),
+                strict=True,
+            ):
+                if local_name not in positions_by_local_name:
+                    return None
+                names.append(global_name)
+                positions.append(float(positions_by_local_name[local_name]))
+        return JointState(name=names, position=positions)
+
     def get_current_velocities(self, robot_id: WorldRobotID) -> JointState | None:
         """Get current joint velocities as JointState. Returns None if not available."""
         if robot_id in self._state_monitors:
@@ -341,6 +373,94 @@ class WorldMonitor:
     def is_state_valid(self, robot_id: WorldRobotID, joint_state: JointState) -> bool:
         """Check if configuration is collision-free."""
         return self._world.check_config_collision_free(robot_id, joint_state)
+
+    def check_collision(
+        self,
+        target_joints: JointState,
+        max_age: float = 1.0,
+    ) -> CollisionCheckResult:
+        """Check a partial global target against the full planning-world state."""
+        if not self._world.is_finalized:
+            return CollisionCheckResult(
+                status="UNAVAILABLE",
+                collision_free=None,
+                message="Planning world is not finalized",
+            )
+        if not target_joints.name:
+            return CollisionCheckResult(
+                status="INVALID",
+                collision_free=None,
+                message="Collision target must include global joint names",
+            )
+        if len(target_joints.name) != len(target_joints.position):
+            return CollisionCheckResult(
+                status="INVALID",
+                collision_free=None,
+                message="Collision target name and position lengths must match",
+            )
+        if len(set(target_joints.name)) != len(target_joints.name):
+            return CollisionCheckResult(
+                status="INVALID",
+                collision_free=None,
+                message="Collision target contains duplicate joint names",
+            )
+        invalid_names = [name for name in target_joints.name if not is_global_joint_name(name)]
+        if invalid_names:
+            return CollisionCheckResult(
+                status="INVALID",
+                collision_free=None,
+                message=f"Expected global joint names; got invalid names: {invalid_names}",
+            )
+
+        current = self.current_global_joint_state(max_age=max_age)
+        if current is None:
+            return CollisionCheckResult(
+                status="STALE_STATE",
+                collision_free=None,
+                message="Fresh monitored planning-world joint state is unavailable",
+            )
+
+        positions_by_global_name = dict(zip(current.name, current.position, strict=True))
+        unknown = [name for name in target_joints.name if name not in positions_by_global_name]
+        if unknown:
+            return CollisionCheckResult(
+                status="INVALID",
+                collision_free=None,
+                message=f"Unknown global joint names: {unknown}",
+            )
+        for name, position in zip(target_joints.name, target_joints.position, strict=True):
+            positions_by_global_name[name] = float(position)
+
+        try:
+            with self._world.scratch_context() as ctx:
+                for robot_id, config in self._robot_configs.items():
+                    global_names = make_global_joint_names(config.name, config.joint_names)
+                    local_state = JointState(
+                        name=list(config.joint_names),
+                        position=[positions_by_global_name[name] for name in global_names],
+                    )
+                    self._world.set_joint_state(ctx, robot_id, local_state)
+                collision_free = all(
+                    self._world.is_collision_free(ctx, robot_id) for robot_id in self._robot_configs
+                )
+        except Exception as exc:
+            return CollisionCheckResult(
+                status="UNAVAILABLE",
+                collision_free=None,
+                message=f"Collision check failed: {exc}",
+            )
+
+        if collision_free:
+            return CollisionCheckResult(
+                status="VALID",
+                collision_free=True,
+                message="Target is collision-free",
+            )
+        return CollisionCheckResult(
+            status="COLLISION",
+            collision_free=False,
+            message="Target is in collision",
+        )
 
     def is_path_valid(
         self, robot_id: WorldRobotID, path: JointPath, step_size: float = 0.05

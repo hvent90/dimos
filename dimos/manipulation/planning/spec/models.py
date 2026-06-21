@@ -18,7 +18,7 @@ from __future__ import annotations
 
 from collections.abc import Mapping
 from dataclasses import dataclass, field
-from typing import TYPE_CHECKING, TypeAlias
+from typing import TYPE_CHECKING, Literal, TypeAlias
 
 from dimos.manipulation.planning.spec.enums import (
     IKStatus,
@@ -68,6 +68,41 @@ class PlanningSceneInfo:
 
 Jacobian: TypeAlias = "NDArray[np.float64]"
 """6 x n Jacobian matrix (rows: [vx, vy, vz, wx, wy, wz])"""
+
+CollisionCheckStatus: TypeAlias = Literal[
+    "VALID",
+    "COLLISION",
+    "INVALID",
+    "UNAVAILABLE",
+    "STALE_STATE",
+]
+"""Status for a planning-world collision target check."""
+
+ForwardKinematicsStatus: TypeAlias = Literal[
+    "VALID",
+    "INVALID",
+    "UNAVAILABLE",
+    "STALE_STATE",
+]
+"""Status for a group-scoped forward-kinematics query."""
+
+
+@dataclass(frozen=True)
+class CollisionCheckResult:
+    """Result of a planning-world collision target check."""
+
+    status: CollisionCheckStatus
+    collision_free: bool | None
+    message: str
+
+
+@dataclass(frozen=True)
+class ForwardKinematicsResult:
+    """Result of a group-scoped forward-kinematics query."""
+
+    status: ForwardKinematicsStatus
+    pose: PoseStamped | None
+    message: str
 
 
 @dataclass

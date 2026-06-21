@@ -18,7 +18,7 @@ from dimos.control.blueprints.dual import coordinator_dual_xarm
 from dimos.control.coordinator import ControlCoordinator
 from dimos.manipulation.blueprints import dual_xarm6_planner_coordinator
 from dimos.manipulation.manipulation_module import ManipulationModule
-from dimos.manipulation.planning.planning_identifiers import make_global_joint_names
+from dimos.manipulation.planning.groups.identifiers import make_global_joint_names
 
 
 def _coordinator_task_names(blueprint) -> list[str]:

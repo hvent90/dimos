@@ -76,10 +76,9 @@ class DrakeOptimizationIK:
         seed: JointState | None = None,
         position_tolerance: float = 0.001,
         orientation_tolerance: float = 0.01,
-        check_collision: bool = True,
         max_attempts: int = 10,
     ) -> IKResult:
-        """Solve IK with multiple random restarts, returning the best collision-free solution."""
+        """Solve IK with multiple random restarts, returning the best solution."""
         error = self._validate_world(world)
         if error is not None:
             return error
@@ -130,11 +129,6 @@ class DrakeOptimizationIK:
             )
 
             if result.is_success() and result.joint_state is not None:
-                # Check collision if requested
-                if check_collision:
-                    if not world.check_config_collision_free(robot_id, result.joint_state):
-                        continue  # Try another seed
-
                 # Check error
                 total_error = result.position_error + result.orientation_error
                 if total_error < best_error:

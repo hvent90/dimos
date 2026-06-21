@@ -16,12 +16,12 @@
 
 from collections.abc import Mapping, Sequence
 
-from dimos.manipulation.planning.groups.models import PlanningGroup
-from dimos.manipulation.planning.planning_identifiers import (
+from dimos.manipulation.planning.groups.identifiers import (
     assert_global_joint_names,
     assert_local_joint_names,
     is_global_joint_name,
 )
+from dimos.manipulation.planning.groups.models import PlanningGroup
 from dimos.manipulation.planning.spec.models import (
     GlobalJointName,
     LocalModelJointName,

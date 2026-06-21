@@ -302,12 +302,13 @@ def test_create_kinematics_pink_missing_dependency_is_actionable(
 ) -> None:
     from dimos.manipulation.planning.kinematics import pink_ik
 
-    def fake_import_module(name: str) -> ModuleType:
-        if name == "pink":
-            raise ImportError("missing pink")
-        return ModuleType(name)
+    def missing_dependencies(_solver: str) -> object:
+        raise PinkIKDependencyError(
+            "Pink IK backend requires Pink. Install manipulation dependencies with: "
+            "uv sync --extra manipulation. PyPI package: pin-pink; import name: pink."
+        )
 
-    monkeypatch.setattr(pink_ik.importlib, "import_module", fake_import_module)
+    monkeypatch.setattr(pink_ik, "_load_optional_dependencies", missing_dependencies)
 
     with pytest.raises(PinkIKDependencyError) as exc_info:
         create_kinematics("pink")
@@ -320,13 +321,13 @@ def test_create_kinematics_pink_unavailable_solver_mentions_manipulation_extra(
 ) -> None:
     from dimos.manipulation.planning.kinematics import pink_ik
 
-    def fake_import_module(name: str) -> ModuleType:
-        module = ModuleType(name)
-        if name == "qpsolvers":
-            module.available_solvers = []  # type: ignore[attr-defined]
-        return module
+    def unavailable_solver(_solver: str) -> object:
+        raise PinkIKDependencyError(
+            "Pink IK solver 'proxqp' is not available from qpsolvers. "
+            "Install manipulation dependencies with uv sync --extra manipulation."
+        )
 
-    monkeypatch.setattr(pink_ik.importlib, "import_module", fake_import_module)
+    monkeypatch.setattr(pink_ik, "_load_optional_dependencies", unavailable_solver)
 
     with pytest.raises(PinkIKDependencyError, match="--extra manipulation"):
         create_kinematics("pink")
@@ -460,10 +461,10 @@ def test_solve_single_reports_non_convergence() -> None:
     assert "did not converge" in result.message
 
 
-def test_solve_rejects_collision_candidate() -> None:
+def test_solve_does_not_filter_collision_candidates() -> None:
     ik = _pink_ik(converge=True)
     context = _context()
-    ik._robot_contexts = {"robot": context}
+    ik._robot_contexts = {"robot:tool": context}
 
     result = ik.solve(
         world=cast("Any", _FakeWorld(collision_free=False)),
@@ -472,12 +473,11 @@ def test_solve_rejects_collision_candidate() -> None:
             position=Vector3(0.1, 0.0, 0.0),
             orientation=Quaternion(0.0, 0.0, 0.0, 1.0),
         ),
-        check_collision=True,
         max_attempts=1,
     )
 
-    assert result.status == IKStatus.COLLISION
-    assert result.joint_state is None
+    assert result.status == IKStatus.SUCCESS
+    assert result.joint_state is not None
 
 
 def test_solve_pose_targets_returns_selected_resolved_joints_and_group_tip(
@@ -518,7 +518,6 @@ def test_solve_pose_targets_returns_selected_resolved_joints_and_group_tip(
         seed=JointState(
             {"name": ["arm/joint_a", "arm/joint_b", "arm/joint_c"], "position": [0.0, 0.0, 0.0]}
         ),
-        check_collision=False,
         max_attempts=1,
     )
 
@@ -580,7 +579,6 @@ def test_solve_pose_targets_same_robot_uses_one_multi_frame_solve(
         seed=JointState(
             {"name": ["arm/joint_a", "arm/joint_b", "arm/joint_c"], "position": [0.0, 0.0, 0.0]}
         ),
-        check_collision=False,
         max_attempts=1,
     )
 
@@ -636,7 +634,6 @@ def test_solve_pose_targets_passes_world_target_to_solver_in_model_frame(
         seed=JointState(
             {"name": ["arm/joint_a", "arm/joint_b", "arm/joint_c"], "position": [0.0, 0.0, 0.0]}
         ),
-        check_collision=False,
         max_attempts=1,
     )
 
@@ -702,7 +699,6 @@ def test_solve_pose_targets_cross_robot_combines_global_joint_names(
             name=["left/joint_a", "left/joint_b", "right/joint_c"],
             position=[0.0, 0.0, 0.0],
         ),
-        check_collision=False,
         max_attempts=1,
     )
 
@@ -716,7 +712,7 @@ def test_solve_pose_targets_cross_robot_combines_global_joint_names(
 def test_solve_retries_after_joint_limit_failure(monkeypatch: pytest.MonkeyPatch) -> None:
     ik = _pink_ik(converge=True)
     context = _context()
-    ik._robot_contexts = {"robot": context}
+    ik._robot_contexts = {"robot:tool": context}
     calls = 0
 
     def fake_solve_single(**_: object) -> IKResult:
@@ -748,7 +744,6 @@ def test_solve_retries_after_joint_limit_failure(monkeypatch: pytest.MonkeyPatch
             position=Vector3(0.1, 0.0, 0.0),
             orientation=Quaternion(0.0, 0.0, 0.0, 1.0),
         ),
-        check_collision=True,
         max_attempts=2,
     )
 
