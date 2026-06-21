@@ -54,13 +54,6 @@ class ViserVisualizationConfig(BaseModel):
         default=0.02,
         validation_alias=AliasChoices("current_match_tolerance", "viser_current_match_tolerance"),
     )
-    target_evaluation_check_collision: bool = Field(
-        default=True,
-        validation_alias=AliasChoices(
-            "target_evaluation_check_collision",
-            "viser_target_evaluation_check_collision",
-        ),
-    )
     allow_plan_execute: bool = False
 
     @property

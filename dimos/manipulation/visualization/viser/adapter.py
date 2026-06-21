@@ -27,7 +27,7 @@ from dimos.msgs.sensor_msgs.JointState import JointState
 
 if TYPE_CHECKING:
     from dimos.manipulation.manipulation_module import ManipulationModule
-    from dimos.manipulation.planning.groups import PlanningGroup
+    from dimos.manipulation.planning.groups.models import PlanningGroup
     from dimos.manipulation.planning.monitor.world_monitor import WorldMonitor
     from dimos.manipulation.planning.spec.config import RobotModelConfig
     from dimos.manipulation.planning.spec.models import PlanningGroupID, RobotName, WorldRobotID
@@ -224,13 +224,7 @@ class InProcessViserAdapter:
     def preview_plan(self, robot_name: RobotName | None = None) -> bool:
         return self._module.preview_plan(robot_name=robot_name)
 
-    def preview_target_set_plan(self) -> bool:
-        return self._module.preview_plan()
-
-    def execute(self, robot_name: RobotName | None = None) -> bool:
-        return self._module.execute(robot_name)
-
-    def execute_target_set_plan(self) -> bool:
+    def execute(self) -> bool:
         return self._module.execute()
 
     def cancel(self) -> bool:

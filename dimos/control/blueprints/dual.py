@@ -15,15 +15,30 @@
 """Dual-arm coordinator blueprints with trajectory control.
 
 Usage:
+    dimos run coordinator-dual-mock      # Mock 7+6 DOF arms
     dimos run coordinator-dual-xarm      # XArm7 left + XArm6 right
     dimos run coordinator-piper-xarm     # XArm6 + Piper
 """
 
 from __future__ import annotations
 
-from dimos.control.blueprints._hardware import manipulator
+from dimos.control.blueprints._hardware import manipulator, mock_arm
 from dimos.control.coordinator import ControlCoordinator, TaskConfig
 from dimos.core.global_config import global_config
+
+# Dual mock arms (7-DOF left, 6-DOF right)
+_mock_left = mock_arm("left_arm", 7)
+_mock_right = mock_arm("right_arm", 6)
+
+coordinator_dual_mock = ControlCoordinator.blueprint(
+    hardware=[_mock_left, _mock_right],
+    tasks=[
+        TaskConfig(name="traj_left", type="trajectory", joint_names=_mock_left.joints, priority=10),
+        TaskConfig(
+            name="traj_right", type="trajectory", joint_names=_mock_right.joints, priority=10
+        ),
+    ],
+)
 
 # Dual XArm (XArm7 left, XArm6 right)
 _xarm7_left = manipulator(
@@ -86,6 +101,7 @@ coordinator_piper_xarm = ControlCoordinator.blueprint(
 
 
 __all__ = [
+    "coordinator_dual_mock",
     "coordinator_dual_xarm",
     "coordinator_piper_xarm",
 ]

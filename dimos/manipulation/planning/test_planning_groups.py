@@ -20,7 +20,7 @@ from pathlib import Path
 
 import pytest
 
-from dimos.manipulation.planning.groups import (
+from dimos.manipulation.planning.groups.discovery import (
     FALLBACK_PLANNING_GROUP_NAME,
     PlanningGroupDiscoveryError,
     discover_planning_group_definitions,

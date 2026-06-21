@@ -714,7 +714,7 @@ class ViserPanelGui:
                 group_ids=self.state.selected_group_ids,
                 auxiliary_group_ids=self._selected_auxiliary_group_ids(),
                 pose_targets=self._active_pose_targets(),
-                check_collision=self.config.target_evaluation_check_collision,
+                check_collision=True,
             )
         )
         self.refresh()
@@ -981,7 +981,7 @@ class ViserPanelGui:
             if not self._operation_is_current(operation_id):
                 return
             self.state.action_status = ActionStatus.PREVIEWING
-            ok = self.adapter.preview_target_set_plan()
+            ok = self.adapter.preview_plan()
             self._finish_operation(f"preview={ok}", operation_id=operation_id)
 
         self._operation_worker.submit(
@@ -1010,7 +1010,7 @@ class ViserPanelGui:
                 return
             self.state.action_status = ActionStatus.EXECUTING
             self.state.plan_state.status = PlanStatus.EXECUTING
-            ok = self.adapter.execute_target_set_plan()
+            ok = self.adapter.execute()
             if not self._operation_is_current(operation_id):
                 return
             if not ok:

@@ -21,6 +21,7 @@ all_blueprints = {
     "coordinator-cartesian-ik-mock": "dimos.control.blueprints.teleop:coordinator_cartesian_ik_mock",
     "coordinator-cartesian-ik-piper": "dimos.control.blueprints.teleop:coordinator_cartesian_ik_piper",
     "coordinator-combined-xarm6": "dimos.control.blueprints.teleop:coordinator_combined_xarm6",
+    "coordinator-dual-mock": "dimos.control.blueprints.dual:coordinator_dual_mock",
     "coordinator-dual-xarm": "dimos.control.blueprints.dual:coordinator_dual_xarm",
     "coordinator-flowbase": "dimos.control.blueprints.mobile:coordinator_flowbase",
     "coordinator-flowbase-keyboard-teleop": "dimos.control.blueprints.mobile:coordinator_flowbase_keyboard_teleop",

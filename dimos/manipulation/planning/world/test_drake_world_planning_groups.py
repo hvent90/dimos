@@ -21,7 +21,8 @@ from pathlib import Path
 import numpy as np
 import pytest
 
-from dimos.manipulation.planning.groups import PlanningGroupDefinition, PlanningGroupRegistry
+from dimos.manipulation.planning.groups.models import PlanningGroupDefinition
+from dimos.manipulation.planning.groups.registry import PlanningGroupRegistry
 from dimos.manipulation.planning.spec.config import RobotModelConfig
 from dimos.manipulation.planning.world.drake_world import DrakeWorld, _RobotData
 from dimos.msgs.geometry_msgs.PoseStamped import PoseStamped

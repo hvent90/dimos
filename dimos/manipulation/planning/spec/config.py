@@ -21,10 +21,8 @@ from pathlib import Path
 from pydantic import Field
 
 from dimos.core.module import ModuleConfig
-from dimos.manipulation.planning.groups import (
-    FALLBACK_PLANNING_GROUP_NAME,
-    PlanningGroupDefinition,
-)
+from dimos.manipulation.planning.groups.discovery import FALLBACK_PLANNING_GROUP_NAME
+from dimos.manipulation.planning.groups.models import PlanningGroupDefinition
 from dimos.manipulation.planning.planning_identifiers import (
     assert_local_joint_names,
     assert_valid_robot_name,
@@ -50,6 +48,7 @@ class RobotModelConfig(ModuleConfig):
             group target frames instead.
         base_link: Compatibility robot-scoped base link used by current Drake
             weld/placement behavior. Planning groups own chain base links.
+            TODO: should remove
         package_paths: Dict mapping package names to filesystem Paths
         joint_limits_lower: Lower joint limits (radians)
         joint_limits_upper: Upper joint limits (radians)

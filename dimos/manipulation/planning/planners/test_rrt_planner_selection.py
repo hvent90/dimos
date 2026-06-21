@@ -23,7 +23,7 @@ from typing import cast
 
 import numpy as np
 
-from dimos.manipulation.planning.groups import PlanningGroup, PlanningGroupSelection
+from dimos.manipulation.planning.groups.models import PlanningGroup, PlanningGroupSelection
 from dimos.manipulation.planning.planners.rrt_planner import RRTConnectPlanner
 from dimos.manipulation.planning.spec.config import RobotModelConfig
 from dimos.manipulation.planning.spec.enums import PlanningStatus

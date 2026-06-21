@@ -20,7 +20,7 @@ from collections.abc import Mapping
 from pathlib import Path
 from typing import cast
 
-from dimos.manipulation.planning.groups import PlanningGroup
+from dimos.manipulation.planning.groups.models import PlanningGroup
 from dimos.manipulation.planning.kinematics.jacobian_ik import JacobianIK
 from dimos.manipulation.planning.spec.config import RobotModelConfig
 from dimos.manipulation.planning.spec.enums import IKStatus

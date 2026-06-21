@@ -144,9 +144,6 @@ class FakeOperationAdapter(InProcessViserAdapter):
     def plan_target_set(self, joint_targets: dict[str, JointState]) -> bool:
         return True
 
-    def preview_target_set_plan(self) -> bool:
-        return True
-
 
 def test_operation_worker_uses_per_operation_timeout() -> None:
     errors: list[str] = []

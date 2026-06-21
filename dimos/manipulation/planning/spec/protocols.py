@@ -29,7 +29,7 @@ if TYPE_CHECKING:
     import numpy as np
     from numpy.typing import NDArray
 
-    from dimos.manipulation.planning.groups import PlanningGroup, PlanningGroupSelection
+    from dimos.manipulation.planning.groups.models import PlanningGroup, PlanningGroupSelection
     from dimos.manipulation.planning.spec.config import RobotModelConfig
     from dimos.manipulation.planning.spec.models import (
         GeneratedPlan,
@@ -168,7 +168,10 @@ class WorldSpec(Protocol):
         ...
 
     def get_ee_pose(self, ctx: Any, robot_id: WorldRobotID) -> PoseStamped:
-        """Get pose for a robot's unique pose-targetable planning group."""
+        """Get pose for a robot's unique pose-targetable planning group.
+
+        TODO: deprecate this.
+        """
         ...
 
     def get_link_pose(

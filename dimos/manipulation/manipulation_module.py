@@ -40,8 +40,8 @@ from dimos.core.core import rpc
 from dimos.core.module import Module, ModuleConfig
 from dimos.core.stream import In
 from dimos.manipulation.planning.factory import create_planning_specs, create_world
-from dimos.manipulation.planning.groups import (
-    PlanningGroup,
+from dimos.manipulation.planning.groups.models import PlanningGroup
+from dimos.manipulation.planning.groups.utils import (
     joint_target_to_global_names,
     planning_group_id_from_selector,
 )
@@ -1491,15 +1491,16 @@ class ManipulationModule(Module):
         return client.task_invoke(task_name, method, kwargs)
 
     @rpc
-    def execute(self, robot_name: RobotName | None = None) -> bool:
+    def execute(self) -> bool:
         """Execute planned trajectory via ControlCoordinator."""
-        return self.execute_plan(self._last_plan, robot_name)
+        return self.execute_plan(self._last_plan)
 
     @rpc
-    def execute_plan(
-        self, plan: GeneratedPlan | None = None, robot_name: RobotName | None = None
-    ) -> bool:
-        """Project and execute a generated plan through affected trajectory tasks."""
+    def execute_plan(self, plan: GeneratedPlan | None = None) -> bool:
+        """Project and execute a generated plan through affected trajectory tasks.
+
+        TODO: proper time parametrization.
+        """
         plan = plan or self._last_plan
         if plan is None or not plan.path:
             logger.warning("No generated plan")
@@ -1513,19 +1514,14 @@ class ManipulationModule(Module):
         except Exception as exc:
             return self._fail(f"Failed to resolve generated plan: {exc}")
         logger.info(
-            "Execute plan: groups=%s, affected=%s, requested_robot=%s",
+            "Execute plan: groups=%s, affected=%s",
             plan.group_ids,
             affected,
-            robot_name,
         )
-        robot_names = [robot_name] if robot_name is not None else affected
         assert self._world_monitor is not None
 
         dispatches: list[tuple[RobotName, RobotModelConfig, JointTrajectory]] = []
-        for name in robot_names:
-            if name not in affected:
-                logger.error("Generated plan does not affect robot '%s'", name)
-                return False
+        for name in affected:
             robot = self._get_robot(name)
             if robot is None:
                 return False
@@ -1864,7 +1860,7 @@ class ManipulationModule(Module):
         self.preview_plan(duration=preview_duration, robot_name=robot_name)
 
         logger.info("Executing trajectory...")
-        if not self.execute(robot_name):
+        if not self.execute():
             return SkillResult.fail("EXECUTION_FAILED", "Trajectory execution failed")
 
         if not self._wait_for_trajectory_completion(robot_name):

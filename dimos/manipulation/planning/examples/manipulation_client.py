@@ -164,13 +164,13 @@ def preview(
     duration: float | None = None,
     robot_name: str | None = None,
 ) -> bool:
-    """Preview the last generated plan in Meshcat."""
+    """Preview the last generated plan in Visualizer."""
     return _client.preview_plan(None, duration, robot_name)
 
 
-def execute(robot_name: str | None = None) -> bool:
+def execute() -> bool:
     """Execute planned trajectory via coordinator."""
-    return _client.execute(robot_name)
+    return _client.execute()
 
 
 def home(robot_name: str | None = None) -> bool:
@@ -180,7 +180,7 @@ def home(robot_name: str | None = None) -> bool:
     home_joints = _client.get_robot_info(robot_name).get("home_joints", [0.0] * 7)
     success = _client.plan_to_joints(JointState(position=home_joints), robot_name)
     if success:
-        return _client.execute(robot_name)
+        return _client.execute()
     return False
 
 

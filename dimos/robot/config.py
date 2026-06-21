@@ -28,7 +28,7 @@ from pydantic import BaseModel, Field, PrivateAttr
 
 from dimos.control.components import HardwareComponent, HardwareType
 from dimos.control.coordinator import TaskConfig
-from dimos.manipulation.planning.groups import discover_planning_group_definitions
+from dimos.manipulation.planning.groups.discovery import discover_planning_group_definitions
 from dimos.manipulation.planning.planning_identifiers import make_global_joint_names
 from dimos.manipulation.planning.spec.config import RobotModelConfig
 from dimos.msgs.geometry_msgs.PoseStamped import PoseStamped

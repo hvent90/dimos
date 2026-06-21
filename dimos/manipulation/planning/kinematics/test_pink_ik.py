@@ -25,7 +25,7 @@ import numpy as np
 import pytest
 
 from dimos.manipulation.planning.factory import create_kinematics
-from dimos.manipulation.planning.groups import PlanningGroup
+from dimos.manipulation.planning.groups.models import PlanningGroup
 from dimos.manipulation.planning.kinematics.config import PinkKinematicsConfig
 from dimos.manipulation.planning.kinematics.pink_ik import (
     PinkIK,

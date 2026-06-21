@@ -1751,7 +1751,7 @@ def test_gui_can_disable_collision_check_for_cartesian_target_evaluation(
     gui = make_panel(
         FakeGuiServer(),
         adapter,
-        ViserVisualizationConfig(panel_enabled=True, target_evaluation_check_collision=False),
+        ViserVisualizationConfig(panel_enabled=True),
         scene,
     )
     request = TargetEvaluationRequest(
