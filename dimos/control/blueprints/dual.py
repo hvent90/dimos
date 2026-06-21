@@ -21,38 +21,66 @@ Usage:
 
 from __future__ import annotations
 
-from dimos.control.coordinator import ControlCoordinator
+from dimos.control.blueprints._hardware import manipulator
+from dimos.control.coordinator import ControlCoordinator, TaskConfig
 from dimos.core.global_config import global_config
-from dimos.robot.catalog.piper import piper as _catalog_piper
-from dimos.robot.catalog.ufactory import xarm6 as _catalog_xarm6, xarm7 as _catalog_xarm7
 
 # Dual XArm (XArm7 left, XArm6 right)
-_xarm7_left = _catalog_xarm7(name="left_arm", adapter_type="xarm", address=global_config.xarm7_ip)
-_xarm6_right = _catalog_xarm6(
-    name="right_arm", adapter_type="xarm", address=global_config.xarm6_ip, add_gripper=False
+_xarm7_left = manipulator(
+    "left_arm",
+    7,
+    adapter_type="xarm",
+    address=global_config.xarm7_ip,
+)
+_xarm6_right = manipulator(
+    "right_arm",
+    6,
+    adapter_type="xarm",
+    address=global_config.xarm6_ip,
 )
 
 coordinator_dual_xarm = ControlCoordinator.blueprint(
-    hardware=[_xarm7_left.to_hardware_component(), _xarm6_right.to_hardware_component()],
+    hardware=[_xarm7_left, _xarm6_right],
     tasks=[
-        _xarm7_left.to_task_config(),
-        _xarm6_right.to_task_config(),
+        TaskConfig(
+            name="traj_left_arm",
+            type="trajectory",
+            joint_names=_xarm7_left.joints,
+            priority=10,
+        ),
+        TaskConfig(
+            name="traj_right_arm",
+            type="trajectory",
+            joint_names=_xarm6_right.joints,
+            priority=10,
+        ),
     ],
 )
 
 # Dual arm (XArm6 + Piper)
-_xarm6_dual = _catalog_xarm6(
-    name="xarm_arm", adapter_type="xarm", address=global_config.xarm6_ip, add_gripper=False
+_xarm6_dual = manipulator(
+    "xarm_arm",
+    6,
+    adapter_type="xarm",
+    address=global_config.xarm6_ip,
 )
-_piper_dual = _catalog_piper(
-    name="piper_arm", adapter_type="piper", address=global_config.can_port or "can0"
+_piper_dual = manipulator(
+    "piper_arm",
+    6,
+    adapter_type="piper",
+    address=global_config.can_port or "can0",
+    gripper=True,
 )
 
 coordinator_piper_xarm = ControlCoordinator.blueprint(
-    hardware=[_xarm6_dual.to_hardware_component(), _piper_dual.to_hardware_component()],
+    hardware=[_xarm6_dual, _piper_dual],
     tasks=[
-        _xarm6_dual.to_task_config(task_name="traj_xarm"),
-        _piper_dual.to_task_config(task_name="traj_piper"),
+        TaskConfig(
+            name="traj_xarm", type="trajectory", joint_names=_xarm6_dual.joints, priority=10
+        ),
+        TaskConfig(
+            name="traj_piper", type="trajectory", joint_names=_piper_dual.joints, priority=10
+        ),
     ],
 )
 

@@ -420,6 +420,3 @@ class TickLoop:
         )
         if self._publish_callback:
             self._publish_callback(msg)
-
-
-__all__ = ["TickLoop"]
