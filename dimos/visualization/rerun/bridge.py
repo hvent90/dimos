@@ -174,7 +174,21 @@ def _default_pubsubs(config: Any = None) -> list[SubscribeAllCapable[Any, Any]]:
     """
     transport = getattr(config, "transport", None) or global_config.transport
     if transport == "zenoh":
-        return [Zenoh(), LCM()]
+        # Thread the parent's zenoh endpoints into the session: worker processes
+        # don't see CLI overrides (e.g. --zenoh-connect) via the module-level
+        # global_config singleton, so a bare Zenoh() would fall back to multicast
+        # scouting and silently fail to reach a router across WiFi.
+        zkwargs: dict[str, Any] = {}
+        connect = getattr(config, "zenoh_connect", None)
+        if connect:
+            zkwargs["connect"] = [e.strip() for e in connect.split(",") if e.strip()]
+        listen = getattr(config, "zenoh_listen", None)
+        if listen:
+            zkwargs["listen"] = [e.strip() for e in listen.split(",") if e.strip()]
+        iface = getattr(config, "zenoh_iface", None)
+        if iface:
+            zkwargs["multicast_iface"] = iface
+        return [Zenoh(**zkwargs), LCM()]
     return [LCM()]
 
 

@@ -209,7 +209,8 @@ class ZenohPubSubBase(ZenohService, AllPubSub[Topic, bytes]):
                 for msg, topic in batch:
                     try:
                         callback(msg, topic)
-                    except Exception:
+                    except Exception as e:
+                        print(e)
                         logger.error("Error in subscribe_all callback", exc_info=True)
 
         thread = threading.Thread(target=drain, name="zenoh-subscribe-all", daemon=True)

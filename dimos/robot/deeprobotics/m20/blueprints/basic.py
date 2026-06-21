@@ -20,31 +20,18 @@
 teleop or nav source into the manager's inputs to drive.
 """
 
-import platform
 from typing import Any
 
-from dimos.constants import DEFAULT_CAPACITY_COLOR_IMAGE
 from dimos.core.coordination.blueprints import autoconnect
-from dimos.core.global_config import global_config
-from dimos.core.transport import pSHMTransport
-from dimos.msgs.sensor_msgs.Image import Image
 from dimos.navigation.movement_manager.movement_manager import MovementManager
 from dimos.robot.deeprobotics.m20.connection import M20Connection
-from dimos.visualization.vis_module import vis_module
-
-# Images are large; keep them on shared memory rather than UDP (esp. on macOS).
-_image_transports: dict[tuple[str, type], pSHMTransport[Image]] = {
-    (name, Image): pSHMTransport(name, default_capacity=DEFAULT_CAPACITY_COLOR_IMAGE)
-    for name in ("color_image", "color_image_rear")
-}
-
-_transports_base = (
-    autoconnect() if platform.system() == "Linux" else autoconnect().transports(_image_transports)
-)
+from dimos.robot.deeprobotics.m20.tf import M20TF
+from dimos.visualization.rerun.bridge import RerunBridgeModule
+from dimos.visualization.rerun.websocket_server import RerunWebSocketServer
+from dimos.web.websocket_vis.websocket_vis_module import WebsocketVisModule
 
 
-def _m20_rerun_blueprint() -> Any:
-    """Front + rear cameras stacked at left, 3D world view at right."""
+def m20_rerun_blueprint() -> Any:
     import rerun as rr
     import rerun.blueprint as rrb
 
@@ -69,38 +56,26 @@ def _m20_rerun_blueprint() -> Any:
     )
 
 
-rerun_config = {
-    "blueprint": _m20_rerun_blueprint,
-    "max_hz": {
-        "world/color_image": 0,
-        "world/color_image_rear": 0,
-    },
-}
-
-_with_vis = autoconnect(
-    _transports_base,
-    vis_module(
-        viewer_backend=global_config.viewer,
-        rerun_config=rerun_config,
+rerun = autoconnect(
+    RerunBridgeModule.blueprint(
+        blueprint=m20_rerun_blueprint,
+        max_hz={
+            "world/color_image": 0,
+            "world/color_image_rear": 0,
+        },
     ),
+    RerunWebSocketServer.blueprint(),
+    WebsocketVisModule.blueprint(),
 )
 
+
+m20 = autoconnect(
+    rerun,
+    M20TF.blueprint(),
+).global_config(n_workers=3)
+
 m20_api = autoconnect(
-    _with_vis,
+    m20,
     M20Connection.blueprint(ip="m20"),
     MovementManager.blueprint(),
 ).global_config(n_workers=3)
-
-
-m20_basic = autoconnect(
-    M20Connection.blueprint(ip="m20"),
-    MovementManager.blueprint(),
-    vis_module(viewer_backend=global_config.viewer, rerun_config=rerun_config),
-).global_config(n_workers=2)
-
-
-__all__ = [
-    "m20_api",
-    "m20_basic",
-    "rerun_config",
-]
