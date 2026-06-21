@@ -12,16 +12,20 @@
 # See the License for the specific language governing permissions and
 # limitations under the License.
 
-"""Python interface to the Rust voxel ray-tracing mapper."""
+from dimos.navigation.basic_path_follower.module import lookahead_distance
 
-from __future__ import annotations
 
-try:
-    from dimos_voxel_ray_tracing import VoxelRayMapper, local_bounds
-except ImportError as e:
-    raise ImportError(
-        "dimos_voxel_ray_tracing is not built. Run: "
-        "uv run maturin develop --uv -m dimos/mapping/ray_tracing/rust/Cargo.toml"
-    ) from e
+def test_lookahead_floor_at_low_speed():
+    assert lookahead_distance(0.1, 1.5, 0.4, 1.5) == 0.4
 
-__all__ = ["VoxelRayMapper", "local_bounds"]
+
+def test_lookahead_scales_in_linear_region():
+    assert lookahead_distance(0.5, 1.5, 0.4, 1.5) == 0.75
+
+
+def test_lookahead_clamped_at_ceiling():
+    assert lookahead_distance(2.0, 1.5, 0.4, 1.5) == 1.5
+
+
+def test_lookahead_monotonic_in_speed():
+    assert lookahead_distance(0.8, 1.5, 0.4, 1.5) > lookahead_distance(0.45, 1.5, 0.4, 1.5)

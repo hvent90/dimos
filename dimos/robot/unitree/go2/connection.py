@@ -68,6 +68,11 @@ class Go2Mode(str, Enum):
 class ConnectionConfig(ModuleConfig):
     ip: str = Field(default_factory=lambda m: m["g"].robot_ip)
     mode: Go2Mode = Go2Mode.DEFAULT
+    lidar: bool = True
+    camera: bool = True
+    # Top-level motion controller: "mcf" is the AI/sport mode that traverses
+    # terrain (stairs); "normal" is basic. None leaves the current mode as-is.
+    motion_mode: str | None = None
 
 
 class Go2ConnectionProtocol(Protocol):
@@ -83,6 +88,7 @@ class Go2ConnectionProtocol(Protocol):
     def liedown(self) -> bool: ...
     def balance_stand(self) -> bool: ...
     def set_obstacle_avoidance(self, enabled: bool = True) -> None: ...
+    def set_motion_mode(self, name: str) -> None: ...
     def enable_rage_mode(self) -> bool: ...
     def publish_request(self, topic: str, data: dict) -> dict: ...  # type: ignore[type-arg]
 
@@ -172,6 +178,9 @@ class ReplayConnection(UnitreeWebRTCConnection, CompositeResource):
     def set_obstacle_avoidance(self, enabled: bool = True) -> None:
         pass
 
+    def set_motion_mode(self, name: str) -> None:
+        pass
+
     def enable_rage_mode(self) -> bool:
         return True
 
@@ -242,16 +251,23 @@ class GO2Connection(Module, Camera, Pointcloud):
             self.color_image.publish(image)
             self._latest_video_frame = image
 
-        self.register_disposable(self.connection.lidar_stream().subscribe(self.lidar.publish))
+        if self.config.lidar:
+            self.register_disposable(self.connection.lidar_stream().subscribe(self.lidar.publish))
         self.register_disposable(self.connection.odom_stream().subscribe(self._publish_tf))
-        self.register_disposable(self.connection.video_stream().subscribe(onimage))
         self.register_disposable(Disposable(self.cmd_vel.subscribe(self.move)))
 
-        self._camera_info_thread = Thread(
-            target=self.publish_camera_info,
-            daemon=True,
-        )
-        self._camera_info_thread.start()
+        if self.config.camera:
+            self.register_disposable(self.connection.video_stream().subscribe(onimage))
+            self._camera_info_thread = Thread(
+                target=self.publish_camera_info,
+                daemon=True,
+            )
+            self._camera_info_thread.start()
+
+        # Select the terrain-capable controller (mcf) before standing, so the
+        # robot can walk up and down stairs under our velocity commands.
+        if self.config.motion_mode:
+            self.connection.set_motion_mode(self.config.motion_mode)
 
         self.standup()
         time.sleep(3)

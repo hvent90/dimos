@@ -353,6 +353,14 @@ class RerunBridgeModule(Module):
         if not rerun_data:
             return
 
+        # Place data on the timeline by capture time, not by when the bridge got
+        # to it. Otherwise heavy messages (clouds) log late and desync from light
+        # ones (path, pose) captured at the same instant. View on the "capture"
+        # timeline for synchronized playback.
+        ts = getattr(msg, "ts", None)
+        if ts is not None:
+            rr.set_time("capture", timestamp=ts)
+
         # TFMessage for example returns list of (entity_path, archetype) tuples
         if is_rerun_multi(rerun_data):
             for path, archetype in rerun_data:
