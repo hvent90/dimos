@@ -13,11 +13,9 @@
 # See the License for the specific language governing permissions and
 # limitations under the License.
 
+from datetime import datetime
 import os
-import time
-from typing import Any
-
-from reactivex.disposable import Disposable
+from pathlib import Path
 
 from dimos.core.coordination.blueprints import autoconnect
 from dimos.core.coordination.module_coordinator import ModuleCoordinator
@@ -25,13 +23,14 @@ from dimos.core.global_config import global_config
 from dimos.core.stream import In
 from dimos.hardware.sensors.camera.realsense.camera import RealSenseCamera
 from dimos.hardware.sensors.lidar.fastlio2.module import FastLio2
-from dimos.hardware.sensors.lidar.fastlio2.recorder import FastLio2Recorder, _default_recording_dir
+from dimos.hardware.sensors.lidar.fastlio2.recorder import FastLio2Recorder
 from dimos.hardware.sensors.lidar.livox.module import Mid360
 from dimos.mapping.recording.mid360_realsense.static_transforms import (
     MID360_TO_WORLD,
     REALSENSE_COLOR_OPTICAL_FRAME_TO_MID360_IMU_FRAME,
 )
-from dimos.memory2.stream import Stream
+from dimos.memory2.module import pose_setter_for
+from dimos.msgs.geometry_msgs.Pose import Pose
 from dimos.msgs.geometry_msgs.Transform import Transform
 from dimos.msgs.nav_msgs.Odometry import Odometry
 from dimos.msgs.sensor_msgs.CameraInfo import CameraInfo
@@ -61,6 +60,12 @@ WORLD_TO_FASTLIO_WORLD = Transform(
 _LIDAR_IP = os.getenv("LIDAR_IP", "192.168.1.107")
 
 
+def _default_recording_dir() -> Path:
+    now = datetime.now()
+    stamp = now.strftime("%Y-%m-%d") + "_" + now.strftime("%I-%M%p").lower() + "-PST"
+    return Path("recordings") / stamp
+
+
 class TfHackRecorder(FastLio2Recorder):
     """Records with statically-applied transforms instead of querying tf.
 
@@ -72,7 +77,7 @@ class TfHackRecorder(FastLio2Recorder):
     - ``fastlio_lidar`` / ``fastlio_odometry`` -> ``mid360_link`` pose in world
     - ``color_image`` / ``realsense_depth_image`` / ``realsense_pointcloud``
       -> ``camera_optical`` pose in world
-    - everything else (odom, camera_info, imu) -> no pose
+    - everything else (odom, camera_info, imu) -> tf fallback / no pose
     """
 
     fastlio_lidar: In[PointCloud2]
@@ -85,43 +90,26 @@ class TfHackRecorder(FastLio2Recorder):
     realsense_imu: In[Imu]
     livox_lidar: In[PointCloud2]
     livox_imu: In[Imu]
-    # Shadow the parent's generic companion ports so they're not recorded as
-    # empty `lidar`/`odom` streams; the prefixed ports above take their place.
-    lidar: None = None  # type: ignore[assignment]
-    odom: None = None  # type: ignore[assignment]
 
     _latest_fastlio_odom: Odometry | None = None
-    _warning_names: set[str] = set()
 
-    def _port_to_stream(self, name: str, input_topic: In[Any], stream: Stream[Any]) -> None:
-        def on_msg(msg: Any) -> None:
-            ts = time.time()
-            pose = None
-            if name == "fastlio_odometry":
-                self._latest_fastlio_odom = msg
-                world_to_mid360 = self._world_to_mid360_from_fastlio()
-                if world_to_mid360 is not None:
-                    pose = world_to_mid360.to_pose()
-            elif name == "fastlio_lidar":
-                world_to_mid360 = self._world_to_mid360_from_fastlio()
-                if world_to_mid360 is not None:
-                    pose = world_to_mid360.to_pose()
-            elif name in ("color_image", "realsense_depth_image", "realsense_pointcloud"):
-                world_to_mid360 = self._world_to_mid360_from_fastlio()
-                if world_to_mid360 is not None:
-                    pose = (world_to_mid360 + MID360_TO_CAMERA_OPTICAL).to_pose()
-            elif name == "go2_odom" or name == "odom":
-                pose = msg
-            elif "odom" in name or "camera_info" in name or "imu" in name:
-                pass
-            else:
-                if name not in self._warning_names:
-                    self._warning_names.add(name)
-                    logger.warning(f"cannot compute pose for {name}; recording without pose")
+    @pose_setter_for("fastlio_odometry")
+    def _odom_pose(self, msg: Odometry) -> Pose | None:
+        self._latest_fastlio_odom = msg
+        world_to_mid360 = self._world_to_mid360_from_fastlio()
+        return world_to_mid360.to_pose() if world_to_mid360 is not None else None
 
-            stream.append(msg, ts=ts, pose=pose)
+    @pose_setter_for("fastlio_lidar")
+    def _lidar_pose(self, msg: PointCloud2) -> Pose | None:
+        world_to_mid360 = self._world_to_mid360_from_fastlio()
+        return world_to_mid360.to_pose() if world_to_mid360 is not None else None
 
-        self.register_disposable(Disposable(input_topic.subscribe(on_msg)))
+    @pose_setter_for("color_image", "realsense_depth_image", "realsense_pointcloud")
+    def _camera_pose(self, msg: object) -> Pose | None:
+        world_to_mid360 = self._world_to_mid360_from_fastlio()
+        if world_to_mid360 is None:
+            return None
+        return (world_to_mid360 + MID360_TO_CAMERA_OPTICAL).to_pose()
 
     def _world_to_mid360_from_fastlio(self) -> Transform | None:
         odom = self._latest_fastlio_odom
@@ -159,7 +147,6 @@ realsense_mid360_record = autoconnect(
     ),
     FastLio2.blueprint(
         frame_id="world",
-        map_freq=-1,
         lidar_ip=_LIDAR_IP,
     ).remappings(
         [
@@ -167,7 +154,7 @@ realsense_mid360_record = autoconnect(
             (FastLio2, "odometry", "fastlio_odometry"),
         ]
     ),
-    TfHackRecorder.blueprint(lidar_ip=_LIDAR_IP, record_pcap=True),
+    TfHackRecorder.blueprint(),
 ).global_config(n_workers=6)
 
 
@@ -178,6 +165,6 @@ if __name__ == "__main__":
     global_config.obstacle_avoidance = False
     coordinator = ModuleCoordinator.build(
         realsense_mid360_record,
-        {TfHackRecorder.name: {"recording_dir": recording_dir}},
+        {TfHackRecorder.name: {"db_path": str(recording_dir / "mem2.db")}},
     )
     coordinator.loop()

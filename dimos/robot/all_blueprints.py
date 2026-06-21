@@ -54,6 +54,7 @@ all_blueprints = {
     "demo-object-scene-registration": "dimos.perception.demo_object_scene_registration:demo_object_scene_registration",
     "demo-osm": "dimos.mapping.osm.demo_osm:demo_osm",
     "demo-skill": "dimos.agents.skills.demo_skill:demo_skill",
+    "demo-virtual-mid360-fastlio": "dimos.hardware.sensors.lidar.virtual_mid360.blueprints:demo_virtual_mid360_fastlio",
     "demo-virtual-mid360-pointlio": "dimos.hardware.sensors.lidar.virtual_mid360.blueprints:demo_virtual_mid360_pointlio",
     "desk-marker-tf": "dimos.perception.fiducial.blueprints.desk_marker_tf:desk_marker_tf",
     "drone-agentic": "dimos.robot.drone.blueprints.agentic.drone_agentic:drone_agentic",
@@ -137,11 +138,9 @@ all_blueprints = {
 
 all_modules = {
     "alfred-high-level": "dimos.robot.diy.alfred.effector_high_level.AlfredHighLevel",
-    "arise-sim-adapter": "dimos.navigation.smart_nav.arise_sim_adapter.AriseSimAdapter",
     "arm-teleop-module": "dimos.teleop.quest.quest_extensions.ArmTeleopModule",
     "b-box-navigation-module": "dimos.navigation.bbox_navigation.BBoxNavigationModule",
     "b1-connection-module": "dimos.robot.unitree.b1.connection.B1ConnectionModule",
-    "better-fast-lio2": "dimos.navigation.smart_nav.modules.better_fastlio2.better_fastlio2.BetterFastLio2",
     "camera-module": "dimos.hardware.sensors.camera.module.CameraModule",
     "cartesian-motion-controller": "dimos.manipulation.control.servo_control.cartesian_motion_controller.CartesianMotionController",
     "click-start-goal-router": "dimos.navigation.nav_stack.modules.click_start_goal_router.click_start_goal_router.ClickStartGoalRouter",
@@ -162,7 +161,6 @@ all_modules = {
     "evaluator": "dimos.navigation.nav_3d.evaluator.evaluator.Evaluator",
     "far-planner": "dimos.navigation.nav_stack.modules.far_planner.far_planner.FarPlanner",
     "fast-lio2": "dimos.hardware.sensors.lidar.fastlio2.module.FastLio2",
-    "fast-lio2-no-cap": "dimos.mapping.recording.go2_mid360.record.FastLio2NoCap",
     "fast-lio2-recorder": "dimos.hardware.sensors.lidar.fastlio2.recorder.FastLio2Recorder",
     "g1-connection": "dimos.robot.unitree.g1.connection.G1Connection",
     "g1-connection-base": "dimos.robot.unitree.g1.connection.G1ConnectionBase",
@@ -235,7 +233,6 @@ all_modules = {
     "semantic-search": "dimos.memory2.module.SemanticSearch",
     "simple-phone-teleop": "dimos.teleop.phone.phone_extensions.SimplePhoneTeleop",
     "simple-planner": "dimos.navigation.nav_stack.modules.simple_planner.simple_planner.SimplePlanner",
-    "slam-sim-adapter": "dimos.navigation.smart_nav.slam_sim_adapter.SlamSimAdapter",
     "spatial-memory": "dimos.perception.spatial_perception.SpatialMemory",
     "speak-skill": "dimos.agents.skills.speak_skill.SpeakSkill",
     "speed-warner": "dimos.hardware.sensors.lidar.fastlio2.speed_warner.SpeedWarner",
@@ -258,4 +255,5 @@ all_modules = {
     "web-input": "dimos.agents.web_human_input.WebInput",
     "websocket-vis-module": "dimos.web.websocket_vis.websocket_vis_module.WebsocketVisModule",
     "zed-camera": "dimos.hardware.sensors.camera.zed.camera.ZEDCamera",
+    "zed-simple": "dimos.hardware.sensors.camera.zed.simple.ZedSimple",
 }

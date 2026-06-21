@@ -13,25 +13,25 @@
 # See the License for the specific language governing permissions and
 # limitations under the License.
 
+from datetime import datetime
 import os
-import time
+from pathlib import Path
 from typing import Any
-
-from reactivex.disposable import Disposable
 
 from dimos.core.coordination.blueprints import autoconnect
 from dimos.core.coordination.module_coordinator import ModuleCoordinator
 from dimos.core.global_config import global_config
 from dimos.core.stream import In
 from dimos.hardware.sensors.lidar.fastlio2.module import FastLio2
-from dimos.hardware.sensors.lidar.fastlio2.recorder import FastLio2Recorder, _default_recording_dir
+from dimos.hardware.sensors.lidar.fastlio2.recorder import FastLio2Recorder
 from dimos.hardware.sensors.lidar.fastlio2.speed_warner import SpeedWarner
 from dimos.hardware.sensors.lidar.livox.module import Mid360
 from dimos.mapping.recording.go2_mid360.static_transforms import (
     BASE_TO_CAMERA_OPTICAL,
     MID360_TO_BASE,
 )
-from dimos.memory2.stream import Stream
+from dimos.memory2.module import pose_setter_for
+from dimos.msgs.geometry_msgs.Pose import Pose
 from dimos.msgs.geometry_msgs.PoseStamped import PoseStamped
 from dimos.msgs.geometry_msgs.Transform import Transform
 from dimos.msgs.nav_msgs.Odometry import Odometry
@@ -49,6 +49,12 @@ _LIDAR_IP = os.getenv("LIDAR_IP", "192.168.1.171")
 _LIDAR_HOST_IP = os.getenv("LIDAR_HOST_IP", "192.168.1.100")
 
 
+def _default_recording_dir() -> Path:
+    now = datetime.now()
+    stamp = now.strftime("%Y-%m-%d") + "_" + now.strftime("%I-%M%p").lower() + "-PST"
+    return Path("recordings") / stamp
+
+
 class Go2TfHackRecorder(FastLio2Recorder):
     """Records with statically-applied transforms instead of querying tf.
 
@@ -60,7 +66,7 @@ class Go2TfHackRecorder(FastLio2Recorder):
     - ``fastlio_lidar`` -> ``base_link`` pose in world (odom, then mid360_link -> base_link)
     - ``color_image``   -> ``camera_optical`` pose in world (odom, mid360_link -> base_link,
       then base_link -> camera_optical)
-    - everything else (odom streams included) -> no pose
+    - everything else (odom streams, imu) -> tf fallback / no pose
     """
 
     fastlio_lidar: In[PointCloud2]
@@ -72,42 +78,30 @@ class Go2TfHackRecorder(FastLio2Recorder):
     zed_imu: In[Imu]
     livox_lidar: In[PointCloud2]
     livox_imu: In[Imu]
-    # Shadow the parent's generic companion ports so they're not recorded as
-    # empty `lidar`/`odom` streams; the go2-prefixed ports above take their place.
-    lidar: None = None  # type: ignore[assignment]
-    odom: None = None  # type: ignore[assignment]
 
     _latest_fastlio_odom: Odometry | None = None
-    _warning_names: set[str] = set()
 
-    def _port_to_stream(self, name: str, input_topic: In[Any], stream: Stream[Any]) -> None:
-        def on_msg(msg: Any) -> None:
-            ts = time.time()
-            pose = None
-            if name == "fastlio_odometry" or name == "fastlio_odometry_no_cap":
-                self._latest_fastlio_odom = msg
-                world_to_base = self._world_to_base_from_fastlio()
-                if world_to_base is not None:
-                    pose = world_to_base.to_pose()
-            elif name == "fastlio_lidar" or name == "fastlio_lidar_no_cap":
-                world_to_base = self._world_to_base_from_fastlio()
-                if world_to_base is not None:
-                    pose = world_to_base.to_pose()
-            elif name in ("color_image", "go2_color_image", "zed_color_image"):
-                # anchor images to world frame as defined by fastlio odom
-                world_to_base = self._world_to_base_from_fastlio()
-                if world_to_base is not None:
-                    pose = (world_to_base + BASE_TO_CAMERA_OPTICAL).to_pose()
-            elif name == "go2_odom" or name == "odom":
-                pose = msg
-            else:
-                if name not in self._warning_names:
-                    self._warning_names.add(name)
-                    logger.warning(f"cannot compute pose for {name}; recording without pose")
+    @pose_setter_for("fastlio_odometry")
+    def _odom_pose(self, msg: Odometry) -> Pose | None:
+        self._latest_fastlio_odom = msg
+        world_to_base = self._world_to_base_from_fastlio()
+        return world_to_base.to_pose() if world_to_base is not None else None
 
-            stream.append(msg, ts=ts, pose=pose)
+    @pose_setter_for("fastlio_lidar")
+    def _lidar_pose(self, msg: PointCloud2) -> Pose | None:
+        world_to_base = self._world_to_base_from_fastlio()
+        return world_to_base.to_pose() if world_to_base is not None else None
 
-        self.register_disposable(Disposable(input_topic.subscribe(on_msg)))
+    @pose_setter_for("color_image", "zed_color_image")
+    def _image_pose(self, msg: Image) -> Pose | None:
+        world_to_base = self._world_to_base_from_fastlio()
+        if world_to_base is None:
+            return None
+        return (world_to_base + BASE_TO_CAMERA_OPTICAL).to_pose()
+
+    @pose_setter_for("go2_odom")
+    def _go2_odom_pose(self, msg: PoseStamped) -> Pose | None:
+        return msg
 
     def _world_to_base_from_fastlio(self) -> Transform | None:
         odom = self._latest_fastlio_odom
@@ -121,10 +115,6 @@ class Go2TfHackRecorder(FastLio2Recorder):
             ts=odom.ts,
         )
         return world_to_mid360 + MID360_TO_BASE
-
-
-class FastLio2NoCap(FastLio2):
-    pass
 
 
 def _zed_camera_blueprint() -> Any:
@@ -175,7 +165,6 @@ unitree_go2_record = autoconnect(
     ),
     FastLio2.blueprint(
         frame_id="world",
-        map_freq=-1,
         lidar_ip=_LIDAR_IP,
     ).remappings(
         [
@@ -183,7 +172,7 @@ unitree_go2_record = autoconnect(
             (FastLio2, "odometry", "fastlio_odometry"),
         ]
     ),
-    Go2TfHackRecorder.blueprint(lidar_ip=_LIDAR_IP, record_pcap=True),
+    Go2TfHackRecorder.blueprint(),
     SpeedWarner.blueprint().remappings(
         [
             (SpeedWarner, "odometry", "fastlio_odometry"),
@@ -207,6 +196,6 @@ if __name__ == "__main__":
     global_config.obstacle_avoidance = False
     coordinator = ModuleCoordinator.build(
         unitree_go2_record,
-        {Go2TfHackRecorder.name: {"recording_dir": recording_dir}},
+        {Go2TfHackRecorder.name: {"db_path": str(recording_dir / "mem2.db")}},
     )
     coordinator.loop()
