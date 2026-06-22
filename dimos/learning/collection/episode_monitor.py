@@ -108,7 +108,6 @@ class EpisodeMonitorModule(Module):
             status = self._snapshot("init", time.time())
         return self._emit(status)
 
-
     # ── port handlers ────────────────────────────────────────────────────────
 
     def _on_buttons(self, msg: Buttons) -> None:
