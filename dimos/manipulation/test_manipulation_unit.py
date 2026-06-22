@@ -165,20 +165,18 @@ class TestStateMachine:
         module = _make_module()
         module._world_monitor = MagicMock()
         module._robots = {"test_arm": ("robot_id", robot_config, MagicMock())}
-        group_ids = ("test_arm/manipulator",)
-
         # From IDLE - OK
         module._state = ManipulationState.IDLE
-        assert module._begin_planning(group_ids) == group_ids
+        assert module._begin_planning() is True
         assert module._state == ManipulationState.PLANNING
 
         # From COMPLETED - OK
         module._state = ManipulationState.COMPLETED
-        assert module._begin_planning(group_ids) == group_ids
+        assert module._begin_planning() is True
 
         # From EXECUTING - Fail
         module._state = ManipulationState.EXECUTING
-        assert module._begin_planning(group_ids) is None
+        assert module._begin_planning() is False
 
 
 class TestRobotSelection:
@@ -383,7 +381,7 @@ class TestPlanningInitialization:
             name=["joint1", "joint2", "joint3"], position=[0.0, 2.0, 3.0]
         )
         pose = PoseStamped(position=Vector3(x=1.0), orientation=Quaternion())
-        module._world_monitor.get_group_pose.return_value = pose
+        module._world_monitor.get_group_ee_pose.return_value = pose
 
         result = module.forward_kinematics(
             "test_arm/wrist",
@@ -392,7 +390,7 @@ class TestPlanningInitialization:
 
         assert result.status == "VALID"
         assert result.pose is pose
-        resolved_state = module._world_monitor.get_group_pose.call_args.args[1]
+        resolved_state = module._world_monitor.get_group_ee_pose.call_args.args[1]
         assert resolved_state.name == ["joint1", "joint2", "joint3"]
         assert resolved_state.position == [1.0, 9.0, 3.0]
 

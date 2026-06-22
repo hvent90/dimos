@@ -17,11 +17,9 @@ from __future__ import annotations
 from collections.abc import Mapping, Sequence
 from typing import TYPE_CHECKING, cast
 
+from dimos.manipulation.planning.groups.models import PlanningGroup
 from dimos.manipulation.planning.spec.models import PlanningGroupID, RobotName
-from dimos.manipulation.visualization.types import (
-    PlanningGroupInfo,
-    TargetSetEvaluation,
-)
+from dimos.manipulation.visualization.types import TargetSetEvaluation
 from dimos.manipulation.visualization.viser.state import FeasibilityStatus
 from dimos.msgs.geometry_msgs.Pose import Pose
 from dimos.msgs.geometry_msgs.PoseStamped import PoseStamped
@@ -62,7 +60,7 @@ def is_state_stale(
 def get_ee_pose(
     world_monitor: WorldMonitor,
     manipulation_module: ManipulationModule,
-    groups: Sequence[PlanningGroupInfo],
+    groups: Sequence[PlanningGroup],
     robot_name: RobotName,
     joint_state: JointState | None = None,
 ) -> Pose | None:
@@ -193,11 +191,11 @@ def evaluate_global_target_set(
 
 
 def primary_pose_group_id(
-    groups: Sequence[PlanningGroupInfo], robot_name: RobotName
+    groups: Sequence[PlanningGroup], robot_name: RobotName
 ) -> PlanningGroupID | None:
     for group in groups:
-        if str(group["robot_name"]) == robot_name and bool(group["has_pose_target"]):
-            return str(group["id"])
+        if group.robot_name == robot_name and group.has_pose_target:
+            return group.id
     return None
 
 

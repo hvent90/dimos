@@ -25,13 +25,14 @@ import pytest
 
 pytest.importorskip("viser", reason="Viser optional dependency is not installed")
 
+from dimos.manipulation.planning.groups.models import PlanningGroup
 from dimos.manipulation.planning.spec.enums import IKStatus
 from dimos.manipulation.planning.spec.models import (
     CollisionCheckResult,
     ForwardKinematicsResult,
     IKResult,
 )
-from dimos.manipulation.visualization.types import PlanningGroupInfo, RobotInfo
+from dimos.manipulation.visualization.types import RobotInfo
 from dimos.manipulation.visualization.viser import scene as scene_module
 from dimos.manipulation.visualization.viser.animation import (
     GroupPreviewAnimation,
@@ -388,19 +389,18 @@ def make_planning_group_info(
     *,
     group_name: str = "manipulator",
     has_pose_target: bool = True,
-) -> dict[str, object]:
+) -> PlanningGroup:
     joint_names = [str(name) for name in config.joint_names]
-    return {
-        "id": f"{robot_name}:{group_name}",
-        "name": group_name,
-        "robot_name": robot_name,
-        "joint_names": [f"{robot_name}/{name}" for name in joint_names],
-        "local_joint_names": joint_names,
-        "base_link": str(config.base_link),
-        "tip_link": str(config.end_effector_link) if has_pose_target else None,
-        "has_pose_target": has_pose_target,
-        "source": "fallback",
-    }
+    return PlanningGroup(
+        id=f"{robot_name}:{group_name}",
+        group_name=group_name,
+        robot_name=robot_name,
+        joint_names=tuple(f"{robot_name}/{name}" for name in joint_names),
+        local_joint_names=tuple(joint_names),
+        base_link=str(config.base_link),
+        tip_link=str(config.end_effector_link) if has_pose_target else None,
+        source="fallback",
+    )
 
 
 class FakeManipulationModule(SimpleNamespace):
@@ -439,9 +439,7 @@ class FakeManipulationModule(SimpleNamespace):
         if planning_groups is None:
             planning_groups = [make_planning_group_info(robot_name, config)]
         else:
-            planning_groups = [
-                group for group in planning_groups if str(group["robot_name"]) == robot_name
-            ]
+            planning_groups = [group for group in planning_groups if group.robot_name == robot_name]
         return {
             "name": config.name,
             "world_robot_id": self.robot_id_for_name(robot_name) or robot_name,
@@ -458,8 +456,8 @@ class FakeManipulationModule(SimpleNamespace):
             "init_joints": list(init.position) if init is not None else None,
         }
 
-    def list_planning_groups(self) -> list[PlanningGroupInfo]:
-        groups: list[PlanningGroupInfo] = []
+    def list_planning_groups(self) -> list[PlanningGroup]:
+        groups: list[PlanningGroup] = []
         for robot_name in self.list_robots():
             info = self.get_robot_info(robot_name)
             if info is not None:
@@ -516,8 +514,8 @@ class FakeManipulationModule(SimpleNamespace):
         world_monitor = getattr(self, "_world_monitor", None)
         pose = None
         if world_monitor is not None and robot_id is not None:
-            if hasattr(world_monitor, "get_group_pose"):
-                pose = world_monitor.get_group_pose(group_id, target_joints)
+            if hasattr(world_monitor, "get_group_ee_pose"):
+                pose = world_monitor.get_group_ee_pose(group_id, target_joints)
             else:
                 pose = world_monitor.get_ee_pose(robot_id, target_joints)
         return ForwardKinematicsResult(

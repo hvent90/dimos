@@ -207,4 +207,4 @@ def test_group_pose_rejects_group_without_target_frame() -> None:
     world._finalized = True
 
     with pytest.raises(ValueError, match="left/waist.*no pose target frame"):
-        world.get_group_pose(None, "left/waist")
+        world.get_group_ee_pose(None, "left/waist")

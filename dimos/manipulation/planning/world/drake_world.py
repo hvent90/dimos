@@ -895,7 +895,7 @@ class DrakeWorld(WorldSpec, VisualizationSpec):
         if robot_data.ee_frame is None:
             raise ValueError(
                 f"Robot '{robot_id}' has no robot-scoped end-effector link; "
-                "use get_group_pose() with an explicit planning group ID"
+                "use get_group_ee_pose() with an explicit planning group ID"
             )
         plant_ctx = self._diagram.GetSubsystemContext(self._plant, ctx)
         full_positions = self._plant.GetPositions(plant_ctx)
@@ -985,7 +985,7 @@ class DrakeWorld(WorldSpec, VisualizationSpec):
 
     # Forward Kinematics (context-based)
 
-    def get_group_pose(self, ctx: Context, group_id: PlanningGroupID) -> PoseStamped:
+    def get_group_ee_pose(self, ctx: Context, group_id: PlanningGroupID) -> PoseStamped:
         """Get pose for a planning group's target frame."""
         if not self._finalized:
             raise RuntimeError("World must be finalized first")

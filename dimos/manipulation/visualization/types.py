@@ -16,6 +16,7 @@ from __future__ import annotations
 
 from typing import TypedDict
 
+from dimos.manipulation.planning.groups.models import PlanningGroup
 from dimos.manipulation.planning.spec.models import PlanningGroupID, RobotName, WorldRobotID
 from dimos.msgs.geometry_msgs.Pose import Pose
 from dimos.msgs.geometry_msgs.PoseStamped import PoseStamped
@@ -59,16 +60,4 @@ class RobotInfo(TypedDict, total=False):
     home_joints: list[float] | None
     pre_grasp_offset: float
     init_joints: list[float] | None
-    planning_groups: list[PlanningGroupInfo]
-
-
-class PlanningGroupInfo(TypedDict):
-    id: PlanningGroupID
-    name: str
-    robot_name: RobotName
-    joint_names: list[str]
-    local_joint_names: list[str]
-    base_link: str
-    tip_link: str | None
-    has_pose_target: bool
-    source: str
+    planning_groups: list[PlanningGroup]

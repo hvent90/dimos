@@ -26,6 +26,7 @@ import pytest
 
 from dimos.manipulation.planning.factory import create_kinematics
 from dimos.manipulation.planning.groups.models import PlanningGroup
+from dimos.manipulation.planning.kinematics import pink_ik as pink_ik_module
 from dimos.manipulation.planning.kinematics.config import PinkKinematicsConfig
 from dimos.manipulation.planning.kinematics.pink_ik import (
     PinkIK,
@@ -33,7 +34,6 @@ from dimos.manipulation.planning.kinematics.pink_ik import (
     PinkIKDependencyError,
     _build_joint_mapping,
     _lock_uncontrolled_model_joints,
-    _PinkModules,
     _PinkRobotContext,
     _seed_for_robot_config,
     _seed_positions_for_mapping,
@@ -129,7 +129,7 @@ class _FakePostureTask:
         self.target = configuration.q.copy()
 
 
-def _fake_modules(converge: bool = True) -> _PinkModules:
+def _fake_modules(converge: bool = True) -> tuple[ModuleType, ModuleType]:
     pinocchio = ModuleType("pinocchio")
     pinocchio.SE3 = _FakeSE3  # type: ignore[attr-defined]
     pinocchio.neutral = lambda model: np.zeros(model.nq)  # type: ignore[attr-defined]
@@ -161,7 +161,15 @@ def _fake_modules(converge: bool = True) -> _PinkModules:
 
     pink.solve_ik = solve_ik  # type: ignore[attr-defined]
 
-    return _PinkModules(pink=pink, pinocchio=pinocchio)
+    return pink, pinocchio
+
+
+def _install_fake_modules(converge: bool = True) -> None:
+    pink, pinocchio = _fake_modules(converge=converge)
+    pink_ik_module.pink = pink
+    pink_ik_module.pinocchio = pinocchio
+    pink_ik_module.qpsolvers = SimpleNamespace(available_solvers=["proxqp"])
+    pink_ik_module._PINK_IMPORT_ERROR = None
 
 
 def _robot_config() -> RobotModelConfig:
@@ -187,7 +195,7 @@ def _pose_stamped(x: float, y: float, z: float, yaw: float = 0.0) -> PoseStamped
 class _TestPinkIK(PinkIK):
     def __init__(self, converge: bool = True) -> None:
         self.config = PinkIKConfig(max_iterations=3)
-        self._modules = _fake_modules(converge=converge)
+        _install_fake_modules(converge=converge)
         self._robot_contexts = {}
 
 
@@ -300,15 +308,13 @@ class _FakeMultiRobotWorld:
 def test_create_kinematics_pink_missing_dependency_is_actionable(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
-    from dimos.manipulation.planning.kinematics import pink_ik
-
     def missing_dependencies(_solver: str) -> object:
         raise PinkIKDependencyError(
             "Pink IK backend requires Pink. Install manipulation dependencies with: "
             "uv sync --extra manipulation. PyPI package: pin-pink; import name: pink."
         )
 
-    monkeypatch.setattr(pink_ik, "_load_optional_dependencies", missing_dependencies)
+    monkeypatch.setattr(pink_ik_module, "_check_optional_dependencies", missing_dependencies)
 
     with pytest.raises(PinkIKDependencyError) as exc_info:
         create_kinematics("pink")
@@ -319,24 +325,20 @@ def test_create_kinematics_pink_missing_dependency_is_actionable(
 def test_create_kinematics_pink_unavailable_solver_mentions_manipulation_extra(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
-    from dimos.manipulation.planning.kinematics import pink_ik
-
     def unavailable_solver(_solver: str) -> object:
         raise PinkIKDependencyError(
             "Pink IK solver 'proxqp' is not available from qpsolvers. "
             "Install manipulation dependencies with uv sync --extra manipulation."
         )
 
-    monkeypatch.setattr(pink_ik, "_load_optional_dependencies", unavailable_solver)
+    monkeypatch.setattr(pink_ik_module, "_check_optional_dependencies", unavailable_solver)
 
     with pytest.raises(PinkIKDependencyError, match="--extra manipulation"):
         create_kinematics("pink")
 
 
 def test_create_kinematics_pink_returns_backend(monkeypatch: pytest.MonkeyPatch) -> None:
-    from dimos.manipulation.planning.kinematics import pink_ik
-
-    monkeypatch.setattr(pink_ik, "_load_optional_dependencies", lambda solver: _fake_modules())
+    _install_fake_modules()
 
     assert isinstance(create_kinematics("pink"), PinkIK)
 
@@ -344,9 +346,7 @@ def test_create_kinematics_pink_returns_backend(monkeypatch: pytest.MonkeyPatch)
 def test_create_kinematics_pink_config_passes_tuning(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
-    from dimos.manipulation.planning.kinematics import pink_ik
-
-    monkeypatch.setattr(pink_ik, "_load_optional_dependencies", lambda solver: _fake_modules())
+    _install_fake_modules()
 
     ik = create_kinematics(config=PinkKinematicsConfig(max_iterations=7, dt=0.02, posture_cost=0.0))
 
@@ -357,9 +357,7 @@ def test_create_kinematics_pink_config_passes_tuning(
 
 
 def test_pink_ik_config_overrides_are_applied(monkeypatch: pytest.MonkeyPatch) -> None:
-    from dimos.manipulation.planning.kinematics import pink_ik
-
-    monkeypatch.setattr(pink_ik, "_load_optional_dependencies", lambda solver: _fake_modules())
+    _install_fake_modules()
 
     ik = PinkIK(PinkIKConfig(solver="proxqp", dt=0.1), max_iterations=7, posture_cost=0.0)
 

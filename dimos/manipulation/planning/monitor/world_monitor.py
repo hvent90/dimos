@@ -496,12 +496,12 @@ class WorldMonitor:
         self, robot_id: WorldRobotID, joint_state: JointState | None = None
     ) -> PoseStamped:
         """Get end-effector pose for the robot's unique pose-targetable group."""
-        return self.get_group_pose(
+        return self.get_group_ee_pose(
             self._unique_pose_group_id_for_robot(robot_id),
             joint_state=joint_state,
         )
 
-    def get_group_pose(
+    def get_group_ee_pose(
         self, group_id: PlanningGroupID, joint_state: JointState | None = None
     ) -> PoseStamped:
         """Get planning group target-frame pose using current state by default."""
@@ -512,7 +512,7 @@ class WorldMonitor:
             if joint_state is not None:
                 self._world.set_joint_state(ctx, robot_id, joint_state)
 
-            return self._world.get_group_pose(ctx, group_id)
+            return self._world.get_group_ee_pose(ctx, group_id)
 
     def get_link_pose(
         self, robot_id: WorldRobotID, link_name: str, joint_state: JointState | None = None
@@ -571,7 +571,7 @@ class WorldMonitor:
         if len(pose_group_ids) != 1:
             raise ValueError(
                 f"Robot '{robot_name}' has {len(pose_group_ids)} pose-targetable planning groups; "
-                "call get_group_pose/get_group_jacobian with an explicit planning group ID"
+                "call get_group_ee_pose/get_group_jacobian with an explicit planning group ID"
             )
         return pose_group_ids[0]
 

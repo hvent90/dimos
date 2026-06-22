@@ -159,7 +159,7 @@ class WorldSpec(Protocol):
         ...
 
     # Forward Kinematics (require context)
-    def get_group_pose(self, ctx: Any, group_id: PlanningGroupID) -> PoseStamped:
+    def get_group_ee_pose(self, ctx: Any, group_id: PlanningGroupID) -> PoseStamped:
         """Get pose for a planning group's target frame."""
         ...
 

@@ -22,7 +22,8 @@ import pytest
 
 pytest.importorskip("viser", reason="Viser optional dependency is not installed")
 
-from dimos.manipulation.visualization.types import PlanningGroupInfo, RobotInfo
+from dimos.manipulation.planning.groups.models import PlanningGroup
+from dimos.manipulation.visualization.types import RobotInfo
 from dimos.manipulation.visualization.viser.config import ViserVisualizationConfig
 from dimos.manipulation.visualization.viser.gui import ViserPanelGui
 from dimos.manipulation.visualization.viser.state import (
@@ -129,7 +130,7 @@ class FakeOperationAdapter:
     def get_robot_info(self, robot_name: str) -> RobotInfo | None:
         return None
 
-    def list_planning_groups(self) -> list[PlanningGroupInfo]:
+    def list_planning_groups(self) -> list[PlanningGroup]:
         return []
 
     def get_current_joint_state(self, robot_name: str) -> None:

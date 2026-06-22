@@ -79,7 +79,7 @@ from dimos.manipulation.visualization.config import (
     NoManipulationVisualizationConfig,
 )
 from dimos.manipulation.visualization.factory import create_manipulation_visualization
-from dimos.manipulation.visualization.types import PlanningGroupInfo, RobotInfo
+from dimos.manipulation.visualization.types import RobotInfo
 from dimos.msgs.geometry_msgs.Pose import Pose
 from dimos.msgs.geometry_msgs.PoseStamped import PoseStamped
 from dimos.msgs.geometry_msgs.Quaternion import Quaternion
@@ -368,7 +368,7 @@ class ManipulationModule(Module):
                     if pose_group_id is not None:
                         pose_group = self._world_monitor.planning_groups.get(pose_group_id)
                         target_frame = pose_group.tip_link
-                        ee_pose = self._world_monitor.get_group_pose(pose_group_id)
+                        ee_pose = self._world_monitor.get_group_ee_pose(pose_group_id)
                     else:
                         ee_pose = (
                             self._world_monitor.get_link_pose(robot_id, target_frame)
@@ -466,7 +466,7 @@ class ManipulationModule(Module):
             _, robot_id, config, _ = robot
             pose_group_id = self._primary_pose_group_id_for_robot(config.name)
             if pose_group_id is not None:
-                return self._world_monitor.get_group_pose(pose_group_id, joint_state=None)
+                return self._world_monitor.get_group_ee_pose(pose_group_id, joint_state=None)
             if config.end_effector_link is None:
                 return None
             return self._world_monitor.get_link_pose(robot_id, config.end_effector_link)
@@ -486,20 +486,18 @@ class ManipulationModule(Module):
             return self._world_monitor.is_state_valid(robot_id, joint_state)
         return False
 
-    def _begin_planning(
-        self, group_ids: Sequence[PlanningGroupID]
-    ) -> tuple[PlanningGroupID, ...] | None:
+    def _begin_planning(self) -> bool:
         """Check state and begin planning for the selected planning groups."""
         if self._world_monitor is None:
             logger.error("Planning not initialized")
-            return None
+            return False
         with self._lock:
             if self._state not in (ManipulationState.IDLE, ManipulationState.COMPLETED):
                 logger.warning(f"Cannot plan: state is {self._state.name}")
-                return None
+                return False
             self._planning_epoch += 1
             self._state = ManipulationState.PLANNING
-        return tuple(group_ids)
+        return True
 
     def _fail(self, msg: str) -> bool:
         """Set FAULT state with error message."""
@@ -525,29 +523,6 @@ class ManipulationModule(Module):
         assert self._world_monitor is not None
         return self._world_monitor.planning_groups.primary_pose_group_id_for_robot(robot_name)
 
-    def _current_positions_by_name(
-        self, robot_name: RobotName, current: JointState
-    ) -> dict[str, float] | None:
-        """Index a robot current state by local model joint name."""
-        if len(current.name) != len(current.position):
-            logger.error(
-                "Current state for '%s' has %d names but %d positions",
-                robot_name,
-                len(current.name),
-                len(current.position),
-            )
-            return None
-        if not current.name:
-            logger.error("Current state for '%s' has no joint names", robot_name)
-            return None
-        try:
-            assert_local_joint_names(current.name)
-        except ValueError as exc:
-            logger.error("Invalid current state for '%s': %s", robot_name, exc)
-            return None
-
-        return dict(zip(current.name, current.position, strict=True))
-
     def _selected_joint_state(self, group_ids: tuple[PlanningGroupID, ...]) -> JointState | None:
         """Collect current state for exactly the selected global joints."""
         assert self._world_monitor is not None
@@ -562,37 +537,8 @@ class ManipulationModule(Module):
         if current is None:
             logger.error("No fresh planning-world joint state")
             return None
-
-        # Compatibility for older tests/mocks that provide only robot-local
-        # get_current_joint_state() behavior instead of the new primitive.
-        robot_ids_by_name: dict[RobotName, WorldRobotID] = {}
-        for robot_name in selection.robot_names:
-            try:
-                robot_ids_by_name[robot_name] = self._robots[robot_name][0]
-            except KeyError:
-                logger.error("Robot '%s' is not registered", robot_name)
-                return None
-        names: list[str] = []
-        positions: list[float] = []
-        for group in selection.groups:
-            current_local = self._world_monitor.get_current_joint_state(
-                robot_ids_by_name[group.robot_name]
-            )
-            if current_local is None:
-                logger.error("No joint state for robot '%s'", group.robot_name)
-                return None
-            current_by_name = self._current_positions_by_name(group.robot_name, current_local)
-            if current_by_name is None:
-                return None
-            for global_name, local_name in zip(
-                group.joint_names, group.local_joint_names, strict=True
-            ):
-                if local_name not in current_by_name:
-                    logger.error("Current state missing selected joint '%s'", global_name)
-                    return None
-                names.append(global_name)
-                positions.append(float(current_by_name[local_name]))
-        return JointState(name=names, position=positions)
+        logger.error("Invalid planning-world joint state")
+        return None
 
     def _joint_target_to_global_names(
         self, group_id: PlanningGroupID, target: JointState
@@ -679,9 +625,9 @@ class ManipulationModule(Module):
             return []
         return list(self._world_monitor.planning_groups.list())
 
-    def list_planning_groups(self) -> list[PlanningGroupInfo]:
-        """Return all planning groups as visualization-friendly typed dictionaries."""
-        return [self._planning_group_info(group) for group in self._planning_group_models()]
+    def list_planning_groups(self) -> list[PlanningGroup]:
+        """Return all planning groups."""
+        return self._planning_group_models()
 
     def get_current_joint_state(self, robot_name: RobotName) -> JointState | None:
         """Return the named robot's current local joint state with names."""
@@ -769,7 +715,7 @@ class ManipulationModule(Module):
                 )
             current = self._world_monitor.get_current_joint_state(robot_id)
             current_by_local_name = (
-                self._current_positions_by_name(group.robot_name, current)
+                dict(zip(current.name, current.position, strict=False))
                 if current is not None
                 else {}
             )
@@ -786,7 +732,7 @@ class ManipulationModule(Module):
             joint_state = JointState(name=list(config.joint_names), position=positions)
 
         try:
-            pose = self._world_monitor.get_group_pose(group_id, joint_state)
+            pose = self._world_monitor.get_group_ee_pose(group_id, joint_state)
         except Exception as exc:
             return ForwardKinematicsResult(
                 status="UNAVAILABLE",
@@ -916,10 +862,8 @@ class ManipulationModule(Module):
         }
         auxiliary_ids = tuple(planning_group_id_from_selector(group) for group in auxiliary_groups)
         group_ids = tuple(dict.fromkeys((*stamped_targets.keys(), *auxiliary_ids)))
-        planned_group_ids = self._begin_planning(group_ids)
-        if planned_group_ids is None:
+        if not self._begin_planning():
             return False
-        group_ids = planned_group_ids
 
         try:
             start = self._selected_joint_state(group_ids)
@@ -968,10 +912,8 @@ class ManipulationModule(Module):
         group_ids = tuple(
             dict.fromkeys(planning_group_id_from_selector(group) for group in joint_targets)
         )
-        planned_group_ids = self._begin_planning(group_ids)
-        if planned_group_ids is None:
+        if not self._begin_planning():
             return False
-        group_ids = planned_group_ids
         try:
             start = self._selected_joint_state(group_ids)
         except Exception as exc:
@@ -1068,10 +1010,7 @@ class ManipulationModule(Module):
 
         robot_name, robot_id, config, _ = robot
         planning_groups = (
-            [
-                self._planning_group_info(group)
-                for group in self._world_monitor.planning_groups.groups_for_robot(robot_name)
-            ]
+            [group for group in self._world_monitor.planning_groups.groups_for_robot(robot_name)]
             if self._world_monitor is not None
             else []
         )
@@ -1091,19 +1030,6 @@ class ManipulationModule(Module):
             "init_joints": list(init.position)
             if (init := self._init_joints.get(robot_name))
             else None,
-        }
-
-    def _planning_group_info(self, group: PlanningGroup) -> PlanningGroupInfo:
-        return {
-            "id": group.id,
-            "name": group.group_name,
-            "robot_name": group.robot_name,
-            "joint_names": list(group.joint_names),
-            "local_joint_names": list(group.local_joint_names),
-            "base_link": group.base_link,
-            "tip_link": group.tip_link,
-            "source": group.source,
-            "has_pose_target": group.has_pose_target,
         }
 
     def robot_items(self) -> list[tuple[RobotName, WorldRobotID, RobotModelConfig]]:
@@ -1290,13 +1216,12 @@ class ManipulationModule(Module):
                 logger.error(f"No coordinator_task_name for '{resolved_name}'")
                 return False
 
-            current_by_name: dict[str, float] = {}
             current = self._world_monitor.get_current_joint_state(robot_id)
-            if current is not None:
-                indexed_current = self._current_positions_by_name(resolved_name, current)
-                if indexed_current is None:
-                    return False
-                current_by_name = indexed_current
+            current_by_name = (
+                dict(zip(current.name, current.position, strict=False))
+                if current is not None
+                else {}
+            )
 
             global_joint_names = make_global_joint_names(resolved_name, config.joint_names)
             local_path: list[JointState] = []
