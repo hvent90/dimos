@@ -408,11 +408,14 @@ def _write_tag_stream(
         tags: dict[str, Any] = {"marker_id": detection["marker_id"]}
         if diagnostics:
             speed = detection.get("speed")
+            distance, view_angle = view_quality(pose)
             tags.update(
                 {
                     "sharpness": float(detection["sharpness"]),
                     "reproj_px": float(detection["reproj_px"]),
                     "tag_px": float(detection["tag_px"]),
+                    "distance_m": float(distance),
+                    "view_angle_deg": float(view_angle),
                     "lin_speed": float(speed[0]) if speed else -1.0,
                     "ang_speed": float(speed[1]) if speed else -1.0,
                 }
