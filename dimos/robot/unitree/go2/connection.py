@@ -81,6 +81,7 @@ class Go2ConnectionProtocol(Protocol):
     def standup(self) -> bool: ...
     def liedown(self) -> bool: ...
     def balance_stand(self) -> bool: ...
+    def sport_command(self, api_id: int) -> bool: ...
     def set_obstacle_avoidance(self, enabled: bool = True) -> None: ...
     def enable_rage_mode(self) -> bool: ...
     def publish_request(self, topic: str, data: dict) -> dict: ...  # type: ignore[type-arg]
@@ -168,6 +169,9 @@ class ReplayConnection(UnitreeWebRTCConnection, CompositeResource):
     def balance_stand(self) -> bool:
         return True
 
+    def sport_command(self, api_id: int) -> bool:
+        return True
+
     def set_obstacle_avoidance(self, enabled: bool = True) -> None:
         pass
 
@@ -245,6 +249,9 @@ class GO2Connection(Module, Camera, Pointcloud):
         self.register_disposable(self.connection.odom_stream().subscribe(self._publish_tf))
         self.register_disposable(self.connection.video_stream().subscribe(onimage))
         self.register_disposable(Disposable(self.cmd_vel.subscribe(self.move)))
+        self.register_disposable(
+            self.connection.lowstate_stream().subscribe(self._on_lowstate)
+        )
 
         self._camera_info_thread = Thread(
             target=self.publish_camera_info,
@@ -329,6 +336,20 @@ class GO2Connection(Module, Camera, Pointcloud):
     def balance_stand(self) -> bool:
         """Enter BalanceStand: neutral state for switching locomotion modes"""
         return self.connection.balance_stand()
+
+    def _on_lowstate(self, msg: Any) -> None:
+        """Cache battery SOC from the lowstate push stream (bms_state.soc, %)."""
+        try:
+            self._latest_soc = int(msg["data"]["bms_state"]["soc"])
+        except (KeyError, TypeError, ValueError):
+            if not getattr(self, "_soc_parse_warned", False):
+                self._soc_parse_warned = True
+                logger.warning("lowstate: could not read bms_state.soc — battery unavailable")
+
+    @rpc
+    def get_battery_soc(self) -> int | None:
+        """Latest battery state-of-charge (0-100%), or None until first lowstate."""
+        return getattr(self, "_latest_soc", None)
 
     @rpc
     def enable_rage_mode(self) -> bool:

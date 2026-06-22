@@ -314,6 +314,10 @@ class UnitreeWebRTCConnection(Resource):
             self.publish_request(RTC_TOPIC["SPORT_MOD"], {"api_id": SPORT_CMD["BalanceStand"]})
         )
 
+    def sport_command(self, api_id: int) -> bool:
+        """Send a parameterless SPORT_MOD command by api_id (Hello, Stretch, ...)."""
+        return bool(self.publish_request(RTC_TOPIC["SPORT_MOD"], {"api_id": api_id}))
+
     def set_obstacle_avoidance(self, enabled: bool = True) -> None:
         self.publish_request(
             RTC_TOPIC["OBSTACLES_AVOID"],
@@ -328,21 +332,33 @@ class UnitreeWebRTCConnection(Resource):
         """Enable Rage Mode on the Go2 via WebRTC.
         Assumes the robot is already in BalanceStand.
         """
+        return self.set_rage_mode(True)
+
+    def set_rage_mode(self, enable: bool) -> bool:
+        """Toggle Rage Mode (api 2059) over WebRTC, both directions.
+
+        Mirrors the DDS adapter recipe: BalanceStand → 2059 {data:enable} →
+        on enable, settle + SwitchJoystick(True); on disable, SwitchJoystick(False)
+        to return to the normal velocity envelope. After enable, normal move()
+        twists drive at the ~2.5 m/s rage envelope.
+        """
+        # Re-establish BalanceStand before toggling (notes: always BalanceStand
+        # before flipping Rage).
+        self.balance_stand()
+        time.sleep(0.3)
+
         rage_ok = bool(
             self.publish_request(
                 RTC_TOPIC["SPORT_MOD"],
-                {"api_id": self._SPORT_API_ID_RAGEMODE, "parameter": {"data": True}},
+                {"api_id": self._SPORT_API_ID_RAGEMODE, "parameter": {"data": enable}},
             )
         )
-        time.sleep(2.0)
-
+        if enable:
+            time.sleep(2.0)  # let FsmRageMode transition settle
         joystick_ok = bool(
             self.publish_request(
                 RTC_TOPIC["SPORT_MOD"],
-                {
-                    "api_id": SPORT_CMD["SwitchJoystick"],
-                    "parameter": {"data": True},
-                },
+                {"api_id": SPORT_CMD["SwitchJoystick"], "parameter": {"data": enable}},
             )
         )
         return rage_ok and joystick_ok
