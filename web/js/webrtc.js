@@ -28,9 +28,6 @@ export function timeout(ms, label) {
 
 export async function setupWebRTC(sessionId) {
     setStatus('Negotiating WebRTC...');
-    // All [ice] timestamps are relative to this — ms since setup began.
-    const t0 = performance.now();
-    const since = () => (performance.now() - t0).toFixed(0);
     // TURN must be in the PC's config at construction for relay candidates
     // to gather with the offer. Best-effort: a broker without TURN
     // configured returns STUN-only, and a failed fetch degrades to it.
@@ -75,11 +72,11 @@ export async function setupWebRTC(sessionId) {
     // permutations long after every usable candidate exists, so 'complete' lags
     // ~10s behind a connection that was ready in <400ms.
     let onUsableCandidate = null;  // set by the gather phase below
+    const candTypes = {};  // type → count, for a one-line gather summary
     pc.onicecandidate = (e) => {
-        if (!e.candidate) { console.info('[ice] candidate gathering done (null candidate)'); return; }
+        if (!e.candidate) return;
         const c = e.candidate;
-        console.info(`[ice] cand type=${c.type} proto=${c.protocol} ` +
-            `${c.relatedAddress ? `via ${c.relatedAddress} ` : ''}@ +${since()}ms`);
+        candTypes[c.type] = (candTypes[c.type] || 0) + 1;
         if ((c.type === 'srflx' || c.type === 'relay') && onUsableCandidate) onUsableCandidate();
     };
     pc.onicecandidateerror = (e) => {
@@ -97,11 +94,8 @@ export async function setupWebRTC(sessionId) {
         };
     });
 
-    console.info(`[ice] pc built, creating offer @ +${since()}ms`);
     const offer = await pc.createOffer();
-    console.info(`[ice] offer created @ +${since()}ms`);
     await pc.setLocalDescription(offer);
-    console.info(`[ice] localDescription set, gather starts @ +${since()}ms`);
 
     // Non-trickle ICE: proceed once we have a usable (srflx/relay) candidate,
     // after a brief settle to scoop up siblings (e.g. the relay leg ~80ms after
@@ -124,7 +118,8 @@ export async function setupWebRTC(sessionId) {
         setTimeout(() => done('cap'), GATHER_TIMEOUT_MS);
     });
     onUsableCandidate = null;  // stop settling on late candidates
-    console.info(`[ice] gather ${(performance.now() - tGather).toFixed(0)}ms (${how})`);
+    const candSummary = Object.entries(candTypes).map(([t, n]) => `${t}×${n}`).join(' ') || 'none';
+    console.info(`[ice] gather ${(performance.now() - tGather).toFixed(0)}ms (${how}) — ${candSummary}`);
 
     const data = await api('POST', `/sessions/${sessionId}/join`, {
         role: 'operator',
