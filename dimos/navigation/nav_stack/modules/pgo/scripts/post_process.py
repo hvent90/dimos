@@ -27,7 +27,7 @@ log of the corrected cloud, and opens a comparison rrd.
 
 Usage: python dimos/navigation/nav_stack/modules/pgo/scripts/post_process.py [odom|lidar|both] --rec=PATH
        [--lidar=pointlio_lidar] [--odom=pointlio_odometry] [--tags=raw_april_tags]
-       [--out=gt_pointlio] [--suffix=...] [--no-icp] [--no-lcm] [--no-rrd]
+       [--out=gt_pointlio] [--suffix=...] [--ignore-tags=17] [--no-icp] [--no-lcm] [--no-rrd]
 """
 
 import json
@@ -78,6 +78,9 @@ SUFFIX = arg("--suffix")
 LIDAR_STREAM = arg("--lidar", "pointlio_lidar")  # input lidar stream (world-registered scans)
 ODOM_STREAM = arg("--odom", "pointlio_odometry")  # input odometry stream (keyframe source)
 RAW_STREAM = arg("--tags", "raw_april_tags")  # input unfiltered AprilTag stream
+IGNORE_TAGS = {
+    int(x) for x in arg("--ignore-tags").replace(",", " ").split()
+}  # dynamic/moving tags
 OUT_PREFIX = arg("--out", "gt_pointlio")  # output prefix -> <out>_odometry / <out>_lidar
 WRITE_LCM = "--no-lcm" not in sys.argv  # also emit <out>_lidar.pc2.lcm of the corrected cloud
 OPEN_RRD = "--no-rrd" not in sys.argv  # build + open a comparison rrd at the end
@@ -161,7 +164,7 @@ for obs in st.stream(RAW_STREAM):
             },
         )
     )
-gated = [t for t in raw if passes(t)]
+gated = [t for t in raw if passes(t) and t["marker_id"] not in IGNORE_TAGS]
 
 # keyframes from raw odometry
 con = sqlite3.connect(f"file:{DB}?mode=ro", uri=True)
