@@ -25,8 +25,6 @@ and `coordinator_joint_state` (observation), `status` (episode segmentation).
 
 from __future__ import annotations
 
-from pathlib import Path
-
 from dimos.core.stream import In
 from dimos.learning.collection.episode_monitor import EpisodeStatus
 from dimos.memory2.module import Recorder, RecorderConfig
@@ -35,7 +33,7 @@ from dimos.msgs.sensor_msgs.JointState import JointState
 
 
 class CollectionRecorderConfig(RecorderConfig):
-    db_path: str | Path = "data/recordings/session.db"
+    pass
 
 
 class CollectionRecorder(Recorder):

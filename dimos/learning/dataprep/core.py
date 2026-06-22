@@ -32,8 +32,10 @@ from pathlib import Path
 from typing import TYPE_CHECKING, Any, Literal
 
 import numpy as np
+from numpy.typing import NDArray
 from pydantic import BaseModel, ConfigDict, Field
 
+from dimos.constants import STATE_DIR
 from dimos.protocol.service.spec import BaseConfig
 
 if TYPE_CHECKING:
@@ -93,7 +95,7 @@ class DataPrepConfig(BaseConfig):
     observation: dict[str, StreamField] = Field(default_factory=dict)
     action: dict[str, StreamField] = Field(default_factory=dict)
     sync: SyncConfig = SyncConfig(anchor="image", rate_hz=30.0, tolerance_ms=50.0)
-    output: OutputConfig = OutputConfig(format="lerobot", path=Path("data/datasets/default"))
+    output: OutputConfig = OutputConfig(format="lerobot", path=STATE_DIR / "datasets" / "default")
 
 
 # ─────────────────────────────────────────────────────────────────────────────
@@ -115,8 +117,8 @@ class Sample(BaseModel):
 
     ts: float
     episode_id: str
-    observation: dict[str, np.ndarray]
-    action: dict[str, np.ndarray]
+    observation: dict[str, NDArray[Any]]
+    action: dict[str, NDArray[Any]]
     task_label: str | None = None  # carried from the episode for multi-task datasets
 
 
@@ -125,7 +127,7 @@ class Sample(BaseModel):
 # ─────────────────────────────────────────────────────────────────────────────
 
 
-def resolve_field(msg: Any, ref: StreamField) -> np.ndarray:
+def resolve_field(msg: Any, ref: StreamField) -> NDArray[Any]:
     """Project `msg` through `ref` (attribute access) and coerce to ndarray.
 
     Single source of truth for obs/action construction across train and
@@ -150,7 +152,7 @@ def resolve_field(msg: Any, ref: StreamField) -> np.ndarray:
     return np.asarray(value)
 
 
-def is_image_array(arr: np.ndarray) -> bool:
+def is_image_array(arr: NDArray[Any]) -> bool:
     """True for image-like *per-frame* arrays: 2D grayscale (H, W) or ≥3D
     (H, W, C). Low-dim features (proprio, actions) are 1D vectors.
 
@@ -315,8 +317,8 @@ def iter_episode_samples(
 
     def _build_frames() -> Iterator[Sample]:
         for t in targets:
-            obs_dict: dict[str, np.ndarray] = {}
-            act_dict: dict[str, np.ndarray] = {}
+            obs_dict: dict[str, NDArray[Any]] = {}
+            act_dict: dict[str, NDArray[Any]] = {}
             skip = False
             for key, ref in streams.items():
                 msg = _nearest(key, t)
