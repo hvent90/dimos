@@ -12,6 +12,8 @@
 # See the License for the specific language governing permissions and
 # limitations under the License.
 
+# Untyped analysis script: gtsam/open3d/cv2 lack type stubs.
+# mypy: ignore-errors
 """Build the raw AprilTag stream: EVERY detection over the camera image, NO filtering whatsoever
 (no blur/reproj/distance/angle/motion/size gate, no time-clustering). One row per per-frame
 detection that yields a valid PnP pose. Each row carries its gate diagnostics in tags

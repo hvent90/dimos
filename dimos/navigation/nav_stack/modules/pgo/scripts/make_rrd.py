@@ -12,6 +12,8 @@
 # See the License for the specific language governing permissions and
 # limitations under the License.
 
+# Untyped analysis script: gtsam/open3d/cv2 lack type stubs.
+# mypy: ignore-errors
 """Combined comparison rrd: raw lidar cloud + EVERY gt_*_lidar version present in the db, each as
 its own colored entity, plus AprilTag landmarks + trajectories. Re-run after adding a new GT method
 and it picks the new stream up automatically.

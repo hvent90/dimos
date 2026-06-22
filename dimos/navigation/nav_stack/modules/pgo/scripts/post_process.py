@@ -12,6 +12,8 @@
 # See the License for the specific language governing permissions and
 # limitations under the License.
 
+# Untyped analysis script: gtsam/open3d/cv2 lack type stubs.
+# mypy: ignore-errors
 """AprilTag-loop-closed + ICP-refined ground-truth post-processing for a go2 recording.
 
 Source of tags = the UNFILTERED tag stream (build it first with detect_tags.py). Each raw
