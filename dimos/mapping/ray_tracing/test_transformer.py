@@ -106,3 +106,25 @@ def test_emit_local_empty_frame_yields_zero_radius_region_at_robot() -> None:
     [emitted] = list(RayTraceMap(emit_local=True)(iter([obs])))
 
     assert emitted.tags["region_bounds"] == pytest.approx((1.0, 2.0, 0.0, 3.0, 3.0))
+
+
+def test_registers_sensor_frame_cloud_by_pose() -> None:
+    margin = 0.2 + 0.1
+    s = 2.0**-0.5
+    # 90-degree pitch maps sensor +x to world -z, then translate by (5, 0, 2),
+    # landing the point at world (5, 0, 1).
+    point = np.array([[1.0, 0.0, 0.0]], dtype=np.float32)
+    obs = Observation(
+        id=0,
+        ts=1.0,
+        pose=(5.0, 0.0, 2.0, 0.0, s, 0.0, s),
+        _data=PointCloud2.from_numpy(point),
+    )
+
+    [emitted] = list(RayTraceMap(emit_local=True)(iter([obs])))
+
+    cx, cy, radius, z_min, z_max = emitted.tags["region_bounds"]
+    assert (cx, cy) == pytest.approx((5.0, 0.0))
+    assert radius == pytest.approx(0.0 + margin)
+    assert z_min == pytest.approx(1.0 - margin)
+    assert z_max == pytest.approx(1.0 + margin)

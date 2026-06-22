@@ -122,8 +122,13 @@ class RayTraceMap(Transformer[PointCloud2, PointCloud2]):
                 continue
             x, y, z, qx, qy, qz, qw = obs.pose_tuple
             # Sensor-frame cloud: register into the world by the odom pose.
-            tf = Transform(translation=Vector3(x, y, z), rotation=Quaternion(qx, qy, qz, qw))
-            pts = obs.data.transform(tf).points_f32()
+            # Apply it to the f32 array directly to skip an Open3D float64 round-trip.
+            mat = Transform(
+                translation=Vector3(x, y, z), rotation=Quaternion(qx, qy, qz, qw)
+            ).to_matrix()
+            rot = mat[:3, :3].astype(np.float32)
+            trans = mat[:3, 3].astype(np.float32)
+            pts = obs.data.points_f32() @ rot.T + trans
             mapper.add_frame(pts, (x, y, z))
             if self.emit_local and pts.size:
                 batch_points.append(pts)
