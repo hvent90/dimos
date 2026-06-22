@@ -17,10 +17,10 @@
 A `Recorder` (memory2) subscribes each declared `In` port and appends every
 message to a SQLite store, flushing durably on stop(). Only *connected*
 streams are recorded, so the same recorder works for any arm whose
-coordinator publishes `joint_state`.
+coordinator publishes `coordinator_joint_state`.
 
 The recorded stream names match what DataPrep reads: `color_image`
-and `joint_state` (observation), `status` (episode segmentation).
+and `coordinator_joint_state` (observation), `status` (episode segmentation).
 """
 
 from __future__ import annotations
@@ -44,7 +44,7 @@ class CollectionRecorder(Recorder):
     config: CollectionRecorderConfig
 
     color_image: In[Image]  # observation (camera)
-    joint_state: In[JointState]  # observation + action (measured/next state)
+    coordinator_joint_state: In[JointState]  # observation + action (measured/next state)
     status: In[EpisodeStatus]  # episode start/save/discard segmentation
 
 

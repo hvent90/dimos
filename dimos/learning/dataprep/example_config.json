@@ -10,13 +10,13 @@
       "field": "data"
     },
     "joint_state": {
-      "stream": "joint_state",
+      "stream": "coordinator_joint_state",
       "field": "position"
     }
   },
   "action": {
     "joint_target": {
-      "stream": "joint_state",
+      "stream": "coordinator_joint_state",
       "field": "position"
     }
   },
