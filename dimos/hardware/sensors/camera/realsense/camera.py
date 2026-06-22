@@ -203,7 +203,7 @@ class RealSenseCamera(DepthCameraHardware, Module, perception.DepthCamera):
             # accel @ 63 Hz, which D4xx firmware doesn't offer -> "Couldn't resolve requests".
             imu_config.enable_stream(rs.stream.accel, rs.format.motion_xyz32f, 200)
             imu_config.enable_stream(rs.stream.gyro, rs.format.motion_xyz32f, 200)
-            imu_profile = imu_pipeline.start(imu_config, self._on_imu_frame)
+            imu_pipeline.start(imu_config, self._on_imu_frame)
         except RuntimeError as error:
             print(f"RealSense IMU unavailable, disabling IMU stream: {error}")
             return
