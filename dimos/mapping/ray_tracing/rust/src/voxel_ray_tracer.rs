@@ -2,8 +2,10 @@
 // SPDX-License-Identifier: Apache-2.0
 
 use ahash::{AHashMap, AHashSet};
+use arrayvec::ArrayVec;
 use dimos_module::native_config;
 use nalgebra::{Matrix3, Vector3};
+use rayon::prelude::*;
 use validator::ValidationError;
 
 pub type VoxelKey = (i32, i32, i32);
@@ -32,6 +34,17 @@ pub struct Config {
     /// Only spare a voxel whose neighborhood was hit within this many frames.
     /// A stale voxel can be cleared, even if it's a grazing hit. Large disables it.
     pub recency_window: u32,
+    /// Integrate every frame, publish the local map and region bounds every
+    /// Nth frame. Zero disables them.
+    #[validate(range(min = 0))]
+    pub emit_every: u32,
+    /// Publish the global map every Nth frame. Zero disables it.
+    #[validate(range(min = 0))]
+    pub global_emit_every: u32,
+    /// Size the local region to this percentile of batch point distances,
+    /// so a stray far hit cannot inflate the region the planner recomputes.
+    #[validate(range(min = 0.0, max = 100.0))]
+    pub region_percentile: f32,
 }
 
 fn validate_health_range(cfg: &Config) -> Result<(), ValidationError> {
@@ -83,7 +96,7 @@ impl VoxelMap {
             .voxels
             .keys()
             .copied()
-            .map(|k| (k, pooled_normal(&self.voxels, k, voxel_size)))
+            .map(|k| (k, pooled_normal_and_recency(&self.voxels, k, voxel_size).0))
             .collect();
         for (k, n) in updates {
             self.voxels.get_mut(&k).unwrap().normal = n;
@@ -93,6 +106,7 @@ impl VoxelMap {
 
 const NORMAL_MIN_POINTS: u32 = 3;
 const NORMAL_NEIGHBOR_RADIUS: i32 = 1;
+const NEIGHBORHOOD_CAP: usize = (2 * NORMAL_NEIGHBOR_RADIUS as usize + 1).pow(3);
 const NORMAL_REWEIGHT_ITERS: u32 = 3;
 /// Neighbor weight falloff with plane distance, as a fraction of voxel size.
 const NORMAL_PLANE_SIGMA_FRAC: f32 = 0.5;
@@ -188,15 +202,17 @@ struct Neighbor {
     centroid: Vector3<f32>,
 }
 
-/// Find voxel's normal from its neighborhood.
-fn pooled_normal(
+/// Find voxel's normal and the most recent frame any voxel in its
+/// neighborhood was hit, from one scan of the neighborhood.
+fn pooled_normal_and_recency(
     voxels: &AHashMap<VoxelKey, Voxel>,
     key: VoxelKey,
     voxel_size: f32,
-) -> Option<Vector3<f32>> {
+) -> (Option<Vector3<f32>>, u32) {
     let r = NORMAL_NEIGHBOR_RADIUS;
-    let mut nbs: Vec<Neighbor> = Vec::new();
+    let mut nbs: ArrayVec<Neighbor, NEIGHBORHOOD_CAP> = ArrayVec::new();
     let mut n_raw: u32 = 0;
+    let mut recency = 0;
     for dx in -r..=r {
         for dy in -r..=r {
             for dz in -r..=r {
@@ -204,6 +220,7 @@ fn pooled_normal(
                 let Some(v) = voxels.get(&nk) else {
                     continue;
                 };
+                recency = recency.max(v.last_hit);
                 if v.num_pts == 0 {
                     continue;
                 }
@@ -224,12 +241,12 @@ fn pooled_normal(
         }
     }
     if n_raw < NORMAL_MIN_POINTS {
-        return None;
+        return (None, recency);
     }
 
     let sigma = NORMAL_PLANE_SIGMA_FRAC * voxel_size;
     let two_sig2 = 2.0 * sigma * sigma;
-    let mut weights = vec![1.0_f32; nbs.len()];
+    let mut weights = [1.0_f32; NEIGHBORHOOD_CAP];
     let mut cov = Matrix3::zeros();
     for _ in 0..NORMAL_REWEIGHT_ITERS {
         let (mut wn, mut s, mut t) = (0.0_f32, Vector3::zeros(), Matrix3::zeros());
@@ -260,25 +277,9 @@ fn pooled_normal(
     // get rid of planes if we had to discard too many points to get a plane
     let kept: f32 = nbs.iter().zip(&weights).map(|(nb, &w)| w * nb.n).sum();
     if kept < NORMAL_MIN_SUPPORT * n_raw as f32 {
-        return None;
+        return (None, recency);
     }
-    fit_normal(cov)
-}
-
-/// Most recent frame any voxel in the neighborhood was hit.
-fn neighborhood_recency(voxels: &AHashMap<VoxelKey, Voxel>, key: VoxelKey) -> u32 {
-    let r = NORMAL_NEIGHBOR_RADIUS;
-    let mut best = 0;
-    for dx in -r..=r {
-        for dy in -r..=r {
-            for dz in -r..=r {
-                if let Some(v) = voxels.get(&(key.0 + dx, key.1 + dy, key.2 + dz)) {
-                    best = best.max(v.last_hit);
-                }
-            }
-        }
-    }
-    best
+    (fit_normal(cov), recency)
 }
 
 /// Refit the cached normal and neighborhood recency of every voxel whose
@@ -301,14 +302,11 @@ fn refresh_voxels(
         }
     }
     let updates: Vec<(VoxelKey, Option<Vector3<f32>>, u32)> = dirty
-        .iter()
+        .par_iter()
         .filter(|k| map.voxels.contains_key(k))
         .map(|&k| {
-            (
-                k,
-                pooled_normal(&map.voxels, k, voxel_size),
-                neighborhood_recency(&map.voxels, k),
-            )
+            let (normal, recency) = pooled_normal_and_recency(&map.voxels, k, voxel_size);
+            (k, normal, recency)
         })
         .collect();
     for (k, n, rec) in updates {
@@ -322,16 +320,12 @@ fn refresh_voxels(
 /// Spare a clearing miss only when a grazing ray skims a recently hit planar
 /// surface. Stale or voxels with no normal are left to the health checks.
 fn should_spare(
-    voxels: &AHashMap<VoxelKey, Voxel>,
-    key: VoxelKey,
+    c: &Voxel,
     ray_unit: Vector3<f32>,
     graze_cos: f32,
     frame: u32,
     recency_window: u32,
 ) -> bool {
-    let Some(c) = voxels.get(&key) else {
-        return false;
-    };
     match c.normal {
         Some(n) => {
             frame.saturating_sub(c.recency) <= recency_window && ray_unit.dot(&n).abs() < graze_cos
@@ -357,6 +351,48 @@ impl LocalBounds {
         let dy = y - self.origin_y;
         dx * dx + dy * dy <= self.r_xy_max_sq
     }
+}
+
+/// The local region a batch of frames observed, as (cx, cy, radius, z_min,
+/// z_max). A cylinder centered on the mean origin, sized to a percentile of
+/// the point distances so a stray far hit cannot inflate it. Points must be
+/// finite. An empty batch yields a zero-radius region at the mean origin.
+pub fn batch_local_bounds(
+    points: &[(f32, f32, f32)],
+    origins: &[(f32, f32, f32)],
+    percentile_pct: f32,
+    margin: f32,
+) -> (f32, f32, f32, f32, f32) {
+    let n = origins.len().max(1) as f64;
+    let cx = (origins.iter().map(|o| o.0 as f64).sum::<f64>() / n) as f32;
+    let cy = (origins.iter().map(|o| o.1 as f64).sum::<f64>() / n) as f32;
+    if points.is_empty() {
+        let cz = (origins.iter().map(|o| o.2 as f64).sum::<f64>() / n) as f32;
+        return (cx, cy, 0.0, cz, cz);
+    }
+
+    let mut dist: Vec<f32> = points.iter().map(|p| (p.0 - cx).hypot(p.1 - cy)).collect();
+    let mut zs: Vec<f32> = points.iter().map(|p| p.2).collect();
+    let radius = percentile(&mut dist, percentile_pct) + margin;
+    let z_min = percentile(&mut zs, 100.0 - percentile_pct) - margin;
+    let z_max = percentile(&mut zs, percentile_pct) + margin;
+    (cx, cy, radius, z_min, z_max)
+}
+
+fn percentile(values: &mut [f32], p: f32) -> f32 {
+    let n = values.len();
+    if n == 1 {
+        return values[0];
+    }
+    let rank = (p as f64 / 100.0).clamp(0.0, 1.0) * (n - 1) as f64;
+    let lo = rank.floor() as usize;
+    let frac = (rank - lo as f64) as f32;
+    let (_, &mut v_lo, rest) = values.select_nth_unstable_by(lo, |a, b| a.total_cmp(b));
+    if frac == 0.0 || rest.is_empty() {
+        return v_lo;
+    }
+    let v_hi = rest.iter().copied().fold(f32::INFINITY, f32::min);
+    v_lo + frac * (v_hi - v_lo)
 }
 
 pub fn iter_global_points(
@@ -423,35 +459,46 @@ pub fn update_map(
     let frame = map.frame;
     let hits = live_voxels(points, cfg.voxel_size);
 
-    let mut misses: AHashSet<VoxelKey> = AHashSet::new();
     let origin_voxel = world_to_voxel(origin.0, origin.1, origin.2, inv);
     let step = cfg.ray_subsample as usize;
-    for (i, &p) in points.iter().enumerate() {
-        if i % step != 0 {
-            continue;
-        }
-        let dx = p.0 - origin.0;
-        let dy = p.1 - origin.1;
-        let dz = p.2 - origin.2;
-        if dx * dx + dy * dy + dz * dz > max_range_sq {
-            continue;
-        }
-        let endpoint = world_to_voxel(p.0, p.1, p.2, inv);
-        find_misses_along_ray(
-            &mut misses,
-            &map.voxels,
-            origin,
-            p,
-            cfg.voxel_size,
-            cfg.shadow_depth,
-            cfg.grace_depth,
-            cfg.graze_cos,
-            frame,
-            cfg.recency_window,
-            origin_voxel,
-            endpoint,
-        );
-    }
+    let voxels = &map.voxels;
+    let misses: AHashSet<VoxelKey> = points
+        .par_iter()
+        .enumerate()
+        .fold(AHashSet::new, |mut misses, (i, &p)| {
+            if i % step != 0 {
+                return misses;
+            }
+            let dx = p.0 - origin.0;
+            let dy = p.1 - origin.1;
+            let dz = p.2 - origin.2;
+            if dx * dx + dy * dy + dz * dz > max_range_sq {
+                return misses;
+            }
+            let endpoint = world_to_voxel(p.0, p.1, p.2, inv);
+            find_misses_along_ray(
+                &mut misses,
+                voxels,
+                origin,
+                p,
+                cfg.voxel_size,
+                cfg.shadow_depth,
+                cfg.grace_depth,
+                cfg.graze_cos,
+                frame,
+                cfg.recency_window,
+                origin_voxel,
+                endpoint,
+            );
+            misses
+        })
+        .reduce(AHashSet::new, |mut a, mut b| {
+            if a.len() < b.len() {
+                std::mem::swap(&mut a, &mut b);
+            }
+            a.extend(b);
+            a
+        });
 
     // add new hits
     for v in &hits {
@@ -619,17 +666,10 @@ fn find_misses_along_ray(
             continue;
         }
 
-        if map_voxels.contains_key(&(x, y, z))
-            && !should_spare(
-                map_voxels,
-                (x, y, z),
-                ray_unit,
-                graze_cos,
-                frame,
-                recency_window,
-            )
-        {
-            misses.insert((x, y, z));
+        if let Some(c) = map_voxels.get(&(x, y, z)) {
+            if !should_spare(c, ray_unit, graze_cos, frame, recency_window) {
+                misses.insert((x, y, z));
+            }
         }
     }
 }
@@ -649,6 +689,9 @@ mod tests {
             max_health: 1,
             graze_cos: 0.5,
             recency_window: 60,
+            emit_every: 1,
+            global_emit_every: 1,
+            region_percentile: 95.0,
         }
     }
 
@@ -694,6 +737,33 @@ mod tests {
         );
 
         assert_eq!(misses, expected);
+    }
+
+    #[test]
+    fn batch_bounds_ignore_far_outlier() {
+        let origins = [(1.0, 1.0, 0.5), (3.0, 1.0, 0.5)];
+        let mut points: Vec<(f32, f32, f32)> = (0..99)
+            .map(|i| {
+                let a = i as f32 / 99.0 * std::f32::consts::TAU;
+                (2.0 + a.cos(), 1.0 + a.sin(), (i % 10) as f32 * 0.1)
+            })
+            .collect();
+        points.push((60.0, 1.0, 30.0));
+        let (cx, cy, radius, z_min, z_max) = batch_local_bounds(&points, &origins, 95.0, 0.3);
+        assert_eq!(cx, 2.0);
+        assert_eq!(cy, 1.0);
+        assert!(radius < 2.0, "outlier inflated radius to {radius}");
+        assert!(z_max < 2.0, "outlier inflated z_max to {z_max}");
+        assert!((-0.5..=0.0).contains(&z_min), "z_min out of range: {z_min}");
+    }
+
+    #[test]
+    fn batch_bounds_empty_points_zero_radius() {
+        let origins = [(1.0, 2.0, 3.0)];
+        let (cx, cy, radius, z_min, z_max) = batch_local_bounds(&[], &origins, 95.0, 0.3);
+        assert_eq!((cx, cy, radius), (1.0, 2.0, 0.0));
+        assert_eq!(z_min, 3.0);
+        assert_eq!(z_max, 3.0);
     }
 
     #[test]
@@ -808,6 +878,9 @@ mod tests {
             max_health: 1,
             graze_cos: 0.5,
             recency_window: 60,
+            emit_every: 1,
+            global_emit_every: 1,
+            region_percentile: 95.0,
         };
         // Build the floor over a y band so it is a 2d plane, not a wire.
         let max_x = 25.0_f32;
@@ -960,6 +1033,9 @@ mod tests {
             max_health: 1,
             graze_cos: 0.5,
             recency_window: 60,
+            emit_every: 1,
+            global_emit_every: 1,
+            region_percentile: 95.0,
         };
 
         // Staircase
@@ -1031,6 +1107,9 @@ mod tests {
             max_health: 1,
             graze_cos: 0.5,
             recency_window: 60,
+            emit_every: 1,
+            global_emit_every: 1,
+            region_percentile: 95.0,
         };
 
         // Flat floor from the sensor out to a vertical wall.
@@ -1090,6 +1169,9 @@ mod tests {
             max_health: 1,
             graze_cos,
             recency_window: 60,
+            emit_every: 1,
+            global_emit_every: 1,
+            region_percentile: 95.0,
         };
 
         // Staircase topped by a flat landing and a back wall.
@@ -1218,6 +1300,9 @@ mod tests {
                 max_health: 1,
                 graze_cos: 0.5,
                 recency_window,
+                emit_every: 1,
+                global_emit_every: 1,
+                region_percentile: 95.0,
             };
             let (mut map, _) = build_surface(&floor, voxel_size, cfg.max_health);
             let row: Vec<VoxelKey> = map
