@@ -122,6 +122,3 @@ class StreamingStats:
                 entry["q99"] = np.quantile(stacked, 0.99, axis=0).tolist()
             out[name] = entry
         return out
-
-
-__all__ = ["FeatureAggregator", "StreamingStats"]

@@ -65,9 +65,3 @@ learning_collect_quest_piper = autoconnect(
     EpisodeMonitorModule.blueprint(),  # default button_map: toggle=B, discard=Y
     CollectionRecorder.blueprint(db_path=_session_db("piper")),
 )
-
-
-__all__ = [
-    "learning_collect_quest_piper",
-    "learning_collect_quest_xarm7",
-]

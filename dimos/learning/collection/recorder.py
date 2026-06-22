@@ -46,6 +46,3 @@ class CollectionRecorder(Recorder):
     color_image: In[Image]  # observation (camera)
     coordinator_joint_state: In[JointState]  # observation + action (measured/next state)
     status: In[EpisodeStatus]  # episode start/save/discard segmentation
-
-
-__all__ = ["CollectionRecorder", "CollectionRecorderConfig"]

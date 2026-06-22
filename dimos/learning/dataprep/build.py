@@ -198,6 +198,3 @@ def inspect_dataset(path: Path | str, fmt: str | None = None) -> dict[str, Any]:
                 f"lerobot directory with meta/info.json. Pass --format explicitly."
             )
     return get_inspector(fmt)(p)
-
-
-__all__ = ["inspect_dataset", "run_dataprep"]

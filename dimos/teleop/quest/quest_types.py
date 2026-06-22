@@ -210,6 +210,3 @@ BUTTON_ALIASES: dict[str, str] = {
     "MENU_L": "left_menu",
     "MENU_R": "right_menu",
 }
-
-
-__all__ = ["BUTTON_ALIASES", "Buttons", "QuestControllerState", "ThumbstickState"]
