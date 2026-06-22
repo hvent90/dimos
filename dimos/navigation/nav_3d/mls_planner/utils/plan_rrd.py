@@ -191,12 +191,6 @@ def main(
     align_tol: float = typer.Option(0.05, "--align-tol", help="Lidar/odom alignment tolerance (s)"),
     voxel_size: float = typer.Option(0.1, "--voxel-size", help="Voxel edge length (m)"),
     max_range: float = typer.Option(30.0, "--max-range", help="Max ray cast distance (m)"),
-    registered_clouds: bool = typer.Option(
-        True,
-        "--registered-clouds/--no-registered-clouds",
-        help="Clouds are already world-registered (fastlio). Use --no-registered-clouds for "
-        "sensor-frame clouds (pointlio); the odom pose then registers each frame.",
-    ),
     ray_subsample: int = typer.Option(1, "--ray-subsample", help="Keep every Nth ray"),
     emit_every: int = typer.Option(1, "--emit-every", help="Replan every N lidar frames"),
     robot_height: float = typer.Option(1.0, "--robot-height", help="Robot height (m)"),
@@ -280,7 +274,6 @@ def main(
                 ray_subsample=ray_subsample,
                 emit_every=emit_every,
                 emit_local=True,
-                registered_clouds=registered_clouds,
             )
         )
 

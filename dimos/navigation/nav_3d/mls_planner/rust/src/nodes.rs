@@ -45,7 +45,7 @@ pub fn place_nodes(
     collect_wall_adjacent_cells(cells, &mut wall_seeds);
     dijkstra(cells, &wall_seeds, state, Weight::Base);
 
-    // Floor is the hard clearance; NMS already prefers the clearest cells.
+    // Floor is the hard clearance. NMS already prefers the clearest cells.
     let node_floor = wall_clearance_m;
     let candidates: Vec<CellId> = cells
         .ids()

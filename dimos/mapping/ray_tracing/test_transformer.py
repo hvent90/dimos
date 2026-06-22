@@ -87,7 +87,7 @@ def _ring(
 
 def test_emit_local_tags_region_bounds_around_registered_origin() -> None:
     margin = 0.2 + 0.1
-    # Sensor-frame ring centered on the sensor; the pose registers it to (2, 3, 0.5).
+    # Sensor-frame ring centered on the sensor. The pose registers it to (2, 3, 0.5).
     obs = _obs(_ring((0.0, 0.0), radius=1.0, z=0.0), ts=1.0, pose=(2.0, 3.0, 0.5))
 
     [emitted] = list(RayTraceMap(emit_local=True)(iter([obs])))
