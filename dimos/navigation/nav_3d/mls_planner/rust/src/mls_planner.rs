@@ -879,7 +879,7 @@ mod region_tests {
             )
         };
 
-        // Interior waypoints are exact cell centers; sample between them too.
+        // Interior waypoints are exact cell centers. Sample between them too.
         let interior = &wp[1..wp.len() - 1];
         assert!(interior.len() >= 2, "expected a multi-cell path");
         for pair in interior.windows(2) {
@@ -900,7 +900,7 @@ mod region_tests {
         }
     }
 
-    /// Solid 0.3 m block, taller than the step threshold; the path must route
+    /// Solid 0.3 m block, taller than the step threshold. The path must route
     /// around it and never climb on.
     fn block_world() -> Vec<(f32, f32, f32)> {
         let vs = 0.1_f32;
@@ -941,7 +941,7 @@ mod region_tests {
             .plan((1.0, 0.5, 0.05), (3.9, 0.5, 0.05), &cfg)
             .expect("plan exists");
 
-        // The block top is at z = 0.4; the floor surface point is z = 0.1. No
+        // The block top is at z = 0.4. The floor surface point is z = 0.1. No
         // interior waypoint may land on the block.
         for w in &wp[1..wp.len() - 1] {
             assert!(
@@ -958,7 +958,7 @@ mod region_tests {
     }
 
     /// Flat floor with a crossable 0.2 m ridge blocking ix 15 except a flat gap
-    /// at iy 10..12. Crossing is short but climbs two steps; the detour is flat.
+    /// at iy 10..12. Crossing is short but climbs two steps. The detour is flat.
     /// Route choice is read from the xy lane, since smoothing flattens the ridge
     /// waypoints away.
     fn ridge_world() -> Vec<(f32, f32, f32)> {
@@ -1046,5 +1046,16 @@ mod region_tests {
             .expect("goal on a sub-clearance spur still reaches its component node");
         let last = *wp.last().expect("path has waypoints");
         assert!((last.0 - goal.0).abs() < 1e-3 && (last.1 - goal.1).abs() < 1e-3);
+    }
+
+    #[test]
+    fn wall_buffer_weight_requires_buffer() {
+        let mut cfg = test_config();
+        cfg.wall_buffer_weight = 1.0;
+        cfg.wall_buffer_m = 0.0;
+        assert!(validate_wall_buffer(&cfg).is_err());
+
+        cfg.wall_buffer_m = 0.3;
+        assert!(validate_wall_buffer(&cfg).is_ok());
     }
 }

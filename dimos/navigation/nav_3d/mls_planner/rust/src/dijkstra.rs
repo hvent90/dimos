@@ -233,6 +233,16 @@ mod tests {
     }
 
     #[test]
+    fn walk_preds_breaks_on_pred_cycle() {
+        let mut state = DijkstraState::default();
+        state.reset(2);
+        state.pred[0] = 1;
+        state.pred[1] = 0;
+        let path = walk_preds(&state, 0);
+        assert_eq!(path, vec![0, 1]);
+    }
+
+    #[test]
     fn region_window_all_equals_full() {
         let sc = grid(10);
         let sources = [sc.id((0, 0, 0)).unwrap(), sc.id((9, 9, 0)).unwrap()];

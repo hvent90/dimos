@@ -526,3 +526,22 @@ async fn main() {
         .expect("failed to create LCM transport");
     run::<MlsPlanner, _>(transport).await;
 }
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn is_at_goal_respects_tolerance_and_ignores_z() {
+        assert!(is_at_goal((0.0, 0.0, 0.0), (0.05, 0.0, 9.0), 0.1));
+        assert!(!is_at_goal((0.0, 0.0, 0.0), (0.2, 0.0, 0.0), 0.1));
+    }
+
+    #[test]
+    fn same_stamp_compares_sec_and_nsec() {
+        let a = Time { sec: 5, nsec: 7 };
+        assert!(same_stamp(&a, &Time { sec: 5, nsec: 7 }));
+        assert!(!same_stamp(&a, &Time { sec: 5, nsec: 8 }));
+        assert!(!same_stamp(&a, &Time { sec: 6, nsec: 7 }));
+    }
+}

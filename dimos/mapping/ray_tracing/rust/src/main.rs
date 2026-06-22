@@ -105,89 +105,77 @@ impl RayTracingVoxelMap {
         }
 
         self.frame_count += 1;
-        if self
-            .frame_count
-            .is_multiple_of(self.config.global_emit_every)
-        {
-            let cloud = build_global_cloud(
-                &self.map,
-                &live,
-                voxel_size,
-                out_frame_id,
-                msg.header.stamp.clone(),
+        let local_due = self.frame_count.is_multiple_of(self.config.emit_every);
+
+        let cylinder = if local_due {
+            let margin = self.config.shadow_depth + voxel_size;
+            let (cx, cy, radius, z_min, z_max) = batch_local_bounds(
+                &self.batch_points,
+                &self.batch_origins,
+                self.config.region_percentile,
+                margin,
             );
-            if let Err(e) = self.global_map.publish(&cloud).await {
+            self.batch_points.clear();
+            self.batch_origins.clear();
+
+            let bounds_msg = PoseStamped {
+                header: Header {
+                    seq: 0,
+                    stamp: msg.header.stamp.clone(),
+                    frame_id: out_frame_id.to_string(),
+                },
+                pose: Pose {
+                    position: Point {
+                        x: cx as f64,
+                        y: cy as f64,
+                        z: 0.0,
+                    },
+                    orientation: Quaternion {
+                        x: radius as f64,
+                        y: z_min as f64,
+                        z: z_max as f64,
+                        w: 0.0,
+                    },
+                },
+            };
+            if let Err(e) = self.region_bounds.publish(&bounds_msg).await {
                 error_throttled!(
                     Duration::from_secs(1),
                     error = %e,
-                    "Updated global voxel map failed to publish",
+                    "Region bounds failed to publish",
                 );
             }
-        }
-        if !self.frame_count.is_multiple_of(self.config.emit_every) {
-            return;
-        }
-
-        // Percentile-bounded cylinder over the batch plus the clearing margin.
-        let margin = self.config.shadow_depth + voxel_size;
-        let (cx, cy, radius, z_min, z_max) = batch_local_bounds(
-            &self.batch_points,
-            &self.batch_origins,
-            self.config.region_percentile,
-            margin,
-        );
-        self.batch_points.clear();
-        self.batch_origins.clear();
-        let cylinder = LocalBounds {
-            origin_x: cx,
-            origin_y: cy,
-            r_xy_max_sq: radius * radius,
-            z_min,
-            z_max,
+            Some(LocalBounds {
+                origin_x: cx,
+                origin_y: cy,
+                r_xy_max_sq: radius * radius,
+                z_min,
+                z_max,
+            })
+        } else {
+            None
         };
 
-        let bounds_msg = PoseStamped {
-            header: Header {
-                seq: 0,
-                stamp: msg.header.stamp.clone(),
-                frame_id: out_frame_id.to_string(),
-            },
-            pose: Pose {
-                position: Point {
-                    x: cx as f64,
-                    y: cy as f64,
-                    z: 0.0,
-                },
-                orientation: Quaternion {
-                    x: radius as f64,
-                    y: z_min as f64,
-                    z: z_max as f64,
-                    w: 0.0,
-                },
-            },
-        };
-        if let Err(e) = self.region_bounds.publish(&bounds_msg).await {
-            error_throttled!(
-                Duration::from_secs(1),
-                error = %e,
-                "Region bounds failed to publish",
-            );
-        }
+        let global_due = self
+            .frame_count
+            .is_multiple_of(self.config.global_emit_every);
 
-        let local_cloud = build_local_cloud(
-            &self.map,
-            &live,
-            voxel_size,
-            &cylinder,
-            out_frame_id,
-            msg.header.stamp,
-        );
-        if let Err(e) = self.local_map.publish(&local_cloud).await {
-            error_throttled!(
-                Duration::from_secs(1),
-                error = %e,
-                "Updated local voxel map failed to publish",
-            );
+        // build and publish the clouds
+        let stamp = msg.header.stamp;
+        if let Some(cyl) = &cylinder {
+            if global_due {
+                let (global, local) =
+                    build_global_and_local(&self.map, &live, voxel_size, cyl, out_frame_id, stamp);
+                publish_cloud(&self.global_map, &global).await;
+                publish_cloud(&self.local_map, &local).await;
+            } else {
+                let local =
+                    build_local_cloud(&self.map, &live, voxel_size, cyl, out_frame_id, stamp);
+                publish_cloud(&self.local_map, &local).await;
+            }
+        } else if global_due {
+            let global = build_global_cloud(&self.map, &live, voxel_size, out_frame_id, stamp);
+            publish_cloud(&self.global_map, &global).await;
         }
     }
 }
@@ -355,6 +343,49 @@ fn build_local_cloud(
         }
     }
     make_cloud(data, n, frame_id, stamp)
+}
+
+/// Build the global and local clouds in one pass over the map, so a frame that
+/// emits both does not scan the voxel map twice.
+fn build_global_and_local(
+    map: &VoxelMap,
+    live: &AHashSet<VoxelKey>,
+    voxel_size: f32,
+    cylinder: &LocalBounds,
+    frame_id: &str,
+    stamp: Time,
+) -> (PointCloud2, PointCloud2) {
+    let mut g_data = Vec::with_capacity((map.voxels.len() + live.len()) * 16);
+    let mut g_n: i32 = 0;
+    let mut l_data = Vec::with_capacity(live.len() * 2 * 16);
+    let mut l_n: i32 = 0;
+    let mut push = |x: f32, y: f32, z: f32| {
+        write_point(&mut g_data, &mut g_n, x, y, z);
+        if cylinder.contains(x, y, z) {
+            write_point(&mut l_data, &mut l_n, x, y, z);
+        }
+    };
+    for (x, y, z) in iter_global_points(map, voxel_size) {
+        push(x, y, z);
+    }
+    for (x, y, z) in unhealthy_live_centers(map, live, voxel_size) {
+        push(x, y, z);
+    }
+    (
+        make_cloud(g_data, g_n, frame_id, stamp.clone()),
+        make_cloud(l_data, l_n, frame_id, stamp),
+    )
+}
+
+async fn publish_cloud(out: &Output<PointCloud2>, cloud: &PointCloud2) {
+    if let Err(e) = out.publish(cloud).await {
+        error_throttled!(
+            Duration::from_secs(1),
+            error = %e,
+            topic = %out.topic,
+            "Voxel map failed to publish",
+        );
+    }
 }
 
 #[tokio::main]
