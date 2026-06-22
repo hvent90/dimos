@@ -16,7 +16,6 @@
 from datetime import datetime
 import os
 from pathlib import Path
-from typing import Any
 
 from dimos.core.coordination.blueprints import autoconnect
 from dimos.core.coordination.module_coordinator import ModuleCoordinator
@@ -62,42 +61,11 @@ class Go2Recorder(PointlioRecorder):
     go2_lidar: In[PointCloud2]
     go2_odom: In[PoseStamped]
     color_image: In[Image]
-    zed_color_image: In[Image]
-    zed_imu: In[Imu]
     livox_lidar: In[PointCloud2]
     livox_imu: In[Imu]
 
 
-def _zed_camera_blueprint() -> Any:
-    """ZED color source, remapped to ``zed_color_image``.
-
-    Prefer the SDK-backed ``ZEDCamera`` (depth/imu/pointcloud); fall back to the
-    UVC-only ``ZedSimple`` (color only) when ``pyzed`` is not installed.
-    """
-    try:
-        import pyzed.sl  # noqa: F401
-
-        from dimos.hardware.sensors.camera.zed.camera import ZEDCamera
-
-        return ZEDCamera.blueprint(enable_depth=False, enable_pointcloud=False).remappings(
-            [
-                (ZEDCamera, "color_image", "zed_color_image"),
-                (ZEDCamera, "imu", "zed_imu"),
-            ]
-        )
-    except ImportError:
-        from dimos.hardware.sensors.camera.zed.simple import ZedSimple
-
-        return ZedSimple.blueprint().remappings(
-            [
-                (ZedSimple, "color_image", "zed_color_image"),
-                (ZedSimple, "imu", "zed_imu"),
-            ]
-        )
-
-
 unitree_go2_record = autoconnect(
-    _zed_camera_blueprint(),
     MovementManager.blueprint(),
     GO2Connection.blueprint().remappings(
         [

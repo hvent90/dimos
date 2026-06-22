@@ -254,5 +254,4 @@ all_modules = {
     "web-input": "dimos.agents.web_human_input.WebInput",
     "websocket-vis-module": "dimos.web.websocket_vis.websocket_vis_module.WebsocketVisModule",
     "zed-camera": "dimos.hardware.sensors.camera.zed.camera.ZEDCamera",
-    "zed-simple": "dimos.hardware.sensors.camera.zed.simple.ZedSimple",
 }

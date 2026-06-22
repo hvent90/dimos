@@ -508,7 +508,6 @@ module = [
     "etils",
     "faster_whisper",
     "geometry_msgs.*",
-    "hid",
     "mcap",
     "mcap.*",
     "mujoco",
