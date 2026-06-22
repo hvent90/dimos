@@ -351,9 +351,7 @@ class BrokerProvider(AsyncProviderBase):
             return
         if msg.get("type") != "ping" or msg.get("client_ts") is None:
             return
-        pong = json.dumps(
-            {"type": "pong", "client_ts": msg["client_ts"], "robot_ts": time.time()}
-        )
+        pong = json.dumps({"type": "pong", "client_ts": msg["client_ts"], "robot_ts": time.time()})
         with self._lock:
             ch = self._dcs.get("state_reliable_back")
         # Pong MUST go on state_reliable_back — CF bridges one direction only;

@@ -50,7 +50,7 @@ ALLOWED_SPORT_CMDS: dict[str, int] = {
     "Stretch": 1017,
     "Damp": 1001,
     "FrontPounce": 1032,  # acrobatic — leaps
-    "FrontJump": 1031,    # acrobatic — leaps
+    "FrontJump": 1031,  # acrobatic — leaps
 }
 
 
@@ -63,12 +63,12 @@ class Go2HostedConnection(GO2Connection):
 
     config: Go2HostedConnectionConfig
 
-    state_json: In[bytes]       # operator → robot control JSON (state_reliable)
-    cmd_raw: In[bytes]          # operator → robot command bytes (stats tap)
+    state_json: In[bytes]  # operator → robot control JSON (state_reliable)
+    cmd_raw: In[bytes]  # operator → robot command bytes (stats tap)
     video_stats: Out[VideoStats]  # operator video health, for recorders
-    telemetry_out: Out[bytes]   # robot → operator telemetry + acks (state_reliable_back)
-    cam2_in: In[Image]          # extra camera (RealSense) for the mux
-    mux_image: Out[Image]       # composited cam1(Go2)+cam2 → video transport
+    telemetry_out: Out[bytes]  # robot → operator telemetry + acks (state_reliable_back)
+    cam2_in: In[Image]  # extra camera (RealSense) for the mux
+    mux_image: Out[Image]  # composited cam1(Go2)+cam2 → video transport
 
     def __init__(self, **kwargs: Any) -> None:
         super().__init__(**kwargs)
@@ -78,18 +78,25 @@ class Go2HostedConnection(GO2Connection):
         self._rage_active = False  # tracks firmware Rage Mode (speed bar)
         self._cam_lock = threading.Lock()
         self._cam_frames: dict[str, Image] = {}  # "cam1"/"cam2" → latest frame
-        self._cam_selected = ["cam1"]            # operator tab selection
+        self._cam_selected = ["cam1"]  # operator tab selection
 
     @rpc
     def start(self) -> None:
         super().start()
         self._stop_event.clear()
         # Sync subscribes (not async handle_*): keep-latest would drop bursts.
-        for stream, cb in ((self.state_json, self._on_state_json), (self.cmd_raw, self._on_cmd_raw)):
+        for stream, cb in (
+            (self.state_json, self._on_state_json),
+            (self.cmd_raw, self._on_cmd_raw),
+        ):
             self.register_disposable(Disposable(stream.subscribe(cb)))
         # Mux: tap the base's color_image as cam1, RealSense as cam2 → mux_image.
-        self.register_disposable(Disposable(self.color_image.subscribe(lambda i: self._on_cam("cam1", i))))
-        self.register_disposable(Disposable(self.cam2_in.subscribe(lambda i: self._on_cam("cam2", i))))
+        self.register_disposable(
+            Disposable(self.color_image.subscribe(lambda i: self._on_cam("cam1", i)))
+        )
+        self.register_disposable(
+            Disposable(self.cam2_in.subscribe(lambda i: self._on_cam("cam2", i)))
+        )
         self._start_telemetry()
 
     # ─── Camera mux ──────────────────────────────────────────────────
@@ -116,7 +123,9 @@ class Go2HostedConnection(GO2Connection):
         tiles = []
         for im in imgs:
             h, w = im.data.shape[:2]
-            tiles.append(cv2.resize(im.data, (int(w * target_h / h), target_h)) if h != target_h else im.data)
+            tiles.append(
+                cv2.resize(im.data, (int(w * target_h / h), target_h)) if h != target_h else im.data
+            )
         return Image(data=np.hstack(tiles), format=imgs[0].format, frame_id="camera_mux")
 
     def _set_cam_selection(self, cams: list[str]) -> None:
@@ -161,7 +170,8 @@ class Go2HostedConnection(GO2Connection):
         elif kind == "clock_report":
             logger.info(
                 "clock-sync: operator rtt=%s offset=%s",
-                msg.get("rtt_ms"), msg.get("offset_ms"),
+                msg.get("rtt_ms"),
+                msg.get("offset_ms"),
             )
         # ping answered by BrokerProvider; unknown types ignored.
 
@@ -267,7 +277,12 @@ class Go2HostedConnection(GO2Connection):
                 soc = getattr(self, "_latest_soc", None)  # cached by GO2Connection
                 if snap is not None or soc is not None:
                     payload = json.dumps(
-                        {"type": "robot_telemetry", "cmd": snap, "soc": soc, "robot_ts": time.time()}
+                        {
+                            "type": "robot_telemetry",
+                            "cmd": snap,
+                            "soc": soc,
+                            "robot_ts": time.time(),
+                        }
                     )
                     try:
                         self.telemetry_out.publish(payload.encode())

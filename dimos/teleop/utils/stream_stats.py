@@ -93,9 +93,7 @@ class LiveStreamStats:
             maxlen=window
         )
 
-    def record(
-        self, ts: float | None, seq: int | None = None, nbytes: int | None = None
-    ) -> None:
+    def record(self, ts: float | None, seq: int | None = None, nbytes: int | None = None) -> None:
         """Note an inbound message's send-stamp, seq, and wire size (any None)."""
         with self._lock:
             self._samples.append((time.time(), ts, seq, nbytes))
