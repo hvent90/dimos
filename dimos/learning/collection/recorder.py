@@ -32,14 +32,10 @@ from dimos.msgs.sensor_msgs.Image import Image
 from dimos.msgs.sensor_msgs.JointState import JointState
 
 
-class CollectionRecorderConfig(RecorderConfig):
-    pass
-
-
 class CollectionRecorder(Recorder):
     """Records the streams DataPrep consumes from a teleop session."""
 
-    config: CollectionRecorderConfig
+    config: RecorderConfig
 
     color_image: In[Image]  # observation (camera)
     coordinator_joint_state: In[JointState]  # observation + action (measured/next state)
