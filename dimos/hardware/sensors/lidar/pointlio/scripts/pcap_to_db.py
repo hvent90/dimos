@@ -25,7 +25,8 @@ Usage:
     python -m dimos.hardware.sensors.lidar.pointlio.scripts.pcap_to_db \
         --pcap "$PCAP_PATH" --config overrides.yaml
 
-    # add to existing .db
+    # add to existing .db (a missing --db is fetched via get_data before falling
+    # back to building from scratch; a missing --pcap is likewise fetched)
     DB="mem2.db"
     python -m dimos.hardware.sensors.lidar.pointlio.scripts.pcap_to_db --db "$DB"  --pcap "$PCAP_PATH"
 
@@ -312,15 +313,48 @@ def _load_overrides(config: str) -> dict[str, Any]:
     return data
 
 
+def _resolve_db_path(args: argparse.Namespace, pcap_path: Path) -> Path:
+    """Where to record. Omitted --db -> <pcap>.db. A given --db that's missing is
+    fetched via get_data (LFS) before falling back to building from scratch."""
+    if not args.db:
+        return pcap_path.with_suffix(".db")
+    db_path = Path(args.db).expanduser().resolve()
+    if not db_path.exists():
+        try:
+            from dimos.utils.data import get_data
+
+            fetched = get_data(args.db)
+            if fetched.exists():
+                print(f"[pcap_to_db] fetched --db via get_data: {fetched}", flush=True)
+                return fetched.resolve()
+        except (FileNotFoundError, RuntimeError, OSError) as exc:  # not an LFS db -> build fresh
+            print(
+                f"[pcap_to_db] --db not found locally or via get_data ({exc}); "
+                "building from scratch",
+                file=sys.stderr,
+                flush=True,
+            )
+    return db_path
+
+
 def _run(args: argparse.Namespace) -> int:
     from dimos.core.coordination.module_coordinator import ModuleCoordinator
 
-    pcap_path = Path(args.pcap).expanduser().resolve()
+    pcap_path = Path(args.pcap).expanduser()
     if not pcap_path.exists():
-        print(f"[pcap_to_db] missing pcap: {pcap_path}", file=sys.stderr)
-        return 2
+        try:
+            from dimos.utils.data import get_data
+
+            pcap_path = get_data(args.pcap)
+        except (FileNotFoundError, RuntimeError, OSError) as exc:
+            print(
+                f"[pcap_to_db] pcap not found locally or via get_data: {args.pcap} ({exc})",
+                file=sys.stderr,
+            )
+            return 2
+    pcap_path = pcap_path.resolve()
     args.pcap_path = pcap_path
-    db_path = Path(args.db).expanduser().resolve() if args.db else pcap_path.with_suffix(".db")
+    db_path = _resolve_db_path(args, pcap_path)
     db_path.parent.mkdir(parents=True, exist_ok=True)
     overrides = _load_overrides(args.config)
 
