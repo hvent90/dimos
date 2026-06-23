@@ -15,6 +15,9 @@
 import asyncio
 from dataclasses import dataclass
 import functools
+import json
+import os
+import random
 import threading
 import time
 from typing import Any, TypeAlias, TypeVar
@@ -25,6 +28,7 @@ from reactivex import operators as ops
 from reactivex.observable import Observable
 from reactivex.subject import Subject
 from unitree_webrtc_connect.constants import (
+    DATA_CHANNEL_TYPE,
     RTC_TOPIC,
     SPORT_CMD,
     VUI_COLOR,
@@ -98,6 +102,15 @@ class UnitreeWebRTCConnection(Resource):
         self.mode = mode
         self.stop_timer: threading.Timer | None = None
         self.cmd_vel_timeout = 0.2
+        # Opt-in: command the robot with the calibrated SPORT Move API (api_id 1008,
+        # real m/s & rad/s) over WebRTC instead of raw joystick stick deflections.
+        # Default OFF = today's joystick path. Enable with GO2_VELOCITY_MOVE=1.
+        self._velocity_move = os.environ.get("GO2_VELOCITY_MOVE", "0").lower() in (
+            "1",
+            "true",
+            "yes",
+            "on",
+        )
         # Per-device AES-128 key for new Unitree firmware (data2=3 handshake); omitted when unset.
         self.conn = LegionConnection(
             WebRTCConnectionMethod.LocalSTA, ip=self.ip, aes_128_key=aes_128_key
@@ -116,6 +129,25 @@ class UnitreeWebRTCConnection(Resource):
             await self.conn.datachannel.pub_sub.publish_request_new(
                 RTC_TOPIC["MOTION_SWITCHER"], {"api_id": 1002, "parameter": {"name": self.mode}}
             )
+
+            # Calibrated SPORT Move (1008) needs a standing/walking gait active; the
+            # joystick path does not. Bring the robot up once at connect (startup, so
+            # awaiting replies here is fine — not the tick-rate path). If Move does
+            # nothing on hardware, this gait sequence is the first thing to adjust.
+            if self._velocity_move:
+                await self.conn.datachannel.pub_sub.publish_request_new(
+                    RTC_TOPIC["SPORT_MOD"], {"api_id": SPORT_CMD["StandUp"]}
+                )
+                await asyncio.sleep(3.0)
+                await self.conn.datachannel.pub_sub.publish_request_new(
+                    RTC_TOPIC["SPORT_MOD"], {"api_id": SPORT_CMD["BalanceStand"]}
+                )
+                await asyncio.sleep(1.0)
+                # FreeWalk is the gait the in-repo DDS path enables before Move 1008.
+                await self.conn.datachannel.pub_sub.publish_request_new(
+                    RTC_TOPIC["SPORT_MOD"], {"api_id": SPORT_CMD["FreeWalk"]}
+                )
+                await asyncio.sleep(1.0)
 
         def start_background_loop() -> None:
             asyncio.set_event_loop(self.loop)
@@ -172,15 +204,42 @@ class UnitreeWebRTCConnection(Resource):
         """
         x, y, yaw = twist.linear.x, twist.linear.y, twist.angular.z
 
-        # WebRTC coordinate mapping:
-        # x - Positive right, negative left
-        # y - positive forward, negative backwards
-        # yaw - Positive rotate right, negative rotate left
-        async def async_move() -> None:
-            self.conn.datachannel.pub_sub.publish_without_callback(
-                RTC_TOPIC["WIRELESS_CONTROLLER"],
-                data={"lx": -y, "ly": x, "rx": -yaw, "ry": 0},
-            )
+        if self._velocity_move:
+            # Calibrated SPORT Move (api_id 1008): parameter is real m/s / rad/s in the
+            # robot body frame (x forward, y left, z yaw CCW), passed through with NO
+            # joystick inversion. Fire-and-forget via publish_without_callback (no reply
+            # awaited) so it is safe to call every control tick. The firmware's velocity
+            # controller does the gait mapping, so K/tau/L must be re-characterized for
+            # this command path.
+            async def async_move() -> None:
+                payload = {
+                    "header": {
+                        "identity": {
+                            # Fresh id per tick; nobody awaits a reply so collisions are harmless.
+                            "id": int(time.time() * 1000) % 2147483648 + random.randint(0, 1000),
+                            "api_id": SPORT_CMD["Move"],  # 1008
+                        }
+                    },
+                    # parameter MUST be a JSON STRING (matches the firmware contract);
+                    # publish_without_callback sends `data` verbatim and does not stringify.
+                    "parameter": json.dumps({"x": x, "y": y, "z": yaw}),
+                }
+                self.conn.datachannel.pub_sub.publish_without_callback(
+                    RTC_TOPIC["SPORT_MOD"],  # "rt/api/sport/request"
+                    data=payload,
+                    msg_type=DATA_CHANNEL_TYPE["REQUEST"],  # "req"
+                )
+
+        else:
+            # Legacy joystick path (default). Raw normalized stick deflections, no api_id.
+            # x - Positive right, negative left
+            # y - positive forward, negative backwards
+            # yaw - Positive rotate right, negative rotate left
+            async def async_move() -> None:
+                self.conn.datachannel.pub_sub.publish_without_callback(
+                    RTC_TOPIC["WIRELESS_CONTROLLER"],
+                    data={"lx": -y, "ly": x, "rx": -yaw, "ry": 0},
+                )
 
         async def async_move_duration() -> None:
             """Send movement commands continuously for the specified duration."""
