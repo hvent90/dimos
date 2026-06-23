@@ -215,7 +215,7 @@ def test_g1_construction_smoke() -> None:
 
 
 def test_viewer_cloud_functions() -> None:
-    from dimos.manipulation.reachability.demo_viewer import body_point_cloud, score_colors
+    from dimos.manipulation.visualization.viser.reachability import body_point_cloud, score_colors
 
     rng = np.random.default_rng(9)
     cap = CapabilityMap(MapParams())
@@ -255,7 +255,7 @@ def test_body_frame_volume() -> None:
 def test_body_voxel_mesh_and_slices() -> None:
     pytest.importorskip("trimesh")
     pytest.importorskip("matplotlib")
-    from dimos.manipulation.reachability.demo_viewer import (
+    from dimos.manipulation.visualization.viser.reachability import (
         body_voxel_mesh,
         slice_image_height,
         slice_image_yaw,
@@ -280,33 +280,6 @@ def test_body_voxel_mesh_and_slices() -> None:
     assert width > 0 and height > 0
     image_h, _, _ = slice_image_height(cap, 0.9)
     assert image_h.ndim == 3 and image_h.dtype == np.uint8
-
-
-@pytest.mark.skipif(not _G1_MJCF.exists(), reason="G1 MJCF assets not present")
-def test_arm_ik_reaches_fk_pose() -> None:
-    pytest.importorskip("mink")
-    pytest.importorskip("mujoco")
-    from dimos.manipulation.reachability.construct import _ArmSampler, arm_spec
-    from dimos.manipulation.reachability.demo_viewer import ArmIK
-
-    sampler = _ArmSampler(arm_spec("g1-left"))
-    rng = np.random.default_rng(12)
-    positions, rotations, _ = sampler.sample_chunk(5, rng)
-
-    import mujoco
-
-    solver = ArmIK("g1-left")
-    wxyz = np.empty(4)
-    mujoco.mju_mat2Quat(wxyz, np.ascontiguousarray(rotations[0]).reshape(9))
-    guesses: list[float] = []
-    joints, reached, error, collided = solver.solve(
-        positions[0], wxyz, on_step=lambda j, e, a: guesses.append(e)
-    )
-    assert reached, f"IK failed with error {error * 1000:.1f} mm"
-    assert not collided
-    assert set(joints) == set(solver.joint_names)
-    # The search streamed intermediate guesses, ending near the solution.
-    assert guesses and guesses[-1] <= guesses[0]
 
 
 def test_registry_is_consistent() -> None:

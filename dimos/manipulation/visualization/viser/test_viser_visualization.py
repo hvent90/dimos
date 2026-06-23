@@ -25,6 +25,7 @@ import pytest
 
 pytest.importorskip("viser", reason="Viser optional dependency is not installed")
 
+from dimos.manipulation.reachability.capability_map import CapabilityMap, MapParams
 from dimos.manipulation.visualization.types import RobotInfo, TargetEvaluation
 from dimos.manipulation.visualization.viser.adapter import InProcessViserAdapter
 from dimos.manipulation.visualization.viser.animation import (
@@ -173,6 +174,47 @@ class FakeHandle:
 
     def remove(self) -> None:
         self.removed = True
+
+
+class FakeReachabilityLayer:
+    def __init__(self) -> None:
+        self.calls: list[tuple[str, object]] = []
+
+    def show_points(self, points: np.ndarray, colors: np.ndarray, *, point_size: float) -> None:
+        self.calls.append(("points", (len(points), len(colors), point_size)))
+
+    def show_voxel_mesh(self, mesh: object | None) -> None:
+        self.calls.append(("voxels", mesh is not None))
+
+    def show_vertical_slice(
+        self,
+        image: np.ndarray,
+        *,
+        width: float,
+        height: float,
+        center_z: float,
+        wxyz: tuple[float, float, float, float],
+    ) -> None:
+        self.calls.append(("vertical", (image.shape, width, height, center_z, wxyz)))
+
+    def show_horizontal_slice(
+        self,
+        image: np.ndarray,
+        *,
+        width: float,
+        height: float,
+        z: float,
+    ) -> None:
+        self.calls.append(("horizontal", (image.shape, width, height, z)))
+
+    def clear_vertical_slice(self) -> None:
+        self.calls.append(("clear_vertical", None))
+
+    def clear_horizontal_slice(self) -> None:
+        self.calls.append(("clear_horizontal", None))
+
+    def close(self) -> None:
+        self.calls.append(("close", None))
 
 
 class FakeUrdf:
@@ -503,9 +545,16 @@ def make_panel() -> Iterator[Callable[..., ViserPanelGui]]:
         adapter: InProcessViserAdapter,
         config: ViserVisualizationConfig | None = None,
         scene: ViserManipulationScene | None = None,
+        reachability_maps: dict[str, CapabilityMap] | None = None,
+        reachability_layer: FakeReachabilityLayer | None = None,
     ) -> ViserPanelGui:
         gui = ViserPanelGui(
-            server, adapter, config or ViserVisualizationConfig(panel_enabled=True), scene
+            server,
+            adapter,
+            config or ViserVisualizationConfig(panel_enabled=True),
+            scene,
+            reachability_maps=reachability_maps,
+            reachability_layer=reachability_layer,  # type: ignore[arg-type]
         )
         gui.start()
         panels.append(gui)
@@ -555,6 +604,45 @@ def test_gui_scene_grid_checkbox_toggles_reference_grid(
         SimpleNamespace(target=SimpleNamespace(value=True))
     )
     assert grid_server.grids[0].visible is True
+
+
+def test_gui_reachability_controls_render_layer(make_panel: Callable[..., ViserPanelGui]) -> None:
+    params = MapParams(r_xy=0.2, z_min=0.0, z_max=0.2, cell=0.1, n_theta=4, n_inplane=2)
+    cap = CapabilityMap(params, robot="arm")
+    positions = np.array([[0.05, 0.05, 0.05], [0.15, -0.05, 0.05]], dtype=np.float64)
+    rotations = np.repeat(np.eye(3)[None, :, :], len(positions), axis=0)
+    cap.record_batch(positions, rotations)
+    layer = FakeReachabilityLayer()
+    gui = make_panel(
+        FakeGuiServer(),
+        make_adapter_with_robot(),
+        ViserVisualizationConfig(panel_enabled=True),
+        reachability_maps={"arm": cap},
+        reachability_layer=layer,
+    )
+
+    assert "reachability_folder" in gui._handles
+    assert "reachability_map" not in gui._handles
+    visible = gui._handles["reachability_visible"]
+    assert isinstance(visible, GuiCheckboxHandle)
+    visible.value = True
+    assert visible.update_callback is not None
+    visible.update_callback(SimpleNamespace(target=visible))
+    assert any(call[0] == "points" for call in layer.calls)
+
+    vertical = gui._handles["reachability_vertical_slice"]
+    assert isinstance(vertical, GuiCheckboxHandle)
+    vertical.value = True
+    assert vertical.update_callback is not None
+    vertical.update_callback(SimpleNamespace(target=vertical))
+    assert any(call[0] == "vertical" for call in layer.calls)
+
+    horizontal = gui._handles["reachability_horizontal_slice"]
+    assert isinstance(horizontal, GuiCheckboxHandle)
+    horizontal.value = True
+    assert horizontal.update_callback is not None
+    horizontal.update_callback(SimpleNamespace(target=horizontal))
+    assert any(call[0] == "horizontal" for call in layer.calls)
 
 
 def test_gui_close_removes_handles_and_late_callbacks_are_noops(
@@ -1404,6 +1492,52 @@ def test_gui_cartesian_ik_result_does_not_rewrite_active_gizmo(
     assert [gui._joint_sliders[name].value for name in ("j1", "j2")] == [1.0, 2.0]
     assert target_joint_updates[-1] == ("robot-1", ["j1", "j2"], [1.0, 2.0])
     assert target_pose_updates == []
+
+
+def test_gui_cartesian_failed_candidate_still_moves_target_configuration(
+    make_panel: Callable[..., ViserPanelGui],
+) -> None:
+    current = FakeJointState(["j1", "j2"], position=[0.0, 0.0])
+    config = make_robot_config(joint_names=["j1", "j2"], home_joints=[0.5, 0.6])
+    module = FakeManipulationModule(
+        _robots={"arm": ("robot-1", config, None)}, _planned_paths={}, _planned_trajectories={}
+    )
+    world_monitor = SimpleNamespace(
+        get_current_joint_state=lambda robot_id: current,
+        is_state_stale=lambda robot_id, max_age=1.0: False,
+        is_state_valid=lambda robot_id, joint_state: True,
+        get_ee_pose=lambda robot_id, joint_state=None: None,
+    )
+    adapter = InProcessViserAdapter(world_monitor=world_monitor, manipulation_module=module)
+    target_joint_updates = []
+    visual_states = []
+    scene = SimpleNamespace(
+        has_reference_grid=lambda: False,
+        ensure_target_controls=lambda *args: None,
+        set_target_joints=lambda *args: target_joint_updates.append(args) or True,
+        set_target_pose=lambda *args: None,
+        set_target_visual_state=lambda *args: visual_states.append(args),
+    )
+    gui = make_panel(FakeGuiServer(), adapter, ViserVisualizationConfig(panel_enabled=True), scene)
+    request = TargetEvaluationRequest(sequence_id=1, source="cartesian", robot_name="arm")
+    gui.state.latest_sequence_id = 1
+
+    gui._apply_target_evaluation_result(
+        request,
+        {
+            "success": False,
+            "status": "NO_SOLUTION",
+            "message": "not converged",
+            "collision_free": True,
+            "joint_state": adapter.joints_from_values(["j1", "j2"], [0.4, 0.8]),
+        },
+    )
+
+    assert gui.state.target_status == TargetStatus.INFEASIBLE
+    assert gui.state.feasibility.status == FeasibilityStatus.IK_FAILED
+    assert [gui._joint_sliders[name].value for name in ("j1", "j2")] == [0.4, 0.8]
+    assert target_joint_updates[-1] == ("robot-1", ["j1", "j2"], [0.4, 0.8])
+    assert visual_states[-1] == ("robot-1", False)
 
 
 def test_gui_collision_evaluation_marks_target_infeasible_and_colors_scene(

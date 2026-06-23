@@ -18,10 +18,13 @@ from __future__ import annotations
 
 from dataclasses import dataclass
 import importlib
+from pathlib import Path
 from types import ModuleType
 from typing import TYPE_CHECKING, Any
+import xml.etree.ElementTree as ET
 
 import numpy as np
+from scipy.spatial.transform import Rotation
 
 from dimos.manipulation.planning.kinematics.config import MinkKinematicsConfig
 from dimos.manipulation.planning.spec.config import RobotModelConfig
@@ -29,7 +32,10 @@ from dimos.manipulation.planning.spec.enums import IKStatus
 from dimos.manipulation.planning.spec.models import IKResult, WorldRobotID
 from dimos.manipulation.planning.spec.protocols import WorldSpec
 from dimos.manipulation.planning.utils.kinematics_utils import compute_pose_error
-from dimos.manipulation.planning.world.mujoco_world import compile_mujoco_model_from_config
+from dimos.manipulation.planning.world.mujoco_world import (
+    compile_mujoco_model_from_config,
+    prepare_urdf_for_mujoco,
+)
 from dimos.msgs.geometry_msgs.PoseStamped import PoseStamped
 from dimos.msgs.sensor_msgs.JointState import JointState
 from dimos.utils.logging_config import setup_logger
@@ -64,7 +70,9 @@ class _MinkRobotContext:
     config: RobotModelConfig
     model: Any
     data: Any
+    ee_body_name: str
     ee_body_id: int
+    body_to_ee: NDArray[np.float64]
     q_base: NDArray[np.float64]
     mapping: _JointMapping
     arm_velocity_mask: NDArray[np.float64]
@@ -116,6 +124,7 @@ class MinkIK:
 
         lower_limits, upper_limits = world.get_joint_limits(robot_id)
         target_matrix = pose_to_matrix(target_pose)
+        target_body_matrix = target_matrix @ np.linalg.inv(context.body_to_ee)
         best_result: IKResult | None = None
         best_error = float("inf")
 
@@ -124,7 +133,8 @@ class MinkIK:
                 q0 = self._initial_q(context, seed, lower_limits, upper_limits, attempt)
                 result = self._solve_single(
                     context=context,
-                    target_matrix=target_matrix,
+                    target_matrix=target_body_matrix,
+                    target_ee_matrix=target_matrix,
                     seed_q=q0,
                     lower_limits=lower_limits,
                     upper_limits=upper_limits,
@@ -161,6 +171,7 @@ class MinkIK:
         self,
         context: _MinkRobotContext,
         target_matrix: NDArray[np.float64],
+        target_ee_matrix: NDArray[np.float64],
         seed_q: NDArray[np.float64],
         lower_limits: NDArray[np.float64],
         upper_limits: NDArray[np.float64],
@@ -170,7 +181,7 @@ class MinkIK:
         mink = self._modules.mink
         configuration = mink.Configuration(context.model, seed_q.copy())
         frame_task = mink.FrameTask(
-            frame_name=context.config.end_effector_link,
+            frame_name=context.ee_body_name,
             frame_type="body",
             position_cost=self.config.position_cost,
             orientation_cost=self.config.orientation_cost,
@@ -189,7 +200,7 @@ class MinkIK:
         for iteration in range(self.config.max_iterations):
             current_pose = self._current_ee_matrix(context, configuration.q)
             final_position_error, final_orientation_error = compute_pose_error(
-                current_pose, target_matrix
+                current_pose, target_ee_matrix
             )
             if (
                 final_position_error <= position_tolerance
@@ -231,7 +242,7 @@ class MinkIK:
             )
         current_pose = self._current_ee_matrix(context, configuration.q)
         final_position_error, final_orientation_error = compute_pose_error(
-            current_pose, target_matrix
+            current_pose, target_ee_matrix
         )
         if (
             final_position_error <= position_tolerance
@@ -269,11 +280,7 @@ class MinkIK:
         model = compile_mujoco_model_from_config(config)
         data = mujoco.MjData(model)
         mapping = _build_joint_mapping(mujoco, model, config)
-        ee_body_id = int(
-            mujoco.mj_name2id(model, mujoco.mjtObj.mjOBJ_BODY, config.end_effector_link)
-        )
-        if ee_body_id < 0:
-            raise ValueError(f"End-effector body '{config.end_effector_link}' not in model")
+        ee_body_name, ee_body_id, body_to_ee = _resolve_end_effector_frame(mujoco, model, config)
         claimed_dofs = {int(idx) for idx in mapping.dof_adr}
         arm_velocity_mask = np.zeros(model.nv, dtype=np.float64)
         arm_velocity_mask[list(claimed_dofs)] = 1.0
@@ -282,7 +289,9 @@ class MinkIK:
             config=config,
             model=model,
             data=data,
+            ee_body_name=ee_body_name,
             ee_body_id=ee_body_id,
+            body_to_ee=body_to_ee,
             q_base=_base_qpos(mujoco, model, config),
             mapping=mapping,
             arm_velocity_mask=arm_velocity_mask,
@@ -319,7 +328,7 @@ class MinkIK:
         matrix = np.eye(4, dtype=np.float64)
         matrix[:3, :3] = context.data.xmat[context.ee_body_id].reshape(3, 3)
         matrix[:3, 3] = context.data.xpos[context.ee_body_id]
-        return matrix
+        return matrix @ context.body_to_ee
 
 
 def _load_optional_dependencies(solver: str) -> _MinkModules:
@@ -375,6 +384,74 @@ def _build_joint_mapping(mujoco: ModuleType, model: Any, config: RobotModelConfi
         qpos_adr=np.asarray(qpos_adr, dtype=np.intp),
         dof_adr=np.asarray(dof_adr, dtype=np.intp),
     )
+
+
+def _resolve_end_effector_frame(
+    mujoco: ModuleType, model: Any, config: RobotModelConfig
+) -> tuple[str, int, NDArray[np.float64]]:
+    ee_body_id = int(mujoco.mj_name2id(model, mujoco.mjtObj.mjOBJ_BODY, config.end_effector_link))
+    if ee_body_id >= 0:
+        return config.end_effector_link, ee_body_id, np.eye(4, dtype=np.float64)
+
+    if Path(str(config.model_path)).resolve().suffix == ".xml":
+        raise ValueError(f"End-effector body '{config.end_effector_link}' not in MuJoCo model")
+
+    fixed_joints = _fixed_joint_map(prepare_urdf_for_mujoco(config))
+    link_name = config.end_effector_link
+    body_to_ee = np.eye(4, dtype=np.float64)
+    visited: set[str] = set()
+
+    while link_name not in visited and link_name in fixed_joints:
+        visited.add(link_name)
+        parent, parent_to_child = fixed_joints[link_name]
+        body_to_ee = parent_to_child @ body_to_ee
+        body_id = int(mujoco.mj_name2id(model, mujoco.mjtObj.mjOBJ_BODY, parent))
+        if body_id >= 0:
+            return parent, body_id, body_to_ee
+        link_name = parent
+
+    raise ValueError(
+        f"End-effector frame '{config.end_effector_link}' is not a MuJoCo body "
+        "and could not be resolved through fixed URDF joints"
+    )
+
+
+def _fixed_joint_map(urdf_path: Path) -> dict[str, tuple[str, NDArray[np.float64]]]:
+    root = ET.parse(urdf_path).getroot()
+    fixed: dict[str, tuple[str, NDArray[np.float64]]] = {}
+    for joint in root.findall("joint"):
+        if joint.get("type") != "fixed":
+            continue
+        parent_node = joint.find("parent")
+        child_node = joint.find("child")
+        if parent_node is None or child_node is None:
+            continue
+        parent = parent_node.get("link")
+        child = child_node.get("link")
+        if parent is None or child is None:
+            continue
+        fixed[child] = (parent, _origin_matrix(joint.find("origin")))
+    return fixed
+
+
+def _origin_matrix(origin: ET.Element | None) -> NDArray[np.float64]:
+    matrix = np.eye(4, dtype=np.float64)
+    if origin is None:
+        return matrix
+    xyz = _parse_vector(origin.get("xyz"), 3)
+    rpy = _parse_vector(origin.get("rpy"), 3)
+    matrix[:3, :3] = Rotation.from_euler("xyz", rpy).as_matrix()
+    matrix[:3, 3] = xyz
+    return matrix
+
+
+def _parse_vector(value: str | None, size: int) -> NDArray[np.float64]:
+    if value is None:
+        return np.zeros(size, dtype=np.float64)
+    parts = [float(part) for part in value.split()]
+    if len(parts) != size:
+        raise ValueError(f"Expected {size} values, got {len(parts)} in '{value}'")
+    return np.asarray(parts, dtype=np.float64)
 
 
 def _base_qpos(mujoco: ModuleType, model: Any, config: RobotModelConfig) -> NDArray[np.float64]:

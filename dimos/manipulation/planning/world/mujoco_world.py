@@ -25,15 +25,16 @@ from __future__ import annotations
 from contextlib import contextmanager
 from dataclasses import dataclass
 from pathlib import Path
-import re
 from threading import RLock
 from typing import TYPE_CHECKING, Any
+import xml.etree.ElementTree as ET
 
 import numpy as np
 
 from dimos.manipulation.planning.spec.config import RobotModelConfig
 from dimos.manipulation.planning.spec.models import Obstacle, WorldRobotID
 from dimos.manipulation.planning.spec.protocols import WorldSpec
+from dimos.manipulation.planning.utils.mesh_utils import prepare_urdf_for_drake
 from dimos.msgs.geometry_msgs.PoseStamped import PoseStamped
 from dimos.msgs.geometry_msgs.Quaternion import Quaternion
 from dimos.msgs.geometry_msgs.Vector3 import Vector3
@@ -374,18 +375,24 @@ def compile_mujoco_model_from_config(config: RobotModelConfig) -> Any:
         spec = mujoco.MjSpec.from_file(str(model_path))
         spec.meshdir = str(_mjcf_meshdir(config, spec, model_path))
     else:
-        text = model_path.read_text()
-        for package, root in config.package_paths.items():
-            text = text.replace(f"package://{package}/", f"{root}/")
-        if "<mujoco>" not in text:
-            text = re.sub(
-                r"(<robot\b[^>]*>)",
-                r'\1<mujoco><compiler strippath="false" discardvisual="true"/></mujoco>',
-                text,
-                count=1,
-            )
-        spec = mujoco.MjSpec.from_string(text)
+        prepared_path = prepare_urdf_for_mujoco(config)
+        spec = mujoco.MjSpec.from_string(_mujoco_urdf_text(prepared_path))
     return spec.compile()
+
+
+def prepare_urdf_for_mujoco(config: RobotModelConfig) -> Path:
+    """Return a processed URDF path for MuJoCo-backed helpers."""
+    model_path = Path(str(config.model_path)).resolve()
+    if model_path.suffix == ".xml":
+        raise ValueError("MJCF models do not have a prepared URDF path")
+    return Path(
+        prepare_urdf_for_drake(
+            urdf_path=model_path,
+            package_paths=config.package_paths,
+            xacro_args=config.xacro_args,
+            convert_meshes=bool(config.auto_convert_meshes),
+        )
+    )
 
 
 def _mjcf_meshdir(config: RobotModelConfig, spec: Any, model_path: Path) -> Path:
@@ -396,6 +403,89 @@ def _mjcf_meshdir(config: RobotModelConfig, spec: Any, model_path: Path) -> Path
         if mesh_dir.exists():
             return mesh_dir.resolve()
     return model_path.parent.resolve()
+
+
+def _mujoco_urdf_text(urdf_path: Path) -> str:
+    root = ET.parse(urdf_path).getroot()
+    invalid_links = _remove_invalid_inertials(root)
+    _ensure_mujoco_compiler(root)
+    if invalid_links:
+        logger.warning(
+            "Removed invalid inertial tags for MuJoCo compile: %s",
+            ", ".join(invalid_links),
+        )
+    return ET.tostring(root, encoding="unicode")
+
+
+def _ensure_mujoco_compiler(root: ET.Element) -> None:
+    mujoco_node = root.find("mujoco")
+    if mujoco_node is None:
+        mujoco_node = ET.SubElement(root, "mujoco")
+    compiler = mujoco_node.find("compiler")
+    if compiler is None:
+        compiler = ET.SubElement(mujoco_node, "compiler")
+    defaults = {
+        "strippath": "false",
+        "discardvisual": "true",
+        "inertiafromgeom": "auto",
+    }
+    for name, value in defaults.items():
+        if compiler.get(name) is None:
+            compiler.set(name, value)
+
+
+def _remove_invalid_inertials(root: ET.Element) -> list[str]:
+    invalid_links: list[str] = []
+    for link in root.findall("link"):
+        inertial = link.find("inertial")
+        if inertial is None:
+            continue
+        if _valid_inertial(inertial):
+            continue
+        link.remove(inertial)
+        invalid_links.append(link.get("name") or "<unnamed>")
+    return invalid_links
+
+
+def _valid_inertial(inertial: ET.Element) -> bool:
+    mass = inertial.find("mass")
+    inertia = inertial.find("inertia")
+    if mass is None or inertia is None:
+        return False
+    try:
+        mass_value = float(mass.get("value", "nan"))
+        matrix = np.array(
+            [
+                [
+                    float(inertia.get("ixx", "nan")),
+                    float(inertia.get("ixy", "nan")),
+                    float(inertia.get("ixz", "nan")),
+                ],
+                [
+                    float(inertia.get("ixy", "nan")),
+                    float(inertia.get("iyy", "nan")),
+                    float(inertia.get("iyz", "nan")),
+                ],
+                [
+                    float(inertia.get("ixz", "nan")),
+                    float(inertia.get("iyz", "nan")),
+                    float(inertia.get("izz", "nan")),
+                ],
+            ],
+            dtype=np.float64,
+        )
+    except ValueError:
+        return False
+    if not np.isfinite(mass_value) or mass_value <= 0.0:
+        return False
+    if not np.all(np.isfinite(matrix)):
+        return False
+    principal = np.linalg.eigvalsh(matrix)
+    if np.any(principal <= 0.0):
+        return False
+    largest = float(principal[-1])
+    other_sum = float(principal[0] + principal[1])
+    return largest <= other_sum + 1e-12
 
 
 def _base_qpos(model: Any, pose: PoseStamped) -> NDArray[np.float64]:
@@ -478,4 +568,4 @@ def _relevant_contact_mask(robot: _MujocoRobotData, geom: NDArray[np.int32]) -> 
     return involved & ~excluded
 
 
-__all__ = ["MujocoWorld", "compile_mujoco_model_from_config"]
+__all__ = ["MujocoWorld", "compile_mujoco_model_from_config", "prepare_urdf_for_mujoco"]

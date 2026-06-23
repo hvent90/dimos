@@ -20,6 +20,7 @@ from typing import TYPE_CHECKING, Any
 
 import numpy as np
 
+from dimos.manipulation.reachability.capability_map import CapabilityMap
 from dimos.utils.logging_config import setup_logger
 
 if TYPE_CHECKING:
@@ -28,6 +29,138 @@ if TYPE_CHECKING:
     from dimos.manipulation.visualization.viser.scene import ViserManipulationScene
 
 logger = setup_logger()
+
+_EMPTY_GRAY = (45, 45, 55)
+
+
+def body_point_cloud(
+    cap: CapabilityMap, min_dexterity: float, min_count: int = 1
+) -> tuple[NDArray[np.float64], NDArray[np.float64]]:
+    """Return occupied body-frame cell centers and per-cell dexterity."""
+    params = cap.params
+    dexterity = cap.body_dexterity()
+    keep = (cap.body_counts >= min_count) & (dexterity >= min_dexterity)
+    iz, ix, iy = np.nonzero(keep)
+    if len(iz) == 0:
+        return np.empty((0, 3)), np.empty(0)
+    centers = (np.arange(params.n_xy) + 0.5) * params.cell - params.r_xy
+    z_centers = (np.arange(params.n_z) + 0.5) * params.cell + params.z_min
+    points = np.stack([centers[ix], centers[iy], z_centers[iz]], axis=1)
+    return points, dexterity[iz, ix, iy]
+
+
+def body_voxel_mesh(
+    cap: CapabilityMap, min_dexterity: float, min_count: int = 1
+) -> tuple[Any, int]:
+    """Return a Trimesh box mesh of occupied body-frame cells."""
+    import trimesh
+
+    params = cap.params
+    dexterity = cap.body_dexterity()
+    keep = (cap.body_counts >= min_count) & (dexterity >= min_dexterity)
+    n_voxels = int(keep.sum())
+    if n_voxels == 0:
+        return None, 0
+
+    matrix = keep.transpose(1, 2, 0)
+    import matplotlib
+
+    colors = np.zeros((*matrix.shape, 4), dtype=np.uint8)
+    rgba = matplotlib.colormaps["RdYlGn"](dexterity.transpose(1, 2, 0))
+    colors[..., :3] = (rgba[..., :3] * 255).astype(np.uint8)
+    colors[..., 3] = 255
+
+    transform = np.eye(4)
+    transform[0, 0] = transform[1, 1] = transform[2, 2] = params.cell
+    transform[:3, 3] = (
+        -params.r_xy + params.cell / 2,
+        -params.r_xy + params.cell / 2,
+        params.z_min + params.cell / 2,
+    )
+    grid = trimesh.voxel.VoxelGrid(matrix, transform=transform)  # type: ignore[no-untyped-call]
+    return grid.as_boxes(colors=colors), n_voxels  # type: ignore[no-untyped-call]
+
+
+def slice_image_yaw(
+    cap: CapabilityMap, yaw_deg: float, px_per_cell: int = 6
+) -> tuple[NDArray[np.uint8], float, float]:
+    """Dexterity cross-section along a vertical plane through the map origin."""
+    params = cap.params
+    n_s = params.n_xy * px_per_cell
+    n_z = params.n_z * px_per_cell
+    s = np.linspace(-params.r_xy, params.r_xy, n_s)
+    z = np.linspace(params.z_max, params.z_min, n_z)
+    yaw = np.deg2rad(yaw_deg)
+    xs = np.cos(yaw) * s
+    ys = np.sin(yaw) * s
+    positions = np.stack(
+        [
+            np.broadcast_to(xs, (n_z, n_s)).reshape(-1),
+            np.broadcast_to(ys, (n_z, n_s)).reshape(-1),
+            np.broadcast_to(z[:, None], (n_z, n_s)).reshape(-1),
+        ],
+        axis=1,
+    )
+    image = _dexterity_image(cap, positions, (n_z, n_s))
+    return image, 2 * params.r_xy, params.z_max - params.z_min
+
+
+def slice_image_height(
+    cap: CapabilityMap, z: float, px_per_cell: int = 6
+) -> tuple[NDArray[np.uint8], float, float]:
+    """Dexterity cross-section on a horizontal plane."""
+    params = cap.params
+    n = params.n_xy * px_per_cell
+    axis = np.linspace(-params.r_xy, params.r_xy, n)
+    xx, yy = np.meshgrid(axis, -axis)
+    positions = np.stack(
+        [xx.reshape(-1), yy.reshape(-1), np.full(n * n, z)],
+        axis=1,
+    )
+    image = _dexterity_image(cap, positions, (n, n))
+    return image, 2 * params.r_xy, 2 * params.r_xy
+
+
+def score_colors(scores: NDArray[np.float64], vmax: float | None = None) -> NDArray[np.uint8]:
+    """Map scalar scores to red-to-green uint8 colors."""
+    import matplotlib
+
+    vmax = vmax or max(float(scores.max(initial=1.0)), 1.0)
+    rgba = matplotlib.colormaps["RdYlGn"](np.clip(scores / vmax, 0, 1))
+    return (rgba[:, :3] * 255).astype(np.uint8)
+
+
+def vertical_slice_wxyz(yaw: float) -> tuple[float, float, float, float]:
+    """Quaternion placing an image plane vertically at the given yaw."""
+    from scipy.spatial.transform import Rotation
+
+    matrix = np.array(
+        [
+            [np.cos(yaw), 0.0, np.sin(yaw)],
+            [np.sin(yaw), 0.0, -np.cos(yaw)],
+            [0.0, 1.0, 0.0],
+        ]
+    )
+    x, y, z, w = Rotation.from_matrix(matrix).as_quat()
+    return (w, x, y, z)
+
+
+def _dexterity_image(
+    cap: CapabilityMap, positions: NDArray[np.float64], shape: tuple[int, int]
+) -> NDArray[np.uint8]:
+    import matplotlib
+
+    dexterity = cap.body_dexterity()
+    iz, ix, iy, valid = cap.body_indices(positions)
+    values = np.zeros(len(positions))
+    occupied = np.zeros(len(positions), dtype=bool)
+    values[valid] = dexterity[iz[valid], ix[valid], iy[valid]]
+    occupied[valid] = cap.body_counts[iz[valid], ix[valid], iy[valid]] > 0
+
+    rgba = matplotlib.colormaps["RdYlGn"](np.clip(values / max(values.max(), 1e-9), 0, 1))
+    image = (rgba[:, :3] * 255).astype(np.uint8)
+    image[~occupied] = _EMPTY_GRAY
+    return np.asarray(image.reshape(*shape, 3))
 
 
 class ReachabilityMapLayer:
@@ -140,4 +273,12 @@ class ReachabilityMapLayer:
                 logger.warning("Could not remove reachability layer handle %s", key, exc_info=True)
 
 
-__all__ = ["ReachabilityMapLayer"]
+__all__ = [
+    "ReachabilityMapLayer",
+    "body_point_cloud",
+    "body_voxel_mesh",
+    "score_colors",
+    "slice_image_height",
+    "slice_image_yaw",
+    "vertical_slice_wxyz",
+]
