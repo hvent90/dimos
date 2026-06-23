@@ -44,7 +44,6 @@ import asyncio
 from collections import defaultdict
 from collections.abc import Callable
 import contextlib
-from dataclasses import dataclass
 import importlib.util
 import os
 from typing import TYPE_CHECKING, Any
@@ -71,7 +70,6 @@ if TYPE_CHECKING:
     from dimos.msgs.sensor_msgs.Image import Image
 
 
-@dataclass(frozen=True)
 class LiveKitBrokerConfig(ProviderConfig):
     """Hosted teleop over LiveKit. Credentials default from TELEOP_* env."""
 

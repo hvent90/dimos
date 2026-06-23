@@ -77,13 +77,14 @@ class Go2ConnectionProtocol(Protocol):
     def lidar_stream(self) -> Observable: ...  # type: ignore[type-arg]
     def odom_stream(self) -> Observable: ...  # type: ignore[type-arg]
     def video_stream(self) -> Observable: ...  # type: ignore[type-arg]
+    def lowstate_stream(self) -> Observable: ...  # type: ignore[type-arg]
     def move(self, twist: Twist, duration: float = 0.0) -> bool: ...
     def standup(self) -> bool: ...
     def liedown(self) -> bool: ...
     def balance_stand(self) -> bool: ...
     def sport_command(self, api_id: int) -> bool: ...
     def set_obstacle_avoidance(self, enabled: bool = True) -> None: ...
-    def enable_rage_mode(self) -> bool: ...
+    def set_rage_mode(self, enable: bool) -> bool: ...
     def publish_request(self, topic: str, data: dict) -> dict: ...  # type: ignore[type-arg]
 
 
@@ -175,7 +176,7 @@ class ReplayConnection(UnitreeWebRTCConnection, CompositeResource):
     def set_obstacle_avoidance(self, enabled: bool = True) -> None:
         pass
 
-    def enable_rage_mode(self) -> bool:
+    def set_rage_mode(self, enable: bool) -> bool:
         return True
 
     @simple_mcache
@@ -262,7 +263,7 @@ class GO2Connection(Module, Camera, Pointcloud):
         self.connection.balance_stand()
 
         if self.config.mode == Go2Mode.RAGE:
-            self.connection.enable_rage_mode()
+            self.connection.set_rage_mode(True)
 
         self.connection.set_obstacle_avoidance(self.config.g.obstacle_avoidance)
 
@@ -350,14 +351,12 @@ class GO2Connection(Module, Camera, Pointcloud):
         return getattr(self, "_latest_soc", None)
 
     @rpc
-    def enable_rage_mode(self) -> bool:
-        """Enable Rage Mode (~2.5 m/s forward velocity envelope).
+    def set_rage_mode(self, enable: bool) -> bool:
+        """Toggle Rage Mode on/off (~2.5 m/s envelope when on).
         Ensures BalanceStand precondition regardless of current FSM state.
         """
-        self.connection.balance_stand()
-        time.sleep(0.3)
-        result = self.connection.enable_rage_mode()
-        logger.info("Rage Mode enabled")
+        result = self.connection.set_rage_mode(enable)
+        logger.info("Rage Mode %s", "enabled" if enable else "disabled")
         return result
 
     @rpc
