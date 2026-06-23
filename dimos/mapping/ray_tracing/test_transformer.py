@@ -85,12 +85,12 @@ def _ring(
     return np.stack([xs, ys, zs], axis=1).astype(np.float32)
 
 
-def test_emit_local_tags_region_bounds_around_registered_origin() -> None:
+def test_tags_region_bounds_around_registered_origin() -> None:
     margin = 0.2 + 0.1
     # Sensor-frame ring centered on the sensor. The pose registers it to (2, 3, 0.5).
     obs = _obs(_ring((0.0, 0.0), radius=1.0, z=0.0), ts=1.0, pose=(2.0, 3.0, 0.5))
 
-    [emitted] = list(RayTraceMap(emit_local=True)(iter([obs])))
+    [emitted] = list(RayTraceMap()(iter([obs])))
 
     cx, cy, radius, z_min, z_max = emitted.tags["region_bounds"]
     assert (cx, cy) == pytest.approx((2.0, 3.0))
@@ -99,11 +99,11 @@ def test_emit_local_tags_region_bounds_around_registered_origin() -> None:
     assert z_max == pytest.approx(0.5 + margin)
 
 
-def test_emit_local_empty_frame_yields_zero_radius_region_at_robot() -> None:
+def test_empty_frame_yields_zero_radius_region_at_robot() -> None:
     empty = np.empty((0, 3), dtype=np.float32)
     obs = _obs(empty, ts=1.0, pose=(1.0, 2.0, 3.0))
 
-    [emitted] = list(RayTraceMap(emit_local=True)(iter([obs])))
+    [emitted] = list(RayTraceMap()(iter([obs])))
 
     assert emitted.tags["region_bounds"] == pytest.approx((1.0, 2.0, 0.0, 3.0, 3.0))
 
@@ -121,7 +121,7 @@ def test_registers_sensor_frame_cloud_by_pose() -> None:
         _data=PointCloud2.from_numpy(point),
     )
 
-    [emitted] = list(RayTraceMap(emit_local=True)(iter([obs])))
+    [emitted] = list(RayTraceMap()(iter([obs])))
 
     cx, cy, radius, z_min, z_max = emitted.tags["region_bounds"]
     assert (cx, cy) == pytest.approx((5.0, 0.0))

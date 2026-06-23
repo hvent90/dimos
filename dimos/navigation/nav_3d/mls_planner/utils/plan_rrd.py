@@ -273,7 +273,6 @@ def main(
                 max_range=max_range,
                 ray_subsample=ray_subsample,
                 emit_every=emit_every,
-                emit_local=True,
             )
         )
 
@@ -307,9 +306,7 @@ def main(
             for ray_obs in ray_pipeline:
                 if ray_obs.pose_tuple is None:
                     continue
-                bounds = ray_obs.tags.get("region_bounds")
-                if bounds is None:
-                    raise ValueError("plan_rrd needs RayTraceMap(emit_local=True)")
+                bounds = ray_obs.tags["region_bounds"]
                 px, py, pz, *_ = ray_obs.pose_tuple
                 start = (float(px), float(py), float(pz) - robot_height)
                 ox, oy, radius, z_min, z_max = bounds

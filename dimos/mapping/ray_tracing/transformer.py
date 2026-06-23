@@ -50,7 +50,6 @@ class RayTraceMap(Transformer[PointCloud2, PointCloud2]):
         voxel_size: float = 0.1,
         max_range: float = 30.0,
         emit_every: int = 1,
-        emit_local: bool = False,
         region_percentile: float = 95.0,
         **mapper_kwargs: Any,
     ) -> None:
@@ -59,7 +58,6 @@ class RayTraceMap(Transformer[PointCloud2, PointCloud2]):
         self.voxel_size = voxel_size
         self.max_range = max_range
         self.emit_every = emit_every
-        self.emit_local = emit_local
         self.region_percentile = region_percentile
         self._mapper_kwargs = mapper_kwargs
 
@@ -93,12 +91,9 @@ class RayTraceMap(Transformer[PointCloud2, PointCloud2]):
         batch_origins: list[tuple[float, float, float]],
     ) -> Observation[PointCloud2]:
         tags = {**last_obs.tags, "frame_count": count}
-        if self.emit_local:
-            cx, cy, radius, z_min, z_max = self._local_bounds(batch_points, batch_origins, last_obs)
-            positions = mapper.local_map((cx, cy, 0.0), radius, z_min, z_max)
-            tags["region_bounds"] = (cx, cy, radius, z_min, z_max)
-        else:
-            positions = mapper.global_map()
+        cx, cy, radius, z_min, z_max = self._local_bounds(batch_points, batch_origins, last_obs)
+        positions = mapper.local_map((cx, cy, 0.0), radius, z_min, z_max)
+        tags["region_bounds"] = (cx, cy, radius, z_min, z_max)
         pcd = o3d.t.geometry.PointCloud()
         pcd.point["positions"] = o3c.Tensor.from_numpy(positions)
         cloud = PointCloud2(pointcloud=pcd, frame_id="world", ts=last_obs.ts)
@@ -130,7 +125,7 @@ class RayTraceMap(Transformer[PointCloud2, PointCloud2]):
             trans = mat[:3, 3].astype(np.float32)
             pts = obs.data.points_f32() @ rot.T + trans
             mapper.add_frame(pts, (x, y, z))
-            if self.emit_local and pts.size:
+            if pts.size:
                 batch_points.append(pts)
                 batch_origins.append((x, y, z))
             last_obs = obs

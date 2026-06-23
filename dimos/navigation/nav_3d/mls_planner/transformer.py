@@ -81,12 +81,7 @@ class MLSPlan(Transformer[PointCloud2, Path]):
             x, y, z, *_ = obs.pose_tuple
             start = (float(x), float(y), float(z) - self.robot_height)
 
-            bounds = obs.tags.get("region_bounds")
-            if bounds is None:
-                raise ValueError(
-                    "MLSPlan consumes local map slices; construct RayTraceMap(emit_local=True)"
-                )
-            ox, oy, radius, z_min, z_max = bounds
+            ox, oy, radius, z_min, z_max = obs.tags["region_bounds"]
             t_update = time.perf_counter()
             planner.update_region(obs.data.points_f32(), (ox, oy), radius, z_min, z_max)
             t_plan = time.perf_counter()
