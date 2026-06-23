@@ -330,11 +330,9 @@ class UnitreeWebRTCConnection(Resource):
         )
 
     def set_motion_mode(self, name: str) -> None:
-        """Select the robot's top-level motion mode via the motion switcher.
+        """Select the top-level motion controller via the motion switcher.
 
-        'mcf' is the AI/sport controller (firmware >= 1.1.7) that handles
-        terrain, including walking up and down stairs. 'normal' is the basic
-        controller. Stair traversal lives in mcf, so the nav stack selects it.
+        mcf is the AI/sport controller that traverses stairs. normal is basic.
         """
         # api_id 1001 = CheckMode, 1002 = SelectMode, param {"name": <mode>}.
         current = None
@@ -343,14 +341,12 @@ class UnitreeWebRTCConnection(Resource):
             current = json.loads(resp["data"]["data"]).get("name")
         except (KeyError, TypeError, ValueError) as e:
             print(f"Motion mode check failed: {e}")
-        print(f"Motion mode: current={current!r} requested={name!r}")
         if current == name:
             return
         self.publish_request(
             RTC_TOPIC["MOTION_SWITCHER"],
             {"api_id": 1002, "parameter": {"name": name}},
         )
-        # Switching controllers makes the robot re-stand; give it a moment.
         time.sleep(5)
 
     def free_walk(self) -> bool:

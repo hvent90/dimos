@@ -13,14 +13,8 @@
 # See the License for the specific language governing permissions and
 # limitations under the License.
 
-"""Go2 3D nav stack: pointlio odometry, raytraced voxel map, MLS planning, path following.
+"""3d navigation on Go2 with ray tracing and MLS planning"""
 
-Expects a mid360 + pointlio running against a lidar mounted on the robot.
-The go2's built-in lidar and odometry are remapped aside and unused for
-navigation. The map, paths, and robot pose all live in pointlio's world frame.
-"""
-
-import os
 from typing import Any
 
 from dimos.core.coordination.blueprints import autoconnect
@@ -97,11 +91,7 @@ unitree_go2_nav_3d = autoconnect(
             (GO2Connection, "odom", "odom_go2"),
         ]
     ),
-    PointLio.blueprint(
-        host_ip=os.getenv("LIDAR_HOST_IP", "192.168.1.5"),
-        lidar_ip=os.getenv("LIDAR_IP", "192.168.1.155"),
-        body_frame_id="body",
-    ),
+    PointLio.blueprint(body_frame_id="body"),
     RayTracingVoxelMap.blueprint(
         voxel_size=voxel_size,
         emit_every=2,
