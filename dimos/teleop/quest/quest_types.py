@@ -155,14 +155,28 @@ class Buttons(UInt32):
             return bool(self.data & (1 << Buttons.BITS[name]))
         raise AttributeError(f"'{type(self).__name__}' has no attribute '{name}'")
 
+    def _set_bit(self, name: str, value: bool) -> None:
+        """Flip the bit for a known button (caller guarantees `name in BITS`)."""
+        if value:
+            self.data |= 1 << Buttons.BITS[name]
+        else:
+            self.data &= ~(1 << Buttons.BITS[name])
+
     def __setattr__(self, name: str, value: bool) -> None:
         if name in Buttons.BITS:
-            if value:
-                self.data |= 1 << Buttons.BITS[name]
-            else:
-                self.data &= ~(1 << Buttons.BITS[name])
+            self._set_bit(name, value)
         else:
             super().__setattr__(name, value)
+
+    def set_attribute(self, name: str, value: bool) -> None:
+        """Set a digital button by name, validating it's a real button.
+
+        Raises on an unknown name instead of silently creating a stray attribute
+        (which a raw `setattr` would, via the `__setattr__` fall-through).
+        """
+        if name not in Buttons.BITS:
+            raise KeyError(f"unknown button {name!r}; valid buttons: {sorted(Buttons.BITS)}")
+        self._set_bit(name, value)
 
     @classmethod
     def from_controllers(

@@ -77,7 +77,7 @@ def _press(monitor: EpisodeMonitorModule, alias: str) -> None:
     attr = BUTTON_ALIASES[alias]
     released = Buttons()
     pressed = Buttons()
-    setattr(pressed, attr, True)
+    pressed.set_attribute(attr, True)
     monitor._on_buttons(released)
     monitor._on_buttons(pressed)
 
