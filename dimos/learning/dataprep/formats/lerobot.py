@@ -44,6 +44,7 @@ from pathlib import Path
 from typing import Any
 
 import numpy as np
+from numpy.typing import NDArray
 
 from dimos.learning.dataprep.core import OutputConfig, Sample, is_image_array
 from dimos.learning.dataprep.formats._stats import StreamingStats
@@ -179,7 +180,7 @@ def write(samples: Iterator[Sample], output: OutputConfig) -> Path:
         d.mkdir(parents=True, exist_ok=True)
         return d / f"{FILE}.mp4"
 
-    def _open_video(image_key: str, frame: np.ndarray) -> Any:
+    def _open_video(image_key: str, frame: NDArray[Any]) -> Any:
         h, w = frame.shape[:2]
         path = _video_path(image_key)
         vw = cv2.VideoWriter(str(path), fourcc, fps, (w, h))

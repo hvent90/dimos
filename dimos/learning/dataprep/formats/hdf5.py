@@ -38,6 +38,7 @@ from pathlib import Path
 from typing import Any
 
 import numpy as np
+from numpy.typing import NDArray
 
 from dimos.learning.dataprep.core import OutputConfig, Sample
 from dimos.learning.dataprep.formats._stats import StreamingStats
@@ -72,8 +73,8 @@ def write(samples: Iterator[Sample], output: OutputConfig) -> Path:
     cur_task = default_task_label  # actual label for the in-progress episode
     cur_start_ts: float | None = None
     buf_ts: list[float] = []
-    buf_obs: dict[str, list[np.ndarray]] = {}
-    buf_act: dict[str, list[np.ndarray]] = {}
+    buf_obs: dict[str, list[NDArray[Any]]] = {}
+    buf_act: dict[str, list[NDArray[Any]]] = {}
 
     total_frames = 0
 
