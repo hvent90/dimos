@@ -195,10 +195,9 @@ pub fn plan(
 }
 
 /// Re-validate a cached cell path against the current surface, returning the
-/// route ahead of the robot up to the first segment no longer traversable.
-/// When the route is cut by a blockage, it holds a BEST_EFFORT_DISTANCE_M
-/// standoff short of it. Empty when nothing ahead is safe, which the follower
-/// reads as a stop.
+/// route ahead of the robot up to the last traversable surface cell before a
+/// blockage. It holds a BEST_EFFORT_DISTANCE_M standoff short of the blockage.
+/// Empty when nothing ahead is safe, which the follower reads as a stop.
 pub fn truncate_to_safe(
     plg: &PlannerGraph,
     cached: &[VoxelKey],
@@ -219,30 +218,43 @@ pub fn truncate_to_safe(
 
     // The cached path runs start -> goal, but its head is the stale original
     // start. Resume from where the robot sits on it so the follower is pulled
-    // forward toward the goal, never back to that start. Validate each segment
-    // ahead and keep the contiguous traversable run.
+    // forward toward the goal, never back to that start.
     let resume = resume_segment(cached, start_pose, voxel_size);
-    let mut safe_end = resume;
+
+    // Walk each chord ahead at surface resolution. On a blockage, keep the
+    // chord up to its last traversable cell so the path ends right at the
+    // obstacle, not back at the previous smoothing anchor.
+    let mut waypoints = vec![start_pose];
+    let mut blocked = false;
     for j in resume..cached.len() - 1 {
-        if segment_metrics(plg, cached[j], cached[j + 1], step_cells, &wall_cost).is_some() {
-            safe_end = j + 1;
-        } else {
+        let (last_safe, cut) = last_safe_on_chord(
+            plg,
+            cached[j],
+            cached[j + 1],
+            step_cells,
+            &wall_cost,
+            voxel_size,
+        );
+        if cut {
+            if let Some(p) = last_safe {
+                if waypoints.last() != Some(&p) {
+                    waypoints.push(p);
+                }
+            }
+            blocked = true;
             break;
         }
-    }
-    if safe_end == resume {
-        return Vec::new();
-    }
-
-    let mut waypoints = Vec::with_capacity(safe_end - resume + 1);
-    waypoints.push(start_pose);
-    for &(ix, iy, iz) in &cached[resume + 1..=safe_end] {
+        let (ix, iy, iz) = cached[j + 1];
         waypoints.push(surface_point_xyz(ix, iy, iz, voxel_size));
     }
 
-    // A break short of the goal end means the route runs into a blockage, so
-    // hold the standoff. A run to the goal end has no blockage to stand off.
-    if safe_end + 1 < cached.len() {
+    if waypoints.len() < 2 {
+        return Vec::new();
+    }
+
+    // A blockage ahead means the route runs into an obstacle, so hold the
+    // standoff. A clean run to the goal end has nothing to stand off from.
+    if blocked {
         return back_off_tail(&waypoints, BEST_EFFORT_DISTANCE_M);
     }
     waypoints
@@ -277,6 +289,82 @@ fn back_off_tail(waypoints: &[(f32, f32, f32)], distance: f32) -> Vec<(f32, f32,
         return if out.len() >= 2 { out } else { Vec::new() };
     }
     Vec::new()
+}
+
+/// Walk the straight chord a -> b at surface resolution, the same sampling the
+/// segment validator uses. Returns the world point of the last traversable
+/// surface cell reached and whether the chord was cut short of b. The point is
+/// None only when the chord's start column is already off the surface.
+fn last_safe_on_chord(
+    plg: &PlannerGraph,
+    a: VoxelKey,
+    b: VoxelKey,
+    step_cells: i32,
+    wc: &WallCost,
+    voxel_size: f32,
+) -> (Option<(f32, f32, f32)>, bool) {
+    let (dx, dy, dz) = (b.0 - a.0, b.1 - a.1, b.2 - a.2);
+    let samples = dx.abs().max(dy.abs()) * 2;
+    if samples == 0 {
+        // Same column: traversable only if it is not a pure vertical move.
+        return if dz == 0 {
+            (Some(surface_point_xyz(a.0, a.1, a.2, voxel_size)), false)
+        } else {
+            (None, true)
+        };
+    }
+    let (mut last_ix, mut last_iy) = (i32::MIN, i32::MIN);
+    let mut prev_iz: Option<i32> = None;
+    let mut last_safe: Option<(f32, f32, f32)> = None;
+    for k in 0..=samples {
+        let t = k as f32 / samples as f32;
+        let ix = (a.0 as f32 + t * dx as f32).round() as i32;
+        let iy = (a.1 as f32 + t * dy as f32).round() as i32;
+        if ix == last_ix && iy == last_iy {
+            continue;
+        }
+        last_ix = ix;
+        last_iy = iy;
+        let iz_line = a.2 as f32 + t * dz as f32;
+        let Some(zs) = plg.surface_lookup.get(&(ix, iy)) else {
+            return (last_safe, true);
+        };
+        // Surface cell in this column nearest the interpolated segment height.
+        let mut nearest: Option<(f32, i32)> = None;
+        for &iz in zs {
+            let d = (iz as f32 - iz_line).abs();
+            if nearest.is_none_or(|(bd, _)| d < bd) {
+                nearest = Some((d, iz));
+            }
+        }
+        let Some((d, iz)) = nearest else {
+            return (last_safe, true);
+        };
+        if d > step_cells as f32 {
+            return (last_safe, true);
+        }
+        if prev_iz.is_some_and(|p| (iz - p).abs() > step_cells) {
+            return (last_safe, true);
+        }
+        let pen = match plg.cells.id((ix, iy, iz)) {
+            Some(id) => {
+                let wall_dist = plg
+                    .wall_state
+                    .dist
+                    .get(id as usize)
+                    .copied()
+                    .unwrap_or(f32::INFINITY);
+                penalty_of(wall_dist, wc.clearance_m, wc.buffer_m, wc.buffer_weight)
+            }
+            None => 1.0,
+        };
+        if !pen.is_finite() {
+            return (last_safe, true);
+        }
+        prev_iz = Some(iz);
+        last_safe = Some(surface_point_xyz(ix, iy, iz, voxel_size));
+    }
+    (last_safe, false)
 }
 
 /// Index of the cached segment the robot is on, by nearest-point projection in
@@ -854,6 +942,30 @@ mod tests {
         assert!(
             (gap - BEST_EFFORT_DISTANCE_M).abs() < VOXEL,
             "standoff is {gap} m, expected ~{BEST_EFFORT_DISTANCE_M}"
+        );
+    }
+
+    #[test]
+    fn truncate_walks_into_a_sparse_chord_to_the_blockage() {
+        let cfg = truncate_config();
+        // Sparse cached route: one 0 -> 39 chord, as string_pull leaves a
+        // straight approach. The surface is gone at x=20, mid-chord, where the
+        // old anchor-level cut would have discarded the whole chord and stopped
+        // back at x=0.
+        let cached: Vec<VoxelKey> = vec![(0, 0, 0), (39, 0, 0)];
+        let surface: Vec<VoxelKey> = (0..40).filter(|&x| x != 20).map(|x| (x, 0, 0)).collect();
+        let robot = surface_point_xyz(0, 0, 0, VOXEL);
+
+        let wp = truncate_to_safe(&surface_graph(&surface), &cached, robot, &cfg);
+
+        // It advances well into the chord and stops a standoff short of the gap.
+        let last = *wp.last().unwrap();
+        assert!(last.0 > 0.5, "did not walk into the chord: {last:?}");
+        let last_safe = surface_point_xyz(19, 0, 0, VOXEL);
+        let gap = (last_safe.0 - last.0).hypot(last_safe.1 - last.1);
+        assert!(
+            (gap - BEST_EFFORT_DISTANCE_M).abs() < VOXEL,
+            "standoff is {gap} m from the last safe cell, expected ~{BEST_EFFORT_DISTANCE_M}"
         );
     }
 
