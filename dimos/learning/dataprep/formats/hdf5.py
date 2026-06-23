@@ -40,7 +40,7 @@ from typing import Any
 import numpy as np
 from numpy.typing import NDArray
 
-from dimos.learning.dataprep.core import OutputConfig, Sample
+from dimos.learning.dataprep.core import DEFAULT_FPS, OutputConfig, Sample
 from dimos.learning.dataprep.formats._stats import stats_from_metadata
 
 
@@ -59,7 +59,7 @@ def write(samples: Iterator[Sample], output: OutputConfig) -> Path:
     stats = stats_from_metadata(output.metadata)
 
     default_task_label: str = output.metadata.get("default_task_label", "task")
-    fps = float(output.metadata.get("fps", 30.0))
+    fps = float(output.metadata.get("fps", DEFAULT_FPS))
 
     tasks_index: dict[str, int] = {}
 

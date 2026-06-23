@@ -47,6 +47,10 @@ if TYPE_CHECKING:
 Writer = Callable[[Iterator["Sample"], "OutputConfig"], Path]
 Inspector = Callable[[Path], dict[str, Any]]
 
+# Default frames-per-second: the resample rate and the written video/timestamp
+# rate are the same number (run_dataprep ties output fps to sync.rate_hz).
+DEFAULT_FPS = 30.0
+
 
 # ─────────────────────────────────────────────────────────────────────────────
 # Sub-configs
@@ -94,7 +98,7 @@ class DataPrepConfig(BaseConfig):
     episodes: EpisodeExtractor = EpisodeExtractor()
     observation: dict[str, StreamField] = Field(default_factory=dict)
     action: dict[str, StreamField] = Field(default_factory=dict)
-    sync: SyncConfig = SyncConfig(anchor="image", rate_hz=30.0, tolerance_ms=50.0)
+    sync: SyncConfig = SyncConfig(anchor="image", rate_hz=DEFAULT_FPS, tolerance_ms=50.0)
     output: OutputConfig = OutputConfig(format="lerobot", path=STATE_DIR / "datasets" / "default")
 
 

@@ -46,7 +46,7 @@ from typing import Any
 import numpy as np
 from numpy.typing import NDArray
 
-from dimos.learning.dataprep.core import OutputConfig, Sample, is_image_array
+from dimos.learning.dataprep.core import DEFAULT_FPS, OutputConfig, Sample, is_image_array
 from dimos.learning.dataprep.formats._stats import StreamingStats, stats_from_metadata
 from dimos.utils.logging_config import setup_logger
 
@@ -134,7 +134,7 @@ def write(samples: Iterator[Sample], output: OutputConfig) -> Path:
     (root / META_DIR / EPISODES_DIR / CHUNK).mkdir(parents=True, exist_ok=True)
     (root / DATA_DIR / CHUNK).mkdir(parents=True, exist_ok=True)
 
-    fps = float(output.metadata.get("fps", 30.0))
+    fps = float(output.metadata.get("fps", DEFAULT_FPS))
     fourcc = cv2.VideoWriter.fourcc(*"mp4v")
     default_task_label = output.metadata.get("default_task_label", "task")
 
