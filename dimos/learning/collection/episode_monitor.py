@@ -101,10 +101,6 @@ class EpisodeMonitorModule(Module):
         self._emit(status)
 
     @rpc
-    def stop(self) -> None:
-        super().stop()
-
-    @rpc
     def reset_counters(self) -> EpisodeStatus:
         with self._lock:
             self._state = "idle"
