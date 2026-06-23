@@ -50,7 +50,13 @@ from dimos.control.tasks.trajectory_tracking_task.config import (
     tracking_config_from_artifact_path,
 )
 from dimos.control.tasks.trajectory_tracking_task.constants import FLOWBASE_TRACKING
+from dimos.control.tasks.trajectory_tracking_task.deadtime_predictor import (
+    DeadtimePosePredictor,
+    build_deadtime_predictor,
+)
+from dimos.control.tasks.trajectory_tracking_task.eso import ESOCompensator, build_eso
 from dimos.control.tasks.trajectory_tracking_task.gain_schedule import ScheduledGainCompensator
+from dimos.control.tasks.trajectory_tracking_task.velocity_estimator import BodyVelocityEstimator
 from dimos.control.tasks.trajectory_tracking_task.trajectory_generator import (
     TimedTrajectory,
     TrajectorySample,
@@ -66,6 +72,7 @@ logger = setup_logger()
 TrajectoryTrackingState = Literal["idle", "tracking", "holding", "arrived", "aborted"]
 
 GainProfile = Literal["default", "aggressive"]
+YawFeedforwardMode = Literal["planned", "measured_speed"]
 
 
 @dataclass
@@ -84,6 +91,24 @@ class TrajectoryTrackingTaskConfig:
     # Plant-gain inversion (u_cmd = u_phys / K_hat). On by default — the
     # base genuinely moves K x the command.
     compensate_gain: bool = True
+    # Opt-in ESO/ADRC disturbance-rejection inner loop (see eso.py). OFF =
+    # today's behavior exactly (plain gain inversion). When ON, the ESO
+    # REPLACES the gain inversion at the velocity-command layer and is fed the
+    # smoothed/differentiated measured body velocity. eso_bandwidth is the
+    # single precision(>1)-vs-robustness(<1) dial.
+    eso: bool = False
+    eso_bandwidth: float = 1.0
+    # Opt-in feedback dead-time compensation. OFF = measured-pose feedback as
+    # today. When ON, the feedback error uses a measured pose advanced by the
+    # nominal FOPDT command-history model.
+    deadtime_compensation: bool = False
+    deadtime_feedback_lag_s: float = 0.0
+    deadtime_prediction_blend: float = 1.0
+    deadtime_prediction_mode: Literal["full", "yaw_only"] = "full"
+    # "planned" tracks the time-parameterized tangent yaw rate. "measured_speed"
+    # keeps the geometric curvature but scales yaw FF by measured along-path
+    # speed, so yaw does not run ahead when the Go2 falls behind in translation.
+    yaw_feedforward_mode: YawFeedforwardMode = "planned"
     heading_mode: Literal["tangent", "fixed"] = "tangent"
     fixed_heading: float = 0.0
     # Arrival tolerances for the hold phase.
@@ -122,6 +147,14 @@ class TrajectoryTrackingTask(BaseControlTask):
         self._compensator: FeedforwardGainCompensator | ScheduledGainCompensator | None = (
             self._build_compensator()
         )
+        # Velocity estimator is needed by ESO and by measured-speed yaw FF.
+        self._eso: ESOCompensator | None = None
+        self._velocity_estimator: BodyVelocityEstimator | None = None
+        self._last_eso_t: float | None = None
+        self._rebuild_velocity_estimator()
+        self._rebuild_eso()
+        self._deadtime_predictor: DeadtimePosePredictor | None = None
+        self._rebuild_deadtime_predictor()
 
         self._state: TrajectoryTrackingState = "idle"
         self._trajectory: TimedTrajectory | None = None
@@ -174,6 +207,10 @@ class TrajectoryTrackingTask(BaseControlTask):
         if pose is not None:
             self._last_pose = pose
             self._last_pose_t = state.t_now
+            # Feed the ESO's body-velocity estimator only on genuinely fresh
+            # odom reads (held/duplicate poses are de-duped inside it).
+            if self._velocity_estimator is not None:
+                self._velocity_estimator.update(state.t_now, pose[0], pose[1], pose[2])
         elif (
             self._last_pose_t is not None
             and state.t_now - self._last_pose_t < self._config.stale_pose_timeout
@@ -185,13 +222,27 @@ class TrajectoryTrackingTask(BaseControlTask):
             self._state = "holding"
 
         if self._state == "tracking":
-            vx, vy, wz = self._tracking_command(t_elapsed, pose if pose_fresh else None)
+            vx, vy, wz = self._tracking_command(
+                t_elapsed, pose if pose_fresh else None, state.t_now
+            )
         else:
             vx, vy, wz = self._holding_command(pose if pose_fresh else None)
             if self._state == "arrived":
                 vx, vy, wz = 0.0, 0.0, 0.0
 
-        if self._compensator is not None:
+        if self._eso is not None:
+            # ADRC inner loop: makes the proven outer controller see a clean
+            # plant by estimating and cancelling the Go2's total disturbance.
+            # Replaces the steady-state gain inversion (which it reduces to in
+            # the disturbance-free limit). Runs at the command-recompute rate;
+            # dt is the time since the last recompute.
+            measured = None
+            if pose_fresh and pose is not None and self._velocity_estimator is not None:
+                measured = self._velocity_estimator.body_velocity(pose[2])
+            dt_eso = state.t_now - self._last_eso_t if self._last_eso_t is not None else 0.0
+            vx, vy, wz = self._eso.compute((vx, vy, wz), measured, dt_eso)
+            self._last_eso_t = state.t_now
+        elif self._compensator is not None:
             vx, vy, wz = self._compensator.compute(vx, vy, wz)
 
         command = JointCommandOutput(
@@ -199,6 +250,8 @@ class TrajectoryTrackingTask(BaseControlTask):
             velocities=[vx, vy, wz],
             mode=ControlMode.VELOCITY,
         )
+        if self._deadtime_predictor is not None:
+            self._deadtime_predictor.record_command(state.t_now, (vx, vy, wz))
         self._last_command = command
         self._last_command_t = state.t_now
         return command
@@ -225,6 +278,42 @@ class TrajectoryTrackingTask(BaseControlTask):
                 self._tracking.schedule, self._tracking.ff_output_limit.as_tuple()
             )
         return FeedforwardGainCompensator(self._tracking.feedforward_config())
+
+    def _compensator_name(self) -> str:
+        if self._eso is not None:
+            return "eso"
+        if isinstance(self._compensator, ScheduledGainCompensator):
+            return "scheduled-gain"
+        if isinstance(self._compensator, FeedforwardGainCompensator):
+            return "constant-gain"
+        return "none"
+
+    def _rebuild_eso(self) -> None:
+        """(Re)build the ESO inner loop + its velocity estimator from the
+        current tracking config. No-op block when ``config.eso`` is off, so
+        the gain-inversion path above is what runs (today's behavior)."""
+        if self._config.eso:
+            self._eso = build_eso(self._tracking, bandwidth=self._config.eso_bandwidth)
+        else:
+            self._eso = None
+        self._last_eso_t = None
+
+    def _rebuild_velocity_estimator(self) -> None:
+        if self._config.eso or self._config.yaw_feedforward_mode == "measured_speed":
+            self._velocity_estimator = BodyVelocityEstimator()
+        else:
+            self._velocity_estimator = None
+
+    def _rebuild_deadtime_predictor(self) -> None:
+        if self._config.deadtime_compensation:
+            self._deadtime_predictor = build_deadtime_predictor(
+                self._tracking,
+                feedback_lag_s=self._config.deadtime_feedback_lag_s,
+                blend=self._config.deadtime_prediction_blend,
+                mode=self._config.deadtime_prediction_mode,
+            )
+        else:
+            self._deadtime_predictor = None
 
     def _read_pose(self, state: CoordinatorState) -> tuple[float, float, float] | None:
         # Twist-base ConnectedHardware routes adapter.read_odometry() ->
@@ -255,7 +344,7 @@ class TrajectoryTrackingTask(BaseControlTask):
         )
 
     def _tracking_command(
-        self, t_elapsed: float, pose: tuple[float, float, float] | None
+        self, t_elapsed: float, pose: tuple[float, float, float] | None, t_now: float
     ) -> tuple[float, float, float]:
         assert self._trajectory is not None
         # Per-axis dead-time preview: each axis sees the reference velocity
@@ -272,13 +361,32 @@ class TrajectoryTrackingTask(BaseControlTask):
         ff_vx = cos_yaw * ref_x.vx_world + sin_yaw * ref_x.vy_world
         ff_vy = -sin_yaw * ref_y.vx_world + cos_yaw * ref_y.vy_world
         ff_wz = ref_yaw.omega
+        if self._config.yaw_feedforward_mode == "measured_speed":
+            ff_wz = self._measured_speed_yaw_ff(ref_yaw)
 
         if pose is None:
             # Stale pose: feedforward only — never correct against a frozen error.
             return ff_vx, ff_vy, ff_wz
 
-        fb_vx, fb_vy, fb_wz = self._feedback(ref_now, pose)
+        feedback_pose = pose
+        if self._deadtime_predictor is not None:
+            feedback_pose = self._deadtime_predictor.predict(pose, t_now)
+        fb_vx, fb_vy, fb_wz = self._feedback(ref_now, feedback_pose)
         return ff_vx + fb_vx, ff_vy + fb_vy, ff_wz + fb_wz
+
+    def _measured_speed_yaw_ff(self, reference: TrajectorySample) -> float:
+        planned_speed = math.hypot(reference.vx_world, reference.vy_world)
+        if planned_speed < 1e-6 or self._velocity_estimator is None:
+            return reference.omega
+        measured = self._velocity_estimator.world_velocity()
+        if measured is None:
+            return reference.omega
+        vx_world, vy_world, _ = measured
+        tangent_x = reference.vx_world / planned_speed
+        tangent_y = reference.vy_world / planned_speed
+        measured_path_speed = max(0.0, vx_world * tangent_x + vy_world * tangent_y)
+        curvature = reference.omega / planned_speed
+        return curvature * measured_path_speed
 
     def _holding_command(
         self, pose: tuple[float, float, float] | None
@@ -305,6 +413,13 @@ class TrajectoryTrackingTask(BaseControlTask):
         speed: float | None = None,
         gain_profile: str | None = None,
         compensate_gain: bool | None = None,
+        eso: bool | None = None,
+        eso_bandwidth: float | None = None,
+        deadtime_compensation: bool | None = None,
+        deadtime_feedback_lag_s: float | None = None,
+        deadtime_prediction_blend: float | None = None,
+        deadtime_prediction_mode: str | None = None,
+        yaw_feedforward_mode: str | None = None,
         heading_mode: str | None = None,
         fixed_heading: float | None = None,
         command_rate_hz: float | None = None,
@@ -328,6 +443,34 @@ class TrajectoryTrackingTask(BaseControlTask):
         if compensate_gain is not None:
             self._config.compensate_gain = compensate_gain
             self._compensator = self._build_compensator()
+        if eso is not None:
+            self._config.eso = eso
+            self._rebuild_velocity_estimator()
+            self._rebuild_eso()
+        if eso_bandwidth is not None:
+            self._config.eso_bandwidth = eso_bandwidth
+            self._rebuild_eso()
+        if deadtime_compensation is not None:
+            self._config.deadtime_compensation = deadtime_compensation
+            self._rebuild_deadtime_predictor()
+        if deadtime_feedback_lag_s is not None:
+            self._config.deadtime_feedback_lag_s = deadtime_feedback_lag_s
+            self._rebuild_deadtime_predictor()
+        if deadtime_prediction_blend is not None:
+            self._config.deadtime_prediction_blend = deadtime_prediction_blend
+            self._rebuild_deadtime_predictor()
+        if deadtime_prediction_mode is not None:
+            if deadtime_prediction_mode not in ("full", "yaw_only"):
+                logger.warning(f"unknown deadtime_prediction_mode {deadtime_prediction_mode!r}")
+                return False
+            self._config.deadtime_prediction_mode = deadtime_prediction_mode  # type: ignore[assignment]
+            self._rebuild_deadtime_predictor()
+        if yaw_feedforward_mode is not None:
+            if yaw_feedforward_mode not in ("planned", "measured_speed"):
+                logger.warning(f"unknown yaw_feedforward_mode {yaw_feedforward_mode!r}")
+                return False
+            self._config.yaw_feedforward_mode = yaw_feedforward_mode  # type: ignore[assignment]
+            self._rebuild_velocity_estimator()
         if heading_mode is not None:
             self._config.heading_mode = heading_mode  # type: ignore[assignment]
         if fixed_heading is not None:
@@ -351,6 +494,8 @@ class TrajectoryTrackingTask(BaseControlTask):
         self._tracking = tracking_config_from_artifact_path(self._artifact_path)
         self._kp = self._tracking.kp(self._config.gain_profile)
         self._compensator = self._build_compensator()
+        self._rebuild_eso()
+        self._rebuild_deadtime_predictor()
         self._artifact_loaded = True
         logger.info(
             f"TrajectoryTrackingTask '{self._name}' loaded artifact ({self._tracking.provenance})"
@@ -361,7 +506,11 @@ class TrajectoryTrackingTask(BaseControlTask):
             logger.warning(f"TrajectoryTrackingTask '{self._name}': invalid path")
             return False
         self._ensure_artifact_loaded()
-        del current_odom  # pose flows in through compute()'s CoordinatorState
+        start_pose = (
+            float(current_odom.position.x),
+            float(current_odom.position.y),
+            float(current_odom.orientation.euler[2]),
+        )
         self._trajectory = TimedTrajectory.from_path(
             path,
             limits=self._tracking.profile_limits,
@@ -371,14 +520,36 @@ class TrajectoryTrackingTask(BaseControlTask):
         )
         if self._compensator is not None:
             self._compensator.reset()
+        if self._eso is not None:
+            self._eso.reset()
+        if self._velocity_estimator is not None:
+            self._velocity_estimator.reset()
+        if self._deadtime_predictor is not None:
+            self._deadtime_predictor.reset(None, start_pose)
+        self._last_eso_t = None
         self._t0 = None
         self._last_command = None
         self._last_command_t = None
         self._state = "tracking"
+        deadtime_horizon = (
+            max(
+                self._tracking.deadtime.x,
+                self._tracking.deadtime.y,
+                self._tracking.deadtime.yaw,
+            )
+            + self._config.deadtime_feedback_lag_s
+        )
         logger.info(
             f"TrajectoryTrackingTask '{self._name}' started: "
             f"{len(path.poses)} poses, {self._trajectory.length:.2f} m, "
-            f"{self._trajectory.duration:.2f} s, cruise {self._trajectory.max_speed:.2f} m/s"
+            f"{self._trajectory.duration:.2f} s, cruise {self._trajectory.max_speed:.2f} m/s, "
+            f"compensator={self._compensator_name()}, "
+            f"deadtime_compensation={self._config.deadtime_compensation}, "
+            f"deadtime_horizon={deadtime_horizon:.3f}s, "
+            f"deadtime_blend={self._config.deadtime_prediction_blend:.2f}, "
+            f"deadtime_mode={self._config.deadtime_prediction_mode}, "
+            f"yaw_ff={self._config.yaw_feedforward_mode}, "
+            f"artifact={self._artifact_path or '<default>'}"
         )
         return True
 
@@ -398,6 +569,13 @@ class TrajectoryTrackingTask(BaseControlTask):
         self._last_pose_t = None
         self._last_command = None
         self._last_command_t = None
+        if self._eso is not None:
+            self._eso.reset()
+        if self._velocity_estimator is not None:
+            self._velocity_estimator.reset()
+        if self._deadtime_predictor is not None:
+            self._deadtime_predictor.reset()
+        self._last_eso_t = None
         return True
 
     def get_state(self) -> TrajectoryTrackingState:
@@ -416,6 +594,14 @@ class TrajectoryTrackingTaskParams(BaseConfig):
     max_speed: float | None = None
     gain_profile: GainProfile = "default"
     compensate_gain: bool = True
+    # Opt-in ESO/ADRC disturbance-rejection inner loop (OFF = today's behavior).
+    eso: bool = False
+    eso_bandwidth: float = 1.0
+    deadtime_compensation: bool = False
+    deadtime_feedback_lag_s: float = 0.0
+    deadtime_prediction_blend: float = 1.0
+    deadtime_prediction_mode: Literal["full", "yaw_only"] = "full"
+    yaw_feedforward_mode: YawFeedforwardMode = "planned"
     heading_mode: Literal["tangent", "fixed"] = "tangent"
     fixed_heading: float = 0.0
     goal_tolerance: float = 0.05
@@ -437,6 +623,13 @@ def create_task(cfg: Any, hardware: Any) -> TrajectoryTrackingTask:
             max_speed=params.max_speed,
             gain_profile=params.gain_profile,
             compensate_gain=params.compensate_gain,
+            eso=params.eso,
+            eso_bandwidth=params.eso_bandwidth,
+            deadtime_compensation=params.deadtime_compensation,
+            deadtime_feedback_lag_s=params.deadtime_feedback_lag_s,
+            deadtime_prediction_blend=params.deadtime_prediction_blend,
+            deadtime_prediction_mode=params.deadtime_prediction_mode,
+            yaw_feedforward_mode=params.yaw_feedforward_mode,
             heading_mode=params.heading_mode,
             fixed_heading=params.fixed_heading,
             goal_tolerance=params.goal_tolerance,

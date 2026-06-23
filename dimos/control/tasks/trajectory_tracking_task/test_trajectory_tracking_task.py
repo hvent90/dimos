@@ -333,6 +333,92 @@ def test_missing_artifact_does_not_break_creation() -> None:
         task.start_path(_line_path(2.0), _pose(0.0, 0.0))
 
 
+def test_eso_flag_tracks_on_clean_go2() -> None:
+    """The opt-in ESO inner loop wires through compute() and still tracks the
+    clean Go2 plant (no disturbance => ESO ~no-op, must not regress)."""
+    from dimos.control.tasks.trajectory_tracking_task.config import TrackingConfig
+    from dimos.utils.benchmarking.plant import GO2_PLANT_FITTED
+    from dimos.utils.benchmarking.tuning import Provenance, derive_config
+
+    artifact = derive_config(
+        GO2_PLANT_FITTED,
+        Provenance(robot_id="go2", surface="concrete", mode="default", sim_or_hw="sim"),
+    )
+    tracking = TrackingConfig.from_artifact(artifact)
+    task = TrajectoryTrackingTask(
+        "go2_eso",
+        TrajectoryTrackingTaskConfig(
+            joint_names=list(_JOINTS), tracking=tracking, max_speed=0.5, eso=True
+        ),
+    )
+    plant = TwistBasePlantSim(GO2_PLANT_FITTED)
+    _, errors, _ = _run_closed_loop(task, _line_path(2.0), plant=plant)
+    assert task.get_state() == "arrived"
+    assert max(abs(e[0]) for e in errors) < 0.05  # cross-track
+
+
+def test_eso_off_is_unchanged_command() -> None:
+    """eso=False must produce byte-for-byte the gain-inverted command (the ESO
+    is strictly opt-in; the default path is untouched)."""
+    off = _task(eso=False, compensate_gain=True, max_speed=0.4)
+    also_off = _task(eso=False, compensate_gain=True, max_speed=0.4)
+    for task in (off, also_off):
+        task.start_path(_line_path(), _pose(0.0, 0.0))
+        task.compute(_state(0.0, 0.0, 0.0, _T0))
+    a = off.compute(_state(1.0, 0.0, 0.0, _T0 + 2.0))
+    b = also_off.compute(_state(1.0, 0.0, 0.0, _T0 + 2.0))
+    assert a is not None and b is not None
+    assert a.velocities == b.velocities
+
+
+def test_deadtime_compensation_is_opt_in_feedback_prediction() -> None:
+    baseline = _task(compensate_gain=False, max_speed=0.5)
+    compensated = _task(
+        compensate_gain=False,
+        max_speed=0.5,
+        deadtime_compensation=True,
+        deadtime_feedback_lag_s=0.2,
+    )
+    for task in (baseline, compensated):
+        task.start_path(_line_path(), _pose(0.0, 0.0))
+        task.compute(_state(0.0, 0.0, 0.0, _T0))
+
+    stale_pose_time = _T0 + 0.7
+    out_baseline = baseline.compute(_state(0.0, 0.0, 0.0, stale_pose_time))
+    out_compensated = compensated.compute(_state(0.0, 0.0, 0.0, stale_pose_time))
+
+    assert out_baseline is not None and out_compensated is not None
+    assert out_baseline.velocities is not None and out_compensated.velocities is not None
+    assert out_compensated.velocities[0] < out_baseline.velocities[0]
+
+
+def test_measured_speed_yaw_feedforward_scales_curve_yaw(mocker) -> None:
+    from dimos.utils.benchmarking.paths import circle
+
+    planned = _task(compensate_gain=False, max_speed=0.5)
+    measured = _task(
+        compensate_gain=False,
+        max_speed=0.5,
+        yaw_feedforward_mode="measured_speed",
+    )
+    path = circle(radius=1.0)
+    for task in (planned, measured):
+        task.start_path(path, path.poses[0])
+    assert planned._trajectory is not None
+    assert measured._trajectory is not None
+
+    t_elapsed = 1.0
+    ref = planned._trajectory.sample(t_elapsed)
+    pose = (ref.x, ref.y, ref.yaw)
+    measured._velocity_estimator = mocker.Mock()
+    measured._velocity_estimator.world_velocity.return_value = (0.0, 0.0, 0.0)
+
+    planned_cmd = planned._tracking_command(t_elapsed, pose, _T0 + t_elapsed)
+    measured_cmd = measured._tracking_command(t_elapsed, pose, _T0 + t_elapsed)
+
+    assert abs(measured_cmd[2]) < abs(planned_cmd[2])
+
+
 def test_go2_artifact_config_tracks_in_sim() -> None:
     """End-to-end: the artifact-driven config drives the controller against
     the Go2 FOPDT plant (no firmware limiter). Validates the plumbing — the

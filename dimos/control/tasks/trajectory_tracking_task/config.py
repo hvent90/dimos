@@ -90,6 +90,7 @@ class TrackingConfig:
 
     k_hat: PerAxis  # plant steady-state gain (for u_cmd = u_phys / K_hat)
     deadtime: PerAxis  # per-axis L (s) — FF reference is previewed by this
+    tau: PerAxis  # per-axis first-order time constant (s) — the ESO uses it
     kp_default: PerAxis  # per-axis P gain at zeta=1.0
     kp_aggressive: PerAxis  # per-axis P gain at zeta=0.7
     plan_max_vel: PerAxis
@@ -149,6 +150,7 @@ class TrackingConfig:
         return TrackingConfig(
             k_hat=k_hat,
             deadtime=PerAxis(plant.vx.L, plant.vy.L, plant.wz.L),
+            tau=PerAxis(plant.vx.tau, plant.vy.tau, plant.wz.tau),
             kp_default=PerAxis(
                 kp_for_zeta(plant.vx.tau, ZETA_DEFAULT),
                 kp_for_zeta(plant.vy.tau, ZETA_DEFAULT),
@@ -184,6 +186,7 @@ class TrackingConfig:
         return TrackingConfig(
             k_hat=k_hat,
             deadtime=PerAxis(plant.vx.L, plant.vy.L, plant.wz.L),
+            tau=PerAxis(plant.vx.tau, plant.vy.tau, plant.wz.tau),
             kp_default=PerAxis(
                 kp_for_zeta(plant.vx.tau, ZETA_DEFAULT),
                 kp_for_zeta(plant.vy.tau, ZETA_DEFAULT),

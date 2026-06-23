@@ -274,6 +274,27 @@ def _floor_anchored_sweep(profile: RobotPlantProfile, channel: str, floor: float
     return [float(a) for a in np.linspace(floor, top, n)]
 
 
+def _settled_gain(
+    ts_fit: np.ndarray, ys_filt: np.ndarray, amp: float, tail_frac: float = 0.4
+) -> float:
+    """Directly-measured steady-state gain: K = (settled body velocity) / amp.
+
+    Mean of the last ``tail_frac`` of the post-step window divided by the
+    commanded amplitude. This is K by DIRECT MEASUREMENT — independent of the
+    FOPDT joint fit's K/tau/L trade-off (unidentifiable at 16 Hz odom). Assumes
+    the step ran long enough to settle (use a long --step-s / --max-dist).
+    """
+    t = np.asarray(ts_fit, dtype=float)
+    y = np.asarray(ys_filt, dtype=float)
+    if t.size == 0 or abs(amp) < 1e-9:
+        return float("nan")
+    t_cut = t[0] + (1.0 - tail_frac) * (t[-1] - t[0])
+    tail = y[t >= t_cut]
+    if tail.size == 0:
+        tail = y[-max(1, int(t.size * tail_frac)) :]
+    return float(np.mean(tail) / amp)
+
+
 def _envelope_from_channel_results(
     floor_probe: list[dict],
     sweep_fits: list[dict],
@@ -327,6 +348,7 @@ def _selftest_step(
 
 def _fit_selftest(
     profile: RobotPlantProfile,
+    exact_amps: dict[str, list[float]] | None = None,
 ) -> tuple[
     TwistBasePlantParams,
     dict[str, list[dict]],
@@ -389,7 +411,9 @@ def _fit_selftest(
         floor, _ = _floor_from_probe(
             floor_results[channel], [r["amp"] for r in floor_results[channel]]
         )
-        for amp in _floor_anchored_sweep(profile, channel, floor):
+        for amp in (exact_amps or {}).get(channel) or _floor_anchored_sweep(
+            profile, channel, floor
+        ):
             fit_and_record(channel, amp, "sweep")
         for amp in profile.ceiling_probe_amplitudes.get(channel, []):
             fit_and_record(channel, amp, "ceiling_probe")
@@ -748,6 +772,7 @@ def _fit_hw(
     savgol_order: int = 2,
     hampel_window: int = 11,
     hampel_n_sigma: float = 3.0,
+    exact_amps: dict[str, list[float]] | None = None,
 ) -> tuple[
     TwistBasePlantParams,
     dict[str, list[dict]],
@@ -904,12 +929,19 @@ def _fit_hw(
         return fp
 
     def record_fit(channel: str, amp: float, r: dict, fp: Any, source: str) -> None:
+        # K is reported by DIRECT MEASUREMENT (settled velocity / amp), not the
+        # FOPDT fit — a 16 Hz odom stream can't pin the joint K/tau/L trade-off,
+        # so we trust the measured steady state. tau/L stay from the fit
+        # (forensic only). Fall back to the fit K only if the tail is degenerate.
+        k_direct = _settled_gain(r["ts_fit"], r["ys_filt"], amp)
+        k_report = k_direct if np.isfinite(k_direct) else fp.K
+        print(f"  {channel}@{amp}: K_direct={k_report:.3f} (settled)  [K_fopdt={fp.K:.3f}]")
         per_amplitude[channel].append(
             {
                 "amp": amp,
                 "amplitude": amp,
                 "direction": "forward",
-                "K": fp.K,
+                "K": k_report,
                 "tau": fp.tau,
                 "L": fp.L,
                 "r2": fp.r_squared,
@@ -924,7 +956,7 @@ def _fit_hw(
                 "y_raw": r["ys_raw"],
                 "n_replaced": r["n_replaced"],
                 "y": r["ys_filt"],
-                "K": fp.K,
+                "K": k_report,
                 "tau": fp.tau,
                 "L": fp.L,
                 "r2": fp.r_squared,
@@ -985,7 +1017,9 @@ def _fit_hw(
             floor, _ = _floor_from_probe(
                 floor_results[channel], [r["amp"] for r in floor_results[channel]]
             )
-            sweep_amps = _floor_anchored_sweep(profile, channel, floor)
+            sweep_amps = (exact_amps or {}).get(channel) or _floor_anchored_sweep(
+                profile, channel, floor
+            )
             print(f"\n=== [{channel}] sweep (floor={floor:.3f} -> {sweep_amps}) ===")
             for amp in sweep_amps:
                 r = run_one_step(channel, amp, "SWEEP")
@@ -1067,6 +1101,13 @@ class CharacterizerConfig(ModuleConfig):
     pre_roll_s: float | None = None
     odom_warmup: float | None = None
     max_dist: float | None = None
+    # EXACT per-channel sweep amplitudes (comma-sep). When set, these are
+    # commanded verbatim and BYPASS the floor-anchored linspace, so the K(v)
+    # curve is sampled exactly where you ask (the floor probe still runs for
+    # the envelope). Units: m/s for vx/vy, rad/s for wz.
+    vx_amps: str | None = None
+    vy_amps: str | None = None
+    wz_amps: str | None = None
     gate_source: Literal["stdin", "stream"] = "stdin"
     savgol_window: int = 11
     savgol_order: int = 2
@@ -1111,6 +1152,13 @@ class Characterizer(Module):
         max_dist = cfg.max_dist if cfg.max_dist is not None else profile.max_dist_m
         robot_id = cfg.robot_id if cfg.robot_id is not None else profile.robot_id
         out_root = Path(cfg.out).expanduser() if cfg.out else DEFAULT_OUT_DIR
+        exact_amps: dict[str, list[float]] = {
+            ch: sorted({float(x) for x in raw.split(",")})
+            for ch, raw in (("vx", cfg.vx_amps), ("vy", cfg.vy_amps), ("wz", cfg.wz_amps))
+            if raw
+        }
+        if exact_amps:
+            print(f"[amps] EXACT sweep override (bypasses floor-anchoring): {exact_amps}")
 
         if cfg.mode == "re-derive":
             self._run_re_derive(cfg, profile, robot_id, out_root)
@@ -1135,9 +1183,12 @@ class Characterizer(Module):
                 savgol_order=cfg.savgol_order,
                 hampel_window=cfg.hampel_window,
                 hampel_n_sigma=cfg.hampel_n_sigma,
+                exact_amps=exact_amps or None,
             )
         else:
-            fitted, per_amplitude, traces, envelope, floor_results = _fit_selftest(profile)
+            fitted, per_amplitude, traces, envelope, floor_results = _fit_selftest(
+                profile, exact_amps=exact_amps or None
+            )
 
         provenance = Provenance(
             robot_id=robot_id,
@@ -1343,6 +1394,19 @@ def main() -> None:
         default=None,
         help="per-step travel cap (m); ends the step early at speed",
     )
+    ap.add_argument(
+        "--vx-amps",
+        default=None,
+        help="EXACT vx sweep amps, comma-sep m/s (e.g. 0.2,0.3,0.4,0.5,0.7,0.9); "
+        "bypasses floor-anchoring",
+    )
+    ap.add_argument("--vy-amps", default=None, help="EXACT vy sweep amps, comma-sep m/s")
+    ap.add_argument(
+        "--wz-amps",
+        default=None,
+        help="EXACT wz sweep amps, comma-sep rad/s (e.g. 0.3,0.5,0.7,0.9,1.1,1.3); "
+        "bypasses floor-anchoring",
+    )
     args = ap.parse_args()
 
     instance = Characterizer(
@@ -1357,6 +1421,9 @@ def main() -> None:
         pre_roll_s=args.pre_roll_s,
         odom_warmup=args.odom_warmup,
         max_dist=args.max_dist,
+        vx_amps=args.vx_amps,
+        vy_amps=args.vy_amps,
+        wz_amps=args.wz_amps,
     )
     instance.start()
 

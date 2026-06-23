@@ -108,6 +108,26 @@ unitree_go2_coordinator = (
 # Flip this constant and restart to switch arms.
 _TRAJTRACK_CMD_RATE_HZ: float | None = 6.0
 
+# Opt-in ESO/ADRC disturbance-rejection inner loop for the trajectory tracker
+# (sim-validated; see dimos/control/tasks/trajectory_tracking_task/eso.py and
+# the writeup ESO_PHASE1.md). OFF = today's behavior. Enable for a hardware
+# trial with `GO2_ESO=1 dimos run ...`; tune the precision/robustness dial with
+# `GO2_ESO_BANDWIDTH=<float>` (1.0 = the calibrated default).
+_TRAJTRACK_ESO: bool = os.environ.get("GO2_ESO", "").lower() in ("1", "true", "yes", "on")
+_TRAJTRACK_ESO_BANDWIDTH: float = float(os.environ.get("GO2_ESO_BANDWIDTH", "1.0"))
+_TRAJTRACK_DEADTIME_COMP: bool = os.environ.get("GO2_DEADTIME_COMP", "").lower() in (
+    "1",
+    "true",
+    "yes",
+    "on",
+)
+_TRAJTRACK_DEADTIME_FEEDBACK_LAG_S: float = float(
+    os.environ.get("GO2_DEADTIME_FEEDBACK_LAG_S", "0.0")
+)
+_TRAJTRACK_DEADTIME_BLEND: float = float(os.environ.get("GO2_DEADTIME_BLEND", "1.0"))
+_TRAJTRACK_DEADTIME_MODE: str = os.environ.get("GO2_DEADTIME_MODE", "full")
+_TRAJTRACK_YAW_FF_MODE: str = os.environ.get("GO2_YAW_FF_MODE", "planned")
+
 
 def _make_coordinator(mode: str = "default"):
     """Build a coordinator blueprint with the Go2 firmware in the given
@@ -175,6 +195,13 @@ def _make_coordinator(mode: str = "default"):
                         params={
                             "artifact_path": _GO2_ARTIFACT,
                             "command_rate_hz": _TRAJTRACK_CMD_RATE_HZ,
+                            "eso": _TRAJTRACK_ESO,
+                            "eso_bandwidth": _TRAJTRACK_ESO_BANDWIDTH,
+                            "deadtime_compensation": _TRAJTRACK_DEADTIME_COMP,
+                            "deadtime_feedback_lag_s": _TRAJTRACK_DEADTIME_FEEDBACK_LAG_S,
+                            "deadtime_prediction_blend": _TRAJTRACK_DEADTIME_BLEND,
+                            "deadtime_prediction_mode": _TRAJTRACK_DEADTIME_MODE,
+                            "yaw_feedforward_mode": _TRAJTRACK_YAW_FF_MODE,
                         },
                     ),
                 ],

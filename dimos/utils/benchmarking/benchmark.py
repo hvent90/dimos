@@ -303,6 +303,13 @@ def _run_baseline(
     label: str,
     task_name: str,
     lookahead_dist: float | None = None,
+    eso: bool = False,
+    eso_bandwidth: float = 1.0,
+    deadtime_compensation: bool = False,
+    deadtime_feedback_lag_s: float = 0.0,
+    deadtime_prediction_blend: float = 1.0,
+    deadtime_prediction_mode: str = "full",
+    yaw_feedforward_mode: str = "planned",
 ) -> tuple[ExecutedTrajectory, NavPath]:
     """Send a path to the operator coord's path-follower task (selected
     by ``task_name`` — ``"path_follower"`` for the bare/ff/profile arms,
@@ -323,16 +330,23 @@ def _run_baseline(
     # Reset accumulated trajectory so each run starts at t=0.
     recorder.reset_trajectory()
 
-    if not _invoke(
-        coord,
-        task_name,
-        "configure",
-        speed=speed,
-        k_angular=k_angular,
-        lookahead_dist=lookahead_dist,
-        ff_config=ff_config,
-        velocity_profile_config=profile_config,
-    ):
+    configure_kwargs: dict[str, object] = {
+        "speed": speed,
+        "k_angular": k_angular,
+        "lookahead_dist": lookahead_dist,
+        "ff_config": ff_config,
+        "velocity_profile_config": profile_config,
+    }
+    if task_name == _TRAJECTORY_TRACKER_TASK_NAME:
+        configure_kwargs["eso"] = eso
+        configure_kwargs["eso_bandwidth"] = eso_bandwidth
+        configure_kwargs["deadtime_compensation"] = deadtime_compensation
+        configure_kwargs["deadtime_feedback_lag_s"] = deadtime_feedback_lag_s
+        configure_kwargs["deadtime_prediction_blend"] = deadtime_prediction_blend
+        configure_kwargs["deadtime_prediction_mode"] = deadtime_prediction_mode
+        configure_kwargs["yaw_feedforward_mode"] = yaw_feedforward_mode
+
+    if not _invoke(coord, task_name, "configure", **configure_kwargs):
         print(f"  [{label}] configure rejected — task still active from prior run?")
         return ExecutedTrajectory(ticks=recorder.snapshot(), arrived=False), path_w
 
@@ -405,6 +419,13 @@ def _run_ladder(
     gate_keys_label: str = "ENTER=run  s=skip  q=quit",
     k_angular_values: list[float] | None = None,
     lookahead_values: list[float | None] | None = None,
+    eso: bool = False,
+    eso_bandwidth: float = 1.0,
+    deadtime_compensation: bool = False,
+    deadtime_feedback_lag_s: float = 0.0,
+    deadtime_prediction_blend: float = 1.0,
+    deadtime_prediction_mode: str = "full",
+    yaw_feedforward_mode: str = "planned",
 ) -> tuple[list[OperatingPoint], list[dict]]:
     # Bare stock baseline by default: this is the physical-limit
     # measurement. FF / velocity profile / RG are opt-in comparison arms.
@@ -471,6 +492,13 @@ def _run_ladder(
                         f"{name}@{speed:.2f}{tag}",
                         task_name=task_name,
                         lookahead_dist=lookahead,
+                        eso=eso,
+                        eso_bandwidth=eso_bandwidth,
+                        deadtime_compensation=deadtime_compensation,
+                        deadtime_feedback_lag_s=deadtime_feedback_lag_s,
+                        deadtime_prediction_blend=deadtime_prediction_blend,
+                        deadtime_prediction_mode=deadtime_prediction_mode,
+                        yaw_feedforward_mode=yaw_feedforward_mode,
                     )
                     # Score/plot against the executed-frame reference (anchored path).
                     s = score_run(ref, traj)
@@ -646,6 +674,19 @@ class BenchmarkerConfig(ModuleConfig):
     # gains from the vendored FlowBase fit, see
     # dimos/control/tasks/trajectory_tracking_task/constants.py).
     trajtrack: bool = False
+    # OPT-IN: enable the trajectory_tracker's ESO/ADRC disturbance-rejection
+    # inner loop (only meaningful with trajtrack=True; other arms ignore it).
+    # This is the clean way to A/B the ESO: run once with eso=false, once with
+    # eso=true, same blueprint — no coordinator restart. eso_bandwidth is the
+    # precision(>1)/robustness(<1) dial (1.0 = calibrated default).
+    eso: bool = False
+    eso_bandwidth: float = 1.0
+    # OPT-IN: enable trajectory_tracker feedback dead-time compensation.
+    deadtime_compensation: bool = False
+    deadtime_feedback_lag_s: float = 0.0
+    deadtime_prediction_blend: float = 1.0
+    deadtime_prediction_mode: Literal["full", "yaw_only"] = "full"
+    yaw_feedforward_mode: Literal["planned", "measured_speed"] = "planned"
     # OPT-IN: output directory for plots + standalone-arm JSONs (the
     # input config artifact augmentation always lands at args.config).
     out_dir: str | None = None
@@ -727,6 +768,9 @@ class Benchmarker(Module):
                     ("profile", cfg.profile),
                     ("rg", cfg.rg),
                     ("trajtrack", cfg.trajtrack),
+                    ("eso", cfg.eso),
+                    ("deadtime", cfg.deadtime_compensation),
+                    ("yawff", cfg.yaw_feedforward_mode == "measured_speed"),
                 )
                 if on
             )
@@ -748,6 +792,10 @@ class Benchmarker(Module):
                 "[pre-check] --mode sim: validates wiring against the FOPDT sim "
                 "plant only; the operating-point map is NOT a real-robot result."
             )
+        if cfg.eso and not cfg.trajtrack:
+            raise SystemExit("benchmark: --eso is only meaningful with --trajtrack")
+        if cfg.deadtime_compensation and not cfg.trajtrack:
+            raise SystemExit("benchmark: --deadtime-comp is only meaningful with --trajtrack")
 
         _prereq_banner(profile, cfg.mode)
 
@@ -811,6 +859,13 @@ class Benchmarker(Module):
                 gate_keys_label=gate_keys_label,
                 k_angular_values=k_angular_values,
                 lookahead_values=lookahead_values,
+                eso=cfg.eso,
+                eso_bandwidth=cfg.eso_bandwidth,
+                deadtime_compensation=cfg.deadtime_compensation,
+                deadtime_feedback_lag_s=cfg.deadtime_feedback_lag_s,
+                deadtime_prediction_blend=cfg.deadtime_prediction_blend,
+                deadtime_prediction_mode=cfg.deadtime_prediction_mode,
+                yaw_feedforward_mode=cfg.yaw_feedforward_mode,
             )
         except KeyboardInterrupt:
             points, runs = [], []
@@ -915,6 +970,48 @@ def main() -> None:
         "default OFF)",
     )
     ap.add_argument(
+        "--eso",
+        action="store_true",
+        help="OPT-IN arm: enable the trajectory_tracker ESO/ADRC inner loop "
+        "(only meaningful with --trajtrack; default OFF)",
+    )
+    ap.add_argument(
+        "--eso-bandwidth",
+        type=float,
+        default=1.0,
+        help="ESO bandwidth dial for --eso (default: 1.0)",
+    )
+    ap.add_argument(
+        "--deadtime-comp",
+        action="store_true",
+        help="OPT-IN arm: enable trajectory_tracker feedback dead-time compensation "
+        "(only meaningful with --trajtrack; default OFF)",
+    )
+    ap.add_argument(
+        "--deadtime-feedback-lag-s",
+        type=float,
+        default=0.0,
+        help="extra feedback/odom lag horizon for --deadtime-comp (default: 0.0)",
+    )
+    ap.add_argument(
+        "--deadtime-prediction-blend",
+        type=float,
+        default=1.0,
+        help="fraction of predicted pose delta to apply for --deadtime-comp (default: 1.0)",
+    )
+    ap.add_argument(
+        "--deadtime-prediction-mode",
+        choices=["full", "yaw_only"],
+        default="full",
+        help="which predicted pose components to apply for --deadtime-comp",
+    )
+    ap.add_argument(
+        "--yaw-feedforward-mode",
+        choices=["planned", "measured_speed"],
+        default="planned",
+        help="trajectory_tracker yaw FF: planned omega(t), or curvature times measured path speed",
+    )
+    ap.add_argument(
         "--out",
         default=None,
         help=f"output dir for plots + standalone-arm JSON (default: {DEFAULT_OUT_DIR}/<robot_id>/)",
@@ -932,6 +1029,13 @@ def main() -> None:
         profile=args.profile,
         rg=args.rg,
         trajtrack=args.trajtrack,
+        eso=args.eso,
+        eso_bandwidth=args.eso_bandwidth,
+        deadtime_compensation=args.deadtime_comp,
+        deadtime_feedback_lag_s=args.deadtime_feedback_lag_s,
+        deadtime_prediction_blend=args.deadtime_prediction_blend,
+        deadtime_prediction_mode=args.deadtime_prediction_mode,
+        yaw_feedforward_mode=args.yaw_feedforward_mode,
         out_dir=args.out,
     )
     instance.start()
