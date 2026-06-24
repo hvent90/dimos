@@ -45,6 +45,7 @@ from dimos.core.core import rpc
 from dimos.core.global_config import global_config
 from dimos.core.module import Module, ModuleConfig
 from dimos.protocol.pubsub.impl.lcmpubsub import LCM
+from dimos.protocol.pubsub.impl.zenohpubsub import Zenoh
 from dimos.protocol.pubsub.patterns import Glob, pattern_matches
 from dimos.protocol.pubsub.spec import SubscribeAllCapable
 from dimos.protocol.service.lcmservice import autoconf
@@ -187,8 +188,8 @@ def _default_pubsubs(config: Any = None) -> list[SubscribeAllCapable[Any, Any]]:
         iface = getattr(config, "zenoh_iface", None)
         if iface:
             zkwargs["multicast_iface"] = iface
-        return [LCM()]
-        # return [Zenoh(**zkwargs), LCM()]
+        # return [LCM()]
+        return [Zenoh(**zkwargs), LCM()]
     return [LCM()]
 
 
@@ -367,9 +368,11 @@ class RerunBridgeModule(Module):
                 rr.log(path, archetype)
         else:
             rr.log(entity_path, cast("Archetype", rerun_data))
-            # if source msg carries a frame_id, attach the entity to that TF frame
-            # should skip if archetype is a Transform3D
-            if not isinstance(rerun_data, rr.Transform3D):
+            # if source msg carries a frame_id, attach the entity to that TF frame.
+            # Skip Transform3D (it *is* the relation) and Pinhole (it carries its
+            # own explicit parent_frame -- a second Transform3D would double-parent
+            # the camera frame, which Rerun rejects).
+            if not isinstance(rerun_data, (rr.Transform3D, rr.Pinhole)):
                 frame_id = getattr(msg, "frame_id", None)
                 if frame_id and self._frame_attached.get(entity_path) != frame_id:
                     rr.log(entity_path, rr.Transform3D(parent_frame=f"tf#/{frame_id}"))

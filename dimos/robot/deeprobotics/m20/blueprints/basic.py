@@ -106,7 +106,9 @@ ray_tracer = RayTracingVoxelMap.blueprint(
 
 m20 = autoconnect(
     rerun,
-    M20TF.blueprint(),
+    # M20TF turns the SLAM odometry into the map->base_link TF. The bridge
+    # publishes it on ``slam_odom`` (not the default ``odometry``), so remap.
+    M20TF.blueprint().remappings([(M20TF, "odometry", "slam_odom")]),
 ).global_config(n_workers=3)
 
 # m20 + the raycasting global/local voxel map built from the SLAM clouds.

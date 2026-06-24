@@ -26,6 +26,9 @@ so 2D/3D views line up.
 
 from threading import Event, Thread
 
+from reactivex.disposable import Disposable
+
+from dimos.core.core import rpc
 from dimos.core.module import Module
 from dimos.core.stream import In, Out
 from dimos.msgs.geometry_msgs.Quaternion import Quaternion
@@ -58,15 +61,17 @@ class M20TF(Module):
     odometry: In[Odometry]
     camera_info: Out[CameraInfo]
 
+    @rpc
     def start(self) -> None:
         super().start()
-        self.register_disposable(self.odometry.subscribe(self._publish_tf))
+        self.register_disposable(Disposable(self.odometry.subscribe(self._publish_tf)))
         self._stop = Event()
         self._camera_info_thread = Thread(
             target=self._publish_camera_info, name="m20-camera-info", daemon=True
         )
         self._camera_info_thread.start()
 
+    @rpc
     def stop(self) -> None:
         stop = getattr(self, "_stop", None)
         if stop is not None:
@@ -83,6 +88,10 @@ class M20TF(Module):
             child_frame_id="base_link",
             ts=odom.ts,
         )
+        # Static mount chain: base_link -> camera_link -> camera_optical. These are
+        # explicit named-frame transforms (Transform.to_rerun emits tf#/<frame>
+        # parent/child), so rerun composes the chain through the odom pose in its
+        # transform forest -- the camera + pinhole ride base_link automatically.
         camera_link = Transform(
             translation=Vector3(*_CAMERA_LINK_XYZ),
             rotation=Quaternion(0.0, 0.0, 0.0, 1.0),
