@@ -318,6 +318,9 @@ class Recorder(MemoryModule):
     config: RecorderConfig
 
     _pose_setters: dict[str, Any] = {}
+    # Per-stream count of frames lost to the dispatcher's LATEST coalescing
+    # (sink slower than input). Populated lazily as drops happen.
+    _dropped_frames: dict[str, int] = {}
 
     @rpc
     def start(self) -> None:
@@ -330,6 +333,7 @@ class Recorder(MemoryModule):
             return
 
         self._pose_setters = self._collect_pose_setters()
+        self._dropped_frames = {}
 
         # TODO: store reset API/logic is not implemented yet. This module
         # shouldn't need to know about files (SqliteStore specific), and
@@ -391,7 +395,23 @@ class Recorder(MemoryModule):
                 )
             stream.append(msg, ts=ts, pose=pose)
 
-        self.process_observable(input_topic.pure_observable(), on_msg)
+        self.process_observable(
+            input_topic.pure_observable(), on_msg, on_drop=lambda: self._on_frame_dropped(name)
+        )
+
+    def _on_frame_dropped(self, name: str) -> None:
+        """A frame for *name* was dropped because the sink couldn't keep up with
+        the input rate (dispatcher LATEST coalescing). Count it and warn — once,
+        then on each power-of-ten — so silent data loss is visible without
+        flooding the log."""
+        count = self._dropped_frames.get(name, 0) + 1
+        self._dropped_frames[name] = count
+        if count == 1 or count % 1000 == 0:
+            logger.warning(
+                "[%s] Recorder dropped %d frame(s) — sink slower than input; recording is lossy",
+                name,
+                count,
+            )
 
     def _prepare_streams(self) -> None:
         """On APPEND, drop the streams this recorder is about to (re)write — the
