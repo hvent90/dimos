@@ -28,8 +28,8 @@ struct RayTracingVoxelMap {
     #[output(encode = PointCloud2::encode)]
     local_map: Output<PointCloud2>,
 
-    // Cylinder bounds of the local map. Position holds the center, orientation
-    // holds radius, z_min, z_max. Stamped like local_map so consumers pair them.
+    // Cylinder bounds of the local map. Position is the center, orientation holds
+    // radius, z_min, z_max. Stamped like local_map so consumers pair them.
     #[output(encode = PoseStamped::encode)]
     region_bounds: Output<PoseStamped>,
 
@@ -57,7 +57,7 @@ impl RayTracingVoxelMap {
 
     async fn on_lidar(&mut self, msg: PointCloud2) {
         let Some((translation, rotation)) = self.last_pose else {
-            // Need at least one odometry sample before we can raycast.
+            // Need an odometry sample before we can raycast.
             return;
         };
         let origin = (translation.x, translation.y, translation.z);
@@ -79,7 +79,7 @@ impl RayTracingVoxelMap {
             return;
         }
 
-        // Register sensor-frame clouds into the world by the odom pose.
+        // Transform sensor-frame points into the world by the odom pose.
         let rot = rotation.to_rotation_matrix();
         let points: Vec<(f32, f32, f32)> = points
             .iter()
@@ -89,13 +89,12 @@ impl RayTracingVoxelMap {
             })
             .collect();
 
-        // The integrated points are world-frame either way.
         let out_frame_id = "world";
 
         let live = update_map(&mut self.map, origin, &points, &self.config);
 
-        // The batch only feeds the local region bounds, so don't let it grow
-        // when the local map is disabled.
+        // The batch only feeds the local region bounds, so skip it when the local
+        // map is disabled.
         if self.config.emit_every > 0 {
             self.batch_points.extend_from_slice(&points);
             self.batch_origins.push(origin);
@@ -344,8 +343,7 @@ fn build_local_cloud(
     make_cloud(data, n, frame_id, stamp)
 }
 
-/// Build the global and local clouds in one pass over the map, so a frame that
-/// emits both does not scan the voxel map twice.
+/// Build the global and local clouds in one pass over the map.
 fn build_global_and_local(
     map: &VoxelMap,
     live: &AHashSet<VoxelKey>,

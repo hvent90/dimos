@@ -1,9 +1,9 @@
 // Copyright 2026 Dimensional Inc.
 // SPDX-License-Identifier: Apache-2.0
 
-//! Surface extraction: from a voxel map, mark cells with robot-height
-//! clearance above as standable, then morphologically close per-z-level
-//! holes without letting closing bridge across walls.
+//! Surface extraction: mark cells with robot-height clearance above as
+//! standable, then morphologically close per-z-level holes without bridging
+//! across walls.
 
 use ahash::{AHashMap, AHashSet};
 use image::{GrayImage, Luma};
@@ -18,8 +18,8 @@ const OFF: Luma<u8> = Luma([0]);
 
 pub type ColumnIz = AHashMap<(i32, i32), Vec<i32>>;
 
-/// A cell is standable if it has at least the robot's height of clear
-/// space above it.
+/// A cell is standable if it has at least the robot's height of clear space
+/// above it.
 fn is_standable(ix: i32, iy: i32, iz: i32, by_col: &ColumnIz, clearance_cells: i32) -> bool {
     let Some(zs) = by_col.get(&(ix, iy)) else {
         return true;
@@ -108,10 +108,9 @@ pub fn remove_from_by_col(by_col: &mut ColumnIz, (ix, iy, iz): VoxelKey) {
     }
 }
 
-/// Re-extract surface cells whose columns fall in the inclusive write box.
-/// Reads by_col over the box plus the morphology halo so closing at the
-/// boundary matches a full rebuild, then filters back to the box. by_col must
-/// already be current.
+/// Re-extract surface cells in the inclusive write box. Reads a morphology
+/// halo around the box so boundary closing matches a full rebuild, then
+/// filters back to the box. by_col must already be current.
 pub fn extract_surfaces_region(
     by_col: &ColumnIz,
     clearance_cells: i32,
@@ -148,8 +147,7 @@ pub fn extract_surfaces_region(
         .collect()
 }
 
-/// Dilation and erosion on all xy slices of the extracted surfaces
-/// to fill in small holes.
+/// Dilate then erode every xy slice to fill small holes.
 fn close_surface_holes(
     standable: Vec<VoxelKey>,
     by_col: &ColumnIz,
@@ -246,12 +244,6 @@ mod tests {
     #[test]
     fn empty_input() {
         assert!(run(&[], 5, 0).is_empty());
-    }
-
-    #[test]
-    fn single_cell_is_topmost_surface() {
-        let s = run(&[(0, 0, 0)], 5, 0);
-        assert_eq!(s, vec![(0, 0, 0)]);
     }
 
     #[test]

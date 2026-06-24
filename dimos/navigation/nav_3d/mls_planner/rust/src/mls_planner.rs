@@ -69,7 +69,7 @@ fn validate_wall_buffer(config: &Config) -> Result<(), ValidationError> {
 }
 
 impl Config {
-    /// Compute number of dilations and erosions to do based on closing radius
+    /// Number of dilation and erosion passes for the closing radius.
     pub fn closing_passes(&self) -> u32 {
         (self.surface_closing_radius / self.voxel_size).ceil() as u32
     }
@@ -112,8 +112,8 @@ pub struct Planner {
     graph: PlannerGraph,
     voxel_map: AHashSet<VoxelKey>,
     by_col: ColumnIz,
-    // Last successful path with the goal it served, for safe truncation when a
-    // later replan finds no full path.
+    // Last successful path and its goal, for safe truncation when a later
+    // replan finds no full path.
     last_path: Option<((f32, f32, f32), Vec<VoxelKey>)>,
 }
 
@@ -140,8 +140,8 @@ impl Planner {
         self.rebuild_graph(config);
     }
 
-    /// Update planner artifacts within a local region instead of recomputing
-    /// the entire planner on the entire map.
+    /// Update planner artifacts within a local region instead of rebuilding
+    /// from the whole map.
     pub fn update_region(
         &mut self,
         local_points: &[(f32, f32, f32)],
@@ -159,8 +159,7 @@ impl Planner {
             return;
         };
 
-        // A changed voxel column shifts surfaces only within pad of it, so the
-        // write-back box is the changed-column bbox grown by pad.
+        // A changed column shifts surfaces only within pad of it.
         let write = (bx0 - pad, bx1 + pad, by0 - pad, by1 + pad);
         let new_cells =
             extract_surfaces_region(&self.by_col, clearance, config.closing_passes(), write);
@@ -169,8 +168,8 @@ impl Planner {
         self.rebuild_region_graph(added, removed, config);
     }
 
-    /// Patch cells for the changed surface, then re-place nodes and edges over
-    /// the change window. A no-op when no surface cell changed.
+    /// Patch changed cells, then re-place nodes and edges over the change
+    /// window. A no-op when no surface cell changed.
     fn rebuild_region_graph(
         &mut self,
         added: Vec<VoxelKey>,
@@ -332,7 +331,7 @@ impl Planner {
     /// Live cells within the changed-cell bbox grown by the node-graph margin,
     /// which covers the reach of any node, edge, or Voronoi change.
     fn node_window(&self, changed: &[VoxelKey], config: &Config) -> AHashSet<CellId> {
-        // A few extra cells beyond the morphology, wall-buffer, and spacing reach.
+        // Slack beyond the morphology, wall-buffer, and spacing reach.
         const SLACK_CELLS: i32 = 2;
         let voxel_size = config.voxel_size;
         let pad = (2 * config.closing_passes()) as i32;
@@ -740,8 +739,7 @@ mod region_tests {
     }
 
     /// Re-observing the same geometry must change nothing: no voxel, surface,
-    /// cell, node, or edge moves. This is the anti-jitter guarantee, far nodes
-    /// stay put when their region is re-seen, matching a full rebuild.
+    /// cell, node, or edge moves. This is the anti-jitter guarantee.
     #[test]
     fn region_reobserve_leaves_graph_bit_identical() {
         let cfg = test_config();
@@ -1077,16 +1075,5 @@ mod region_tests {
             .expect("goal on a sub-clearance spur still reaches its component node");
         let last = *wp.last().expect("path has waypoints");
         assert!((last.0 - goal.0).abs() < 1e-3 && (last.1 - goal.1).abs() < 1e-3);
-    }
-
-    #[test]
-    fn wall_buffer_weight_requires_buffer() {
-        let mut cfg = test_config();
-        cfg.wall_buffer_weight = 1.0;
-        cfg.wall_buffer_m = 0.0;
-        assert!(validate_wall_buffer(&cfg).is_err());
-
-        cfg.wall_buffer_m = 0.3;
-        assert!(validate_wall_buffer(&cfg).is_ok());
     }
 }

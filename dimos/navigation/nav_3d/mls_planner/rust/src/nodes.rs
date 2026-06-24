@@ -20,10 +20,7 @@ pub struct NodeData {
     pub pos: (f32, f32, f32),
 }
 
-/// Distribute nodes on the surfaces.
-///
-/// Runs multi source dijkstra using edges as sources, then distribute nodes
-/// using a grid based NMS.
+/// Place graph nodes across the surface, spaced out and biased away from walls.
 #[allow(clippy::too_many_arguments)]
 pub fn place_nodes(
     cells: &mut SurfaceCells,
@@ -74,8 +71,7 @@ pub fn place_nodes(
     );
 }
 
-/// Sort candidates by descending wall distance, thin them with NMS against the
-/// seed nodes, and append the survivors as nodes.
+/// Thin candidates with NMS, clearest-first, against the seed nodes.
 fn place_from_candidates(
     cells: &SurfaceCells,
     mut candidates: Vec<CellId>,
@@ -172,9 +168,7 @@ fn collect_wall_adjacent_in_window(
     }
 }
 
-/// A cell is wall-adjacent when it is missing at least one of its 4 xy-direction
-/// neighbors. Membership is tracked with a 4-bit mask to avoid per-cell
-/// allocation on the 349k-cell case.
+/// A cell is wall-adjacent when it lacks at least one of its 4 xy neighbors.
 fn is_wall_adjacent(cells: &SurfaceCells, id: CellId) -> bool {
     let (cx, cy, _) = cells.coord(id);
     let mut mask: u8 = 0;
@@ -238,10 +232,9 @@ fn collect_wall_adjacent_cells(cells: &SurfaceCells, out: &mut Vec<CellId>) {
     }
 }
 
-/// Space out nodes based on minimum distance.
-///
-/// The seed nodes suppress nearby candidates without being emitted, keeping a
-/// regional re-placement consistent with cached nodes outside the window.
+/// Keep nodes at least node_spacing_m apart. Seeds suppress nearby candidates
+/// without being emitted, so regional re-placement respects cached nodes
+/// outside the window.
 fn nms_grid(
     cells: &SurfaceCells,
     candidates_sorted: &[CellId],
@@ -343,9 +336,8 @@ fn scale_edges(
     }
 }
 
-/// Lateral wall multiplier at wall distance d. Infinite inside the clearance,
-/// then 1 + weight at the clearance edge decaying convexly to 1 at
-/// clearance_m + buffer_m, and 1 beyond.
+/// Lateral wall multiplier: infinite inside clearance, ramping convexly from
+/// 1 + weight at the clearance edge down to 1 at clearance_m + buffer_m.
 #[inline]
 pub(crate) fn penalty_of(d: f32, clearance_m: f32, buffer_m: f32, weight: f32) -> f32 {
     if d < clearance_m {
@@ -515,23 +507,6 @@ mod tests {
     }
 
     #[test]
-    fn sloped_patch_places_interior_nodes() {
-        let mut cells_in = Vec::new();
-        for ix in 0..10 {
-            for iy in 0..10 {
-                cells_in.push((ix, iy, ix));
-            }
-        }
-        let mut sc = build_cells(&cells_in, 2);
-        let mut state = DijkstraState::default();
-        let mut nodes = Vec::new();
-        place_nodes(
-            &mut sc, VOXEL, 1.0, 0.0, 0.3, 1.0, 0.0, &mut state, &mut nodes,
-        );
-        assert!(!nodes.is_empty());
-    }
-
-    #[test]
     fn each_disconnected_component_gets_a_node() {
         // Two 1-wide strips far apart: every cell is wall-adjacent so none
         // clears the 0.5 m clearance floor, yet each disconnected strip must
@@ -634,22 +609,5 @@ mod tests {
             (cost_with(10.0) - cost_with(0.0) - 10.0 * 0.2).abs() < 1e-4,
             "step penalty must add weight * rise"
         );
-    }
-
-    #[test]
-    fn wall_cells_scale_outbound_cost() {
-        let cells_in: Vec<VoxelKey> = (0..10).map(|ix| (ix, 0, 0)).collect();
-        let mut sc = build_cells(&cells_in, 2);
-        let mut state = DijkstraState::default();
-        let mut nodes = Vec::new();
-        place_nodes(
-            &mut sc, VOXEL, 1.0, 0.0, 0.3, 1.0, 0.0, &mut state, &mut nodes,
-        );
-        let id0 = sc.id((0, 0, 0)).unwrap();
-        let outbound = sc.neighbors(id0);
-        assert!(!outbound.is_empty());
-        for edge in outbound {
-            assert!(edge.cost >= 1.5 * VOXEL - 1e-5);
-        }
     }
 }

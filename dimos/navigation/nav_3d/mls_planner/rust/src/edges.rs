@@ -3,10 +3,9 @@
 
 //! Node-graph edge construction.
 //!
-//! Build edges by running multi-source Dijkstra from all the start nodes.
-//! This labels the surface with each cells closest source, also known as
-//! the Voronoi region. We use the boundaries of these regions to build the
-//! edges between start nodes.
+//! Multi-source Dijkstra from the start nodes labels each cell with its closest
+//! source, partitioning the surface into Voronoi regions. Edges between nodes
+//! come from the boundaries between those regions.
 
 use ahash::{AHashMap, AHashSet};
 use rayon::prelude::*;
@@ -16,12 +15,12 @@ use crate::dijkstra::{dijkstra, dijkstra_region, walk_preds, DijkstraState, Weig
 use crate::nodes::NodeData;
 use crate::voxel::VoxelKey;
 
-/// A node is identified by the CellId it sits on, stable across incremental
+/// A node is identified by the CellId it sits on. Stable across incremental
 /// updates so cached edges and the Voronoi forest survive a regional rebuild.
 pub type NodeId = CellId;
 pub const NO_NODE: NodeId = NO_CELL;
 
-/// Index into planner graph node edges
+/// Index into the planner graph node edges.
 pub type NodeEdgeIdx = u32;
 
 #[derive(Clone, Copy, Debug)]
@@ -45,8 +44,7 @@ pub struct PlannerGraph {
     /// Each cell's nearest node and the predecessor back toward it. The planner
     /// walks these to expand a node-to-node edge into its cell path.
     pub cell_state: DijkstraState,
-    /// Each cell's distance to the nearest wall, recomputed only in the changed
-    /// window and reused elsewhere.
+    /// Each cell's distance to the nearest wall.
     pub wall_state: DijkstraState,
 }
 
@@ -56,10 +54,8 @@ impl PlannerGraph {
     }
 }
 
-/// Assemble the cheapest paths between neighboring source nodes.
-///
-/// Runs multi-source dijkstra from the sources, then adds the cheapest edges
-/// between Voronoi region boundaries.
+/// Assemble the cheapest edges between neighboring source nodes from their
+/// Voronoi region boundaries.
 pub fn build_node_edges(
     cells: &SurfaceCells,
     nodes: &[NodeData],
@@ -98,9 +94,9 @@ fn rebuild_node_adj(edges: &[NodeEdge], out_adj: &mut AHashMap<NodeId, Vec<NodeE
     }
 }
 
-/// Incremental build_node_edges. Only the cells in the window changed, so redo
-/// the Voronoi there, keep cached edges whose boundary lies outside the window,
-/// and rescan the window for new node-to-node crossings.
+/// Incremental build_node_edges. Redo the Voronoi inside the window, keep cached
+/// edges whose boundary lies outside it, and rescan the window for new
+/// node-to-node crossings.
 pub fn build_node_edges_region(
     cells: &SurfaceCells,
     nodes: &[NodeData],
@@ -174,7 +170,7 @@ fn boundary_edge_map(
                         continue;
                     }
                     let cost = du + edge.cost + dv;
-                    // Skip impassable crossings
+                    // Skip impassable crossings.
                     if !cost.is_finite() {
                         continue;
                     }
@@ -218,9 +214,7 @@ fn merge_min(
     }
 }
 
-/// Walk every node-graph edge and emit one segment per consecutive cell
-/// pair along the reconstructed cell path. Output coords are in VoxelKey
-/// space.
+/// Expand each node-graph edge into VoxelKey segments along its cell path.
 pub fn edges_to_segments(
     cells: &SurfaceCells,
     state: &DijkstraState,

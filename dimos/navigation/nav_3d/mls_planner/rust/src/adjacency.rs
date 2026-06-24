@@ -3,8 +3,7 @@
 
 //! Surface cells indexed by dense CellId.
 //!
-//! Uses a "slot map" to store cells. When inserting, either expand the map
-//! or reuse a freed location marked with a tombstone.
+//! A slot map: inserts reuse freed slots marked with a tombstone, or grow.
 
 use ahash::{AHashMap, AHashSet};
 use rayon::prelude::*;
@@ -13,15 +12,15 @@ use crate::voxel::VoxelKey;
 
 pub type SurfaceLookup = AHashMap<(i32, i32), Vec<i32>>;
 
-/// Index of surface voxel
+/// Index of a surface voxel.
 pub type CellId = u32;
 pub const NO_CELL: CellId = u32::MAX;
 
-/// Represent a deleted cell that can be reincarnated on an insertion.
+/// Marks a freed slot reusable by the next insert.
 const TOMBSTONE: VoxelKey = (i32::MIN, i32::MIN, i32::MIN);
 const NEIGHBORS_4: [(i32, i32); 4] = [(-1, 0), (1, 0), (0, -1), (0, 1)];
 
-/// Vertical extent of a `dz`-cell change in meters, the step-penalty input.
+/// Vertical extent of a dz-cell change in meters, the step-penalty input.
 #[inline]
 pub fn rise(dz: i32, voxel_size: f32) -> f32 {
     dz.unsigned_abs() as f32 * voxel_size
@@ -32,7 +31,7 @@ pub struct Edge {
     pub dest: CellId,
     /// Geometric cost, set at build time and never mutated.
     pub base_cost: f32,
-    /// Vertical change of the edge in meters, for the step penalty.
+    /// Vertical change of the edge in meters.
     pub rise: f32,
     /// base_cost scaled by the wall penalty plus the step penalty.
     pub cost: f32,
@@ -56,7 +55,7 @@ impl SurfaceCells {
         self.coord.len()
     }
 
-    /// Clear all vecs but keeps space allocated.
+    /// Clear all vecs but keep allocated capacity.
     pub fn clear(&mut self) {
         self.coord.clear();
         self.by_coord.clear();
@@ -71,9 +70,7 @@ impl SurfaceCells {
         self.coord[id as usize] != TOMBSTONE
     }
 
-    /// Get or insert a new cell.
-    ///
-    /// Only expand the list if there are no available dead cells.
+    /// Get or insert a cell, reusing a freed slot before growing.
     pub fn insert(&mut self, k: VoxelKey) -> CellId {
         debug_assert_ne!(k, TOMBSTONE, "voxel coord collides with tombstone sentinel");
         if let Some(&id) = self.by_coord.get(&k) {
@@ -92,9 +89,7 @@ impl SurfaceCells {
         id
     }
 
-    /// Remove a cell.
-    ///
-    /// Mark the cell as available with a tombstone and remove the output edges.
+    /// Remove a cell, tombstoning its slot and dropping its edges.
     #[allow(dead_code)]
     pub fn remove(&mut self, k: VoxelKey) -> Option<CellId> {
         let id = self.by_coord.remove(&k)?;
@@ -108,13 +103,13 @@ impl SurfaceCells {
         Some(id)
     }
 
-    /// XYZ coord to cell ID.
+    /// Coord to cell ID.
     #[inline]
     pub fn id(&self, k: VoxelKey) -> Option<CellId> {
         self.by_coord.get(&k).copied()
     }
 
-    /// Cell ID to XYZ coord.
+    /// Cell ID to coord.
     #[inline]
     pub fn coord(&self, id: CellId) -> VoxelKey {
         self.coord[id as usize]
@@ -189,8 +184,7 @@ pub fn build_surface_lookup(cells: &[VoxelKey], out: &mut SurfaceLookup) {
     }
 }
 
-/// Populate cells with surface adjacency from the lookup. Deletes any
-/// existing contents
+/// Build surface adjacency from the lookup, replacing any existing contents.
 pub fn build_surface_cells(
     cells: &mut SurfaceCells,
     surface_lookup: &SurfaceLookup,
@@ -241,9 +235,10 @@ pub fn build_surface_cells(
         });
 }
 
-/// Recompute outgoing edges for the seed cells and their surface neighbors,
-/// matching build_surface_cells. Call after an incremental insert or remove so
-/// the affected region matches a full rebuild.
+/// Recompute outgoing edges for the seed cells and their surface neighbors.
+///
+/// Call after an incremental insert or remove so the affected region matches a
+/// full rebuild.
 pub fn rebuild_edges_around(
     cells: &mut SurfaceCells,
     surface_lookup: &SurfaceLookup,

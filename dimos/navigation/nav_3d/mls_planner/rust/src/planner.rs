@@ -22,9 +22,7 @@ const SNAP_SEARCH_RADIUS_M: f32 = 1.5;
 /// Max snap candidates tried when connecting the start.
 const MAX_SNAP_ATTEMPTS: usize = 64;
 
-/// Standoff held from a blockage on a truncated path. The robot follows the
-/// cached route to best effort and stops this far short of the last
-/// traversable point, in meters.
+/// On a blocked path, stop this far short of the last traversable point.
 const BEST_EFFORT_DISTANCE_M: f32 = 1.0;
 
 /// World-frame waypoints paired with the string-pulled cell path that produced
@@ -194,10 +192,9 @@ pub fn plan(
     Some((waypoints, path_cells))
 }
 
-/// Re-validate a cached cell path against the current surface, returning the
-/// route ahead of the robot up to the last traversable surface cell before a
-/// blockage. It holds a BEST_EFFORT_DISTANCE_M standoff short of the blockage.
-/// Empty when nothing ahead is safe, which the follower reads as a stop.
+/// Re-validate a cached path against the current surface. Returns the route
+/// ahead up to a standoff short of the first blockage, or empty when nothing
+/// ahead is safe, which the follower reads as a stop.
 pub fn truncate_to_safe(
     plg: &PlannerGraph,
     cached: &[VoxelKey],
@@ -216,14 +213,12 @@ pub fn truncate_to_safe(
         voxel_size,
     };
 
-    // The cached path runs start -> goal, but its head is the stale original
-    // start. Resume from where the robot sits on it so the follower is pulled
-    // forward toward the goal, never back to that start.
+    // The cached path's head is the stale original start. Resume from where the
+    // robot sits on it so the follower is pulled forward, never back to it.
     let resume = resume_segment(cached, start_pose, voxel_size);
 
-    // Walk each chord ahead at surface resolution. On a blockage, keep the
-    // chord up to its last traversable cell so the path ends right at the
-    // obstacle, not back at the previous smoothing anchor.
+    // Walk each chord ahead at surface resolution. On a blockage, keep up to the
+    // last traversable cell so the path ends at the obstacle, not the prior anchor.
     let mut waypoints = vec![start_pose];
     let mut blocked = false;
     for j in resume..cached.len() - 1 {
@@ -252,17 +247,15 @@ pub fn truncate_to_safe(
         return Vec::new();
     }
 
-    // A blockage ahead means the route runs into an obstacle, so hold the
-    // standoff. A clean run to the goal end has nothing to stand off from.
+    // Hold the standoff only when blocked; a clean run to the goal has nothing
+    // to stand off from.
     if blocked {
         return back_off_tail(&waypoints, BEST_EFFORT_DISTANCE_M);
     }
     waypoints
 }
 
-/// Drop `distance` meters off the goal end of the path, measured in the ground
-/// plane. Empty when trimming consumes the whole path, which is the robot
-/// already sitting inside the standoff.
+/// Trim `distance` off the goal end, measured in the ground plane.
 fn back_off_tail(waypoints: &[(f32, f32, f32)], distance: f32) -> Vec<(f32, f32, f32)> {
     let mut remaining = distance;
     for i in (1..waypoints.len()).rev() {

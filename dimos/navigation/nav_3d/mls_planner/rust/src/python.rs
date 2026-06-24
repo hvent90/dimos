@@ -80,10 +80,9 @@ impl MLSPlanner {
             wall_buffer_weight,
             step_threshold_m,
             step_penalty_weight,
-            // Only the binary's replan loop reads goal_tolerance. This
-            // in-process binding plans on demand and never consults it.
+            // Unused here. Only the binary's replan loop reads goal_tolerance.
             goal_tolerance: 1.0,
-            // Only the binary's worker publishes viz artifacts. Unused here.
+            // Unused here. Only the binary's worker publishes viz artifacts.
             viz_publish_hz: 1.0,
         };
         config

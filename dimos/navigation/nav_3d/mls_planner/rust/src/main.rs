@@ -18,8 +18,7 @@ use tracing::debug;
 /// A point in the planner's world frame.
 type Xyz = (f32, f32, f32);
 
-/// State shared between the handle loop and the worker. The handle loop writes
-/// the newest value, the worker reads it.
+/// State shared between the handle loop and the worker.
 type Shared<T> = Arc<Mutex<Option<T>>>;
 
 /// A map input handed from the handle loop to the worker. Only the newest is
@@ -67,24 +66,21 @@ struct MlsPlanner {
     #[config]
     config: Config,
 
-    // These live only on the handle loop. We hold a local map and its bounds
-    // here until their stamps match, then hand the paired snapshot to the worker.
+    // Held on the handle loop until stamps match, then handed off paired.
     pending_local: Option<PointCloud2>,
     pending_bounds: Option<PoseStamped>,
 
-    // Shared with the worker task. The handle loop only writes these and wakes
-    // the worker, so it never blocks on the heavy map processing.
+    // Written by the handle loop, read by the worker, so the loop never blocks
+    // on map processing.
     pending: Shared<MapUpdate>,
     latest_start: Shared<Xyz>,
     active_goal: Shared<Xyz>,
     wake: Arc<Notify>,
 
-    // Handle to the background worker, aborted on teardown.
     worker: Option<tokio::task::JoinHandle<()>>,
 }
 
 impl MlsPlanner {
-    /// Spawn the background task that handles map updates and planning.
     async fn spawn_worker(&mut self) {
         let worker = Worker {
             pending: Arc::clone(&self.pending),
@@ -100,7 +96,6 @@ impl MlsPlanner {
         self.worker = Some(tokio::spawn(worker.run()));
     }
 
-    /// Abort the background worker on teardown.
     async fn stop_worker(&mut self) {
         if let Some(handle) = self.worker.take() {
             handle.abort();
@@ -121,8 +116,7 @@ impl MlsPlanner {
         self.try_pair();
     }
 
-    /// Hand a local map and its stamp-matching bounds to the worker once both
-    /// are in hand.
+    /// Hand off the local map and bounds once their stamps match.
     fn try_pair(&mut self) {
         if !stamps_paired(self.pending_bounds.as_ref(), self.pending_local.as_ref()) {
             return;
@@ -132,14 +126,13 @@ impl MlsPlanner {
         self.hand_off(MapUpdate::Region { cloud, bounds });
     }
 
-    /// Store the newest map input and wake the worker.
     fn hand_off(&self, update: MapUpdate) {
         *self.pending.lock().expect("pending mutex") = Some(update);
         self.wake.notify_one();
     }
 
-    /// Record the latest start pose. The worker reads it when it replans. No
-    /// wake here, so odometry never drives replanning.
+    /// Record the latest start pose. No wake here, so odometry never drives
+    /// replanning.
     async fn on_start_pose(&mut self, msg: PoseStamped) {
         let p = &msg.pose.position;
         *self.latest_start.lock().expect("start mutex") =
@@ -153,8 +146,7 @@ impl MlsPlanner {
     }
 }
 
-/// True when bounds and a local cloud are both present with matching stamps,
-/// so they form one paired region update.
+/// True when bounds and a local cloud are both present with matching stamps.
 fn stamps_paired(bounds: Option<&PoseStamped>, cloud: Option<&PointCloud2>) -> bool {
     match (bounds, cloud) {
         (Some(b), Some(c)) => same_stamp(&b.header.stamp, &c.header.stamp),
@@ -169,8 +161,8 @@ fn goal_position(p: &Point) -> Option<Xyz> {
     (goal.0.is_finite() && goal.1.is_finite() && goal.2.is_finite()).then_some(goal)
 }
 
-/// Owns the planner graph and does every map mutation, graph publish, and
-/// replan off the handle loop. Woken by the handlers via `wake`.
+/// Owns the planner graph and does map mutation, publishing, and replanning
+/// off the handle loop. Woken by the handlers.
 struct Worker {
     pending: Shared<MapUpdate>,
     latest_start: Shared<Xyz>,
@@ -190,7 +182,6 @@ impl Worker {
         let mut last_viz_at: Option<Instant> = None;
         loop {
             self.wake.notified().await;
-            // Take the newest map input, dropping any intermediates.
             let update = self.pending.lock().expect("pending mutex").take();
             if let Some(update) = update {
                 self.apply_update(&mut planner, update, &mut last_viz_at)
@@ -200,9 +191,8 @@ impl Worker {
         }
     }
 
-    /// Update the graph every cycle so planning sees fresh surfaces, then publish
-    /// the viz clouds rate-capped to viz_publish_hz, since building them is costly
-    /// and nothing on the planning path reads them.
+    /// Update the graph every cycle, but rate-cap viz publishing to
+    /// viz_publish_hz since building those clouds is costly and unread by planning.
     async fn apply_update(
         &self,
         planner: &mut Planner,
@@ -300,8 +290,7 @@ impl Worker {
         (surface, node_cloud, edges)
     }
 
-    /// Replan from the latest start to the active goal. This gates and does the
-    /// IO. The planning itself lives in Planner::plan.
+    /// Gate and publish a replan. The planning itself lives in Planner::plan.
     async fn maybe_replan(&self, planner: &mut Planner, last_path_at: &mut Option<Instant>) {
         let Some(start) = *self.latest_start.lock().expect("start mutex") else {
             return;
@@ -322,7 +311,7 @@ impl Worker {
         let waypoints =
             tokio::task::block_in_place(|| planner.plan_or_truncate(start, goal, &self.config));
         if waypoints.is_empty() {
-            // No full path and nothing safe ahead on the cached path: stop.
+            // No full path and nothing safe ahead on the cached path, so stop.
             publish_path(&self.path, &empty_path(&self.config.world_frame, now())).await;
             return;
         }
@@ -557,14 +546,6 @@ mod tests {
     fn is_at_goal_respects_tolerance_and_ignores_z() {
         assert!(is_at_goal((0.0, 0.0, 0.0), (0.05, 0.0, 9.0), 0.1));
         assert!(!is_at_goal((0.0, 0.0, 0.0), (0.2, 0.0, 0.0), 0.1));
-    }
-
-    #[test]
-    fn same_stamp_compares_sec_and_nsec() {
-        let a = Time { sec: 5, nsec: 7 };
-        assert!(same_stamp(&a, &Time { sec: 5, nsec: 7 }));
-        assert!(!same_stamp(&a, &Time { sec: 5, nsec: 8 }));
-        assert!(!same_stamp(&a, &Time { sec: 6, nsec: 7 }));
     }
 
     fn stamped(stamp: Time) -> Header {

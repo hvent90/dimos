@@ -21,7 +21,7 @@ pub struct DijkstraState {
 }
 
 impl DijkstraState {
-    /// Reset all vecs to the specified capacity.
+    /// Reset all vecs to n slots.
     pub fn reset(&mut self, n: usize) {
         self.dist.clear();
         self.dist.resize(n, f32::INFINITY);
@@ -32,8 +32,8 @@ impl DijkstraState {
         self.heap.clear();
     }
 
-    /// Grow the vecs to hold `n` slots without disturbing existing labels.
-    /// New slots default to unreached.
+    /// Grow the vecs to n slots without disturbing existing labels. New slots
+    /// default to unreached.
     fn ensure_capacity(&mut self, n: usize) {
         if self.dist.len() < n {
             self.dist.resize(n, f32::INFINITY);
@@ -62,7 +62,7 @@ impl Weight {
     }
 }
 
-/// Multi-source dijkstra labeling each cell with its nearest source and path.
+/// Multi-source Dijkstra labeling each cell with its nearest source and path.
 pub fn dijkstra(
     cells: &SurfaceCells,
     sources: &[CellId],
@@ -101,7 +101,7 @@ pub fn dijkstra(
     }
 }
 
-/// Multi-source dijkstra that re-labels only cells in `window`, seeded from
+/// Multi-source Dijkstra that re-labels only cells in the window, seeded from
 /// in-window sources and the cached frontier just outside it. Correct while the
 /// window margin exceeds the reach of the change.
 pub fn dijkstra_region(
@@ -200,7 +200,7 @@ impl PartialOrd for Scored {
 }
 impl Ord for Scored {
     fn cmp(&self, other: &Self) -> Ordering {
-        // Order on score, and use cell id for tie-breaker for repeatability
+        // Tie-break on cell id for repeatable ordering.
         other.0.total_cmp(&self.0).then(self.1.cmp(&other.1))
     }
 }

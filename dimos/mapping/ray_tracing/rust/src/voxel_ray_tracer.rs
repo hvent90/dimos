@@ -27,12 +27,12 @@ pub struct Config {
     pub min_health: i32,
     #[validate(range(min = 1))]
     pub max_health: i32,
-    /// Don't clear a miss when abs of ray dot normal is below this, clear it when above.
-    /// Higher clears only on direct hits, lower clears on slight grazes too.
+    /// Spare a miss when abs of ray dot normal is below this. Higher clears only
+    /// on direct hits, lower clears on slight grazes too.
     #[validate(range(min = 0.0, max = 1.0))]
     pub graze_cos: f32,
     /// Only spare a voxel whose neighborhood was hit within this many frames.
-    /// A stale voxel can be cleared, even if it's a grazing hit. Large disables it.
+    /// Large disables it.
     pub recency_window: u32,
     /// Publish the accumulated local map and region bounds every Nth frame. Zero disables them.
     #[validate(range(min = 0))]
@@ -40,8 +40,8 @@ pub struct Config {
     /// Publish the global map every Nth frame. Zero disables it.
     #[validate(range(min = 0))]
     pub global_emit_every: u32,
-    /// Size the local region to this percentile of batch point distances,
-    /// so a stray far hit cannot inflate the region the planner recomputes.
+    /// Size the local region to this percentile of batch point distances, so a
+    /// stray far hit cannot inflate it.
     #[validate(range(min = 0.0, max = 100.0))]
     pub region_percentile: f32,
 }
@@ -109,7 +109,7 @@ const NEIGHBORHOOD_CAP: usize = (2 * NORMAL_NEIGHBOR_RADIUS as usize + 1).pow(3)
 const NORMAL_REWEIGHT_ITERS: u32 = 3;
 /// Neighbor weight falloff with plane distance, as a fraction of voxel size.
 const NORMAL_PLANE_SIGMA_FRAC: f32 = 0.5;
-/// Fraction of points that must be kept after the IRLS to count as a real plane
+/// Fraction of points that must survive the IRLS to count as a real plane.
 const NORMAL_MIN_SUPPORT: f32 = 0.5;
 
 /// Occupancy health, accumulated point moments about the voxel center, and the
@@ -273,7 +273,7 @@ fn pooled_normal_and_recency(
             *w = (-(dist * dist) / two_sig2).exp();
         }
     }
-    // get rid of planes if we had to discard too many points to get a plane
+    // Reject the plane if too many points had to be discarded to fit it.
     let kept: f32 = nbs.iter().zip(&weights).map(|(nb, &w)| w * nb.n).sum();
     if kept < NORMAL_MIN_SUPPORT * n_raw as f32 {
         return (None, recency);
@@ -317,7 +317,7 @@ fn refresh_voxels(
 }
 
 /// Spare a clearing miss only when a grazing ray skims a recently hit planar
-/// surface. Stale or voxels with no normal are left to the health checks.
+/// surface. Stale voxels or those with no normal are left to the health checks.
 fn should_spare(
     c: &Voxel,
     ray_unit: Vector3<f32>,
@@ -410,8 +410,8 @@ pub fn iter_global_points(
         })
 }
 
-/// Healthy voxel centers paired with their surface normal.
-/// If no normal, it's just the null vector
+/// Healthy voxel centers paired with their surface normal, the zero vector where
+/// there is no plane.
 pub fn iter_global_normals(
     map: &VoxelMap,
     voxel_size: f32,
@@ -498,7 +498,6 @@ pub fn update_map(
             a
         });
 
-    // add new hits
     for v in &hits {
         let c = map.voxels.entry(*v).or_insert_with(|| Voxel {
             health: cfg.min_health,
@@ -523,7 +522,6 @@ pub fn update_map(
         }
     }
 
-    // refresh cached normals and recency wherever the neighborhood changed
     refresh_voxels(map, &hits, &removed, cfg.voxel_size);
 
     hits
@@ -538,8 +536,9 @@ fn world_to_voxel(x: f32, y: f32, z: f32, inv: f32) -> VoxelKey {
     )
 }
 
-/// Amanatides & Woo 3d DDA. Records voxels on ray in between the end of the shadow region
-/// and origin if it is in the map. Voxels within grace region of the endpoint are spared from being marked as misses.
+/// Amanatides and Woo 3d DDA. Records in-map voxels along the ray between the
+/// origin and the end of the shadow region. Voxels within the grace region of
+/// the endpoint are spared from being marked as misses.
 #[allow(clippy::too_many_arguments)]
 fn find_misses_along_ray(
     misses: &mut AHashSet<VoxelKey>,
@@ -655,12 +654,12 @@ fn find_misses_along_ray(
         let dist_sq = ddx * ddx + ddy * ddy + ddz * ddz;
 
         if past_endpoint {
-            // continue past the endpoint and in to the shadow realm
+            // Past the endpoint, keep going until we leave the shadow region.
             if dist_sq > shadow_sq {
                 return;
             }
         } else if dist_sq < grace_sq {
-            // too close to the endpoint to safely mark as miss because we might be clipping other voxel's rays
+            // Too close to the endpoint to safely mark a miss, we might be clipping another voxel's ray.
             continue;
         }
 
@@ -785,7 +784,7 @@ mod tests {
         let mut map = VoxelMap::default();
         map.set((3, 0, 0), 1);
         update_map(&mut map, (0.0, 0.0, 0.0), &[(5.5, 0.5, 0.5)], &cfg);
-        // make sure the initial point got cleared by the new update
+        // The voxel on the ray should be cleared.
         assert!(!map.voxels.contains_key(&(3, 0, 0)));
         assert_eq!(map.health((5, 0, 0)), Some(1));
     }
@@ -806,7 +805,7 @@ mod tests {
         let mut map = VoxelMap::default();
         map.set((6, 0, 0), 1);
         update_map(&mut map, (0.0, 0.0, 0.0), &[(5.5, 0.5, 0.5)], &cfg);
-        // point within the shadow is no longer included, new point is included
+        // The voxel inside the shadow region should be cleared.
         assert!(!map.voxels.contains_key(&(6, 0, 0)));
         assert_eq!(map.health((5, 0, 0)), Some(1));
     }
