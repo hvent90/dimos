@@ -34,6 +34,7 @@ Usage: python dimos/navigation/jnav/components/loop_closure/gsc_pgo/post_process
 
 import json
 from pathlib import Path
+import re
 import sqlite3
 import sys
 import time
@@ -79,6 +80,10 @@ REC_ARG = arg("--rec")
 SUFFIX = arg("--suffix")
 LIDAR_STREAM = arg("--lidar", "pointlio_lidar")  # input lidar stream (world-registered scans)
 ODOM_STREAM = arg("--odom", "pointlio_odometry")  # input odometry stream (keyframe source)
+# ODOM_STREAM is interpolated as a table name (SQLite can't parameterize those);
+# reject anything that isn't a plain identifier to keep that injection-free.
+if not re.match(r"^[A-Za-z_][A-Za-z0-9_]*$", ODOM_STREAM):
+    raise ValueError(f"unsafe --odom stream name: {ODOM_STREAM!r}")
 RAW_STREAM = arg("--tags", "raw_april_tags")  # input unfiltered AprilTag stream
 IGNORE_TAGS = {
     int(x) for x in arg("--ignore-tags").replace(",", " ").split()
