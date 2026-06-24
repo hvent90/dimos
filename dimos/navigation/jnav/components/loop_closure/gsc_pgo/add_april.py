@@ -41,7 +41,7 @@ RAW_STREAM = "raw_april_tags"
 FILTERED_STREAM = "april_tags"
 SUMMARY_NAME = "summary.json"
 MIN_REVISITS = 2  # a tag seen on fewer visits than this carries no agreement signal
-DEFAULT_MARKER_LENGTH_M = 0.10
+DEFAULT_MARKER_LENGTH_METERS = 0.10
 DEFAULT_DICTIONARY = "DICT_APRILTAG_36h11"
 
 
@@ -181,7 +181,7 @@ def main() -> None:
     marker_length = (
         args.tag_size
         if args.tag_size is not None
-        else config.get("marker_length", DEFAULT_MARKER_LENGTH_M)
+        else config.get("marker_length", DEFAULT_MARKER_LENGTH_METERS)
     )
     dictionary = args.dictionary or config.get("dictionary", DEFAULT_DICTIONARY)
     ensure_april_streams(
