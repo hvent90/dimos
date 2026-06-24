@@ -280,7 +280,7 @@ sim = [
 ]
 
 mapping = [
-    # PGO for reloc premap + nav_stack experiments
+    # PGO for reloc premap + cmu_nav experiments
     # Jeff's https://github.com/jeff-hykin/gtsam-extended
     "gtsam-extended>=4.3a1.post1",
 ]
@@ -593,6 +593,6 @@ ignore = [
     "dimos/manipulation/manipulation_module.py",
     "dimos/manipulation/planning/world/drake_world.py",
     "dimos/manipulation/visualization/viser/test_viser_visualization.py",
-    "dimos/navigation/nav_stack/modules/*/main.cpp",
-    "dimos/navigation/nav_stack/common/*.hpp",
+    "dimos/navigation/cmu_nav/modules/*/main.cpp",
+    "dimos/navigation/cmu_nav/common/*.hpp",
 ]
