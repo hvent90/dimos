@@ -56,8 +56,11 @@ _N_WORKERS = 12
 
 
 def _default_recording_dir() -> Path:
-    now = datetime.now()
-    stamp = now.strftime("%Y-%m-%d") + "_" + now.strftime("%I-%M%p").lower() + "-PST"
+    # Local time, with the machine's actual zone abbreviation (not a hardcoded PST).
+    now = datetime.now().astimezone()
+    stamp = (
+        now.strftime("%Y-%m-%d") + "_" + now.strftime("%I-%M%p").lower() + "-" + now.strftime("%Z")
+    )
     return Path("recordings") / stamp
 
 

@@ -27,11 +27,19 @@ standalone time-aligning recorder used by the pcap-replay tooling.
 
 from __future__ import annotations
 
+import time
+
 from dimos.core.stream import In
 from dimos.memory2.module import OnExisting, Recorder, RecorderConfig, pose_setter_for
 from dimos.msgs.geometry_msgs.Pose import Pose
 from dimos.msgs.nav_msgs.Odometry import Odometry
 from dimos.msgs.sensor_msgs.PointCloud2 import PointCloud2
+
+# Max sensor-ts gap to stamp a lidar frame with the latest odometry pose. Past
+# this the odometry is considered stale (Point-LIO dropout/lag) and the frame is
+# left unposed -> map-skipped rather than registered at a wrong location. Matches
+# PointlioRecorder._POSE_MATCH_TOL / pose_fill's nearest-match window.
+_POSE_MATCH_TOL = 0.1
 
 
 class PointlioPoseRecorderConfig(RecorderConfig):
@@ -46,15 +54,25 @@ class PointlioPoseRecorder(Recorder):
     pointlio_lidar: In[PointCloud2]
 
     _last_odom_pose: Pose | None = None
+    _last_odom_raw_ts: float = 0.0
 
     @pose_setter_for("pointlio_odometry")
     def _odom_pose(self, msg: Odometry) -> Pose | None:
         pose = getattr(msg, "pose", None)
         self._last_odom_pose = getattr(pose, "pose", None) if pose is not None else None
+        raw_ts = getattr(msg, "ts", None)
+        self._last_odom_raw_ts = raw_ts if raw_ts is not None else time.time()
         return self._last_odom_pose
 
     @pose_setter_for("pointlio_lidar")
     def _lidar_pose(self, msg: PointCloud2) -> Pose | None:
-        # Most-recent odometry pose, stamped directly (no tf). None before the
-        # first odometry -> frame stored unposed, map-skipped.
+        # Most-recent odometry pose, stamped directly (no tf) — but only if it's
+        # fresh. Stale odometry (older than _POSE_MATCH_TOL) or no odometry yet
+        # returns None -> frame stored unposed, map-skipped.
+        if self._last_odom_pose is None:
+            return None
+        raw_ts = getattr(msg, "ts", None)
+        raw_ts = raw_ts if raw_ts is not None else time.time()
+        if abs(raw_ts - self._last_odom_raw_ts) > _POSE_MATCH_TOL:
+            return None
         return self._last_odom_pose

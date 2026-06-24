@@ -26,14 +26,12 @@ from __future__ import annotations
 from dimos.core.stream import In
 from dimos.hardware.sensors.lidar.pointlio.pose_recorder import PointlioPoseRecorder
 from dimos.msgs.geometry_msgs.PoseStamped import PoseStamped
-from dimos.msgs.nav_msgs.Odometry import Odometry
 from dimos.msgs.sensor_msgs.Image import Image
 from dimos.msgs.sensor_msgs.PointCloud2 import PointCloud2
 
 
 class Go2Mid360Recorder(PointlioPoseRecorder):
-    pointlio_odometry: In[Odometry]
-    pointlio_lidar: In[PointCloud2]
+    # pointlio_odometry / pointlio_lidar are inherited from PointlioPoseRecorder.
     go2_lidar: In[PointCloud2]
     go2_odom: In[PoseStamped]
     color_image: In[Image]
