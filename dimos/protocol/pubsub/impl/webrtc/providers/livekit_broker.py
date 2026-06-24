@@ -31,11 +31,13 @@ Video: ``set_video_frame()`` pushes camera frames into a sendonly LiveKit track
 (published lazily on the first frame) — typically via ``LiveKitVideoTransport``
 bound to a blueprint's Image stream.
 
-Env vars (fallback when config fields are unset):
-    TELEOP_BROKER_URL — default https://teleop.dimensionalos.com
-    TELEOP_API_KEY    — robot API key (dtk_live_*); broker derives identity
-    TELEOP_ROBOT_ID   — optional robot identifier override
-    TELEOP_ROBOT_NAME — human-readable robot name
+Config comes from the blueprint's ``transports.broker.*`` flow (env form
+``TRANSPORTS__BROKER__<FIELD>``, or ``-o transports.broker.<field>=...``), the
+same scheme as the Cloudflare ``BrokerConfig``:
+    TRANSPORTS__BROKER__BROKER_URL  — default https://teleop.dimensionalos.com
+    TRANSPORTS__BROKER__API_KEY     — robot API key (dtk_live_*); derives identity
+    TRANSPORTS__BROKER__ROBOT_ID    — optional robot identifier override
+    TRANSPORTS__BROKER__ROBOT_NAME  — human-readable robot name
 """
 
 from __future__ import annotations
@@ -45,7 +47,6 @@ from collections import defaultdict
 from collections.abc import Callable
 import contextlib
 import importlib.util
-import os
 from typing import TYPE_CHECKING, Any
 
 from dimos.protocol.pubsub.impl.webrtc.providers.spec import (
@@ -71,7 +72,7 @@ if TYPE_CHECKING:
 
 
 class LiveKitBrokerConfig(ProviderConfig):
-    """Hosted teleop over LiveKit. Credentials default from TELEOP_* env."""
+    """Hosted teleop over LiveKit. Config from transports.broker.* (TRANSPORTS__BROKER__*)."""
 
     broker_url: str | None = None
     api_key: str | None = None
@@ -192,17 +193,17 @@ class LiveKitBrokerProvider(AsyncProviderBase):
             raise RuntimeError("livekit and httpx required: pip install dimos[livekit]")
         super().__init__()
         config = config or LiveKitBrokerConfig()
-        self._broker_url = (
-            config.broker_url
-            or os.environ.get("TELEOP_BROKER_URL", "https://teleop.dimensionalos.com")
-        ).rstrip("/")
-        self._api_key = config.api_key or os.environ.get("TELEOP_API_KEY", "")
-        self._robot_id = config.robot_id or os.environ.get("TELEOP_ROBOT_ID", "")
-        self._robot_name = config.robot_name or os.environ.get("TELEOP_ROBOT_NAME", "robot")
+        # Config is populated from transports.broker.* (= TRANSPORTS__BROKER__*
+        # env / -o overrides), same scheme as the Cloudflare BrokerConfig.
+        self._broker_url = (config.broker_url or "https://teleop.dimensionalos.com").rstrip("/")
+        self._api_key = config.api_key or ""
+        self._robot_id = config.robot_id or ""
+        self._robot_name = config.robot_name or "robot"
         if not self._api_key:
             raise RuntimeError(
-                "TELEOP_API_KEY or LiveKitBrokerConfig.api_key required "
-                "(create one in the teleop dashboard: New Key)"
+                "transports.broker.api_key required "
+                "(TRANSPORTS__BROKER__API_KEY=dtk_live_...; create one in the "
+                "teleop dashboard: New Key)"
             )
         self._config = config
 

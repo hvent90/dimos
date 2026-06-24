@@ -461,7 +461,8 @@ class LiveKitTransport(WebRTCTransport[M]):
     """WebRTC DataChannels via the hosted teleop broker + LiveKit SFU.
 
     Drop-in alternative to :class:`CloudflareTransport`; config kwargs flow into
-    :class:`LiveKitBrokerConfig` (unset fields fall back to ``TELEOP_*`` env).
+    :class:`LiveKitBrokerConfig`, populated from ``transports.broker.*``
+    (``TRANSPORTS__BROKER__*`` env / ``-o`` overrides).
 
         unitree_go2_livekit = unitree_go2_basic.transports({
             ("cmd_vel", Twist): LiveKitTransport("cmd_unreliable", TwistStamped),
