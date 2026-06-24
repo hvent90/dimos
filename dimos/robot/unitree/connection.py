@@ -15,6 +15,7 @@
 import asyncio
 from dataclasses import dataclass
 import functools
+import json
 import threading
 import time
 from typing import Any, TypeAlias, TypeVar
@@ -25,6 +26,7 @@ from reactivex import operators as ops
 from reactivex.observable import Observable
 from reactivex.subject import Subject
 from unitree_webrtc_connect.constants import (
+    DATA_CHANNEL_TYPE,
     RTC_TOPIC,
     SPORT_CMD,
     VUI_COLOR,
@@ -93,19 +95,20 @@ class SerializableVideoFrame:
 class UnitreeWebRTCConnection(Resource):
     _SPORT_API_ID_RAGEMODE: int = 2059
 
-    def __init__(self, ip: str, mode: str = "ai") -> None:
+    def __init__(self, ip: str, mode: str = "ai", aes_128_key: str | None = None) -> None:
         self.ip = ip
         self.mode = mode
         self.stop_timer: threading.Timer | None = None
         self.cmd_vel_timeout = 0.2
-        self.conn = LegionConnection(WebRTCConnectionMethod.LocalSTA, ip=self.ip)
+        self._move_seq = 0  # monotonic request id for SPORT Move commands
+        # Per-device AES-128 key for new Unitree firmware (data2=3 handshake); omitted when unset.
+        self.conn = LegionConnection(
+            WebRTCConnectionMethod.LocalSTA, ip=self.ip, aes_128_key=aes_128_key
+        )
         self.connect()
 
     def connect(self) -> None:
         self.loop = asyncio.new_event_loop()
-        self.task = None
-        self.connected_event = asyncio.Event()
-        self.connection_ready = threading.Event()
 
         async def async_connect() -> None:
             await self.conn.connect()
@@ -117,21 +120,20 @@ class UnitreeWebRTCConnection(Resource):
                 RTC_TOPIC["MOTION_SWITCHER"], {"api_id": 1002, "parameter": {"name": self.mode}}
             )
 
-            self.connected_event.set()
-            self.connection_ready.set()
-
-            while True:
-                await asyncio.sleep(1)
-
         def start_background_loop() -> None:
             asyncio.set_event_loop(self.loop)
-            self.task = self.loop.create_task(async_connect())
             self.loop.run_forever()
 
-        self.loop = asyncio.new_event_loop()
         self.thread = threading.Thread(target=start_background_loop, daemon=True)
         self.thread.start()
-        self.connection_ready.wait()
+
+        # Blocks until connected; re-raises connect failures (e.g. missing AES key).
+        try:
+            asyncio.run_coroutine_threadsafe(async_connect(), self.loop).result()
+        except Exception:
+            self.loop.call_soon_threadsafe(self.loop.stop)
+            self.thread.join(timeout=DEFAULT_THREAD_JOIN_TIMEOUT)
+            raise
 
     def start(self) -> None:
         pass
@@ -142,16 +144,11 @@ class UnitreeWebRTCConnection(Resource):
             self.stop_timer.cancel()
             self.stop_timer = None
 
-        if self.task:
-            self.task.cancel()
-
         async def async_disconnect() -> None:
             try:
-                # Send stop command directly since we're already in the event loop.
-                self.conn.datachannel.pub_sub.publish_without_callback(
-                    RTC_TOPIC["WIRELESS_CONTROLLER"],
-                    data={"lx": 0, "ly": 0, "rx": 0, "ry": 0},
-                )
+                # Zero-velocity Move to halt before disconnecting (matches the
+                # command path; the firmware also stops on command loss).
+                self._publish_move(0.0, 0.0, 0.0)
                 await self.conn.disconnect()
             except Exception:
                 pass
@@ -164,27 +161,39 @@ class UnitreeWebRTCConnection(Resource):
         if self.thread.is_alive():
             self.thread.join(timeout=DEFAULT_THREAD_JOIN_TIMEOUT)
 
+    def _publish_move(self, vx: float, vy: float, vyaw: float) -> None:
+        """Publish one SPORT ``Move`` (api_id 1008) velocity command."""
+        self._move_seq += 1
+        payload = {
+            "header": {
+                "identity": {
+                    # Monotonic id; unique per command (nothing awaits a reply).
+                    "id": self._move_seq,
+                    "api_id": SPORT_CMD["Move"],  # 1008
+                }
+            },
+            # parameter is a JSON STRING (firmware contract); publish_without_callback
+            # sends ``data`` verbatim and does not stringify it.
+            "parameter": json.dumps({"x": vx, "y": vy, "z": vyaw}),
+        }
+        self.conn.datachannel.pub_sub.publish_without_callback(
+            RTC_TOPIC["SPORT_MOD"],  # "rt/api/sport/request"
+            data=payload,
+            msg_type=DATA_CHANNEL_TYPE["REQUEST"],  # "req"
+        )
+
     def move(self, twist: Twist, duration: float = 0.0) -> bool:
-        """Send movement command to the robot using Twist commands.
+        """Send a velocity command to the robot.
 
-        Args:
-            twist: Twist message with linear and angular velocities
-            duration: How long to move (seconds). If 0, command is continuous
+        ``twist`` is a body-frame velocity (x forward, y left, z yaw CCW) in real
+        m/s & rad/s, sent via the calibrated SPORT ``Move`` API.
 
-        Returns:
-            bool: True if command was sent successfully
+        Returns True if the command was sent successfully.
         """
         x, y, yaw = twist.linear.x, twist.linear.y, twist.angular.z
 
-        # WebRTC coordinate mapping:
-        # x - Positive right, negative left
-        # y - positive forward, negative backwards
-        # yaw - Positive rotate right, negative rotate left
         async def async_move() -> None:
-            self.conn.datachannel.pub_sub.publish_without_callback(
-                RTC_TOPIC["WIRELESS_CONTROLLER"],
-                data={"lx": -y, "ly": x, "rx": -yaw, "ry": 0},
-            )
+            self._publish_move(x, y, yaw)
 
         async def async_move_duration() -> None:
             """Send movement commands continuously for the specified duration."""
@@ -432,8 +441,6 @@ class UnitreeWebRTCConnection(Resource):
             self.stop_timer.cancel()
             self.stop_timer = None
 
-        if hasattr(self, "task") and self.task:
-            self.task.cancel()
         if hasattr(self, "conn"):
 
             async def async_disconnect() -> None:
