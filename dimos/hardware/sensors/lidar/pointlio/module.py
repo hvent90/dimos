@@ -28,11 +28,9 @@ Usage::
 
 from __future__ import annotations
 
-import os
 from pathlib import Path
 from typing import TYPE_CHECKING, Annotated
 
-from pydantic import Field
 from pydantic.experimental.pipeline import validate_as
 from reactivex.disposable import Disposable
 
@@ -69,8 +67,8 @@ class PointLioConfig(NativeModuleConfig):
     build_command: str | None = "nix build .#pointlio_native"
     # lidar_ip required; host_ip optional (auto-derived from lidar_ip's subnet).
     # Both fall back to DIMOS_POINTLIO_LIDAR_IP / DIMOS_POINTLIO_HOST_IP.
-    host_ip: str | None = Field(default_factory=lambda: os.environ.get("DIMOS_POINTLIO_HOST_IP"))
-    lidar_ip: str | None = Field(default_factory=lambda: os.environ.get("DIMOS_POINTLIO_LIDAR_IP"))
+    host_ip: str | None
+    lidar_ip: str = "192.168.1.155"
     frequency: float = 10.0
 
     # Sensor frame for the cloud + odometry headers.
