@@ -10,8 +10,8 @@ If you're on the RealSense rig instead of a Go2, the steps are the same — use 
 
 - A Unitree Go2 with a Livox Mid-360 mounted on it
 - A computer to do the recording (it talks to the dog over wifi and to the lidar over a wired link)
-- A phone with a hotspot
 - The Mid-360's USB-ethernet adapter and cable
+- A Go2 that's already online and reachable — see [Unitree Go2 — Setup](/docs/platforms/quadruped/go2/setup.md)
 
 ## 1. Mount the Mid-360
 
@@ -41,38 +41,18 @@ sudo nmcli con up livox-mid360
 
 This sticks across reboots, so you only do it once per machine.
 
-## 3. Put the dog and your computer on the same hotspot
+## 3. Get the dog and your computer on the same network
 
-The recorder talks to the dog over wifi, so both the dog and your computer need to be on the same network. A phone hotspot is the easy, portable answer.
-
-Turn on your phone's hotspot, then point the dog at it over Bluetooth:
-
-```bash
-dimos go2tool connect-wifi --ssid <hotspot-name> --password <hotspot-password>
-```
-
-Power the dog on first — it advertises over Bluetooth right away. The command scans, finds the dog, and hands it the wifi credentials. If more than one robot shows up, it'll ask which one.
-
-Now connect your computer to the same hotspot. Then find the dog's IP on it:
-
-```bash
-dimos go2tool discover
-```
-
-That prints a row per robot it sees. Grab the dog's IP and export it:
-
-```bash
-export ROBOT_IP=<the-dog-ip>
-```
+Follow [Unitree Go2 — Setup](/docs/platforms/quadruped/go2/setup.md) to put the dog on your wifi, discover its IP, and `export ROBOT_IP=<the-dog-ip>`.
 
 At this point your computer has two links going at once: wifi to the dog, wired ethernet to the lidar. That's expected.
 
 ## 4. Record
 
-Tell the recorder where the lidar is and start it:
+Point the recorder at the lidar (whatever you found in step 2) and start it:
 
 ```bash
-export LIDAR_IP=192.168.1.171   # whatever you found in step 2
+export DIMOS_MID360_LIDAR_IP=192.168.1.171 DIMOS_POINTLIO_LIDAR_IP=192.168.1.171
 uv run python dimos/robot/unitree/go2/blueprints/basic/unitree_go2_mid360_record.py
 ```
 
@@ -82,7 +62,7 @@ A keyboard-teleop window opens. Drive with WASD, turn with Q/E, `Z` to lie down,
 - Close the loop — end where you started, and re-cross your own path a couple times.
 - Drive smoothly; sharp jerks make Point-LIO's job harder.
 
-When you're done, `Ctrl+C` the recorder. It writes everything to a timestamped folder under `recordings/`, e.g. `recordings/2026-06-22_03-15pm-PST/mem2.db`.
+When you're done, `Ctrl+C` the recorder. It writes everything to a timestamped folder under `recordings/`, e.g. `recordings/2026-06-22_03-15pm-PDT/mem2.db`.
 
 You don't fuss with poses while recording — the Point-LIO recorder stamps each lidar frame with the live odometry pose as it goes, so the trajectory is already baked into the recording. The rig's mount frames are published onto the tf stream continuously, so they're captured too.
 
@@ -91,7 +71,7 @@ You don't fuss with poses while recording — the Point-LIO recorder stamps each
 By default the raw Mid-360 UDP stream is *not* saved. To also capture a `.pcap` of it alongside the db, set `RECORD_PCAP=1`:
 
 ```bash
-RECORD_PCAP=1 LIDAR_IP=192.168.1.171 \
+RECORD_PCAP=1 DIMOS_MID360_LIDAR_IP=192.168.1.171 DIMOS_POINTLIO_LIDAR_IP=192.168.1.171 \
     uv run python dimos/robot/unitree/go2/blueprints/basic/unitree_go2_mid360_record.py
 ```
 
