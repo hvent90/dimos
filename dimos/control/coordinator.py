@@ -26,6 +26,7 @@ Features:
 """
 
 from dataclasses import dataclass, field
+import inspect
 import threading
 import time
 from typing import TYPE_CHECKING, Any
@@ -550,6 +551,32 @@ class ControlCoordinator(Module):
                         handler(enabled)
                     except Exception:
                         logger.exception(f"set_dry_run() raised on task {task.name!r}")
+
+    @rpc
+    def reset_runtime_state(self, reactivate: bool | None = None) -> dict[str, bool]:
+        """Reset transient state on tasks that expose ``reset_runtime_state``.
+
+        This is meant for simulation/runtime discontinuities such as MuJoCo
+        respawn, where task histories and latched commands must be cleared
+        without tearing down the coordinator.
+        """
+        results: dict[str, bool] = {}
+        with self._task_lock:
+            for task in self._tasks.values():
+                handler = getattr(task, "reset_runtime_state", None)
+                if not callable(handler):
+                    results[task.name] = False
+                    continue
+                try:
+                    params = inspect.signature(handler).parameters
+                    if "reactivate" in params:
+                        results[task.name] = bool(handler(reactivate=reactivate))
+                    else:
+                        results[task.name] = bool(handler())
+                except Exception:
+                    logger.exception(f"reset_runtime_state() raised on task {task.name!r}")
+                    results[task.name] = False
+        return results
 
     @rpc
     def task_invoke(

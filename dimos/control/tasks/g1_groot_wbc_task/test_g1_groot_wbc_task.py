@@ -48,17 +48,22 @@ class _StubSession:
         label: str,
         action: np.ndarray,
         call_log: list[str],
+        providers: Any = None,
     ) -> None:
         self.model_path = model_path
         self._label = label
         self._action = action
         self._call_log = call_log
+        self._providers = list(providers or [])
         fake_input = MagicMock()
         fake_input.name = "obs"
         self._inputs = [fake_input]
 
     def get_inputs(self) -> list[Any]:
         return self._inputs
+
+    def get_providers(self) -> list[str]:
+        return self._providers
 
     def run(self, _outputs: Any, _feed: dict[str, np.ndarray]) -> list[np.ndarray]:
         self._call_log.append(self._label)
@@ -77,6 +82,7 @@ def patched_ort(monkeypatch: pytest.MonkeyPatch) -> list[str]:
             label=label,
             action=np.full(15, 0.1, dtype=np.float32),
             call_log=call_log,
+            providers=providers,
         )
 
     monkeypatch.setattr(g1_groot_wbc_task.ort, "InferenceSession", _factory)
@@ -276,6 +282,32 @@ def test_dry_run_suppresses_output_but_keeps_policy_hot(
     assert out is None
     assert patched_ort == ["balance"]
     assert np.any(task._obs_buf != 0.0)
+
+
+def test_reset_runtime_state_clears_policy_state_and_rearms(
+    task: G1GrootWBCTask, joints_29: list[str]
+) -> None:
+    task.start()
+    task.set_velocity_command(0.5, 0.0, 0.0, t_now=100.0)
+    for _ in range(10):
+        task.compute(_state_at(100.0, joints_29))
+
+    assert task.state_snapshot()["armed"]
+    assert np.any(task._obs_buf != 0.0)
+    assert np.any(task._cmd != 0.0)
+
+    assert task.reset_runtime_state(reactivate=True)
+
+    snapshot = task.state_snapshot()
+    assert not snapshot["armed"]
+    assert snapshot["arm_pending"]
+    np.testing.assert_array_equal(task._obs_buf, np.zeros_like(task._obs_buf))
+    np.testing.assert_array_equal(task._last_action, np.zeros_like(task._last_action))
+    np.testing.assert_array_equal(task._cmd, np.zeros_like(task._cmd))
+    assert task._last_cmd_time == 0.0
+
+    task.compute(_state_at(101.0, joints_29))
+    assert task.state_snapshot()["armed"]
 
 
 def test_projected_gravity_matches_reference_quaternion_order() -> None:

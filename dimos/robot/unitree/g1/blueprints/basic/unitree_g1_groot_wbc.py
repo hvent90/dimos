@@ -34,6 +34,8 @@ Sim (``--simulation``):
 Usage:
     dimos run unitree-g1-groot-wbc                 # real hardware
     dimos --simulation mujoco run unitree-g1-groot-wbc    # sim
+    dimos --simulation mujoco --scene data/scene_packages/dimos_office/scene.meta.json \\
+        run unitree-g1-groot-wbc                   # sim in a cooked scene package
 
 Overrides (replace the old env-var dance):
     dimos run unitree-g1-groot-wbc \\
@@ -70,8 +72,11 @@ from dimos.utils.data import LfsPath
 # whole CLI on a multi-GB download every time the module is imported.
 _GROOT_MODEL_DIR = LfsPath("groot")
 _MJCF_PATH = LfsPath("mujoco_sim/g1_gear_wbc.xml")
+_ROBOT_ONLY_MJCF_PATH = Path(__file__).resolve().parents[2] / "assets" / "g1_29dof.xml"
+_ROBOT_MESHDIR = LfsPath("g1_urdf/meshes")
 
 _adapter_address: str | Path
+_cmd_vel_topic = "/cmd_vel" if global_config.simulation else "/g1/cmd_vel"
 
 if global_config.simulation and global_config.simulation != "mujoco":
     raise ValueError("unitree-g1-groot-wbc only supports --simulation mujoco")
@@ -94,35 +99,68 @@ if global_config.simulation == "mujoco":
         imu_gyro_names=(
             "imu-pelvis-angular-velocity",
             "imu-torso-angular-velocity",
+            "imu-angular-velocity",
             "gyro_pelvis",
             "imu_gyro",
         ),
         imu_accel_names=(
             "imu-pelvis-linear-acceleration",
             "imu-torso-linear-acceleration",
+            "imu-linear-acceleration",
             "accelerometer_pelvis",
             "imu_accel",
         ),
         require_imu=True,
     )
 
+    def _legacy_mujoco_backend() -> Any:
+        return MujocoSimModule.blueprint(
+            address=_MJCF_PATH,
+            headless=True,
+            dof=29,
+            enable_color=False,
+            enable_depth=False,
+            enable_pointcloud=False,
+            inject_legacy_assets=True,
+            robot_sim_spec=_g1_sim_spec,
+        )
+
+    def _scene_mujoco_backend() -> tuple[Any, str | Path]:
+        if global_config.scene is None:
+            return _legacy_mujoco_backend(), _MJCF_PATH
+
+        from dimos.simulation.scenes.catalog import resolve_scene_package
+
+        package = resolve_scene_package(global_config.scene)
+        if package is None:
+            return _legacy_mujoco_backend(), _MJCF_PATH
+        if package.mujoco_scene_path is None:
+            raise ValueError(f"scene package has no MuJoCo scene artifact: {package.metadata_path}")
+
+        return (
+            MujocoSimModule.blueprint(
+                scene_xml=package.mujoco_scene_path,
+                robot_mjcf=_ROBOT_ONLY_MJCF_PATH,
+                robot_meshdir=_ROBOT_MESHDIR,
+                robot_id="",
+                scene_entities=package.entities,
+                headless=True,
+                dof=29,
+                enable_color=False,
+                enable_depth=False,
+                enable_pointcloud=False,
+                robot_sim_spec=_g1_sim_spec,
+            ),
+            _ROBOT_ONLY_MJCF_PATH,
+        )
+
     # Sim backend: MuJoCo engine via SHM.
-    _backend = MujocoSimModule.blueprint(
-        address=_MJCF_PATH,
-        headless=True,
-        dof=29,
-        enable_color=False,
-        enable_depth=False,
-        enable_pointcloud=False,
-        inject_legacy_assets=True,
-        robot_sim_spec=_g1_sim_spec,
-    )
+    _backend, _adapter_address = _scene_mujoco_backend()
     # MujocoSimModule's ``odom`` Out is the sole producer of ``/odom``
     # now - the coordinator no longer polls the whole-body adapter for
     # base pose (read_odom was dropped from the Protocol). autoconnect
     # maps ``(odom, PoseStamped)`` to ``/odom`` by default; no override.
     _adapter_type = "sim_mujoco_g1"
-    _adapter_address = _MJCF_PATH
     _tick_rate = 50.0
     _auto_arm = True
     _auto_dry_run = False
@@ -246,8 +284,8 @@ _coordinator = ControlCoordinator.blueprint(
 ).transports(
     {
         ("joint_command", JointState): LCMTransport("/g1/joint_command", JointState),
-        ("twist_command", Twist): LCMTransport("/g1/cmd_vel", Twist),
-        ("tele_cmd_vel", Twist): LCMTransport("/g1/cmd_vel", Twist),
+        ("twist_command", Twist): LCMTransport(_cmd_vel_topic, Twist),
+        ("tele_cmd_vel", Twist): LCMTransport(_cmd_vel_topic, Twist),
         # Real-hw only: the transport_lcm adapter speaks to
         # G1WholeBodyConnection over these topics. autoconnect already
         # matches by (name, type) so sim doesn't need them -- they're

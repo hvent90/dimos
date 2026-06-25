@@ -188,6 +188,12 @@ class _WholeBodySimHooks:
             if self._gripper_idx < len(positions):
                 shm.write_gripper_state(positions[self._gripper_idx])
 
+    def clear_latched_commands(self) -> None:
+        self._latest_pd_pos_target = None
+        self._latest_pd_kp = None
+        self._latest_pd_kd = None
+        self._latest_pd_tau = None
+
     def _gripper_joint_to_ctrl(self, joint_position: float) -> float:
         jlo, jhi = self._gripper_joint_range
         clo, chi = self._gripper_ctrl_range
@@ -199,9 +205,24 @@ class _WholeBodySimHooks:
 
 
 class MujocoSimModuleConfig(ModuleConfig, DepthCameraConfig):
-    """Configuration for the unified MuJoCo simulation module."""
+    """Configuration for the unified MuJoCo simulation module.
+
+    Use ``address`` for the legacy path: one MJCF/MJB that already contains
+    scene and robot. Use ``robot_mjcf`` plus optional ``scene_xml`` for scene
+    packages: the module composes the scene wrapper, robot MJCF, and package
+    entities at startup.
+    """
 
     address: str | Path = ""
+    scene_xml: str | Path | None = None
+    robot_mjcf: str | Path | None = None
+    robot_meshdir: str | Path | None = None
+    robot_id: str = ""
+    scene_entities: list[dict[str, Any]] = Field(default_factory=list)
+    spawn_xy: tuple[float, float] | None = None
+    spawn_z: float | None = None
+    spawn_yaw: float | None = None
+    reset_joint_positions: list[float] | None = None
     headless: bool = False
     dof: int = 7
 
@@ -294,6 +315,7 @@ class MujocoSimModule(
         # has a free joint at the robot root; None otherwise.
         self._imu_base_qpos_slice: slice | None = None
         self._root_base_qpos_adr: int | None = None
+        self._root_spawn_clearance_z: float | None = None
 
     @property
     def _camera_link(self) -> str:
@@ -333,11 +355,15 @@ class MujocoSimModule(
 
     @rpc
     def start(self) -> None:
-        if not self.config.address:
-            raise RuntimeError("MujocoSimModule: config.address (MJCF path) is required")
+        if not self.config.address and not self.config.robot_mjcf:
+            raise RuntimeError(
+                "MujocoSimModule: either config.address (legacy MJCF path) "
+                "or config.robot_mjcf (composed scene path) is required"
+            )
 
-        # SHM key - adapter derives the same key from the same MJCF path.
-        shm_key = shm_key_from_path(self.config.address)
+        # SHM key - adapters derive the same key from the robot/control MJCF path.
+        shm_key_source = self.config.robot_mjcf or self.config.address
+        shm_key = shm_key_from_path(shm_key_source)
         self._shm = ManipShmWriter(shm_key)
         self._shm_ready_signaled = False
 
@@ -372,13 +398,22 @@ class MujocoSimModule(
 
         # Hooks are installed via set_step_hooks() after gripper detection
         # below, since they depend on the resolved gripper index.
-        self._engine = MujocoEngine(
-            config_path=Path(self.config.address),
+        engine_kwargs: dict[str, Any] = dict(
             headless=self.config.headless,
             cameras=cameras,
-            assets=engine_assets,
             robot_sim_spec=self.config.robot_sim_spec,
+            reset_joint_positions=self.config.reset_joint_positions,
         )
+        if self.config.robot_mjcf is not None:
+            engine_kwargs["config_path"] = Path(self.config.robot_mjcf)
+            engine_kwargs["model"] = self._compose_model()
+        else:
+            engine_kwargs["config_path"] = Path(self.config.address)
+            engine_kwargs["assets"] = engine_assets
+            engine_kwargs["spawn_xy"] = self.config.spawn_xy
+            engine_kwargs["spawn_z"] = self.config.spawn_z
+            engine_kwargs["spawn_yaw"] = self.config.spawn_yaw
+        self._engine = MujocoEngine(**engine_kwargs)
 
         # Detect gripper (extra joint beyond dof).
         dof = self.config.dof
@@ -423,6 +458,7 @@ class MujocoSimModule(
             )
         else:
             self._imu_base_qpos_slice = None
+        self._root_spawn_clearance_z = self._compute_root_spawn_clearance_z()
 
         # Wire SHM bridge hooks.
         self._sim_hooks = _WholeBodySimHooks(
@@ -472,10 +508,45 @@ class MujocoSimModule(
         logger.info(
             "MujocoSimModule started",
             address=self.config.address,
+            robot_mjcf=self.config.robot_mjcf,
+            scene_xml=self.config.scene_xml,
             dof=dof,
             camera=self.config.camera_name,
             shm_key=shm_key,
         )
+
+    def _compose_model(self) -> mujoco.MjModel:
+        """Compose optional scene package MJCF + robot MJCF + entities."""
+        from dimos.simulation.mujoco.entity_scene import add_entities_to_spec
+
+        if self.config.robot_mjcf is None:
+            raise RuntimeError("MujocoSimModule: robot_mjcf is required for composition")
+
+        if self.config.scene_xml is not None:
+            spec_scene = mujoco.MjSpec.from_file(str(self.config.scene_xml))
+        else:
+            spec_scene = mujoco.MjSpec()
+
+        spec_robot = mujoco.MjSpec.from_file(str(self.config.robot_mjcf))
+        if self.config.robot_meshdir is not None:
+            spec_robot.meshdir = str(self.config.robot_meshdir)
+
+        # Keep the robot controller timing stable when attached to a scene
+        # package whose wrapper may have different default options.
+        spec_scene.option.timestep = spec_robot.option.timestep
+
+        spawn_xy = self.config.spawn_xy or (0.0, 0.0)
+        spawn_z = self.config.spawn_z if self.config.spawn_z is not None else 0.0
+        frame = spec_scene.worldbody.add_frame(
+            pos=[float(spawn_xy[0]), float(spawn_xy[1]), float(spawn_z)],
+        )
+        prefix = f"{self.config.robot_id}-" if self.config.robot_id else None
+        spec_scene.attach(spec_robot, prefix=prefix, frame=frame)
+
+        if self.config.scene_entities:
+            add_entities_to_spec(spec_scene, self.config.scene_entities)
+
+        return spec_scene.compile()
 
     @rpc
     def stop(self) -> None:
@@ -508,6 +579,75 @@ class MujocoSimModule(
         if errors:
             op, err = errors[0]
             raise RuntimeError(f"MujocoSimModule.stop() failed during {op}: {err}") from err
+
+    @rpc
+    def reset(self) -> bool:
+        """Reset the running simulation to its current configured spawn pose."""
+        engine = self._engine
+        if engine is None:
+            return False
+        if self._sim_hooks is not None:
+            self._sim_hooks.clear_latched_commands()
+        applied = engine.request_reset(wait=True)
+        logger.info("MujocoSimModule: reset requested", applied=applied)
+        return applied
+
+    @rpc
+    def respawn_at(
+        self,
+        x: float,
+        y: float,
+        z: float | None = None,
+        yaw: float | None = None,
+    ) -> bool:
+        engine = self._engine
+        if engine is None:
+            return False
+        if self._sim_hooks is not None:
+            self._sim_hooks.clear_latched_commands()
+
+        ground_z = None
+        spawn_z = None if z is None else float(z)
+        if spawn_z is None:
+            ground_z = engine.ground_height_at(float(x), float(y))
+            if ground_z is not None and self._root_spawn_clearance_z is not None:
+                spawn_z = ground_z + self._root_spawn_clearance_z
+
+        applied = engine.request_reset_to(
+            spawn_xy=(float(x), float(y)),
+            spawn_z=spawn_z,
+            spawn_yaw=None if yaw is None else float(yaw),
+            wait=True,
+        )
+        logger.info(
+            "MujocoSimModule: respawn_at requested",
+            x=x,
+            y=y,
+            z=z,
+            ground_z=ground_z,
+            root_clearance_z=self._root_spawn_clearance_z,
+            spawn_z=spawn_z,
+            yaw=yaw,
+            applied=applied,
+        )
+        return applied
+
+    def _compute_root_spawn_clearance_z(self) -> float | None:
+        engine = self._engine
+        qpos_adr = self._root_base_qpos_adr
+        if engine is None or qpos_adr is None:
+            return None
+
+        qpos = engine.data.qpos
+        root_x = float(qpos[qpos_adr])
+        root_y = float(qpos[qpos_adr + 1])
+        root_z = float(qpos[qpos_adr + 2])
+        ground_z = engine.ground_height_at(root_x, root_y)
+        if ground_z is not None:
+            return root_z - ground_z
+        if self.config.spawn_z is not None:
+            return root_z - float(self.config.spawn_z)
+        return root_z
 
     def _publish_shm_and_lcm(self, engine: MujocoEngine) -> None:
         """Post-step hook: SHM writes + LCM publishes.
