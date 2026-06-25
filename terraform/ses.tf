@@ -13,7 +13,7 @@
 variable "ses_email_enabled" {
   description = "Use SES (no-reply@dimensionalos.com) for Cognito email. Only enable after SES production access is granted."
   type        = bool
-  default     = false
+  default     = true
 }
 
 data "aws_route53_zone" "main" {
