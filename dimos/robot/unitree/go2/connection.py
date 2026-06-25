@@ -13,7 +13,6 @@
 # limitations under the License.
 
 from enum import Enum
-import sys
 import time
 from typing import TYPE_CHECKING, Any, Protocol
 
@@ -51,11 +50,6 @@ from dimos.robot.unitree.connection import UnitreeWebRTCConnection
 from dimos.robot.unitree.go2.config import Go2Config, camera_info_static
 from dimos.utils.decorators.decorators import cached_property, simple_mcache
 
-if sys.version_info < (3, 13):
-    from typing_extensions import TypeVar
-else:
-    from typing import TypeVar
-
 logger = setup_logger()
 
 
@@ -67,6 +61,10 @@ class Go2Mode(str, Enum):
 class ConnectionConfig(TfModuleConfig):
     ip: str = Field(default_factory=lambda m: m["g"].robot_ip)
     mode: Go2Mode = Go2Mode.DEFAULT
+    lidar: bool = True
+    camera: bool = True
+    # "mcf" for stair traversal, "normal" for basic, None to leave it as is
+    motion_mode: str | None = None
     # Per-device AES-128 key (Go2 fw >=1.1.15); defaults from GlobalConfig.
     aes_128_key: str | None = Field(default_factory=lambda m: m["g"].unitree_aes_128_key)
     frame_mapping: dict[str, str] = Field(
@@ -163,6 +161,9 @@ class ReplayConnection(UnitreeWebRTCConnection, CompositeResource):
     def set_obstacle_avoidance(self, enabled: bool = True) -> None:
         pass
 
+    def set_motion_mode(self, name: str) -> None:
+        pass
+
     def enable_rage_mode(self) -> bool:
         return True
 
@@ -184,9 +185,6 @@ class ReplayConnection(UnitreeWebRTCConnection, CompositeResource):
     def publish_request(self, topic: str, data: dict):  # type: ignore[no-untyped-def, type-arg]
         """Fake publish request for testing."""
         return {"status": "ok", "message": "Fake publish"}
-
-
-_Config = TypeVar("_Config", bound=ConnectionConfig, default=ConnectionConfig)
 
 
 class GO2Connection(TfModule, Camera, Pointcloud):
@@ -236,14 +234,21 @@ class GO2Connection(TfModule, Camera, Pointcloud):
             self.color_image.publish(image)
             self._latest_video_frame = image
 
-        def on_lidar(pointcloud: PointCloud2) -> None:
-            pointcloud.frame_id = self.frame_mapping["body"]
-            self.lidar.publish(pointcloud)
-
-        self.register_disposable(self.connection.lidar_stream().subscribe(on_lidar))
+        if self.config.lidar:
+            self.register_disposable(self.connection.lidar_stream().subscribe(self.lidar.publish))
         self.register_disposable(self.connection.odom_stream().subscribe(self._publish_tf))
-        self.register_disposable(self.connection.video_stream().subscribe(on_image))
         self.register_disposable(Disposable(self.cmd_vel.subscribe(self.move)))
+
+        if self.config.camera:
+            self.register_disposable(self.connection.video_stream().subscribe(onimage))
+            self._camera_info_thread = Thread(
+                target=self.publish_camera_info,
+                daemon=True,
+            )
+            self._camera_info_thread.start()
+
+        if self.config.motion_mode and isinstance(self.connection, UnitreeWebRTCConnection):
+            self.connection.set_motion_mode(self.config.motion_mode)
 
         self.standup()
         time.sleep(3)
