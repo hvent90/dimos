@@ -236,33 +236,44 @@ class DbTf:
         self._trees_ready = True
 
     def _fetch_transforms(self, ids: list[int]) -> list[Transform]:
-        """Decode the given tf-row ids into transforms (frames live in the blob)."""
+        """Decode the given tf-row ids into transforms in a single batched query
+        (frames live in the blob, so we decode each via the stream's codec)."""
         if not ids:
             return []
         backend: Any = self._store.stream(self._stream, TFMessage)._source
+        codec = backend.codec
+        placeholders = ",".join("?" * len(ids))
+        rows = (
+            self._connection()
+            .execute(f'SELECT data FROM "{self._stream}_blob" WHERE id IN ({placeholders})', ids)
+            .fetchall()
+        )
         transforms: list[Transform] = []
-        for tf_id in ids:
-            # _make_loader is the same blob-load + codec-decode the stream uses.
-            message = backend._make_loader(tf_id)()
+        for (data,) in rows:
+            message = codec.decode(data)
             transforms.extend(getattr(message, "transforms", None) or [message])
-        self.rows_fetched += len(ids)
+        self.rows_fetched += len(rows)
         return transforms
 
-    def _anchor_id(self, conn: sqlite3.Connection, time_point: float | None) -> int | None:
-        """The tf row whose tree to use: the first row with ts >= query (so its
-        own edge brackets the query for interpolation); else the last row."""
+    def _anchor_tree(self, conn: sqlite3.Connection, time_point: float | None) -> str | None:
+        """The tree JSON of the anchor row, in one query: the first row with
+        ts >= query (so its own edge brackets the query for interpolation); else
+        the last row. Joins ``<stream>_tree`` to ``<stream>`` so it's a single hit."""
+        tree = f'"{self._stream}_tree"'
+        stream = f'"{self._stream}"'
+        last = f"SELECT t.tree FROM {tree} t JOIN {stream} s ON s.id = t.tf_id ORDER BY s.ts DESC LIMIT 1"
         if time_point is None:
-            row = conn.execute(
-                f'SELECT id FROM "{self._stream}" ORDER BY ts DESC LIMIT 1'
-            ).fetchone()
-            return int(row[0]) if row else None
+            row = conn.execute(last).fetchone()
+            return str(row[0]) if row else None
         row = conn.execute(
-            f'SELECT id FROM "{self._stream}" WHERE ts >= ? ORDER BY ts ASC LIMIT 1', (time_point,)
+            f"SELECT t.tree FROM {tree} t JOIN {stream} s ON s.id = t.tf_id "
+            "WHERE s.ts >= ? ORDER BY s.ts ASC LIMIT 1",
+            (time_point,),
         ).fetchone()
         if row is not None:
-            return int(row[0])
-        row = conn.execute(f'SELECT id FROM "{self._stream}" ORDER BY ts DESC LIMIT 1').fetchone()
-        return int(row[0]) if row else None
+            return str(row[0])
+        row = conn.execute(last).fetchone()
+        return str(row[0]) if row else None
 
     def _get_sqlite(
         self,
@@ -278,22 +289,18 @@ class DbTf:
                 return self._cache[key]
         self._ensure_trees()
         conn = self._connection()
-        anchor = self._anchor_id(conn, time_point)
+        tree_json = self._anchor_tree(conn, time_point)  # query 1: anchor + tree
         result: Transform | None = None
-        if anchor is not None:
-            row = conn.execute(
-                f'SELECT tree FROM "{self._stream}_tree" WHERE tf_id = ?', (anchor,)
-            ).fetchone()
-            if row is not None:
-                tree: dict[str, list[int]] = json.loads(row[0])
-                ids = sorted({tf_id for refs in tree.values() for tf_id in refs})
-                # Only the <=2-per-frame referenced rows are read — never the
-                # whole table. MultiTBuffer composes the chain + interpolates.
-                buffer = MultiTBuffer(buffer_size=_NO_PRUNE)
-                transforms = self._fetch_transforms(ids)
-                if transforms:
-                    buffer.receive_transform(*transforms)
-                    result = buffer.lookup(target_frame, source_frame, time_point, time_tolerance)
+        if tree_json is not None:
+            tree: dict[str, list[int]] = json.loads(tree_json)
+            ids = sorted({tf_id for refs in tree.values() for tf_id in refs})
+            # query 2: only the <=2-per-frame referenced rows, batched — never the
+            # whole table. MultiTBuffer composes the chain + interpolates.
+            buffer = MultiTBuffer(buffer_size=_NO_PRUNE)
+            transforms = self._fetch_transforms(ids)
+            if transforms:
+                buffer.receive_transform(*transforms)
+                result = buffer.lookup(target_frame, source_frame, time_point, time_tolerance)
         with self._lock:
             self._cache[key] = result
             self._cache.move_to_end(key)
