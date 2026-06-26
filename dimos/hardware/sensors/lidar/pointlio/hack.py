@@ -12,17 +12,22 @@
 # See the License for the specific language governing permissions and
 # limitations under the License.
 
-"""Rewrite the lidar cloud from a physical mount into a pretend one.
+"""Fake a normally-mounted mid-360 from the physically-tilted one.
 
-The mid-360 is bolted to the robot at an angle (``rotated_urdf``), but the rest
-of the stack is wired as if it sat "forward = forward" (``normal_urdf``). This
-module consumes ``rotated_lidar`` and emits ``lidar`` with each point moved from
-the rotated sensor frame into the normal one, so nothing downstream needs to know
+The sensor is bolted to the robot at an angle (``rotated_urdf``), but the rest of
+the stack is wired as if it sat in the nominal mount (``normal_urdf``). This
+module rewrites both the cloud and the odometry so nothing downstream can tell
 the sensor is tilted.
 
-The correction is a single rigid transform derived from the two URDFs:
-``inv(normal_base_to_sensor) @ rotated_base_to_sensor`` evaluated at the shared
-``sensor_frame``. Only the cloud is rewritten — the odometry is left untouched.
+The correction is a single rigid transform ``C`` derived from the two URDFs:
+``C = inv(normal_base_to_sensor) @ rotated_base_to_sensor`` evaluated at the
+shared ``sensor_frame``.
+
+* cloud: each point is moved ``p' = C @ p`` (rotated sensor frame -> normal one).
+* odometry: the body pose is conjugated ``T' = C @ T @ inv(C)`` and the twist
+  rotated by ``C``'s rotation. That is exactly the odometry a normally-mounted
+  sensor would have produced, so a forward walk stays forward instead of drifting
+  sideways the way a bare body-frame relabel would.
 """
 
 from __future__ import annotations
@@ -35,7 +40,12 @@ import numpy as np
 
 from dimos.core.module import Module, ModuleConfig
 from dimos.core.stream import In, Out
+from dimos.msgs.geometry_msgs.Pose import Pose
+from dimos.msgs.geometry_msgs.Quaternion import Quaternion
 from dimos.msgs.geometry_msgs.Transform import Transform
+from dimos.msgs.geometry_msgs.Twist import Twist
+from dimos.msgs.geometry_msgs.Vector3 import Vector3
+from dimos.msgs.nav_msgs.Odometry import Odometry
 from dimos.msgs.sensor_msgs.PointCloud2 import PointCloud2
 from dimos.robot.urdf_loader import UrdfLoader
 from dimos.spec import perception
@@ -73,11 +83,17 @@ def _base_to_frame_matrix(loader: UrdfLoader, leaf_frame: str) -> np.ndarray:
     return matrix
 
 
-class PointLioHack(Module, perception.Lidar):
+def _vector_to_numpy(vector: Vector3) -> np.ndarray:
+    return np.array([vector.x, vector.y, vector.z])
+
+
+class PointLioHack(Module, perception.Lidar, perception.Odometry):
     config: PointLioHackConfig
 
     rotated_lidar: In[PointCloud2]
     lidar: Out[PointCloud2]
+    rotated_odometry: In[Odometry]
+    odometry: Out[Odometry]
 
     async def main(self) -> AsyncIterator[None]:
         rotated = _base_to_frame_matrix(
@@ -88,9 +104,10 @@ class PointLioHack(Module, perception.Lidar):
             UrdfLoader(name="normal", model_path=self.config.normal_urdf),
             self.config.sensor_frame,
         )
-        correction = np.linalg.inv(normal) @ rotated
-        self._rotation = correction[:3, :3].astype(np.float32)
-        self._translation = correction[:3, 3].astype(np.float32)
+        self._correction = np.linalg.inv(normal) @ rotated
+        self._correction_inv = np.linalg.inv(self._correction)
+        self._rotation = self._correction[:3, :3].astype(np.float32)
+        self._translation = self._correction[:3, 3].astype(np.float32)
         yield
 
     async def handle_rotated_lidar(self, value: PointCloud2) -> None:
@@ -101,6 +118,32 @@ class PointLioHack(Module, perception.Lidar):
                 frame_id=value.frame_id,
                 timestamp=value.ts,
                 intensities=value.intensities_f32(),
+            )
+        )
+
+    async def handle_rotated_odometry(self, value: Odometry) -> None:
+        pose = np.eye(4)
+        pose[:3, :3] = value.orientation.to_rotation_matrix()
+        pose[:3, 3] = _vector_to_numpy(value.position)
+        faked = self._correction @ pose @ self._correction_inv
+
+        rotation = self._correction[:3, :3]
+        linear = rotation @ _vector_to_numpy(value.linear_velocity)
+        angular = rotation @ _vector_to_numpy(value.angular_velocity)
+
+        self.odometry.publish(
+            Odometry(
+                ts=value.ts,
+                frame_id=value.frame_id,
+                child_frame_id=value.child_frame_id,
+                pose=Pose(
+                    Vector3(*(float(component) for component in faked[:3, 3])),
+                    Quaternion.from_rotation_matrix(faked[:3, :3]),
+                ),
+                twist=Twist(
+                    Vector3(*(float(component) for component in linear)),
+                    Vector3(*(float(component) for component in angular)),
+                ),
             )
         )
 

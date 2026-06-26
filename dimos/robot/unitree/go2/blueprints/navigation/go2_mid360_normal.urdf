@@ -11,7 +11,7 @@
   <joint name="front_camera_to_mid360_link" type="fixed">
     <parent link="front_camera"/>
     <child link="mid360_link"/>
-    <origin xyz="-0.032 0.0 0.12" rpy="0.0 0.767944870877505 0.0"/>
+    <origin xyz="-0.032 0.0 0.12" rpy="0.0 0.0 0.0"/>
   </joint>
   <link name="camera_optical"/>
   <joint name="front_camera_to_camera_optical" type="fixed">

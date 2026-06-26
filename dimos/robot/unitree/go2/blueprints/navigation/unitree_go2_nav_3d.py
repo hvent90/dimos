@@ -15,7 +15,6 @@
 
 """3d navigation on Go2 with ray tracing and MLS planning"""
 
-import math
 from pathlib import Path
 from typing import Any
 
@@ -24,8 +23,6 @@ from dimos.core.global_config import global_config
 from dimos.hardware.sensors.lidar.pointlio.hack import PointLioHack
 from dimos.hardware.sensors.lidar.pointlio.module import PointLio
 from dimos.mapping.ray_tracing.module import RayTracingVoxelMap
-from dimos.msgs.geometry_msgs.Quaternion import Quaternion
-from dimos.msgs.geometry_msgs.Vector3 import Vector3
 from dimos.navigation.basic_path_follower.module import BasicPathFollower
 from dimos.navigation.movement_manager.movement_manager import MovementManager
 from dimos.navigation.nav_3d.mls_planner.goal_relay import GoalRelay
@@ -50,20 +47,6 @@ voxel_size = 0.08
 # Height of the head-mounted lidar above the ground while standing.
 go2_lidar_height = 0.5
 
-# The lidar is physically pitched down 45 deg and rolled 45 deg, so pointlio's
-# body frame is tilted. Counter-rotate the robot body box by the inverse of that
-# mount so it renders level (flip a sign here if the box leans the wrong way).
-_body_box_roll_deg = -45.0
-_body_box_pitch_deg = -45.0
-_body_box_yaw_deg = 0.0
-_body_box_rotation = Quaternion.from_euler(
-    Vector3(
-        math.radians(_body_box_roll_deg),
-        math.radians(_body_box_pitch_deg),
-        math.radians(_body_box_yaw_deg),
-    )
-)
-
 
 def _render_global_map(msg: Any) -> Any:
     return msg.to_rerun()
@@ -77,9 +60,25 @@ def _render_path(msg: Any) -> Any:
     return msg
 
 
+def _render_surface_map(msg: Any) -> Any:
+    # Walkable surface the planner solved on. Cyan voxel boxes so it reads as a
+    # distinct carpet over the raw global_map.
+    return msg.to_rerun(voxel_size=voxel_size, colors=[80, 200, 255], mode="boxes")
+
+
+def _render_nodes(msg: Any) -> Any:
+    # Planning-graph nodes as fat magenta spheres so they pop above the surface.
+    return msg.to_rerun(voxel_size=0.25, colors=[255, 0, 200], mode="spheres")
+
+
+def _render_node_edges(msg: Any) -> Any:
+    # LineSegments3D already colors edges by traversability (green/yellow/red).
+    return msg.to_rerun()
+
+
 def _static_robot_body(rr: Any) -> list[Any]:
-    """Go2-shaped box + forward arrow on pointlio's body frame, counter-rotated
-    so the physically pitched/rolled lidar mount renders level."""
+    """Go2-shaped box + forward arrow on pointlio's body frame. The hack fakes a
+    level, forward-facing mount, so the box needs no counter-rotation."""
     return [
         rr.Boxes3D(half_sizes=[0.35, 0.155, 0.2], colors=[(0, 255, 127)]),
         # Red arrow out the nose marks the robot's forward (+x) direction.
@@ -88,10 +87,7 @@ def _static_robot_body(rr: Any) -> list[Any]:
             vectors=[(0.3, 0.0, 0.0)],
             colors=[(255, 40, 40)],
         ),
-        rr.Transform3D(
-            parent_frame="tf#/body",
-            rotation=_body_box_rotation.to_rerun(),
-        ),
+        rr.Transform3D(parent_frame="tf#/body"),
     ]
 
 
@@ -114,9 +110,9 @@ _nav_rerun_config = {
         "world/camera_info": None,
         "world/color_image": None,
         "world/lidar": None,
-        "world/surface_map": None,
-        "world/nodes": None,
-        "world/node_edges": None,
+        "world/surface_map": _render_surface_map,
+        "world/nodes": _render_nodes,
+        "world/node_edges": _render_node_edges,
     },
 }
 
@@ -134,13 +130,13 @@ unitree_go2_nav_3d = autoconnect(
             (GO2Connection, "odom", "odom_go2"),
         ]
     ),
-    # gravity_align is off (no_gravity_align.yaml) so pointlio leaves the odometry
-    # in the raw mount frame; the hack applies the known rotated->normal transform
-    # instead. Only the lidar is rerouted through the hack; odometry flows straight
-    # to consumers.
+    # gravity_align is off (no_gravity_align.yaml) so pointlio leaves both the cloud
+    # and the odometry in the raw mount frame. The hack rewrites both into the normal
+    # mount, so everything downstream sees a normally-mounted sensor.
     PointLio.blueprint(body_frame_id="body", config="no_gravity_align.yaml").remappings(
         [
             (PointLio, "lidar", "rotated_lidar"),
+            (PointLio, "odometry", "rotated_odometry"),
         ]
     ),
     PointLioHack.blueprint(rotated_urdf=_rotated_urdf, normal_urdf=_normal_urdf),
@@ -162,7 +158,7 @@ unitree_go2_nav_3d = autoconnect(
         wall_buffer_weight=100.0,
         step_threshold_m=0.16,
         step_penalty_weight=1.0,
-        viz_publish_hz=0.0,
+        viz_publish_hz=2.0,
     ).remappings([(MLSPlannerNative, "global_map", "global_map_unused")]),
     GoalRelay.blueprint(),
     BasicPathFollower.blueprint(speed=0.5, heading_gain=0.4, max_angular=0.6),
