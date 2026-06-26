@@ -94,6 +94,10 @@ htmlcov/
 
 # Memory2 autorecord
 recording*.db
+recording*.db-shm
+recording*.db-wal
+recording*.lcm
+recordings/
 
 # Rerun recordings
 *.rrd
