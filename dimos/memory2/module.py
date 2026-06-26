@@ -30,6 +30,7 @@ from dimos.agents.annotation import skill
 from dimos.constants import DIMOS_PROJECT_ROOT
 from dimos.core.core import rpc
 from dimos.core.module import Module, ModuleConfig
+from dimos.memory2.db_tf import TfTreeWriter
 from dimos.memory2.embed import EmbedImages
 from dimos.memory2.store.null import NullStore
 from dimos.memory2.store.sqlite import SqliteStore
@@ -40,6 +41,7 @@ from dimos.models.embedding.base import EmbeddingModel
 from dimos.msgs.geometry_msgs.PoseStamped import PoseStamped
 from dimos.msgs.sensor_msgs.Image import Image
 from dimos.msgs.tf2_msgs.TFMessage import TFMessage
+from dimos.protocol.pubsub.impl.lcmpubsub import Topic
 from dimos.utils.data import backup_file
 from dimos.utils.logging_config import setup_logger
 
@@ -452,7 +454,8 @@ class Recorder(MemoryModule):
         return setters
 
     def _record_tf(self) -> None:
-        """Record the live tf stream under "tf" (no-op without a pubsub tf)."""
+        """Record the live tf + static_tf streams under "tf", building a per-row
+        tf tree as we go (no-op without a pubsub tf)."""
         topic = getattr(self.tf.config, "topic", None)
         pubsub = getattr(self.tf, "pubsub", None)
         if not topic or pubsub is None:
@@ -460,12 +463,29 @@ class Recorder(MemoryModule):
             return
         tf_stream = self.store.stream("tf", TFMessage)
 
+        # Per-row tf tree (last 2 refs per child frame), written to "tf_tree".
+        # Needs the db path, so only when backed by SQLite.
+        tree_writer = (
+            TfTreeWriter(self.store.config.path, "tf")
+            if isinstance(self.store, SqliteStore)
+            else None
+        )
+        if tree_writer is not None:
+            self.register_disposable(Disposable(tree_writer.close))
+
         def on_tf(msg: TFMessage, _topic: Any) -> None:
             try:
                 for transform in msg.transforms:
-                    tf_stream.append(TFMessage(transform), ts=transform.ts, pose=None)
+                    observation = tf_stream.append(TFMessage(transform), ts=transform.ts, pose=None)
+                    if tree_writer is not None:
+                        tree_writer.record(transform.child_frame_id, observation.id)
             except sqlite3.ProgrammingError:
                 # A late LCM callback raced teardown and hit the closed store.
                 pass
 
         self.register_disposable(Disposable(pubsub.subscribe(topic, on_tf)))
+        # Also listen on the static_tf stream (nothing publishes it yet); static
+        # transforms are treated exactly like dynamic ones (folded into "tf").
+        self.register_disposable(
+            Disposable(pubsub.subscribe(Topic("/tf_static", TFMessage), on_tf))
+        )
