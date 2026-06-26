@@ -743,14 +743,14 @@ def _pose_from_xy_yaw(x: float, y: float, yaw: float) -> Pose:
 
 class DanHolonomicTCConfig(ModuleConfig):
     control_frequency: float = 10.0
-    run_profile: str = "walk"
+    run_profile: str = "trot"
     speed_m_s: float | None = None
     goal_tolerance: float = 0.2
     orientation_tolerance: float = 0.35
     k_position_per_s: float = 2.0
-    k_yaw_per_s: float = 1.5
-    k_velocity_per_s: float = 0.0
-    k_yaw_rate_per_s: float = 0.0
+    k_yaw_per_s: float = 1.0
+    k_velocity_per_s: float = 0.5
+    k_yaw_rate_per_s: float = 1.0
     align_heading_before_move: bool = False
     align_goal_yaw: bool = False
     trajectory_tick_log_path: str | None = None

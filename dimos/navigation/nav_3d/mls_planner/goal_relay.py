@@ -28,6 +28,34 @@ class GoalRelayConfig(ModuleConfig):
     pass
 
 
+class PoseOdomRelayConfig(ModuleConfig):
+    child_frame_id: str = "base_link"
+
+
+class PoseOdomRelay(Module):
+    """Convert GO2Connection's PoseStamped odom to nav_msgs.Odometry."""
+
+    config: PoseOdomRelayConfig
+
+    odom: In[PoseStamped]
+    odometry: Out[Odometry]
+
+    @rpc
+    def start(self) -> None:
+        super().start()
+        self.register_disposable(Disposable(self.odom.subscribe(self._on_odom)))
+
+    def _on_odom(self, msg: PoseStamped) -> None:
+        self.odometry.publish(
+            Odometry(
+                ts=msg.ts,
+                frame_id=msg.frame_id,
+                child_frame_id=self.config.child_frame_id,
+                pose=msg,
+            )
+        )
+
+
 class GoalRelay(Module):
     """Adapt odometry and goal points to the planner's PoseStamped inputs."""
 
