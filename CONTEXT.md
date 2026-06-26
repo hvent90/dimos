@@ -40,6 +40,10 @@ _Avoid_: public simulator API, benchmark control plane, module object sharing
 The hardware-facing subset of simulator state that resembles what a raw robot driver exposes: actuator positions, velocities, efforts, commands, enable state, and errors.
 _Avoid_: task observation, scene observation, evaluator state
 
+**Whole-body motor surface**:
+A hardware control surface that treats a robot as an ordered set of motors with per-motor state and commands, independent of whether the robot is a manipulator, mobile base, or humanoid.
+_Avoid_: manipulator-only adapter, end-effector API, task action API
+
 **Damiao-based Robot**:
 A robot whose joints are actuated by one or more Damiao motors, possibly spread across multiple CAN buses and physical limbs.
 _Avoid_: Damiao arm when the robot may contain multiple motor groups
