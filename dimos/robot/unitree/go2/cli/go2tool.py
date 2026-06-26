@@ -67,10 +67,12 @@ def discover(
 
         async def _consume_lan() -> None:
             async for d in discover_lan(tick=lan_tick):
-                if d.serial in seen_lan:
+                # Probe-fallback devices have no serial; dedupe on IP instead.
+                key = d.serial or d.ip
+                if key in seen_lan:
                     continue
-                seen_lan.add(d.serial)
-                typer.echo(_format_row("LAN", "-", d.ip, d.mac or "-", d.serial))
+                seen_lan.add(key)
+                typer.echo(_format_row("LAN", "-", d.ip, d.mac or "-", d.serial or "?"))
 
         tasks: list[asyncio.Task[None]] = []
         if do_ble:

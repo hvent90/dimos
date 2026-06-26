@@ -28,6 +28,7 @@ from __future__ import annotations
 
 import asyncio
 from collections.abc import AsyncIterator, Iterator
+from concurrent.futures import ThreadPoolExecutor
 from dataclasses import dataclass
 import json
 import socket
@@ -44,6 +45,13 @@ MULTICAST_GROUP = "231.1.1.1"
 QUERY_PORT = 10131
 REPLY_PORT = 10134
 QUERY_PAYLOAD = json.dumps({"name": "unitree_dapengche"}).encode("utf-8")
+
+# TCP port the Go2 WebRTC signaling service listens on. Used as a fallback
+# identifier: networks that drop the discovery multicast group (common with
+# IGMP snooping / WiFi multicast handling) leave the multicast probe silent
+# even though the robot is reachable. Probing this port identifies a Go2 by
+# the service it runs, with no dependency on MAC/vendor heuristics.
+GO2_SIGNALING_PORT = 9991
 
 
 @dataclass(frozen=True)
@@ -103,13 +111,21 @@ def _candidate_ifaces() -> Iterator[tuple[str, str]]:
                 break
 
 
-def discover(timeout: float = 2.0, iface_ip: str | None = None) -> list[Go2Device]:
+def discover(
+    timeout: float = 2.0,
+    iface_ip: str | None = None,
+    probe_fallback: bool = True,
+) -> list[Go2Device]:
     """Probe the LAN for Go2 robots.
 
     Args:
         timeout: seconds to wait for replies after sending the probe.
         iface_ip: pin multicast to this local IPv4 address. If None, probe every
             non-tunnel interfacel.
+        probe_fallback: if multicast yields nothing, fall back to identifying
+            Go2s by their open signaling port (see ``discover_probe``). Devices
+            found this way have no serial (the network offers no lightweight way
+            to read it). Set False to get multicast-only results.
     """
     targets: list[tuple[str | None, str]] = (
         [(None, iface_ip)] if iface_ip else list(_candidate_ifaces())
@@ -125,6 +141,53 @@ def discover(timeout: float = 2.0, iface_ip: str | None = None) -> list[Go2Devic
                 serial=dev.serial, ip=dev.ip, iface=name or "?", mac=_resolve_mac(dev.ip)
             )
             found.setdefault(dev.serial, dev)
+
+    if not found and probe_fallback:
+        return discover_probe(iface_ip=iface_ip)
+    return list(found.values())
+
+
+def _tcp_open(ip: str, port: int, timeout: float) -> bool:
+    s = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
+    s.settimeout(timeout)
+    try:
+        s.connect((ip, port))
+        return True
+    except OSError:
+        return False
+    finally:
+        s.close()
+
+
+def discover_probe(
+    timeout: float = 0.7,
+    iface_ip: str | None = None,
+    port: int = GO2_SIGNALING_PORT,
+) -> list[Go2Device]:
+    """Find Go2s by probing the signaling port across the local /24(s).
+
+    Fallback for when multicast discovery is silent (e.g. a network that drops
+    the discovery group). A Go2 is identified by the service it runs — an open
+    TCP signaling port — not by any MAC/vendor heuristic, so it survives
+    firmware changes that alter the discovery protocol.
+
+    Serial is intentionally left blank: the only network-authoritative serial
+    source is multicast (which failed here) or a full WebRTC connect (too heavy
+    and slot-exclusive for a scan). MAC is filled from the ARP cache on Linux
+    for display only (None elsewhere) — never used to decide what is a Go2.
+
+    Scans the /24 around each non-tunnel interface; assumes the common /24 LAN.
+    """
+    targets: list[tuple[str, str]] = [("?", iface_ip)] if iface_ip else list(_candidate_ifaces())
+    found: dict[str, Go2Device] = {}
+    for name, local_ip in targets:
+        prefix = local_ip.rsplit(".", 1)[0]
+        hosts = [f"{prefix}.{i}" for i in range(1, 255)]
+        with ThreadPoolExecutor(max_workers=128) as ex:
+            opens = list(ex.map(lambda h: (h, _tcp_open(h, port, timeout)), hosts))
+        for host, is_open in opens:
+            if is_open and host not in found:
+                found[host] = Go2Device(serial="", ip=host, iface=name, mac=_resolve_mac(host))
     return list(found.values())
 
 
