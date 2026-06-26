@@ -47,6 +47,10 @@ class VGNGraspGenModuleConfig(ModuleConfig):
     model_path_env: str = "DIMOS_VGN_MODEL_PATH"
     output_frame: str = "world"
     default_jaw_width: float = 0.08
+    quality_threshold: float = 0.90
+    width_filter_min_voxels: float = 1.33
+    width_filter_max_voxels: float = 9.33
+    filter_candidates_to_target_bounds: bool = True
     min_score: float = 0.0
     auto_generate_on_tsdf: bool = False
     auto_generate_min_interval: float = 1.0
@@ -177,7 +181,11 @@ class VGNGraspGenModule(Module):
         result = self._generate_grasps_from_tsdf(masked_tsdf)
         if result is None:
             return None
-        filtered = self._filter_candidates_to_bounds(result, bounds, cushion_m)
+        filtered = (
+            self._filter_candidates_to_bounds(result, bounds, cushion_m)
+            if self.config.filter_candidates_to_target_bounds
+            else result
+        )
         self.grasp_candidates.publish(filtered)
         self.grasp_poses.publish(filtered.to_pose_array())
         return filtered
@@ -249,7 +257,12 @@ class VGNGraspGenModule(Module):
                     "VGN ROS visualization dependency %s is unavailable; using headless VGN detector",
                     exc.name,
                 )
-                self._detector = _HeadlessVGNDetector(model_path)
+                self._detector = _HeadlessVGNDetector(
+                    model_path,
+                    quality_threshold=self.config.quality_threshold,
+                    width_filter_min_voxels=self.config.width_filter_min_voxels,
+                    width_filter_max_voxels=self.config.width_filter_max_voxels,
+                )
         return self._detector
 
     def _resolve_model_path(self) -> str:
@@ -393,13 +406,23 @@ class VGNGraspGenModule(Module):
 class _HeadlessVGNDetector:
     """Run pinned VGN inference without importing ROS-backed `vgn.vis`."""
 
-    def __init__(self, model_path: str) -> None:
+    def __init__(
+        self,
+        model_path: str,
+        *,
+        quality_threshold: float = 0.90,
+        width_filter_min_voxels: float = 1.33,
+        width_filter_max_voxels: float = 9.33,
+    ) -> None:
         import torch  # type: ignore[import-not-found]
         from vgn.networks import get_network  # type: ignore[import-not-found]
 
         self._torch = torch
         self._device = _select_torch_device(torch)
         self._net = _load_vgn_network(torch, get_network, Path(model_path), self._device)
+        self._quality_threshold = quality_threshold
+        self._width_filter_min_voxels = width_filter_min_voxels
+        self._width_filter_max_voxels = width_filter_max_voxels
         logger.info("Loaded headless VGN detector", device=str(self._device))
 
     def __call__(self, state: _VGNState) -> tuple[Sequence[object], Sequence[float], float]:
@@ -423,9 +446,21 @@ class _HeadlessVGNDetector:
             mask=np.logical_not(inside_voxels),
         )
         quality_volume[np.logical_not(valid_voxels)] = 0.0
-        quality_volume[np.logical_or(width_volume < 1.33, width_volume > 9.33)] = 0.0
+        quality_volume[
+            np.logical_or(
+                width_volume < self._width_filter_min_voxels,
+                width_volume > self._width_filter_max_voxels,
+            )
+        ] = 0.0
 
-        quality_volume[quality_volume < 0.90] = 0.0
+        logger.info(
+            "VGN quality stats before threshold",
+            max_quality=float(quality_volume.max()) if quality_volume.size else 0.0,
+            threshold=self._quality_threshold,
+            width_min=float(width_volume.min()) if width_volume.size else 0.0,
+            width_max=float(width_volume.max()) if width_volume.size else 0.0,
+        )
+        quality_volume[quality_volume < self._quality_threshold] = 0.0
         max_volume = ndimage.maximum_filter(quality_volume, size=4)
         quality_volume = np.where(quality_volume == max_volume, quality_volume, 0.0)
 

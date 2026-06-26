@@ -104,11 +104,15 @@ vgn_mujoco_grasp_demo = autoconnect(
     ),
     VGNGraspGenModule.blueprint(
         output_frame="world",
+        quality_threshold=0.05,
+        width_filter_min_voxels=0.0,
+        width_filter_max_voxels=1000.0,
+        filter_candidates_to_target_bounds=True,
         auto_generate_on_tsdf=False,
         debug_export_dir="/tmp/opencode/dimos-vgn-tsdf-debug",
     ),
     GraspingModule.blueprint(),
-    TargetGraspDemoController.blueprint(target_name="orange"),
+    TargetGraspDemoController.blueprint(target_name="sphere", cushion_m=0.2),
     RerunBridgeModule.blueprint(),
 ).remappings(
     [

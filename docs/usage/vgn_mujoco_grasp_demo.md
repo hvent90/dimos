@@ -31,6 +31,6 @@ The default target prompt/name is `orange`, the sphere near the workspace center
 
 The TSDF visualizations are diagnostic voxel views, not watertight meshes. `world/tsdf_surface` and `world/target_masked_tsdf` render near-surface TSDF voxels as points. They can look blocky at the demo resolution, and the masked TSDF is expected to look cropped because voxels outside the cushioned target bounds are suppressed before VGN inference.
 
-For offline inspection, the demo writes TSDF debug artifacts to `/tmp/opencode/dimos-vgn-tsdf-debug/` whenever target-conditioned generation runs. Each run exports raw `.npz` grids plus Open3D-readable `.ply` point clouds for near-surface voxels and observed voxels, for both the full TSDF and target-masked TSDF.
+For offline inspection, the demo writes TSDF debug artifacts to `/tmp/opencode/dimos-vgn-tsdf-debug/` whenever target-conditioned generation runs. Each run exports raw `.npz` grids, Open3D-readable `.ply` point clouds for near-surface and observed voxels, `.png` slice/projection summaries, and `.json` count/stat summaries for both the full TSDF and target-masked TSDF. The near-surface views use normalized TSDF values with `abs(distance) <= 0.1`; they are diagnostic zero-crossing bands, not metric-distance meshes.
 
 If no checkpoint path is set, the VGN module starts but reports a clear `DIMOS_VGN_MODEL_PATH` requirement when target-conditioned grasp generation runs.

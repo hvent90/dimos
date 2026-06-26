@@ -42,6 +42,8 @@ def test_export_tsdf_debug_files_writes_raw_grid_and_open3d_pointclouds(tmp_path
         "target_masked_tsdf.npz",
         "target_masked_tsdf_near_surface.ply",
         "target_masked_tsdf_observed.ply",
+        "target_masked_tsdf_slices.png",
+        "target_masked_tsdf_summary.json",
     }
     with np.load(tmp_path / "target_masked_tsdf.npz", allow_pickle=False) as data:
         np.testing.assert_array_equal(data["distances"], distances)
@@ -53,3 +55,6 @@ def test_export_tsdf_debug_files_writes_raw_grid_and_open3d_pointclouds(tmp_path
     observed = o3d.io.read_point_cloud(str(tmp_path / "target_masked_tsdf_observed.ply"))
     assert len(near_surface.points) == 1
     assert len(observed.points) == 2
+    assert (tmp_path / "target_masked_tsdf_slices.png").stat().st_size > 0
+    assert '"observed_voxels": 2' in (tmp_path / "target_masked_tsdf_summary.json").read_text()
+    assert '"surface_voxels": 1' in (tmp_path / "target_masked_tsdf_summary.json").read_text()

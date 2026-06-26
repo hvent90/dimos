@@ -65,8 +65,12 @@ def test_vgn_mujoco_grasp_demo_uses_target_controller_not_workspace_auto_generat
     )
 
     assert grasp_atom.kwargs["auto_generate_on_tsdf"] is False
+    assert grasp_atom.kwargs["quality_threshold"] == 0.05
+    assert grasp_atom.kwargs["width_filter_max_voxels"] == 1000.0
+    assert grasp_atom.kwargs["filter_candidates_to_target_bounds"] is True
     assert grasp_atom.kwargs["debug_export_dir"] == "/tmp/opencode/dimos-vgn-tsdf-debug"
-    assert controller_atom.kwargs["target_name"] == "orange"
+    assert controller_atom.kwargs["target_name"] == "sphere"
+    assert controller_atom.kwargs["cushion_m"] == 0.2
     assert grasp_atom.kwargs.get("auto_generate_on_tsdf") is False
     assert reconstruction_atom.kwargs["workspace_center"] == (0.45, 0.0, 0.18)
     assert reconstruction_atom.kwargs["resolution"] == 40
@@ -74,6 +78,7 @@ def test_vgn_mujoco_grasp_demo_uses_target_controller_not_workspace_auto_generat
     sim_atom = next(
         atom for atom in vgn_mujoco_grasp_demo.blueprints if atom.module is MujocoSimModule
     )
+    assert sim_atom.kwargs["headless"] is False
     assert sim_atom.kwargs["initial_joint_positions"] == [
         0.0,
         -0.247,

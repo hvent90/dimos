@@ -90,8 +90,10 @@ def test_tsdf_grid_rejects_invalid_shape() -> None:
 def test_tsdf_grid_to_rerun_filters_unobserved_surface_voxels() -> None:
     distances = np.ones((1, 2, 2, 2), dtype=np.float32)
     distances[0, 0, 0, 0] = 0.0
+    distances[0, 0, 1, 1] = 0.08
     distances[0, 1, 1, 1] = 0.0
     weights = np.zeros((2, 2, 2), dtype=np.float32)
+    weights[0, 1, 1] = 1.0
     weights[1, 1, 1] = 1.0
     grid = TSDFGrid(
         distances=distances,
@@ -105,7 +107,7 @@ def test_tsdf_grid_to_rerun_filters_unobserved_surface_voxels() -> None:
 
     assert isinstance(archetype, rr.Points3D)
     points = cast("rr.Points3D", archetype)
-    assert len(points.positions.as_arrow_array().to_pylist()) == 1
+    assert len(points.positions.as_arrow_array().to_pylist()) == 2
 
 
 def test_reconstruction_status_lcm_round_trip() -> None:

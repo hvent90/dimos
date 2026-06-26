@@ -24,6 +24,8 @@ import numpy as np
 from dimos.msgs.geometry_msgs.Vector3 import Vector3
 from dimos.types.timestamped import Timestamped
 
+DEFAULT_RERUN_SURFACE_LEVEL = 0.1
+
 
 class TSDFGrid(Timestamped):
     """Dense TSDF grid with min-corner origin semantics.
@@ -130,7 +132,7 @@ class TSDFGrid(Timestamped):
         import rerun as rr  # type: ignore[import-not-found]
 
         field = self.distances[0]
-        surface_mask = np.abs(field) <= self.voxel_size
+        surface_mask = np.abs(field) <= DEFAULT_RERUN_SURFACE_LEVEL
         if self.weights is not None:
             weights = self.weights[0] if self.weights.ndim == 4 else self.weights
             surface_mask = np.logical_and(surface_mask, weights > 0.0)
@@ -143,7 +145,7 @@ class TSDFGrid(Timestamped):
 
         origin = np.array([self.origin.x, self.origin.y, self.origin.z], dtype=np.float32)
         points = origin + surface.astype(np.float32) * np.float32(self.voxel_size)
-        values = np.clip(np.abs(field[tuple(surface.T)]) / self.truncation_distance, 0.0, 1.0)
+        values = np.clip(np.abs(field[tuple(surface.T)]), 0.0, 1.0)
         colors = np.stack(
             [
                 (255.0 * (1.0 - values)).astype(np.uint8),
