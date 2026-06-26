@@ -1,4 +1,8 @@
-## ADDED Requirements
+## Purpose
+
+Define script-based runtime sidecar demos that validate protocol, motor-control, observation, visualization, artifact, and teardown plumbing without adding a new DimOS CLI command or requiring agent task success.
+
+## Requirements
 
 ### Requirement: Fake sidecar smoke demo
 The system SHALL include a script-based fake sidecar smoke demo that validates protocol handshake, prelaunch orchestration, resolved runtime plan generation, local motor bridge behavior, ControlCoordinator integration, and artifact output without requiring Robosuite.
@@ -25,6 +29,14 @@ The system SHALL include a script-based Robosuite Panda Lift plumbing demo that 
 #### Scenario: Robosuite observation stream is exported
 - **WHEN** the Robosuite demo enables a camera observation stream
 - **THEN** DimOS-side artifacts or logs show that at least one observation frame was received from the sidecar and published or recorded by the runtime client
+
+#### Scenario: Robosuite camera appears in Rerun through DimOS streams
+- **WHEN** a developer runs the Robosuite demo with Rerun stream visualization enabled
+- **THEN** the demo fetches referenced `.npy` camera payloads, applies the declared image convention, publishes `color_image` and `camera_info` through DimOS streams, and Rerun displays the camera image through its normal stream bridge rather than through direct Rerun SDK logging at the runtime boundary
+
+#### Scenario: Rerun demo stream is isolated and bounded
+- **WHEN** a developer runs the Robosuite demo with Rerun stream visualization enabled repeatedly or alongside other DimOS publishers
+- **THEN** the demo uses isolated Rerun and local DimOS transport settings for its visualization path and applies a bounded Rerun memory limit so old recordings or unrelated camera topics do not mix with the demo stream
 
 ### Requirement: No agent success requirement
 The scripted demos SHALL verify runtime plumbing and MUST NOT require an LLM, MCP skill policy, or successful task completion by an agent.

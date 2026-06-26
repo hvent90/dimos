@@ -37,7 +37,7 @@ The Robosuite sidecar SHALL expose configured Robosuite camera and state observa
 
 #### Scenario: Agentview camera is available
 - **WHEN** the episode config enables the `agentview` camera
-- **THEN** step responses include observation frames that allow DimOS to publish the camera output as a stream
+- **THEN** step responses include observation frames with `.npy` payload references that allow DimOS to fetch and publish the camera output as a stream
 
 ### Requirement: Score and artifact export
 The Robosuite sidecar SHALL provide score and artifact outputs for each episode, including reward/done/success metadata, backend timing, and sidecar logs or trace summaries.

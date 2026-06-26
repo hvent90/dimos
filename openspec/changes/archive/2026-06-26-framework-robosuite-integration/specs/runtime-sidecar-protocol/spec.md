@@ -40,6 +40,10 @@ The runtime protocol SHALL support image, depth, segmentation, and object/state 
 - **WHEN** a sidecar returns an RGB image observation
 - **THEN** the observation frame includes stream name, kind, encoding, shape, dtype, and either a binary payload reference or a supported binary payload representation
 
+#### Scenario: Referenced array payload is fetched separately
+- **WHEN** an observation frame reports a raw array payload reference
+- **THEN** the DimOS runtime client can fetch the referenced `.npy` bytes without embedding image arrays in the JSON step response
+
 ### Requirement: Backend-neutral protocol types
 Runtime protocol models MUST NOT expose Robosuite, LIBERO-PRO, OmniGibson, DimOS hardware adapter, or simulator object types in public fields.
 

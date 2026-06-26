@@ -21,8 +21,8 @@ build-backend = "setuptools.build_meta"
 include-package-data = false
 
 [tool.setuptools.packages.find]
-where = ["."]
-include = ["dimos*"]
+where = [".", "packages/dimos-runtime-protocol/src"]
+include = ["dimos*", "dimos_runtime_protocol*"]
 # Web frontends / vendored node_modules: not part of the Python runtime
 # (MANIFEST.in already prunes these from the sdist; this keeps their stray
 # .py modules out of the wheel too).
@@ -136,7 +136,6 @@ dependencies = [
     # DimSim scene client (dimos/simulation/dimsim/scene_client.py) imports `websocket`
     # at module load; DimSim is a non-extra-gated robot connection backend.
     "websocket-client>=1.8",
-    "roboplan[manipulation]>=0.0.100",
 ]
 
 
@@ -238,11 +237,12 @@ unitree-dds = [
 ]
 
 manipulation = [
-    # Planning (Drake)
+    # Planning
     "drake==1.45.0; sys_platform == 'darwin' and platform_machine != 'aarch64'",
     "drake>=1.40.0; sys_platform != 'darwin' and platform_machine != 'aarch64'",
     "pin-pink>=4.2.0",
     "qpsolvers[proxqp]>=4.12.0",
+    "roboplan[manipulation]>=0.0.100",
 
     # Hardware SDKs
     "can-motor-control>=0.0.2; sys_platform == 'linux' and platform_machine == 'x86_64'",
@@ -262,6 +262,7 @@ manipulation = [
     # Other
     "matplotlib>=3.7.1",
     "pyyaml>=6.0",
+
 ]
 
 grasp = [
