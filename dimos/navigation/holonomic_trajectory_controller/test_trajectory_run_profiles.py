@@ -18,7 +18,7 @@ import math
 
 import pytest
 
-from dimos.navigation.dannav.controllers import command_envelope_overrides_for_profile
+from dimos.navigation.holonomic_trajectory_controller.holonomic_path_controller import command_envelope_overrides_for_profile
 from dimos.navigation.holonomic_trajectory_controller.trajectory_run_profiles import (
     GO2_RUN_PROFILES,
     RunProfile,

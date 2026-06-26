@@ -187,7 +187,6 @@ all_modules = {
     "gps-nav-skill-container": "dimos.agents.skills.gps_nav_skill.GpsNavSkillContainer",
     "grasping-module": "dimos.manipulation.grasping.grasping.GraspingModule",
     "gstreamer-camera-module": "dimos.hardware.sensors.camera.gstreamer.gstreamer_camera.GstreamerCameraModule",
-    "holonomic-controller": "dimos.navigation.dannav.holonomic_controller.HolonomicController",
     "hosted-arm-teleop-module": "dimos.teleop.quest_hosted.hosted_extensions.HostedArmTeleopModule",
     "hosted-teleop-module": "dimos.teleop.quest_hosted.hosted_teleop_module.HostedTeleopModule",
     "hosted-teleop-recorder": "dimos.teleop.quest_hosted.blueprints.HostedTeleopRecorder",

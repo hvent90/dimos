@@ -32,7 +32,7 @@ from dimos.msgs.nav_msgs.OccupancyGrid import OccupancyGrid
 from dimos.msgs.nav_msgs.Path import Path
 from dimos.navigation.dannav.local_planner import LocalPlanner
 from dimos.navigation.replanning_a_star.navigation_map import NavigationMap
-from dimos.navigation.dannav.path_distancer import PathDistancer
+from dimos.navigation.holonomic_trajectory_controller.path_distancer import PathDistancer
 
 
 def _yaw_quaternion(yaw_rad: float) -> Quaternion:

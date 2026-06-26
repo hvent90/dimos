@@ -31,13 +31,11 @@ from dimos.msgs.geometry_msgs.Quaternion import Quaternion
 from dimos.msgs.geometry_msgs.Twist import Twist
 from dimos.msgs.nav_msgs.OccupancyGrid import CostValues, OccupancyGrid
 from dimos.msgs.nav_msgs.Path import Path
-from dimos.navigation.dannav.controllers import (
-    HolonomicPathController,
-    make_local_path_controller,
-)
+from dimos.navigation.dannav.controllers import make_local_path_controller
 from dimos.navigation.dannav.local_planner import LocalPlanner
 from dimos.navigation.replanning_a_star.navigation_map import NavigationMap
-from dimos.navigation.dannav.path_distancer import PathDistancer
+from dimos.navigation.holonomic_trajectory_controller.holonomic_path_controller import HolonomicPathController
+from dimos.navigation.holonomic_trajectory_controller.path_distancer import PathDistancer
 from dimos.navigation.holonomic_trajectory_controller.trajectory_holonomic_tracking_controller import HolonomicTrackingController
 from dimos.navigation.holonomic_trajectory_controller.trajectory_types import TrajectoryMeasuredSample, TrajectoryReferenceSample
 from dimos.utils.trigonometry import angle_diff
