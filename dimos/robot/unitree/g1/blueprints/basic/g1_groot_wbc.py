@@ -348,8 +348,21 @@ def _select_backend() -> _BackendSelection:
         require_floating_base=True,
         model_joint_names=g1_model_joints,
         model_actuator_names=g1_model_joints,
-        imu_gyro_names=("imu-pelvis-angular-velocity", "imu-torso-angular-velocity"),
-        imu_accel_names=("imu-pelvis-linear-acceleration", "imu-torso-linear-acceleration"),
+        # ``imu-angular-velocity`` / ``imu-linear-acceleration`` are what the
+        # supermarket precomposed mjb actually ships (prefixed with ``/`` by
+        # MjSpec.attach; _candidate_names handles the prefix). The legacy
+        # pelvis/torso variants are kept for compose-path models that name
+        # them per-site.
+        imu_gyro_names=(
+            "imu-pelvis-angular-velocity",
+            "imu-torso-angular-velocity",
+            "imu-angular-velocity",
+        ),
+        imu_accel_names=(
+            "imu-pelvis-linear-acceleration",
+            "imu-torso-linear-acceleration",
+            "imu-linear-acceleration",
+        ),
         require_imu=True,
     )
 

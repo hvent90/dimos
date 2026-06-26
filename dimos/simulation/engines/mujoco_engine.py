@@ -421,11 +421,32 @@ class MujocoEngine(SimulationEngine):
             logger.error("disconnect() failed", cls=self.__class__.__name__, error=str(e))
             return False
 
+    def _camera_id(self, camera_name: str) -> int:
+        """Resolve a camera by trying its name as written and ``/``-prefixed.
+
+        Precomposed scene ``.mjb`` files (e.g. supermarket) have all bodies /
+        cameras / joints prefixed with ``/`` because ``MjSpec.attach`` walks
+        their hierarchy. Configs written for compose-time runs pass the bare
+        name (``lidar_front_camera``); without this fallback ``mj_name2id``
+        returns -1 and the camera is silently skipped, killing the lidar.
+        """
+        stripped = camera_name.strip("/")
+        candidates = [camera_name]
+        if stripped != camera_name:
+            candidates.append(stripped)
+        elif stripped:
+            candidates.append(f"/{stripped}")
+        for candidate in dict.fromkeys(candidates):
+            cam_id = mujoco.mj_name2id(self._model, mujoco.mjtObj.mjOBJ_CAMERA, candidate)
+            if cam_id >= 0:
+                return int(cam_id)
+        return -1
+
     def _init_cameras(self) -> dict[str, _CameraRendererState]:
         """Create renderers for all configured cameras"""
         cam_renderers: dict[str, _CameraRendererState] = {}
         for cfg in self._camera_configs:
-            cam_id = mujoco.mj_name2id(self._model, mujoco.mjtObj.mjOBJ_CAMERA, cfg.name)
+            cam_id = self._camera_id(cfg.name)
             if cam_id < 0:
                 logger.warning("Camera not found in MJCF, skipping", camera_name=cfg.name)
                 continue
@@ -980,7 +1001,7 @@ class MujocoEngine(SimulationEngine):
 
     def get_camera_fovy(self, camera_name: str) -> float | None:
         """Get vertical field of view for a named camera, in degrees."""
-        cam_id = mujoco.mj_name2id(self._model, mujoco.mjtObj.mjOBJ_CAMERA, camera_name)
+        cam_id = self._camera_id(camera_name)
         if cam_id < 0:
             return None
         return float(self._model.cam_fovy[cam_id])
@@ -989,7 +1010,7 @@ class MujocoEngine(SimulationEngine):
         self, camera_name: str
     ) -> tuple[NDArray[np.float64], NDArray[np.float64]] | None:
         """Get a named camera's latest world pose from MuJoCo data."""
-        cam_id = mujoco.mj_name2id(self._model, mujoco.mjtObj.mjOBJ_CAMERA, camera_name)
+        cam_id = self._camera_id(camera_name)
         if cam_id < 0:
             return None
         return self._data.cam_xpos[cam_id].copy(), self._data.cam_xmat[cam_id].copy()
