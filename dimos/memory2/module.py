@@ -371,17 +371,23 @@ class Recorder(MemoryModule):
 
         Registers the subscription as a disposable on this module.
         """
+        last_warn = 0.0
 
         def on_msg(msg: Any) -> None:
+            nonlocal last_warn
             ts = self._resolve_ts(name, msg)
             pose = self._resolve_pose(name, msg, ts)
             if not pose:
-                logger.warning(
-                    "[%s] No pose for time %s (msg ts: %s), storing without pose",
-                    name,
-                    ts,
-                    getattr(msg, "ts", None),
-                )
+                now = time.monotonic()
+                if now - last_warn > self.config.tf_warning_interval:
+                    last_warn = now
+                    logger.warning(
+                        "[%s] No pose for time %s (msg ts: %s), storing without pose\n%s",
+                        name,
+                        ts,
+                        getattr(msg, "ts", None),
+                        self.tf.tree_str,
+                    )
             stream.append(msg, ts=ts, pose=pose)
 
         self.register_disposable(Disposable(input_topic.subscribe(on_msg)))
