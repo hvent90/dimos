@@ -14,11 +14,27 @@
 
 """Demo: visualize the Odin1's onboard point cloud, image, and odometry."""
 
+from typing import Any
+
 from dimos.core.coordination.blueprints import autoconnect
 from dimos.hardware.sensors.odin1.module import Odin1
 from dimos.visualization.vis_module import vis_module
 
+
+def _cloud_1cm(pc: Any) -> Any:
+    # voxel_size/2 is the sphere radius, so 0.01 -> ~1 cm spheres.
+    return pc.to_rerun(voxel_size=0.01)
+
+
 demo_odin1 = autoconnect(
     Odin1.blueprint(),
-    vis_module("rerun"),
+    vis_module(
+        "rerun",
+        rerun_config={
+            "visual_override": {
+                "world/lidar": _cloud_1cm,
+                "world/slam_cloud": _cloud_1cm,
+            }
+        },
+    ),
 ).global_config(n_workers=2, robot_model="odin1")
