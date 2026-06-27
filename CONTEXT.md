@@ -188,6 +188,10 @@ _Avoid_: benchmark intent, user-authored task config
 The phase that starts and coordinates the simulator sidecar environment and the DimOS blueprint environment before a benchmark episode begins.
 _Avoid_: config parsing, blueprint launch, single-process startup
 
+**Runtime asset bootstrap**:
+A deliberate preparation phase that retrieves, stages, or validates external benchmark assets before a runtime sidecar starts an episode.
+_Avoid_: implicit sidecar download, startup mutation, hidden dataset setup
+
 **Remote runtime boundary**:
 The network-facing protocol boundary between a DimOS simulator client and a benchmark backend process that may run in another environment or on another machine.
 _Avoid_: shared memory boundary, hardware adapter boundary, in-process simulator object
