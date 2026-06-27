@@ -82,9 +82,11 @@ def _ensure_child_index(conn: sqlite3.Connection, stream: str) -> None:
     tagged appends); this is for migrated recordings and the read side. Requires
     the tf table to exist."""
     safe = _safe_table(stream)
+    # Composite (child_frame, ts) so a per-frame "latest at/before T" is a direct
+    # index range seek, not a scan+sort.
     conn.execute(
-        f'CREATE INDEX IF NOT EXISTS "{safe}_child_idx" '
-        f"ON \"{safe}\"(json_extract(tags, '$.child_frame'))"
+        f'CREATE INDEX IF NOT EXISTS "{safe}_child_ts_idx" '
+        f"ON \"{safe}\"(json_extract(tags, '$.child_frame'), ts)"
     )
     conn.commit()
 
@@ -299,46 +301,58 @@ class DbTf2:
         frames += target_path[: target_path.index(common)]
         return frames
 
-    def _static_transform(self, frame: str) -> Transform | None:
-        if frame in self._static_cache:
-            return self._static_cache[frame]
-        conn = self._connection()
-        row = conn.execute(
-            f"SELECT id FROM \"{self._stream}\" WHERE json_extract(tags, '$.child_frame') = ? "
-            "ORDER BY ts DESC LIMIT 1",
-            (frame,),
-        ).fetchone()
-        if row is None:
-            return None
-        transform = self._decode(int(row[0]), frame)
-        self._static_cache[frame] = transform
-        return transform
+    def _codec(self) -> Any:
+        source = self._store.stream(self._stream, TFMessage)._source
+        return cast("Any", source).codec
 
-    def _bracket_rows(self, frame: str, query_time: float) -> tuple[int | None, int | None]:
-        conn = self._connection()
-        earlier = conn.execute(
-            f"SELECT id FROM \"{self._stream}\" WHERE json_extract(tags, '$.child_frame') = ? "
-            "AND ts <= ? ORDER BY ts DESC LIMIT 1",
-            (frame, query_time),
-        ).fetchone()
-        later = conn.execute(
-            f"SELECT id FROM \"{self._stream}\" WHERE json_extract(tags, '$.child_frame') = ? "
-            "AND ts >= ? ORDER BY ts ASC LIMIT 1",
-            (frame, query_time),
-        ).fetchone()
-        return (int(earlier[0]) if earlier else None, int(later[0]) if later else None)
-
-    def _decode(self, row_id: int, frame: str) -> Transform:
-        # A row normally holds one transform (the live recorder appends one per row);
-        # pick the one for `frame` defensively in case a legacy row packs several.
-        backend: Any = self._store.stream(self._stream, TFMessage)._source
-        self.rows_fetched += 1
-        message = backend._make_loader(row_id)()
+    def _decode_blob(self, data: bytes, frame: str) -> Transform:
+        # The blob is the codec-encoded message; pick the transform for `frame`
+        # (rows normally hold one; legacy rows may pack several).
+        message = self._codec().decode(data)
         transforms = getattr(message, "transforms", None) or [message]
         for transform in transforms:
             if transform.child_frame_id == frame:
                 return cast("Transform", transform)
         return cast("Transform", transforms[0])
+
+    def _fetch_rows(
+        self, dynamic: list[str], static: list[str], query_time: float
+    ) -> dict[tuple[str, str], bytes]:
+        """ONE query: for each dynamic frame the bracketing rows ('lo' = latest at
+        or before query_time, 'hi' = earliest at or after), and for each (uncached)
+        static frame its latest row ('st') — all joined to the blob data. Keyed by
+        (frame, kind) -> blob bytes."""
+        cf = "json_extract(tags, '$.child_frame')"
+        tf, blob = f'"{self._stream}"', f'"{self._stream}_blob"'
+        # One UNION of per-frame, index-served LIMIT-1 subqueries: each is a direct
+        # (child_frame, ts) range seek — far cheaper than a window-function scan, and
+        # still a single round-trip.
+        parts: list[str] = []
+        params: list[Any] = []
+
+        def pick(frame: str, kind: str, where_ts: str, order: str) -> None:
+            parts.append(
+                f"SELECT ? AS cf, ? AS kind, "
+                f"(SELECT id FROM {tf} WHERE {cf} = ?{where_ts} ORDER BY ts {order} LIMIT 1) AS id"
+            )
+            params.extend([frame, kind, frame])
+
+        for frame in dynamic:
+            pick(frame, "lo", " AND ts <= ?", "DESC")
+            params.append(query_time)
+            pick(frame, "hi", " AND ts >= ?", "ASC")
+            params.append(query_time)
+        for frame in static:
+            pick(frame, "st", "", "DESC")
+        if not parts:
+            return {}
+        union = " UNION ALL ".join(parts)
+        sql = f"SELECT t.cf, t.kind, b.data FROM ({union}) t JOIN {blob} b ON b.id = t.id"
+        rows: dict[tuple[str, str], bytes] = {}
+        for cf_val, kind, data in self._connection().execute(sql, params):
+            rows[(cf_val, kind)] = data
+            self.rows_fetched += 1
+        return rows
 
     def get(
         self,
@@ -350,34 +364,42 @@ class DbTf2:
         self._ensure_built()
         self._load_graph_if_small()
         query_time = time_point if time_point is not None else 0.0
-        graph = self._graph_at(query_time)
+        graph = self._graph_at(query_time)  # 0 queries when the graph is in RAM
         if graph is None:
             return None
         frames = self._chain_frames(graph, source_frame, target_frame)
         if frames is None:
             return None
 
+        edges = [f for f in frames if f in graph]  # roots have no incoming edge
+        dynamic = [f for f in edges if not graph[f].get("static")]
+        static = [f for f in edges if graph[f].get("static")]
+        uncached_static = [f for f in static if f not in self._static_cache]
+
+        rows = self._fetch_rows(dynamic, uncached_static, query_time)  # ONE detail query
+
         buffer = MultiTBuffer(buffer_size=_NO_PRUNE)
-        for frame in frames:
-            if frame not in graph:
-                continue  # a root frame has no incoming edge
-            if graph[frame].get("static"):
-                transform = self._static_transform(frame)
-                if transform is None:
+        for frame in static:
+            transform = self._static_cache.get(frame)
+            if transform is None:
+                data = rows.get((frame, "st"))
+                if data is None:
                     return None
-                # restamp the constant to the query time so the buffer's tolerance
-                # (statics may have been recorded long ago) never rejects it.
-                buffer.receive_transform(_restamp(transform, query_time))
-            else:
-                earlier_id, later_id = self._bracket_rows(frame, query_time)
-                if earlier_id is None and later_id is None:
-                    return None
-                lo = earlier_id if earlier_id is not None else later_id
-                hi = later_id if later_id is not None else earlier_id
-                assert lo is not None and hi is not None  # at least one existed
-                buffer.receive_transform(self._decode(lo, frame))
-                if hi != lo:
-                    buffer.receive_transform(self._decode(hi, frame))
+                transform = self._decode_blob(data, frame)
+                self._static_cache[frame] = transform
+            # restamp the constant to query_time so the buffer's tolerance never
+            # rejects a static that was recorded long ago (latched once).
+            buffer.receive_transform(_restamp(transform, query_time))
+        for frame in dynamic:
+            lo = rows.get((frame, "lo"))
+            hi = rows.get((frame, "hi"))
+            chosen = lo if lo is not None else hi
+            if chosen is None:
+                return None
+            buffer.receive_transform(self._decode_blob(chosen, frame))
+            other = hi if hi is not None else lo
+            if other is not None and other is not chosen:
+                buffer.receive_transform(self._decode_blob(other, frame))
         return buffer.lookup(target_frame, source_frame, time_point, time_tolerance)
 
 
