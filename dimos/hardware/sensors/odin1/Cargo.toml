@@ -1,0 +1,23 @@
+[package]
+name = "odin1-module"
+version = "0.1.0"
+edition = "2021"
+
+[[bin]]
+name = "odin1_module"
+path = "src/main.rs"
+
+[dependencies]
+dimos-module = { path = "../../../../native/rust/dimos-module" }
+odin1 = { git = "https://github.com/aclauer/odin1-rs.git", branch = "main" }
+lcm-msgs = { git = "https://github.com/dimensionalOS/dimos-lcm.git", branch = "rust-codegen" }
+tokio = { version = "1", features = ["rt-multi-thread", "macros", "signal", "sync"] }
+serde = { version = "1", features = ["derive"] }
+validator = { version = "0.20", features = ["derive"] }
+jpeg-decoder = "0.3"
+tracing = "0.1"
+
+# TEMP local dev patch: use the working copy of odin1-rs (dtof mm->m fix) until
+# it is committed + pushed and the git rev bumped above. Remove after pushing.
+[patch."https://github.com/aclauer/odin1-rs.git"]
+odin1 = { path = "../../../../../odin1-rs/odin1" }
