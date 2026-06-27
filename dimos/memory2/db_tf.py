@@ -12,38 +12,37 @@
 # See the License for the specific language governing permissions and
 # limitations under the License.
 
-"""Transform lookups over the transforms recorded in a store.
+"""Transform lookups over the transforms recorded in a store (multi-robot friendly).
 
-Instead of loading every recorded transform into RAM, each tf row carries a
-small **tf tree**: a snapshot, as of that row, of the last two recorded rows per
-child frame. The tree is stored in a sibling ``<stream>_tree`` table and its
-values are tf-row ids — *keys into the tf table* — so editing a transform's pose
-in place changes what the tree resolves to.
+Two pieces of recorded state, written by the recorder:
 
-``store.tf.get(target, source, ts)`` then: finds the tf row nearest the query
-time, reads its tree, fetches only the (<= 2 per frame) referenced rows, and
-composes/interpolates the chain through a small :class:`MultiTBuffer`. A FIFO of
-the last few lookups avoids re-querying the db for repeated identical lookups.
+* a **graph stream** (table ``tf_graph``): one row per *topology* change — i.e.
+  whenever the set of frames or any frame's parent / static-ness changes. Each row
+  is the full structure at that instant: ``{child_frame: {parent, static}}``.
+  Topology changes rarely (a robot joins/leaves, a relocalization re-parents), so
+  this table is tiny and naturally supports time-varying / multi-robot trees.
+* the ``tf`` stream, with each row tagged by its ``child_frame`` (an indexed json
+  tag) so a frame's samples can be range-queried by time.
 
-NOTE — retro-correction caveat: because a tree's edges are keys to *existing*
-rows, the right way to correct history (e.g. after a loop closure) is to EDIT the
-existing tf rows' poses in place — already-built trees pick that up for free.
-Inserting NEW corrective tf messages does NOT work: trees built before the
-insertion still point at the old rows and never see the new ones. (Re-running the
-recompute below would rebuild trees to include them, but in-place edits are the
-intended path.)
+``store.tf.get(target, source, ts)`` then: reads the graph as-of the query time
+(from RAM if there are few graph changes, else one query), walks it to the
+source->target chain (in memory; the graph may be DISJOINT for unrelated robots),
+and resolves *only* that chain's frames — a static frame is one cached constant, a
+dynamic frame is its two bracketing samples, interpolated. Composition +
+interpolation reuse :class:`MultiTBuffer`. Non-sqlite stores fall back to loading
+the tf streams into a buffer.
 
 ``write_tf_tree`` populates the tf stream for a recording that lacks one.
 """
 
 from __future__ import annotations
 
-from collections import OrderedDict
+import bisect
 import json
 import re
 import sqlite3
 import threading
-from typing import TYPE_CHECKING, Any
+from typing import TYPE_CHECKING, Any, cast
 
 import numpy as np
 
@@ -60,16 +59,16 @@ if TYPE_CHECKING:
 
 logger = setup_logger()
 
-# The unified tf stream the tree is built over. The recorder folds both the
-# dynamic (`tf`) and static (`static_tf`) topics into this one stream/table so the
-# tree's row-id keys are unambiguous (static is treated the same as dynamic).
 DEFAULT_TF_STREAM = "tf"
+GRAPH_TABLE = "tf_graph"
 # Streams the RAM fallback (non-sqlite stores) reads.
 TF_STREAMS = ("tf", "tf_static")
+# If a recording has fewer than this many topology changes, load them all into RAM
+# so a lookup needs no graph query (the common single-robot / stable-tree case).
+# At or above it, fall back to one graph query per lookup (many-robot churn).
+DEFAULT_MAX_GRAPH_CHANGES_IN_RAM = 20
 # Larger than any single recording's span so the fallback buffer never prunes.
 _NO_PRUNE = 1.0e15
-# Last-N identical lookups cached to avoid re-querying the db.
-_LOOKUP_CACHE_SIZE = 20
 # SQLite can't parameterize table names, so caller-supplied stream names are
 # interpolated; allow only safe identifiers to keep that injection-free.
 _SAFE_TABLE = re.compile(r"^[A-Za-z_][A-Za-z0-9_]*$")
@@ -83,230 +82,170 @@ def _safe_table(name: str) -> str:
 
 def _connect(db_path: str) -> sqlite3.Connection:
     """A connection that waits on the WAL write-lock instead of erroring — the
-    store keeps its own connection to the same db open while we read/write trees."""
+    store keeps its own connection to the same db open while we read/write."""
     conn = sqlite3.connect(db_path, check_same_thread=False)
     conn.execute("PRAGMA busy_timeout=5000")
     return conn
 
 
-def _advance(latest: dict[str, list[int]], child_frame: str, tf_id: int) -> None:
-    """Push ``tf_id`` as the newest reference for ``child_frame``, keeping <= 2."""
-    refs = latest.get(child_frame)
-    if refs is None:
-        latest[child_frame] = [tf_id]
-    else:
-        refs.append(tf_id)
-        if len(refs) > 2:
-            del refs[0]
+def _graph_table(stream: str) -> str:
+    return f"{_safe_table(stream)}_graph"
 
 
-class TfTreeWriter:
-    """Builds tf trees incrementally as rows are appended (used by the recorder).
-
-    Holds the running ``{child_frame: [older_id, newer_id]}`` state and, after each
-    tf row is appended, writes that row's full tree snapshot to ``<stream>_tree``.
-    """
-
-    def __init__(self, db_path: str, stream: str = DEFAULT_TF_STREAM) -> None:
-        self._stream = _safe_table(stream)
-        self._conn = _connect(db_path)
-        self._lock = threading.Lock()
-        self._latest: dict[str, list[int]] = {}
-        ensure_tree_table(self._conn, self._stream)
-
-    def record(self, child_frame: str, tf_id: int) -> None:
-        """Record that tf row ``tf_id`` holds the latest ``child_frame`` edge."""
-        with self._lock:
-            _advance(self._latest, child_frame, tf_id)
-            snapshot = json.dumps(self._latest)
-            self._conn.execute(
-                f'INSERT OR REPLACE INTO "{self._stream}_tree" (tf_id, tree) VALUES (?, ?)',
-                (tf_id, snapshot),
-            )
-            self._conn.commit()
-
-    def close(self) -> None:
-        with self._lock:
-            self._conn.close()
-
-
-def ensure_tree_table(conn: sqlite3.Connection, stream: str) -> None:
+def ensure_graph_table(conn: sqlite3.Connection, stream: str) -> None:
+    """Create the topology change-log table (safe to call before the tf table
+    exists — it doesn't touch the tf table)."""
+    table = _graph_table(stream)
     conn.execute(
-        f'CREATE TABLE IF NOT EXISTS "{_safe_table(stream)}_tree" '
-        "(tf_id INTEGER PRIMARY KEY, tree TEXT NOT NULL)"
+        f'CREATE TABLE IF NOT EXISTS "{table}" '
+        "(id INTEGER PRIMARY KEY AUTOINCREMENT, ts REAL NOT NULL, structure TEXT NOT NULL)"
     )
-    # Speeds up the nearest-row lookup in get(); harmless if it already exists.
+    conn.execute(f'CREATE INDEX IF NOT EXISTS "{table}_ts_idx" ON "{table}"(ts)')
+    conn.commit()
+
+
+def _ensure_child_index(conn: sqlite3.Connection, stream: str) -> None:
+    """Index the child_frame json tag on the tf rows so per-frame time queries
+    seek. The live recorder gets this for free (the store auto-indexes tag keys on
+    tagged appends); this is for migrated recordings and the read side. Requires
+    the tf table to exist."""
+    safe = _safe_table(stream)
+    # Composite (child_frame, ts) so a per-frame "latest at/before T" is a direct
+    # index range seek, not a scan+sort.
     conn.execute(
-        f'CREATE INDEX IF NOT EXISTS "{_safe_table(stream)}_ts_idx" ON "{_safe_table(stream)}"(ts)'
+        f'CREATE INDEX IF NOT EXISTS "{safe}_child_ts_idx" '
+        f"ON \"{safe}\"(json_extract(tags, '$.child_frame'), ts)"
     )
     conn.commit()
 
 
-def recompute_trees(store: Store, stream: str = DEFAULT_TF_STREAM) -> int:
-    """(Re)build every tf row's tree in chronological order, writing it back.
+class TfGraphWriter:
+    """Recorder helper: tracks the running topology and appends a ``tf_graph`` row
+    only when the structure changes."""
 
-    Iterates the whole stream once — the expensive, one-time cost of adopting a
-    recording that predates trees. Returns the number of tf rows given a tree.
-    """
+    def __init__(self, db_path: str, stream: str = DEFAULT_TF_STREAM) -> None:
+        self._stream = _safe_table(stream)
+        self._table = _graph_table(stream)
+        self._conn = _connect(db_path)
+        self._structure: dict[str, dict[str, Any]] = {}
+        ensure_graph_table(self._conn, self._stream)
+
+    def record(self, child_frame: str, parent_frame: str, is_static: bool, ts: float) -> None:
+        entry = {"parent": parent_frame, "static": bool(is_static)}
+        if self._structure.get(child_frame) == entry:
+            return  # no structural change -> no new graph row
+        self._structure[child_frame] = entry
+        self._conn.execute(
+            f'INSERT INTO "{self._table}" (ts, structure) VALUES (?, ?)',
+            (ts, json.dumps(self._structure)),
+        )
+        self._conn.commit()
+
+    def close(self) -> None:
+        self._conn.close()
+
+
+def build_graph_stream(store: Store, stream: str = DEFAULT_TF_STREAM) -> int:
+    """One-time migration for a recording that predates the graph stream: tag every
+    tf row with its ``child_frame`` and build ``tf_graph`` chronologically. A frame
+    is treated as static if its pose never changes across the recording. Returns the
+    number of topology-change rows written."""
     config = store.config
     if not isinstance(config, SqliteStoreConfig):
-        raise TypeError("recompute_trees needs a SqliteStore")
+        raise TypeError("build_graph_stream needs a SqliteStore")
+    table = _graph_table(stream)
+    safe = _safe_table(stream)
+
+    # one decode pass: collect (id, ts, child, parent, pose-key) per row
+    rows: list[tuple[int, float, str, str, tuple[float, ...]]] = []
+    poses_per_child: dict[str, set[tuple[float, ...]]] = {}
+    for obs in store.stream(safe, TFMessage).order_by("ts"):
+        for transform in getattr(obs.data, "transforms", None) or [obs.data]:
+            pose_key = (
+                round(transform.translation.x, 9),
+                round(transform.translation.y, 9),
+                round(transform.translation.z, 9),
+                round(transform.rotation.x, 9),
+                round(transform.rotation.y, 9),
+                round(transform.rotation.z, 9),
+                round(transform.rotation.w, 9),
+            )
+            rows.append((obs.id, obs.ts, transform.child_frame_id, transform.frame_id, pose_key))
+            poses_per_child.setdefault(transform.child_frame_id, set()).add(pose_key)
+    static_frames = {child for child, poses in poses_per_child.items() if len(poses) == 1}
+
     conn = _connect(config.path)
     try:
-        ensure_tree_table(conn, stream)
-        conn.execute(f'DELETE FROM "{_safe_table(stream)}_tree"')
-        latest: dict[str, list[int]] = {}
-        rows: list[tuple[int, str]] = []
-        for observation in store.stream(stream, TFMessage).order_by("ts"):
-            transforms = getattr(observation.data, "transforms", None) or [observation.data]
-            for transform in transforms:
-                _advance(latest, transform.child_frame_id, observation.id)
-            rows.append((observation.id, json.dumps(latest)))
-        conn.executemany(
-            f'INSERT OR REPLACE INTO "{_safe_table(stream)}_tree" (tf_id, tree) VALUES (?, ?)',
-            rows,
-        )
+        ensure_graph_table(conn, safe)
+        conn.execute(f'DELETE FROM "{table}"')
+        # tag each tf row with its child_frame (json_set keeps any existing tags)
+        for row_id, _ts, child, _parent, _pose in rows:
+            conn.execute(
+                f"UPDATE \"{safe}\" SET tags = json_set(tags, '$.child_frame', ?) WHERE id = ?",
+                (child, row_id),
+            )
+        _ensure_child_index(conn, safe)
+        # build the topology change-log
+        structure: dict[str, dict[str, Any]] = {}
+        written = 0
+        for _row_id, ts, child, parent, _pose in rows:
+            entry = {"parent": parent, "static": child in static_frames}
+            if structure.get(child) == entry:
+                continue
+            structure[child] = entry
+            conn.execute(
+                f'INSERT INTO "{table}" (ts, structure) VALUES (?, ?)', (ts, json.dumps(structure))
+            )
+            written += 1
         conn.commit()
-        return len(rows)
+        return written
     finally:
         conn.close()
 
 
 class DbTf:
-    """Transform lookups backed by a store's tf stream + per-row tf trees."""
+    """Transform lookups backed by a store's recorded transforms.
+
+    On a SQLite store this uses the graph stream + an in-RAM graph cache; other
+    stores fall back to loading the tf streams into a :class:`MultiTBuffer`. Surface
+    is ``get(target, source, time_point, time_tolerance)`` / ``has_transforms()``.
+    """
 
     def __init__(
         self,
         store: Store,
         stream: str = DEFAULT_TF_STREAM,
+        max_graph_changes_in_ram: int = DEFAULT_MAX_GRAPH_CHANGES_IN_RAM,
         stream_names: tuple[str, ...] = TF_STREAMS,
-        cache_size: int = _LOOKUP_CACHE_SIZE,
     ) -> None:
         self._store = store
         self._stream = _safe_table(stream)
+        self._table = _graph_table(stream)
+        self._max_in_ram = max_graph_changes_in_ram
         self._stream_names = stream_names  # RAM fallback only
-        self._cache_size = cache_size
         self._lock = threading.Lock()
         self._conn: sqlite3.Connection | None = None
-        self._trees_ready = False
-        self._cache: OrderedDict[tuple[str, str, float | None, float | None], Transform | None] = (
-            OrderedDict()
-        )
-        # Instrumentation: number of tf rows decoded out of the db by get() (for
-        # the "no full load" test). The whole-table recompute is not counted.
+        self._built = False
+        # graph cache: either the whole change-log in RAM, or None (query per lookup)
+        self._graph_in_ram: list[tuple[float, dict[str, Any]]] | None = None
+        self._graph_loaded = False
+        self._static_cache: dict[str, Transform] = {}
+        self._buffer: MultiTBuffer | None = None  # RAM fallback (non-sqlite)
         self.rows_fetched = 0
-        # RAM fallback for non-sqlite stores.
-        self._buffer: MultiTBuffer | None = None
-
-    # --- sqlite path -----------------------------------------------------------
+        self.graph_queries = 0
 
     @property
     def _is_sqlite(self) -> bool:
         return isinstance(self._store.config, SqliteStoreConfig)
 
     def _connection(self) -> sqlite3.Connection:
-        if self._conn is None:
+        conn = self._conn
+        if conn is None:
             config = self._store.config
             assert isinstance(config, SqliteStoreConfig)  # guarded by _is_sqlite
-            self._conn = _connect(config.path)
-        return self._conn
-
-    def _ensure_trees(self) -> None:
-        """Make sure every tf row has a tree; recompute (loudly) if not."""
-        if self._trees_ready:
-            return
-        conn = self._connection()
-        ensure_tree_table(conn, self._stream)
-        (n_rows,) = conn.execute(f'SELECT count(*) FROM "{self._stream}"').fetchone()
-        (n_trees,) = conn.execute(f'SELECT count(*) FROM "{self._stream}_tree"').fetchone()
-        if n_rows and n_trees < n_rows:
-            logger.warning(
-                "\n"
-                "========================================================================\n"
-                "  tf tree MISSING for stream %r (%d/%d rows have a tree).\n"
-                "  Computing tf trees over the whole recording (one-time, chronological,\n"
-                "  written back to the db). This can take a moment on large recordings.\n"
-                "========================================================================",
-                self._stream,
-                n_trees,
-                n_rows,
-            )
-            built = recompute_trees(self._store, self._stream)
-            logger.warning("tf tree computed for %d rows of stream %r.", built, self._stream)
-        self._trees_ready = True
-
-    def _fetch_transforms(self, ids: list[int]) -> list[Transform]:
-        """Decode the given tf-row ids into transforms in a single batched query
-        (frames live in the blob, so we decode each via the stream's codec)."""
-        if not ids:
-            return []
-        backend: Any = self._store.stream(self._stream, TFMessage)._source
-        codec = backend.codec
-        placeholders = ",".join("?" * len(ids))
-        rows = (
-            self._connection()
-            .execute(f'SELECT data FROM "{self._stream}_blob" WHERE id IN ({placeholders})', ids)
-            .fetchall()
-        )
-        transforms: list[Transform] = []
-        for (data,) in rows:
-            message = codec.decode(data)
-            transforms.extend(getattr(message, "transforms", None) or [message])
-        self.rows_fetched += len(rows)
-        return transforms
-
-    def _anchor_tree(self, conn: sqlite3.Connection, time_point: float | None) -> str | None:
-        """The tree JSON of the anchor row, in one query: the first row with
-        ts >= query (so its own edge brackets the query for interpolation); else
-        the last row. Joins ``<stream>_tree`` to ``<stream>`` so it's a single hit."""
-        tree = f'"{self._stream}_tree"'
-        stream = f'"{self._stream}"'
-        last = f"SELECT t.tree FROM {tree} t JOIN {stream} s ON s.id = t.tf_id ORDER BY s.ts DESC LIMIT 1"
-        if time_point is None:
-            row = conn.execute(last).fetchone()
-            return str(row[0]) if row else None
-        row = conn.execute(
-            f"SELECT t.tree FROM {tree} t JOIN {stream} s ON s.id = t.tf_id "
-            "WHERE s.ts >= ? ORDER BY s.ts ASC LIMIT 1",
-            (time_point,),
-        ).fetchone()
-        if row is not None:
-            return str(row[0])
-        row = conn.execute(last).fetchone()
-        return str(row[0]) if row else None
-
-    def _get_sqlite(
-        self,
-        target_frame: str,
-        source_frame: str,
-        time_point: float | None,
-        time_tolerance: float | None,
-    ) -> Transform | None:
-        key = (target_frame, source_frame, time_point, time_tolerance)
-        with self._lock:
-            if key in self._cache:
-                self._cache.move_to_end(key)
-                return self._cache[key]
-        self._ensure_trees()
-        conn = self._connection()
-        tree_json = self._anchor_tree(conn, time_point)  # query 1: anchor + tree
-        result: Transform | None = None
-        if tree_json is not None:
-            tree: dict[str, list[int]] = json.loads(tree_json)
-            ids = sorted({tf_id for refs in tree.values() for tf_id in refs})
-            # query 2: only the <=2-per-frame referenced rows, batched — never the
-            # whole table. MultiTBuffer composes the chain + interpolates.
-            buffer = MultiTBuffer(buffer_size=_NO_PRUNE)
-            transforms = self._fetch_transforms(ids)
-            if transforms:
-                buffer.receive_transform(*transforms)
-                result = buffer.lookup(target_frame, source_frame, time_point, time_tolerance)
-        with self._lock:
-            self._cache[key] = result
-            self._cache.move_to_end(key)
-            while len(self._cache) > self._cache_size:
-                self._cache.popitem(last=False)
-        return result
+            conn = _connect(config.path)
+            self._conn = conn
+        return conn
 
     # --- RAM fallback (non-sqlite stores) --------------------------------------
 
@@ -327,7 +266,7 @@ class DbTf:
             self._buffer = buffer
             return buffer
 
-    # --- public API ------------------------------------------------------------
+    # --- graph stream (sqlite) -------------------------------------------------
 
     def has_transforms(self) -> bool:
         if not self._is_sqlite:
@@ -338,6 +277,143 @@ class DbTf:
         (n_rows,) = conn.execute(f'SELECT count(*) FROM "{self._stream}"').fetchone()
         return bool(n_rows)
 
+    def _ensure_built(self) -> None:
+        if self._built:
+            return
+        conn = self._connection()
+        ensure_graph_table(conn, self._stream)
+        (n_graph,) = conn.execute(f'SELECT count(*) FROM "{self._table}"').fetchone()
+        (n_rows,) = conn.execute(f'SELECT count(*) FROM "{self._stream}"').fetchone()
+        if n_rows and n_graph == 0:
+            logger.warning(
+                "\n========================================================================\n"
+                "  tf graph stream MISSING for %r. Building it (one-time): tagging tf rows\n"
+                "  with child_frame and writing the topology change-log.\n"
+                "========================================================================",
+                self._stream,
+            )
+            built = build_graph_stream(self._store, self._stream)
+            logger.warning("tf graph built: %d topology changes for %r.", built, self._stream)
+        if n_rows:
+            _ensure_child_index(conn, self._stream)  # tf table exists now
+        self._built = True
+
+    def _load_graph_if_small(self) -> None:
+        if self._graph_loaded:
+            return
+        conn = self._connection()
+        (n_graph,) = conn.execute(f'SELECT count(*) FROM "{self._table}"').fetchone()
+        if n_graph < self._max_in_ram:
+            self._graph_in_ram = [
+                (ts, json.loads(structure))
+                for ts, structure in conn.execute(
+                    f'SELECT ts, structure FROM "{self._table}" ORDER BY ts ASC'
+                )
+            ]
+        else:
+            self._graph_in_ram = None  # too many -> query per lookup
+        self._graph_loaded = True
+
+    def _graph_at(self, query_time: float) -> dict[str, Any] | None:
+        if self._graph_in_ram is not None:
+            # in-RAM: binary search the latest change at-or-before query_time
+            stamps = [ts for ts, _ in self._graph_in_ram]
+            index = bisect.bisect_right(stamps, query_time) - 1
+            if index < 0:
+                return self._graph_in_ram[0][1]  # before first -> earliest
+            return self._graph_in_ram[index][1]
+        # fallback: one query
+        self.graph_queries += 1
+        conn = self._connection()
+        row = conn.execute(
+            f'SELECT structure FROM "{self._table}" WHERE ts <= ? ORDER BY ts DESC LIMIT 1',
+            (query_time,),
+        ).fetchone()
+        if row is None:
+            row = conn.execute(
+                f'SELECT structure FROM "{self._table}" ORDER BY ts ASC LIMIT 1'
+            ).fetchone()
+        return json.loads(row[0]) if row else None
+
+    def _chain_frames(self, graph: dict[str, Any], source: str, target: str) -> list[str] | None:
+        def to_root(frame: str) -> list[str]:
+            path = [frame]
+            seen = {frame}
+            while (
+                frame in graph
+                and graph[frame].get("parent") in graph
+                and graph[frame]["parent"] not in seen
+            ):
+                frame = graph[frame]["parent"]
+                path.append(frame)
+                seen.add(frame)
+            # include a final parent that is itself a root (not a key in graph)
+            if frame in graph and graph[frame].get("parent") and graph[frame]["parent"] not in seen:
+                path.append(graph[frame]["parent"])
+            return path
+
+        source_path = to_root(source)
+        target_path = to_root(target)
+        common = next((f for f in source_path if f in set(target_path)), None)
+        if common is None:
+            return None  # disjoint graph: no transform between them
+        frames = source_path[: source_path.index(common) + 1]
+        frames += target_path[: target_path.index(common)]
+        return frames
+
+    def _codec(self) -> Any:
+        source = self._store.stream(self._stream, TFMessage)._source
+        return cast("Any", source).codec
+
+    def _decode_blob(self, data: bytes, frame: str) -> Transform:
+        # The blob is the codec-encoded message; pick the transform for `frame`
+        # (rows normally hold one; legacy rows may pack several).
+        message = self._codec().decode(data)
+        transforms = getattr(message, "transforms", None) or [message]
+        for transform in transforms:
+            if transform.child_frame_id == frame:
+                return cast("Transform", transform)
+        return cast("Transform", transforms[0])
+
+    def _fetch_rows(
+        self, dynamic: list[str], static: list[str], query_time: float
+    ) -> dict[tuple[str, str], bytes]:
+        """ONE query: for each dynamic frame the bracketing rows ('lo' = latest at
+        or before query_time, 'hi' = earliest at or after), and for each (uncached)
+        static frame its latest row ('st') — all joined to the blob data. Keyed by
+        (frame, kind) -> blob bytes."""
+        cf = "json_extract(tags, '$.child_frame')"
+        tf, blob = f'"{self._stream}"', f'"{self._stream}_blob"'
+        # One UNION of per-frame, index-served LIMIT-1 subqueries: each is a direct
+        # (child_frame, ts) range seek — far cheaper than a window-function scan, and
+        # still a single round-trip.
+        parts: list[str] = []
+        params: list[Any] = []
+
+        def pick(frame: str, kind: str, where_ts: str, order: str) -> None:
+            parts.append(
+                f"SELECT ? AS cf, ? AS kind, "
+                f"(SELECT id FROM {tf} WHERE {cf} = ?{where_ts} ORDER BY ts {order} LIMIT 1) AS id"
+            )
+            params.extend([frame, kind, frame])
+
+        for frame in dynamic:
+            pick(frame, "lo", " AND ts <= ?", "DESC")
+            params.append(query_time)
+            pick(frame, "hi", " AND ts >= ?", "ASC")
+            params.append(query_time)
+        for frame in static:
+            pick(frame, "st", "", "DESC")
+        if not parts:
+            return {}
+        union = " UNION ALL ".join(parts)
+        sql = f"SELECT t.cf, t.kind, b.data FROM ({union}) t JOIN {blob} b ON b.id = t.id"
+        rows: dict[tuple[str, str], bytes] = {}
+        for cf_val, kind, data in self._connection().execute(sql, params):
+            rows[(cf_val, kind)] = data
+            self.rows_fetched += 1
+        return rows
+
     def get(
         self,
         target_frame: str,
@@ -345,17 +421,62 @@ class DbTf:
         time_point: float | None = None,
         time_tolerance: float | None = None,
     ) -> Transform | None:
-        """Transform that maps a point in ``source_frame`` into ``target_frame``.
-
-        Returns ``None`` if no chain connects the two frames at the requested
-        time. Resolves through the per-row tf tree (O(tree size) rows read), with
-        a small FIFO cache over identical lookups.
-        """
+        """Transform that maps a point in ``source_frame`` into ``target_frame``,
+        or ``None`` if no chain connects them at the requested time."""
         if not self._is_sqlite:
             return self._ensure_loaded().lookup(
                 target_frame, source_frame, time_point, time_tolerance
             )
-        return self._get_sqlite(target_frame, source_frame, time_point, time_tolerance)
+        self._ensure_built()
+        self._load_graph_if_small()
+        query_time = time_point if time_point is not None else 0.0
+        graph = self._graph_at(query_time)  # 0 queries when the graph is in RAM
+        if graph is None:
+            return None
+        frames = self._chain_frames(graph, source_frame, target_frame)
+        if frames is None:
+            return None
+
+        edges = [f for f in frames if f in graph]  # roots have no incoming edge
+        dynamic = [f for f in edges if not graph[f].get("static")]
+        static = [f for f in edges if graph[f].get("static")]
+        uncached_static = [f for f in static if f not in self._static_cache]
+
+        rows = self._fetch_rows(dynamic, uncached_static, query_time)  # ONE detail query
+
+        buffer = MultiTBuffer(buffer_size=_NO_PRUNE)
+        for frame in static:
+            transform = self._static_cache.get(frame)
+            if transform is None:
+                data = rows.get((frame, "st"))
+                if data is None:
+                    return None
+                transform = self._decode_blob(data, frame)
+                self._static_cache[frame] = transform
+            # restamp the constant to query_time so the buffer's tolerance never
+            # rejects a static that was recorded long ago (latched once).
+            buffer.receive_transform(_restamp(transform, query_time))
+        for frame in dynamic:
+            lo = rows.get((frame, "lo"))
+            hi = rows.get((frame, "hi"))
+            chosen = lo if lo is not None else hi
+            if chosen is None:
+                return None
+            buffer.receive_transform(self._decode_blob(chosen, frame))
+            other = hi if hi is not None else lo
+            if other is not None and other is not chosen:
+                buffer.receive_transform(self._decode_blob(other, frame))
+        return buffer.lookup(target_frame, source_frame, time_point, time_tolerance)
+
+
+def _restamp(transform: Transform, ts: float) -> Transform:
+    return Transform(
+        translation=transform.translation,
+        rotation=transform.rotation,
+        frame_id=transform.frame_id,
+        child_frame_id=transform.child_frame_id,
+        ts=ts,
+    )
 
 
 def transform_matrix(transform: Transform) -> tuple[np.ndarray, np.ndarray]:
@@ -388,7 +509,9 @@ def write_tf_tree(
     - ``odom_parent -> odom_child`` is emitted once per odometry sample, taken
       from each observation's pose.
 
-    Returns the number of tf observations written.
+    Each transform is written as its own row (one transform per ``TFMessage``) so
+    the graph-stream reader can range-query it by ``child_frame``. Returns the
+    number of tf observations written.
     """
     config = store.config
     if not isinstance(config, SqliteStoreConfig):
@@ -411,18 +534,26 @@ def write_tf_tree(
     tf_stream = store.stream(stream_name, TFMessage)
     written = 0
 
+    def _append(transform: Transform, ts: float) -> None:
+        nonlocal written
+        tf_stream.append(
+            TFMessage(transform), ts=ts, tags={"child_frame": transform.child_frame_id}
+        )
+        written += 1
+
     # dynamic: odom_parent -> odom_child, one per odometry sample
     for row in odom:
         ts = float(row[0])
-        transform = Transform(
-            translation=Vector3(row[1], row[2], row[3]),
-            rotation=Quaternion(row[4], row[5], row[6], row[7]),
-            frame_id=odom_parent,
-            child_frame_id=odom_child,
-            ts=ts,
+        _append(
+            Transform(
+                translation=Vector3(row[1], row[2], row[3]),
+                rotation=Quaternion(row[4], row[5], row[6], row[7]),
+                frame_id=odom_parent,
+                child_frame_id=odom_child,
+                ts=ts,
+            ),
+            ts,
         )
-        tf_stream.append(TFMessage(transform), ts=ts)
-        written += 1
 
     # static: root links + sensor mount, resampled every static_period
     t0 = float(odom[0, 0])
@@ -444,7 +575,7 @@ def write_tf_tree(
         return links
 
     for static_ts in np.arange(t0, t1 + static_period, static_period):
-        tf_stream.append(TFMessage(*statics_at(float(static_ts))), ts=float(static_ts))
-        written += 1
+        for transform in statics_at(float(static_ts)):
+            _append(transform, float(static_ts))
 
     return written

@@ -30,8 +30,7 @@ from dimos.agents.annotation import skill
 from dimos.constants import DIMOS_PROJECT_ROOT
 from dimos.core.core import rpc
 from dimos.core.module import Module, ModuleConfig
-from dimos.memory2.db_tf import TfTreeWriter
-from dimos.memory2.db_tf2 import TfGraphWriter
+from dimos.memory2.db_tf import TfGraphWriter
 from dimos.memory2.embed import EmbedImages
 from dimos.memory2.store.null import NullStore
 from dimos.memory2.store.sqlite import SqliteStore
@@ -455,8 +454,8 @@ class Recorder(MemoryModule):
         return setters
 
     def _record_tf(self) -> None:
-        """Record the live tf + static_tf streams under "tf", building a per-row
-        tf tree as we go (no-op without a pubsub tf)."""
+        """Record the live tf + static_tf streams under "tf", writing the topology
+        change-log (tf_graph) as we go (no-op without a pubsub tf)."""
         topic = getattr(self.tf.config, "topic", None)
         pubsub = getattr(self.tf, "pubsub", None)
         if not topic or pubsub is None:
@@ -465,27 +464,21 @@ class Recorder(MemoryModule):
         tf_stream = self.store.stream("tf", TFMessage)
 
         is_sqlite = isinstance(self.store, SqliteStore)
-        # Per-row tf tree (last 2 refs per child frame), for the current DbTf.
-        tree_writer = TfTreeWriter(self.store.config.path, "tf") if is_sqlite else None
-        # Topology change-log + child_frame tags, for the DbTf2 graph-stream design.
-        # Both written during the transition; DbTf2 becomes the default at swap time.
+        # Topology change-log + child_frame tags, for the graph-stream DbTf.
         graph_writer = TfGraphWriter(self.store.config.path, "tf") if is_sqlite else None
-        for writer in (tree_writer, graph_writer):
-            if writer is not None:
-                self.register_disposable(Disposable(writer.close))
+        if graph_writer is not None:
+            self.register_disposable(Disposable(graph_writer.close))
 
         def make_handler(is_static: bool) -> Any:
             def on_tf(msg: TFMessage, _topic: Any) -> None:
                 try:
                     for transform in msg.transforms:
-                        observation = tf_stream.append(
+                        tf_stream.append(
                             TFMessage(transform),
                             ts=transform.ts,
                             pose=None,
                             tags={"child_frame": transform.child_frame_id},
                         )
-                        if tree_writer is not None:
-                            tree_writer.record(transform.child_frame_id, observation.id)
                         if graph_writer is not None:
                             graph_writer.record(
                                 transform.child_frame_id,
