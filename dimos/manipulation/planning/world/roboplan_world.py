@@ -21,10 +21,11 @@ the optional dependency installed.
 
 from __future__ import annotations
 
-from collections.abc import Iterable
+from collections.abc import Iterable, Mapping, Sequence
 from contextlib import contextmanager
 from copy import deepcopy
 from dataclasses import dataclass, field, replace
+import importlib
 from itertools import combinations, pairwise
 from math import atan2, sqrt
 from pathlib import Path
@@ -51,17 +52,21 @@ try:
 except ImportError:
     roboplan_simple_ik = None
 
+from dimos.manipulation.planning.groups.models import PlanningGroup, PlanningGroupSelection
 from dimos.manipulation.planning.groups.registry import PlanningGroupRegistry
 from dimos.manipulation.planning.groups.utils import joint_target_to_global_names
+from dimos.manipulation.planning.kinematics.config import RoboPlanKinematicsConfig
 from dimos.manipulation.planning.spec.config import RobotModelConfig
-from dimos.manipulation.planning.spec.enums import ObstacleType, PlanningStatus
+from dimos.manipulation.planning.spec.enums import IKStatus, ObstacleType, PlanningStatus
 from dimos.manipulation.planning.spec.models import (
     CartesianDelta,
     CartesianPlanningRequest,
+    IKResult,
     Obstacle,
     PlanningResult,
     WorldRobotID,
 )
+from dimos.manipulation.planning.utils.kinematics_utils import compute_pose_error
 from dimos.manipulation.planning.utils.mesh_utils import prepare_urdf_for_drake
 from dimos.manipulation.planning.utils.path_utils import compute_path_length
 from dimos.msgs.geometry_msgs.PoseStamped import PoseStamped
@@ -74,7 +79,6 @@ if TYPE_CHECKING:
 
     from numpy.typing import NDArray
 
-    from dimos.manipulation.planning.groups.models import PlanningGroup, PlanningGroupSelection
     from dimos.manipulation.planning.spec.models import PlanningGroupID, RobotName
     from dimos.manipulation.planning.spec.protocols import WorldSpec
 
@@ -171,6 +175,7 @@ class RoboPlanWorld:
         ] = {}
         self._full_native_joint_names: tuple[str, ...] = ()
         self._uses_composite_model = False
+        self._kinematics_config = RoboPlanKinematicsConfig()
 
     # Robot Management
 
@@ -435,6 +440,179 @@ class RoboPlanWorld:
             raise ValueError(f"Unexpected RoboPlan Jacobian shape: {arr.shape}; expected 6 x n")
         return self._reorder_jacobian_columns(
             group, robot.config.joint_names, native_joint_names, arr
+        )
+
+    # KinematicsSpec for RoboPlan Oink IK
+
+    def configure_kinematics(
+        self, config: RoboPlanKinematicsConfig | None = None, **overrides: Any
+    ) -> None:
+        """Configure RoboPlan Oink IK behavior for this world instance."""
+        config_values = (config or RoboPlanKinematicsConfig()).model_dump()
+        config_values.update(overrides)
+        self._kinematics_config = RoboPlanKinematicsConfig(**config_values)
+
+    def solve(
+        self,
+        world: Any,
+        robot_id: WorldRobotID,
+        target_pose: PoseStamped,
+        seed: JointState | None = None,
+        position_tolerance: float = 0.001,
+        orientation_tolerance: float = 0.01,
+        max_attempts: int = 10,
+    ) -> IKResult:
+        """Solve a single pose target with RoboPlan Oink IK."""
+        if world is not self:
+            return self._ik_failure(
+                IKStatus.NO_SOLUTION,
+                "RoboPlan IK requires its RoboPlanWorld instance",
+            )
+        try:
+            robot = self._get_robot(robot_id)
+            group_id = self._planning_groups.primary_pose_group_id_for_robot(robot.config.name)
+            if group_id is None:
+                return self._ik_failure(
+                    IKStatus.NO_SOLUTION,
+                    f"Robot '{robot.config.name}' has no pose-targetable planning group",
+                )
+            group = self._planning_groups.get(group_id)
+        except (KeyError, ValueError) as exc:
+            return self._ik_failure(IKStatus.NO_SOLUTION, str(exc))
+        return self.solve_pose_targets(
+            world=self,
+            pose_targets={group: target_pose},
+            seed=seed,
+            position_tolerance=position_tolerance,
+            orientation_tolerance=orientation_tolerance,
+            max_attempts=max_attempts,
+        )
+
+    def solve_pose_targets(
+        self,
+        world: Any,
+        pose_targets: Mapping[PlanningGroup, PoseStamped],
+        auxiliary_groups: Sequence[PlanningGroup] = (),
+        seed: JointState | None = None,
+        position_tolerance: float = 0.001,
+        orientation_tolerance: float = 0.01,
+        max_attempts: int = 10,
+    ) -> IKResult:
+        """Solve one or more planning-group pose targets with RoboPlan Oink IK."""
+        if world is not self:
+            return self._ik_failure(
+                IKStatus.NO_SOLUTION,
+                "RoboPlan IK requires its RoboPlanWorld instance",
+            )
+        try:
+            self._require_finalized()
+        except RuntimeError as exc:
+            return self._ik_failure(IKStatus.NO_SOLUTION, str(exc))
+        if not pose_targets:
+            return self._ik_failure(IKStatus.NO_SOLUTION, "At least one pose target is required")
+
+        pose_groups = tuple(pose_targets.keys())
+        for group in pose_groups:
+            if not group.has_pose_target or group.tip_link is None:
+                return self._ik_failure(
+                    IKStatus.NO_SOLUTION,
+                    f"Planning group '{group.id}' has no pose target frame",
+                )
+
+        try:
+            selection = PlanningGroupSelection.from_groups(pose_groups + tuple(auxiliary_groups))
+        except ValueError as exc:
+            return self._ik_failure(IKStatus.NO_SOLUTION, str(exc))
+        unsupported = self._validate_supported_selection(selection)
+        if unsupported is not None:
+            return self._ik_failure(IKStatus.NO_SOLUTION, unsupported.message)
+
+        try:
+            optimal_ik = self._load_optimal_ik()
+            group_data = self._group_data_for_selection_ids(selection.group_ids)
+            scene = self._require_scene()
+            oink = optimal_ik.Oink(scene, group_name=group_data.group_name)
+            tasks = self._make_oink_frame_tasks(
+                optimal_ik,
+                oink,
+                scene,
+                pose_targets,
+                position_tolerance,
+                orientation_tolerance,
+            )
+            constraints = self._make_oink_constraints(optimal_ik, oink, group_data)
+            candidate_native_q = self._seed_native_selection_q(selection, group_data, seed)
+            lower_limits, upper_limits = self._selection_native_limits(selection, group_data)
+        except (ImportError, KeyError, ValueError, AttributeError) as exc:
+            return self._ik_failure(IKStatus.NO_SOLUTION, f"RoboPlan Oink IK setup failed: {exc}")
+
+        final_position_error = float("inf")
+        final_orientation_error = float("inf")
+        iteration_limit = max(1, self._kinematics_config.max_iterations)
+        if max_attempts <= 0:
+            return self._ik_failure(IKStatus.NO_SOLUTION, "max_attempts must be positive")
+
+        try:
+            with self.scratch_context() as ctx:
+                for iteration in range(iteration_limit):
+                    result = self._maybe_return_converged_oink_result(
+                        ctx,
+                        selection,
+                        group_data,
+                        candidate_native_q,
+                        pose_targets,
+                        position_tolerance,
+                        orientation_tolerance,
+                        iteration,
+                    )
+                    final_position_error = result.position_error
+                    final_orientation_error = result.orientation_error
+                    if result.is_success():
+                        return result
+                    if result.status == IKStatus.COLLISION:
+                        return result
+
+                    full_q = self._full_scene_q_with_native_selection_q(
+                        ctx, group_data, candidate_native_q
+                    )
+                    self._set_scene_joint_positions(scene, full_q)
+                    delta_q = self._solve_oink_delta(oink, group_data, scene, tasks, constraints)
+                    delta_full_q = self._scatter_oink_delta(oink, group_data, delta_q)
+                    next_full_q = self._integrate_scene_q(scene, full_q, delta_full_q)
+                    self._set_scene_joint_positions(scene, next_full_q)
+                    candidate_native_q = self._native_selection_q_from_full_q(
+                        group_data, next_full_q
+                    )
+                    candidate_native_q = np.clip(candidate_native_q, lower_limits, upper_limits)
+
+                result = self._maybe_return_converged_oink_result(
+                    ctx,
+                    selection,
+                    group_data,
+                    candidate_native_q,
+                    pose_targets,
+                    position_tolerance,
+                    orientation_tolerance,
+                    iteration_limit,
+                )
+                final_position_error = result.position_error
+                final_orientation_error = result.orientation_error
+                if result.is_success():
+                    return result
+                if result.status == IKStatus.COLLISION:
+                    return result
+        except ValueError as exc:
+            return self._ik_failure(IKStatus.NO_SOLUTION, f"RoboPlan Oink IK mapping failed: {exc}")
+        except Exception as exc:
+            return self._ik_failure(IKStatus.NO_SOLUTION, f"RoboPlan Oink IK failed: {exc}")
+
+        return IKResult(
+            status=IKStatus.NO_SOLUTION,
+            joint_state=None,
+            position_error=final_position_error,
+            orientation_error=final_orientation_error,
+            iterations=iteration_limit,
+            message="RoboPlan Oink IK did not converge within the iteration budget",
         )
 
     # PlannerSpec for native RoboPlan planning
@@ -888,6 +1066,354 @@ class RoboPlanWorld:
         return (
             position_error <= _CARTESIAN_POSITION_TOLERANCE
             and rotation_error <= _CARTESIAN_ORIENTATION_TOLERANCE
+        )
+
+    def _ik_failure(
+        self,
+        status: IKStatus,
+        message: str,
+        position_error: float = 0.0,
+        orientation_error: float = 0.0,
+        iterations: int = 0,
+    ) -> IKResult:
+        return IKResult(
+            status=status,
+            joint_state=None,
+            position_error=position_error,
+            orientation_error=orientation_error,
+            iterations=iterations,
+            message=message,
+        )
+
+    def _load_optimal_ik(self) -> Any:
+        try:
+            return importlib.import_module("roboplan.optimal_ik")
+        except ImportError as exc:
+            raise ImportError(
+                "RoboPlan Oink IK requires roboplan.optimal_ik. "
+                "Install a RoboPlan build that includes the optimal_ik Python bindings."
+            ) from exc
+
+    def _make_oink_frame_tasks(
+        self,
+        optimal_ik: Any,
+        oink: Any,
+        scene: Any,
+        pose_targets: Mapping[PlanningGroup, PoseStamped],
+        position_tolerance: float,
+        orientation_tolerance: float,
+    ) -> list[Any]:
+        tasks: list[Any] = []
+        for group, target_pose in pose_targets.items():
+            if group.tip_link is None:
+                raise ValueError(f"Planning group '{group.id}' has no pose target frame")
+            native_map = self._native_names_by_robot[group.robot_name]
+            target = roboplan_core.CartesianConfiguration()
+            target.base_frame = native_map.link(group.base_link)
+            target.tip_frame = native_map.link(group.tip_link)
+            target.tform = pose_to_matrix(target_pose)
+            options = self._make_oink_frame_task_options(
+                optimal_ik,
+                position_tolerance,
+                orientation_tolerance,
+            )
+            tasks.append(optimal_ik.FrameTask(oink, scene, target, options))
+        return tasks
+
+    def _make_oink_frame_task_options(
+        self,
+        optimal_ik: Any,
+        position_tolerance: float,
+        orientation_tolerance: float,
+    ) -> Any:
+        values = {
+            "position_cost": self._kinematics_config.position_cost,
+            "orientation_cost": self._kinematics_config.orientation_cost,
+            "task_gain": self._kinematics_config.task_gain,
+            "lm_damping": self._kinematics_config.lm_damping,
+            "max_position_error": position_tolerance,
+            "max_rotation_error": orientation_tolerance,
+        }
+        try:
+            return optimal_ik.FrameTaskOptions(**values)
+        except TypeError:
+            options = optimal_ik.FrameTaskOptions()
+            for name, value in values.items():
+                setattr(options, name, value)
+            return options
+
+    def _make_oink_constraints(
+        self, optimal_ik: Any, oink: Any, group_data: _RoboPlanGroupData
+    ) -> list[Any]:
+        constraints = [optimal_ik.PositionLimit(oink, gain=1.0)]
+        if self._kinematics_config.velocity_limit is not None:
+            v_max = np.full(
+                self._oink_variable_count(oink, group_data),
+                self._kinematics_config.velocity_limit,
+                dtype=np.float64,
+            )
+            constraints.append(
+                optimal_ik.VelocityLimit(oink, self._kinematics_config.dt, v_max=v_max)
+            )
+        return constraints
+
+    def _oink_variable_count(self, oink: Any, group_data: _RoboPlanGroupData) -> int:
+        v_indices = getattr(oink, "v_indices", None)
+        if v_indices is None:
+            return len(group_data.native_joint_names)
+        return len(tuple(v_indices))
+
+    def _seed_native_selection_q(
+        self,
+        selection: PlanningGroupSelection,
+        group_data: _RoboPlanGroupData,
+        seed: JointState | None,
+    ) -> NDArray[np.float64]:
+        positions_by_global = self._selection_belief_positions(selection)
+        if seed is not None:
+            self._overlay_seed_positions(selection, positions_by_global, seed)
+        return np.asarray(
+            [
+                positions_by_global[group_data.native_to_global_joint_name[native_name]]
+                for native_name in group_data.native_joint_names
+            ],
+            dtype=np.float64,
+        )
+
+    def _overlay_seed_positions(
+        self,
+        selection: PlanningGroupSelection,
+        positions_by_global: dict[str, float],
+        seed: JointState,
+    ) -> None:
+        if not seed.name:
+            if len(seed.position) != len(selection.joint_names):
+                raise ValueError(
+                    f"Seed has {len(seed.position)} positions for selection, "
+                    f"expected {len(selection.joint_names)}"
+                )
+            for global_name, position in zip(selection.joint_names, seed.position, strict=True):
+                positions_by_global[global_name] = float(position)
+            return
+        if len(seed.name) != len(seed.position):
+            raise ValueError(f"Seed has {len(seed.name)} names but {len(seed.position)} positions")
+
+        local_to_global: dict[str, str] = {}
+        for group in selection.groups:
+            for local_name, global_name in zip(
+                group.local_joint_names, group.joint_names, strict=True
+            ):
+                local_to_global[local_name] = global_name
+                local_to_global[f"{group.robot_name}/{local_name}"] = global_name
+
+        seen: set[str] = set()
+        for seed_name, position in zip(seed.name, seed.position, strict=True):
+            if seed_name in selection.joint_names:
+                global_name = seed_name
+            elif seed_name in local_to_global:
+                global_name = local_to_global[seed_name]
+            else:
+                raise ValueError(f"Seed contains joint outside RoboPlan selection: {seed_name}")
+            if global_name in seen:
+                raise ValueError(f"Seed contains duplicate selected joint: {global_name}")
+            seen.add(global_name)
+            positions_by_global[global_name] = float(position)
+
+    def _selection_native_limits(
+        self, selection: PlanningGroupSelection, group_data: _RoboPlanGroupData
+    ) -> tuple[NDArray[np.float64], NDArray[np.float64]]:
+        lower_by_global: dict[str, float] = {}
+        upper_by_global: dict[str, float] = {}
+        for group in selection.groups:
+            robot_id = self._robot_ids_by_name[group.robot_name]
+            robot = self._get_robot(robot_id)
+            if robot.lower_limits is None or robot.upper_limits is None:
+                raise ValueError(f"RoboPlan joint limits are unavailable for robot '{robot_id}'")
+            index_by_local = {name: index for index, name in enumerate(robot.config.joint_names)}
+            for local_name, global_name in zip(
+                group.local_joint_names, group.joint_names, strict=True
+            ):
+                index = index_by_local[local_name]
+                lower_by_global[global_name] = float(robot.lower_limits[index])
+                upper_by_global[global_name] = float(robot.upper_limits[index])
+        return (
+            np.asarray(
+                [
+                    lower_by_global[group_data.native_to_global_joint_name[native_name]]
+                    for native_name in group_data.native_joint_names
+                ],
+                dtype=np.float64,
+            ),
+            np.asarray(
+                [
+                    upper_by_global[group_data.native_to_global_joint_name[native_name]]
+                    for native_name in group_data.native_joint_names
+                ],
+                dtype=np.float64,
+            ),
+        )
+
+    def _maybe_return_converged_oink_result(
+        self,
+        ctx: RoboPlanContext,
+        selection: PlanningGroupSelection,
+        group_data: _RoboPlanGroupData,
+        native_q: NDArray[np.float64],
+        pose_targets: Mapping[PlanningGroup, PoseStamped],
+        position_tolerance: float,
+        orientation_tolerance: float,
+        iterations: int,
+    ) -> IKResult:
+        joint_state = self._native_selection_q_to_joint_state(selection, group_data, native_q)
+        self._set_selection_state(ctx, selection, joint_state)
+        position_error, orientation_error = self._pose_target_errors(ctx, pose_targets)
+        if position_error > position_tolerance or orientation_error > orientation_tolerance:
+            return IKResult(
+                status=IKStatus.NO_SOLUTION,
+                joint_state=None,
+                position_error=position_error,
+                orientation_error=orientation_error,
+                iterations=iterations,
+                message="RoboPlan Oink IK candidate has not converged",
+            )
+        if self._kinematics_config.collision_check and not self._selection_config_collision_free(
+            selection, joint_state
+        ):
+            return IKResult(
+                status=IKStatus.COLLISION,
+                joint_state=None,
+                position_error=position_error,
+                orientation_error=orientation_error,
+                iterations=iterations,
+                message="RoboPlan Oink IK converged to a colliding configuration",
+            )
+        return IKResult(
+            status=IKStatus.SUCCESS,
+            joint_state=joint_state,
+            position_error=position_error,
+            orientation_error=orientation_error,
+            iterations=iterations,
+            message="RoboPlan Oink IK solution found",
+        )
+
+    def _native_selection_q_to_joint_state(
+        self,
+        selection: PlanningGroupSelection,
+        group_data: _RoboPlanGroupData,
+        native_q: NDArray[np.float64],
+    ) -> JointState:
+        if len(native_q) != len(group_data.native_joint_names):
+            raise ValueError(
+                f"RoboPlan Oink returned {len(native_q)} selected positions, "
+                f"expected {len(group_data.native_joint_names)}"
+            )
+        positions_by_global = {
+            group_data.native_to_global_joint_name[native_name]: float(position)
+            for native_name, position in zip(group_data.native_joint_names, native_q, strict=True)
+        }
+        return JointState(
+            {
+                "name": list(selection.joint_names),
+                "position": [positions_by_global[name] for name in selection.joint_names],
+            }
+        )
+
+    def _pose_target_errors(
+        self, ctx: RoboPlanContext, pose_targets: Mapping[PlanningGroup, PoseStamped]
+    ) -> tuple[float, float]:
+        position_errors: list[float] = []
+        orientation_errors: list[float] = []
+        for group, target_pose in pose_targets.items():
+            current_pose = self.get_group_ee_pose(ctx, group.id)
+            position_error, orientation_error = compute_pose_error(
+                pose_to_matrix(current_pose), pose_to_matrix(target_pose)
+            )
+            position_errors.append(position_error)
+            orientation_errors.append(orientation_error)
+        return max(position_errors), max(orientation_errors)
+
+    def _full_scene_q_with_native_selection_q(
+        self,
+        ctx: RoboPlanContext,
+        group_data: _RoboPlanGroupData,
+        native_q: NDArray[np.float64],
+    ) -> NDArray[np.float64]:
+        if len(native_q) != len(group_data.native_joint_names):
+            raise ValueError(
+                f"Selected q length {len(native_q)} does not match "
+                f"{len(group_data.native_joint_names)} native joints"
+            )
+        full_q = self._full_scene_q(ctx)
+        index_by_native = {name: index for index, name in enumerate(self._full_native_joint_names)}
+        for native_name, position in zip(group_data.native_joint_names, native_q, strict=True):
+            full_q[index_by_native[native_name]] = float(position)
+        return full_q
+
+    def _set_scene_joint_positions(self, scene: Any, q: NDArray[np.float64]) -> None:
+        setter = getattr(scene, "setJointPositions", None)
+        if setter is not None:
+            setter(np.asarray(q, dtype=np.float64))
+
+    def _solve_oink_delta(
+        self,
+        oink: Any,
+        group_data: _RoboPlanGroupData,
+        scene: Any,
+        tasks: Sequence[Any],
+        constraints: Sequence[Any],
+    ) -> NDArray[np.float64]:
+        delta_q = np.zeros(self._oink_variable_count(oink, group_data), dtype=np.float64)
+        oink.solveIk(
+            scene,
+            list(tasks),
+            list(constraints),
+            [],
+            delta_q,
+            regularization=self._kinematics_config.regularization,
+        )
+        return delta_q
+
+    def _scatter_oink_delta(
+        self, oink: Any, group_data: _RoboPlanGroupData, delta_q: NDArray[np.float64]
+    ) -> NDArray[np.float64]:
+        delta = np.asarray(delta_q, dtype=np.float64)
+        delta_full = np.zeros(len(self._full_native_joint_names), dtype=np.float64)
+        v_indices = getattr(oink, "v_indices", None)
+        if v_indices is not None:
+            indices = np.asarray(tuple(v_indices), dtype=np.int64)
+            if len(indices) != len(delta):
+                raise ValueError(
+                    f"Oink returned delta length {len(delta)} for {len(indices)} velocity indices"
+                )
+            delta_full[indices] = delta
+            return delta_full
+        if len(delta) == len(delta_full):
+            return delta
+        if len(delta) != len(group_data.native_joint_names):
+            raise ValueError(
+                f"Oink returned delta length {len(delta)}, expected full scene length "
+                f"{len(delta_full)} or selected length {len(group_data.native_joint_names)}"
+            )
+        index_by_native = {name: index for index, name in enumerate(self._full_native_joint_names)}
+        for native_name, value in zip(group_data.native_joint_names, delta, strict=True):
+            delta_full[index_by_native[native_name]] = float(value)
+        return delta_full
+
+    def _integrate_scene_q(
+        self, scene: Any, q: NDArray[np.float64], delta_q: NDArray[np.float64]
+    ) -> NDArray[np.float64]:
+        integrator = getattr(scene, "integrate", None)
+        if integrator is not None:
+            return np.asarray(integrator(q, delta_q), dtype=np.float64)
+        return np.asarray(q, dtype=np.float64) + np.asarray(delta_q, dtype=np.float64)
+
+    def _native_selection_q_from_full_q(
+        self, group_data: _RoboPlanGroupData, full_q: NDArray[np.float64]
+    ) -> NDArray[np.float64]:
+        index_by_native = {name: index for index, name in enumerate(self._full_native_joint_names)}
+        return np.asarray(
+            [full_q[index_by_native[native_name]] for native_name in group_data.native_joint_names],
+            dtype=np.float64,
         )
 
     def _create_scene(self) -> Any:

@@ -22,12 +22,18 @@ from types import ModuleType, SimpleNamespace
 from typing import Any, cast
 
 import numpy as np
+from pydantic import TypeAdapter
 import pytest
 
 from dimos.manipulation.planning.factory import create_kinematics
 from dimos.manipulation.planning.groups.models import PlanningGroup
 from dimos.manipulation.planning.kinematics import pink_ik as pink_ik_module
-from dimos.manipulation.planning.kinematics.config import PinkKinematicsConfig
+from dimos.manipulation.planning.kinematics.config import (
+    ManipulationKinematicsConfig,
+    PinkKinematicsConfig,
+    RoboPlanKinematicsConfig,
+    kinematics_config_from_name,
+)
 from dimos.manipulation.planning.kinematics.pink_ik import (
     PinkIK,
     PinkIKConfig,
@@ -46,6 +52,36 @@ from dimos.msgs.geometry_msgs.PoseStamped import PoseStamped
 from dimos.msgs.geometry_msgs.Quaternion import Quaternion
 from dimos.msgs.geometry_msgs.Vector3 import Vector3
 from dimos.msgs.sensor_msgs.JointState import JointState
+
+
+def test_roboplan_kinematics_config_defaults_and_parsing() -> None:
+    config = RoboPlanKinematicsConfig()
+
+    assert config.backend == "roboplan"
+    assert config.max_iterations == 100
+    assert config.dt == pytest.approx(0.05)
+    assert config.position_cost == pytest.approx(1.0)
+    assert config.orientation_cost == pytest.approx(1.0)
+    assert config.task_gain == pytest.approx(0.5)
+    assert config.lm_damping == pytest.approx(1e-6)
+    assert config.regularization == pytest.approx(1e-8)
+    assert config.velocity_limit is None
+    assert config.collision_check is True
+
+    parsed = TypeAdapter(ManipulationKinematicsConfig).validate_python(
+        {
+            "backend": "roboplan",
+            "max_iterations": 5,
+            "velocity_limit": 0.25,
+            "collision_check": False,
+        }
+    )
+
+    assert isinstance(parsed, RoboPlanKinematicsConfig)
+    assert parsed.max_iterations == 5
+    assert parsed.velocity_limit == pytest.approx(0.25)
+    assert parsed.collision_check is False
+    assert isinstance(kinematics_config_from_name("roboplan"), RoboPlanKinematicsConfig)
 
 
 class _FakeJoint:
