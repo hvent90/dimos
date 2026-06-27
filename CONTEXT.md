@@ -20,6 +20,22 @@ _Avoid_: combined URDF, merged robot scene
 The authoritative belief state for manipulation planning, including robot state and scene state used by planners.
 _Avoid_: planner context, backend instance
 
+**Trajectory parametrization**:
+The manipulation-planning capability that assigns time to a geometric joint path under motion constraints.
+_Avoid_: trajectory generation, retiming when referring to the broader capability
+
+**Generated trajectory**:
+A manipulation-planning artifact that represents a geometric path after trajectory parametrization, ready for preview, validation, benchmarking, or execution planning.
+_Avoid_: timed generated plan, generated plan when referring to the time-parametrized artifact, joint trajectory when referring to the manipulation-level artifact
+
+**Shared trajectory time domain**:
+The single timing basis a generated trajectory uses for all selected joints and robot-local projections in a composite or multi-robot motion.
+_Avoid_: independent per-robot timing, per-arm retiming when referring to coordinated composite motion
+
+**Trajectory dispatch**:
+An execution-preparation artifact that derives control-task-specific joint trajectory messages from a generated trajectory without changing the generated trajectory's canonical global timing.
+_Avoid_: generated trajectory projection, execution-time parametrization, per-task generated trajectory
+
 **Robokin kinematics backend**:
 A DimOS kinematics backend that presents multiple robokin-supported inverse-kinematics engines through one robotics-facing capability.
 _Avoid_: Oink backend, RoboKin world backend, single-engine Oink solver
