@@ -20,7 +20,7 @@ from collections.abc import Mapping
 from pathlib import Path
 from typing import cast
 
-from dimos.manipulation.planning.groups.models import PlanningGroup
+from dimos.manipulation.planning.groups.models import PlanningGroup, PlanningGroupDefinition
 from dimos.manipulation.planning.kinematics.jacobian_ik import JacobianIK
 from dimos.manipulation.planning.spec.config import RobotModelConfig
 from dimos.manipulation.planning.spec.enums import IKStatus
@@ -61,7 +61,15 @@ class _IKWorld:
                 model_path=Path("robot.urdf"),
                 base_pose=_pose(),
                 joint_names=["joint1", "joint2", "gripper"],
-                end_effector_link="tool0",
+                planning_groups=[
+                    PlanningGroupDefinition(
+                        name="arm",
+                        joint_names=("joint1", "joint2"),
+                        base_link="base_link",
+                        tip_link="tool0",
+                        source="explicit",
+                    )
+                ],
             )
         }
 

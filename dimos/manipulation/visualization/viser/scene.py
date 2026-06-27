@@ -32,6 +32,7 @@ from dimos.manipulation.visualization.viser.runtime import (
 )
 from dimos.msgs.geometry_msgs.Pose import Pose
 from dimos.msgs.sensor_msgs.JointState import JointState
+from dimos.robot.model_parser import parse_model
 from dimos.utils.logging_config import setup_logger
 
 try:
@@ -367,7 +368,7 @@ class ViserManipulationScene:
 
     def prepared_urdf_path(self, config: RobotModelConfig) -> Path:
         package_paths = {package: Path(path) for package, path in config.package_paths.items()}
-        return Path(
+        prepared_path = Path(
             prepare_urdf_for_drake(
                 Path(str(config.model_path)),
                 package_paths=package_paths,
@@ -377,6 +378,18 @@ class ViserManipulationScene:
                 if bool(getattr(config, "strip_model_world_joint", False))
                 else None,
             )
+        )
+        self._assert_base_link_is_urdf_root(config, prepared_path)
+        return prepared_path
+
+    @staticmethod
+    def _assert_base_link_is_urdf_root(config: RobotModelConfig, prepared_path: Path) -> None:
+        root_link = parse_model(prepared_path).root_link
+        if root_link == config.base_link:
+            return
+        raise ValueError(
+            f"Viser visualization requires base_link '{config.base_link}' to match "
+            f"the prepared URDF root '{root_link}' because base_pose is applied to the URDF root"
         )
 
     def _urdf_root_node_name(self, robot_id: str, kind: str, config: RobotModelConfig) -> str:

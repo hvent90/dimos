@@ -19,6 +19,7 @@ from pathlib import Path
 from typing import Any
 
 from dimos.manipulation.planning import factory as planning_factory
+from dimos.manipulation.planning.groups.models import PlanningGroupDefinition
 from dimos.manipulation.planning.monitor import world_monitor as world_monitor_module
 from dimos.manipulation.planning.spec.config import RobotModelConfig
 from dimos.manipulation.planning.spec.models import (
@@ -200,8 +201,16 @@ def _robot_config() -> RobotModelConfig:
         model_path=Path("/tmp/arm.urdf"),
         base_pose=PoseStamped(position=Vector3(), orientation=Quaternion([0, 0, 0, 1])),
         joint_names=["j1", "j2"],
-        end_effector_link="ee",
         base_link="base",
+        planning_groups=[
+            PlanningGroupDefinition(
+                name="manipulator",
+                joint_names=("j1", "j2"),
+                base_link="base",
+                tip_link="ee",
+                source="explicit",
+            )
+        ],
     )
 
 
@@ -211,8 +220,16 @@ def _robot_config_named(name: str, joint_names: list[str]) -> RobotModelConfig:
         model_path=Path(f"/tmp/{name}.urdf"),
         base_pose=PoseStamped(position=Vector3(), orientation=Quaternion([0, 0, 0, 1])),
         joint_names=joint_names,
-        end_effector_link="ee",
         base_link="base",
+        planning_groups=[
+            PlanningGroupDefinition(
+                name="manipulator",
+                joint_names=tuple(joint_names),
+                base_link="base",
+                tip_link="ee",
+                source="explicit",
+            )
+        ],
     )
 
 

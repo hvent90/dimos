@@ -28,7 +28,11 @@ from dimos.manipulation.manipulation_module import (
     ManipulationModuleConfig,
     ManipulationState,
 )
-from dimos.manipulation.planning.groups.models import PlanningGroup, PlanningGroupSelection
+from dimos.manipulation.planning.groups.models import (
+    PlanningGroup,
+    PlanningGroupDefinition,
+    PlanningGroupSelection,
+)
 from dimos.manipulation.planning.kinematics.config import PinkKinematicsConfig
 from dimos.manipulation.planning.monitor.world_monitor import WorldMonitor
 from dimos.manipulation.planning.spec.config import RobotModelConfig
@@ -57,8 +61,16 @@ def robot_config():
         model_path=Path("/path/to/robot.urdf"),
         base_pose=PoseStamped(position=Vector3(), orientation=Quaternion()),
         joint_names=["joint1", "joint2", "joint3"],
-        end_effector_link="link_tcp",
         base_link="link_base",
+        planning_groups=[
+            PlanningGroupDefinition(
+                name="manipulator",
+                joint_names=("joint1", "joint2", "joint3"),
+                base_link="link_base",
+                tip_link="link_tcp",
+                source="explicit",
+            )
+        ],
         max_velocity=1.0,
         max_acceleration=2.0,
         coordinator_task_name="traj_arm",
@@ -73,8 +85,16 @@ def left_robot_config():
         model_path=Path("/path/to/robot.urdf"),
         base_pose=PoseStamped(position=Vector3(), orientation=Quaternion()),
         joint_names=["joint1", "joint2", "joint3"],
-        end_effector_link="link_tcp",
         base_link="link_base",
+        planning_groups=[
+            PlanningGroupDefinition(
+                name="manipulator",
+                joint_names=("joint1", "joint2", "joint3"),
+                base_link="link_base",
+                tip_link="link_tcp",
+                source="explicit",
+            )
+        ],
         coordinator_task_name="traj_left",
     )
 
@@ -369,6 +389,27 @@ class TestPlanningInitialization:
         assert kwargs["seed"] is explicit_seed
         module._world_monitor.get_current_joint_state.assert_not_called()
 
+    def test_primary_pose_group_id_raises_without_pose_target_group(self, robot_config):
+        """Robot-scoped pose wrappers require exactly one pose-targetable group."""
+        module = _make_module_with_monitor(robot_config)
+        module._world_monitor.planning_groups = _FakePlanningGroups([])
+
+        with pytest.raises(ValueError, match="no pose-targetable planning groups"):
+            module._primary_pose_group_id_for_robot(robot_config.name)
+
+    def test_primary_pose_group_id_raises_with_multiple_pose_target_groups(self, robot_config):
+        """Robot-scoped pose wrappers fail when the primary target frame is ambiguous."""
+        module = _make_module_with_monitor(robot_config)
+        module._world_monitor.planning_groups = _FakePlanningGroups(
+            [
+                _make_global_group(robot_config.name, "left", ["joint1"]),
+                _make_global_group(robot_config.name, "right", ["joint2"]),
+            ]
+        )
+
+        with pytest.raises(ValueError, match="2 pose-targetable planning groups"):
+            module._primary_pose_group_id_for_robot(robot_config.name)
+
     def test_forward_kinematics_accepts_extra_global_joints_and_requires_group_joints(
         self, robot_config
     ):
@@ -420,7 +461,15 @@ class TestExecute:
             model_path=Path("/path"),
             base_pose=PoseStamped(position=Vector3(), orientation=Quaternion()),
             joint_names=["j1"],
-            end_effector_link="ee",
+            planning_groups=[
+                PlanningGroupDefinition(
+                    name="manipulator",
+                    joint_names=("j1",),
+                    base_link="base_link",
+                    tip_link="ee",
+                    source="explicit",
+                )
+            ],
         )
         module = _make_module_with_monitor(config_no_task)
         module._world_monitor.planning_groups = _FakePlanningGroups(
@@ -617,8 +666,16 @@ def _make_robot_config(
         model_path=Path("/path/to/robot.urdf"),
         base_pose=PoseStamped(position=Vector3(), orientation=Quaternion()),
         joint_names=joints,
-        end_effector_link="ee",
         base_link="base",
+        planning_groups=[
+            PlanningGroupDefinition(
+                name="manipulator",
+                joint_names=tuple(joints),
+                base_link="base",
+                tip_link="ee",
+                source="explicit",
+            )
+        ],
         coordinator_task_name=task_name,
     )
 
@@ -788,8 +845,16 @@ class TestOnJointState:
             model_path=Path("/path/to/robot.urdf"),
             base_pose=PoseStamped(position=Vector3(), orientation=Quaternion()),
             joint_names=["j1", "j2"],
-            end_effector_link="ee",
             base_link="base",
+            planning_groups=[
+                PlanningGroupDefinition(
+                    name="manipulator",
+                    joint_names=("j1", "j2"),
+                    base_link="base",
+                    tip_link="ee",
+                    source="explicit",
+                )
+            ],
             coordinator_task_name="traj_left",
         )
         right_config = RobotModelConfig(
@@ -797,8 +862,16 @@ class TestOnJointState:
             model_path=Path("/path/to/robot.urdf"),
             base_pose=PoseStamped(position=Vector3(), orientation=Quaternion()),
             joint_names=["j1", "j2"],
-            end_effector_link="ee",
             base_link="base",
+            planning_groups=[
+                PlanningGroupDefinition(
+                    name="manipulator",
+                    joint_names=("j1", "j2"),
+                    base_link="base",
+                    tip_link="ee",
+                    source="explicit",
+                )
+            ],
             coordinator_task_name="traj_right",
         )
         module = _make_module_with_monitor(left_config, right_config)

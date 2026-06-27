@@ -21,7 +21,6 @@ from pathlib import Path
 from pydantic import Field
 
 from dimos.core.module import ModuleConfig
-from dimos.manipulation.planning.groups.discovery import FALLBACK_PLANNING_GROUP_NAME
 from dimos.manipulation.planning.groups.identifiers import (
     assert_local_joint_names,
     assert_valid_robot_name,
@@ -37,18 +36,14 @@ class RobotModelConfig(ModuleConfig):
         name: Human-readable robot name
         model_path: Path to robot model file (.urdf, .xacro, or .xml/MJCF)
         srdf_path: Optional path to SRDF file containing planning group definitions
-        base_pose: Compatibility placement transform used by current Drake
-            world loading/welding. This is the canonical world placement for
+        base_pose: Placement transform. This is the canonical world placement for
             robot instances; model-authored world/base attach joints are
             stripped when strip_model_world_joint is true.
         joint_names: Ordered list of controllable joints in the local model
             namespace. This is not a planning group.
-        end_effector_link: Compatibility robot-scoped end-effector link used by
-            legacy helpers. New pose-targeted planning should use planning
-            group target frames instead.
-        base_link: Compatibility robot-scoped base link used by current Drake
-            weld/placement behavior. Planning groups own chain base links.
-            TODO: should remove
+        base_link: Robot-scoped link that base_pose places in the world and
+            current backends use for weld/placement and optional model-authored
+            world-joint stripping.
         package_paths: Dict mapping package names to filesystem Paths
         joint_limits_lower: Lower joint limits (radians)
         joint_limits_upper: Upper joint limits (radians)
@@ -70,7 +65,6 @@ class RobotModelConfig(ModuleConfig):
     base_pose: PoseStamped = Field(default_factory=PoseStamped)
     strip_model_world_joint: bool = False
     joint_names: list[str]
-    end_effector_link: str | None = None
     base_link: str = "base_link"
     planning_groups: list[PlanningGroupDefinition] = Field(default_factory=list)
     package_paths: dict[str, Path] = Field(default_factory=dict)
@@ -97,13 +91,3 @@ class RobotModelConfig(ModuleConfig):
         """Validate delimiter-based naming constraints."""
         assert_valid_robot_name(self.name)
         assert_local_joint_names(self.joint_names)
-        if not self.planning_groups:
-            self.planning_groups = [
-                PlanningGroupDefinition(
-                    name=FALLBACK_PLANNING_GROUP_NAME,
-                    joint_names=tuple(self.joint_names),
-                    base_link=self.base_link,
-                    tip_link=self.end_effector_link,
-                    source="fallback",
-                )
-            ]

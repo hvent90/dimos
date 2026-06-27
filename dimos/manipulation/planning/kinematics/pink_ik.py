@@ -40,6 +40,7 @@ from dimos.manipulation.planning.utils.kinematics_utils import compute_pose_erro
 from dimos.manipulation.planning.utils.mesh_utils import prepare_urdf_for_drake
 from dimos.msgs.geometry_msgs.PoseStamped import PoseStamped
 from dimos.msgs.sensor_msgs.JointState import JointState
+from dimos.robot.model_parser import parse_model
 from dimos.utils.logging_config import setup_logger
 from dimos.utils.transform_utils import pose_to_matrix
 
@@ -459,9 +460,9 @@ class PinkIK:
         config: RobotModelConfig | None = None,
     ) -> _PinkRobotContext:
         config = config or world.get_robot_config(robot_id)
-        target_frame = frame_name or config.end_effector_link
-        if target_frame is None:
-            raise ValueError(f"Robot '{robot_id}' has no end-effector frame configured")
+        if frame_name is None:
+            raise ValueError(f"Robot '{robot_id}' requires an explicit planning-group target frame")
+        target_frame = frame_name
         model_context = self._get_robot_model_context(robot_id, config)
         frame_id = self._frame_id_for_model_context(model_context, target_frame)
         return _PinkRobotContext(
@@ -495,6 +496,7 @@ class PinkIK:
             raise FileNotFoundError(f"Robot model not found: {model_path}")
 
         if model_path.suffix == ".xml":
+            _assert_base_link_is_model_root(config, model_path)
             model = pinocchio.buildModelFromMJCF(str(model_path))
         else:
             prepared_path = prepare_urdf_for_drake(
@@ -506,6 +508,7 @@ class PinkIK:
                 if config.strip_model_world_joint
                 else None,
             )
+            _assert_base_link_is_model_root(config, Path(prepared_path))
             model = pinocchio.buildModelFromUrdf(str(prepared_path))
         model = _lock_uncontrolled_model_joints(pinocchio, model, config)
         mapping = _build_joint_mapping(model, config)
@@ -597,6 +600,16 @@ def _check_optional_dependencies(solver: str) -> None:
             "Install manipulation dependencies with uv sync --extra manipulation, "
             "which includes qpsolvers[proxqp]."
         )
+
+
+def _assert_base_link_is_model_root(config: RobotModelConfig, model_path: Path) -> None:
+    root_link = parse_model(model_path).root_link
+    if root_link == config.base_link:
+        return
+    raise ValueError(
+        f"PinkIK requires base_link '{config.base_link}' to match the prepared "
+        f"model root '{root_link}' because base_pose is applied in model-root coordinates"
+    )
 
 
 def _build_joint_mapping(model: Any, config: RobotModelConfig) -> _JointMapping:

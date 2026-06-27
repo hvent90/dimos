@@ -26,13 +26,14 @@ import pytest
 from pytest_mock import MockerFixture
 
 from dimos.manipulation.planning.factory import create_kinematics
-from dimos.manipulation.planning.groups.models import PlanningGroup
+from dimos.manipulation.planning.groups.models import PlanningGroup, PlanningGroupDefinition
 from dimos.manipulation.planning.kinematics import pink_ik as pink_ik_module
 from dimos.manipulation.planning.kinematics.config import PinkKinematicsConfig
 from dimos.manipulation.planning.kinematics.pink_ik import (
     PinkIK,
     PinkIKConfig,
     PinkIKDependencyError,
+    _assert_base_link_is_model_root,
     _build_joint_mapping,
     _lock_uncontrolled_model_joints,
     _PinkRobotContext,
@@ -181,8 +182,16 @@ def _robot_config() -> RobotModelConfig:
         model_path=Path("/tmp/fake.urdf"),
         base_pose=PoseStamped(position=Vector3(), orientation=Quaternion(0.0, 0.0, 0.0, 1.0)),
         joint_names=["joint_a", "joint_b", "joint_c"],
-        end_effector_link="tool",
         base_link="base",
+        planning_groups=[
+            PlanningGroupDefinition(
+                name="manipulator",
+                joint_names=("joint_a", "joint_b", "joint_c"),
+                base_link="base",
+                tip_link="tool",
+                source="explicit",
+            )
+        ],
     )
 
 
@@ -198,6 +207,29 @@ def _pose_stamped(x: float, y: float, z: float, yaw: float = 0.0) -> PoseStamped
 def _pink_ik(mocker: MockerFixture, converge: bool = True) -> PinkIK:
     _install_fake_modules(mocker, converge=converge)
     return PinkIK(PinkIKConfig(max_iterations=3))
+
+
+def test_assert_base_link_is_model_root_accepts_match(mocker: MockerFixture) -> None:
+    parse_model = mocker.patch.object(
+        pink_ik_module, "parse_model", return_value=SimpleNamespace(root_link="base")
+    )
+    config = _robot_config()
+
+    _assert_base_link_is_model_root(config, Path("/tmp/prepared.urdf"))
+
+    parse_model.assert_called_once_with(Path("/tmp/prepared.urdf"))
+
+
+def test_assert_base_link_is_model_root_rejects_mismatch(
+    mocker: MockerFixture,
+) -> None:
+    mocker.patch.object(
+        pink_ik_module, "parse_model", return_value=SimpleNamespace(root_link="world")
+    )
+    config = _robot_config()
+
+    with pytest.raises(ValueError, match="base_link 'base'.*model root 'world'"):
+        _assert_base_link_is_model_root(config, Path("/tmp/prepared.urdf"))
 
 
 def _context() -> _PinkRobotContext:
@@ -311,8 +343,16 @@ class _FakeMultiRobotWorld:
                     position=Vector3(), orientation=Quaternion(0.0, 0.0, 0.0, 1.0)
                 ),
                 joint_names=["joint_a", "joint_b"],
-                end_effector_link="tool",
                 base_link="base",
+                planning_groups=[
+                    PlanningGroupDefinition(
+                        name="arm",
+                        joint_names=("joint_a", "joint_b"),
+                        base_link="base",
+                        tip_link="tool",
+                        source="explicit",
+                    )
+                ],
             ),
             "right_robot": RobotModelConfig(
                 name="right",
@@ -321,8 +361,16 @@ class _FakeMultiRobotWorld:
                     position=Vector3(), orientation=Quaternion(0.0, 0.0, 0.0, 1.0)
                 ),
                 joint_names=["joint_c"],
-                end_effector_link="tool",
                 base_link="base",
+                planning_groups=[
+                    PlanningGroupDefinition(
+                        name="arm",
+                        joint_names=("joint_c",),
+                        base_link="base",
+                        tip_link="tool",
+                        source="explicit",
+                    )
+                ],
             ),
         }
 

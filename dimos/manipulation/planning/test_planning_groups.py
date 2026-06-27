@@ -27,6 +27,10 @@ from dimos.manipulation.planning.groups.discovery import (
     generate_fallback_planning_group,
     parse_srdf_planning_groups,
 )
+from dimos.manipulation.planning.groups.models import PlanningGroupDefinition
+from dimos.manipulation.planning.groups.registry import PlanningGroupRegistry
+from dimos.manipulation.planning.spec.config import RobotModelConfig
+from dimos.msgs.geometry_msgs.PoseStamped import PoseStamped
 from dimos.robot.model_parser import JointDescription, ModelDescription
 
 
@@ -222,3 +226,35 @@ def test_discovery_auto_discovers_srdf_with_warning(
         )
 
     assert [group.name for group in groups] == ["auto_arm"]
+
+
+def test_primary_pose_group_id_for_robot_raises_when_ambiguous() -> None:
+    registry = PlanningGroupRegistry(
+        [
+            RobotModelConfig(
+                name="robot",
+                model_path=Path("/tmp/robot.urdf"),
+                base_pose=PoseStamped(),
+                joint_names=["joint1", "joint2"],
+                planning_groups=[
+                    PlanningGroupDefinition(
+                        name="left",
+                        joint_names=("joint1",),
+                        base_link="base",
+                        tip_link="left_tool",
+                        source="explicit",
+                    ),
+                    PlanningGroupDefinition(
+                        name="right",
+                        joint_names=("joint2",),
+                        base_link="base",
+                        tip_link="right_tool",
+                        source="explicit",
+                    ),
+                ],
+            )
+        ]
+    )
+
+    with pytest.raises(ValueError, match="multiple|2 pose-targetable|explicit planning group"):
+        registry.primary_pose_group_id_for_robot("robot")

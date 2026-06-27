@@ -23,7 +23,11 @@ from typing import cast
 
 import numpy as np
 
-from dimos.manipulation.planning.groups.models import PlanningGroup, PlanningGroupSelection
+from dimos.manipulation.planning.groups.models import (
+    PlanningGroup,
+    PlanningGroupDefinition,
+    PlanningGroupSelection,
+)
 from dimos.manipulation.planning.planners.rrt_planner import RRTConnectPlanner
 from dimos.manipulation.planning.spec.config import RobotModelConfig
 from dimos.manipulation.planning.spec.enums import PlanningStatus
@@ -42,7 +46,15 @@ def _robot_config(name: str, joint_names: list[str]) -> RobotModelConfig:
         model_path=Path("robot.urdf"),
         base_pose=_pose(),
         joint_names=joint_names,
-        end_effector_link="tool0",
+        planning_groups=[
+            PlanningGroupDefinition(
+                name="manipulator",
+                joint_names=tuple(joint_names),
+                base_link="base_link",
+                tip_link="tool0",
+                source="explicit",
+            )
+        ],
     )
 
 

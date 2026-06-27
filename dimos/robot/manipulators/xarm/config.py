@@ -21,6 +21,7 @@ from typing import Any
 
 from dimos.control.components import HardwareComponent, HardwareType, make_joints
 from dimos.core.global_config import global_config
+from dimos.manipulation.planning.groups.models import PlanningGroupDefinition
 from dimos.manipulation.planning.spec.config import RobotModelConfig
 from dimos.robot.manipulators._modeling import (
     base_pose,
@@ -170,14 +171,24 @@ def make_xarm_model_config(
     if add_gripper:
         xacro_args["add_gripper"] = "true"
 
+    local_joint_names = joint_names(dof)
+    tip_link = "link_tcp" if add_gripper else f"link{dof}"
     return RobotModelConfig(
         name=name,
         model_path=XARM_MODEL_PATH,
         base_pose=base_pose(x_offset, y_offset, z_offset, pitch),
         strip_model_world_joint=True,
-        joint_names=joint_names(dof),
-        end_effector_link="link_tcp" if add_gripper else f"link{dof}",
+        joint_names=local_joint_names,
         base_link="link_base",
+        planning_groups=[
+            PlanningGroupDefinition(
+                name="manipulator",
+                joint_names=tuple(local_joint_names),
+                base_link="link_base",
+                tip_link=tip_link,
+                source="explicit",
+            )
+        ],
         package_paths=XARM_PACKAGE_PATHS,
         xacro_args=xacro_args,
         auto_convert_meshes=True,

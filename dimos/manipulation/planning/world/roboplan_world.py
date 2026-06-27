@@ -41,9 +41,19 @@ except ImportError as exc:
         "Install the manipulation extra before selecting the roboplan backend."
     ) from exc
 
+from dimos.manipulation.planning.groups.identifiers import (
+    local_joint_name_from_global,
+    make_planning_group_id,
+)
+from dimos.manipulation.planning.groups.models import PlanningGroupDefinition
 from dimos.manipulation.planning.spec.config import RobotModelConfig
 from dimos.manipulation.planning.spec.enums import ObstacleType, PlanningStatus
-from dimos.manipulation.planning.spec.models import Obstacle, PlanningResult, WorldRobotID
+from dimos.manipulation.planning.spec.models import (
+    Obstacle,
+    PlanningGroupID,
+    PlanningResult,
+    WorldRobotID,
+)
 from dimos.manipulation.planning.utils.mesh_utils import prepare_urdf_for_drake
 from dimos.manipulation.planning.utils.path_utils import compute_path_length
 from dimos.msgs.geometry_msgs.PoseStamped import PoseStamped
@@ -270,9 +280,16 @@ class RoboPlanWorld:
     # Forward Kinematics
 
     def get_ee_pose(self, ctx: RoboPlanContext, robot_id: WorldRobotID) -> PoseStamped:
-        """Get end-effector pose if RoboPlan exposes FK."""
-        robot = self._get_robot(robot_id)
-        mat = self.get_link_pose(ctx, robot_id, robot.config.end_effector_link)
+        """Get pose for the robot's unique pose-targetable planning group."""
+        return self.get_group_ee_pose(ctx, self._unique_pose_group_id_for_robot(robot_id))
+
+    def get_group_ee_pose(self, ctx: RoboPlanContext, group_id: PlanningGroupID) -> PoseStamped:
+        """Get pose for a planning group's target frame."""
+        robot = self._get_robot_for_group(group_id)
+        group = self._get_group(robot, group_id)
+        if group.tip_link is None:
+            raise ValueError(f"Planning group '{group_id}' has no pose target frame")
+        mat = self.get_link_pose(ctx, robot.robot_id, group.tip_link)
         pose = matrix_to_pose(mat)
         return PoseStamped(
             frame_id="world",
@@ -297,19 +314,28 @@ class RoboPlanWorld:
         return np.asarray(result, dtype=np.float64)
 
     def get_jacobian(self, ctx: RoboPlanContext, robot_id: WorldRobotID) -> NDArray[np.float64]:
-        """Get end-effector Jacobian if RoboPlan exposes a compatible API."""
-        robot = self._get_robot(robot_id)
-        q = ctx.q_by_robot.get(robot_id)
+        """Get Jacobian for the robot's unique pose-targetable planning group."""
+        return self.get_group_jacobian(ctx, self._unique_pose_group_id_for_robot(robot_id))
+
+    def get_group_jacobian(
+        self, ctx: RoboPlanContext, group_id: PlanningGroupID
+    ) -> NDArray[np.float64]:
+        """Get planning group target-frame Jacobian if RoboPlan exposes it."""
+        robot = self._get_robot_for_group(group_id)
+        group = self._get_group(robot, group_id)
+        if group.tip_link is None:
+            raise ValueError(f"Planning group '{group_id}' has no pose target frame")
+        q = ctx.q_by_robot.get(robot.robot_id)
         if q is None:
-            raise KeyError(f"Robot '{robot_id}' not found in context")
+            raise KeyError(f"Robot '{robot.robot_id}' not found in context")
         scene = self._require_scene()
         result = scene.computeFrameJacobian(
-            self._to_scene_q(robot_id, q), robot.config.end_effector_link, True
+            self._to_scene_q(robot.robot_id, q), group.tip_link, True
         )
         arr = np.asarray(result, dtype=np.float64)
         if arr.shape[0] != 6:
             raise ValueError(f"Unexpected RoboPlan Jacobian shape: {arr.shape}; expected 6 x n")
-        return arr
+        return self._project_jacobian_to_group(scene, robot, group, group_id, arr)
 
     # PlannerSpec for native RoboPlan planning
 
@@ -389,8 +415,41 @@ class RoboPlanWorld:
                 package_paths=config.package_paths,
                 xacro_args=config.xacro_args,
                 convert_meshes=config.auto_convert_meshes,
+                strip_world_joint_child_link=config.base_link
+                if config.strip_model_world_joint
+                else None,
             )
         )
+
+    def _project_jacobian_to_group(
+        self,
+        scene: roboplan_core.Scene,
+        robot: _RoboPlanRobotData,
+        group: PlanningGroupDefinition,
+        group_id: PlanningGroupID,
+        jacobian: NDArray[np.float64],
+    ) -> NDArray[np.float64]:
+        scene_joint_order = self._query_scene_joint_order(scene, robot.config)
+        if scene_joint_order is not None and len(scene_joint_order) == jacobian.shape[1]:
+            column_order = scene_joint_order
+        elif len(robot.config.joint_names) == jacobian.shape[1]:
+            column_order = list(robot.config.joint_names)
+        else:
+            raise ValueError(
+                "Cannot project RoboPlan Jacobian for planning group "
+                f"'{group_id}': returned shape {jacobian.shape} without a known joint-column order"
+            )
+
+        column_by_joint = {joint_name: index for index, joint_name in enumerate(column_order)}
+        missing = [
+            joint_name for joint_name in group.joint_names if joint_name not in column_by_joint
+        ]
+        if missing:
+            raise ValueError(
+                "Cannot project RoboPlan Jacobian for planning group "
+                f"'{group_id}': missing joint columns {missing}"
+            )
+        return jacobian[:, [column_by_joint[joint_name] for joint_name in group.joint_names]]
 
     def _prepare_robot_srdf(self, config: RobotModelConfig, urdf_path: Path) -> Path:
         srdf = self._generate_srdf(config, urdf_path)
@@ -507,6 +566,38 @@ class RoboPlanWorld:
             raise KeyError(f"Robot '{robot_id}' not found")
         return self._robots[robot_id]
 
+    def _unique_pose_group_id_for_robot(self, robot_id: WorldRobotID) -> PlanningGroupID:
+        robot = self._get_robot(robot_id)
+        pose_group_ids = [
+            make_planning_group_id(robot.config.name, group.name)
+            for group in robot.config.planning_groups
+            if group.has_pose_target
+        ]
+        if len(pose_group_ids) != 1:
+            raise ValueError(
+                f"Robot '{robot.config.name}' has {len(pose_group_ids)} pose-targetable "
+                "planning groups; call get_group_ee_pose/get_group_jacobian with an explicit "
+                "planning group ID"
+            )
+        return pose_group_ids[0]
+
+    def _get_robot_for_group(self, group_id: PlanningGroupID) -> _RoboPlanRobotData:
+        for robot in self._robots.values():
+            if any(
+                make_planning_group_id(robot.config.name, group.name) == group_id
+                for group in robot.config.planning_groups
+            ):
+                return robot
+        raise KeyError(f"Planning group '{group_id}' not found")
+
+    def _get_group(
+        self, robot: _RoboPlanRobotData, group_id: PlanningGroupID
+    ) -> PlanningGroupDefinition:
+        for group in robot.config.planning_groups:
+            if make_planning_group_id(robot.config.name, group.name) == group_id:
+                return group
+        raise KeyError(f"Planning group '{group_id}' not found")
+
     def _joint_state_to_q(
         self, robot_id: WorldRobotID, joint_state: JointState
     ) -> NDArray[np.float64]:
@@ -515,10 +606,13 @@ class RoboPlanWorld:
             raise ValueError("JointState position length must match configured joint count")
         if not joint_state.name:
             return np.asarray(joint_state.position, dtype=np.float64)
-        name_to_pos = {
-            robot.config.get_urdf_joint_name(name): position
-            for name, position in zip(joint_state.name, joint_state.position, strict=True)
-        }
+        name_to_pos: dict[str, float] = {}
+        for name, position in zip(joint_state.name, joint_state.position, strict=True):
+            if name in robot.config.joint_names:
+                local_name = name
+            else:
+                local_name = local_joint_name_from_global(robot.config.name, name)
+            name_to_pos[local_name] = position
         missing = [name for name in robot.config.joint_names if name not in name_to_pos]
         if missing:
             raise ValueError(f"JointState missing joints for RoboPlanWorld: {missing}")

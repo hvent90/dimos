@@ -374,26 +374,14 @@ class ManipulationModule(Module):
                     break
                 transforms: list[Transform] = []
                 for robot_id, config, _ in self._robots.values():
-                    # Publish world → primary planning-group target frame.
-                    # Fall back to robot-scoped EE only for compatibility configs.
-                    # TODO: Publish one TF per pose-targetable group, or expose the
-                    # backend's full robot TF tree, once consumers stop assuming a
-                    # single robot-scoped end-effector frame.
-                    target_frame = config.end_effector_link
-                    ee_pose: PoseStamped | None
-                    pose_group_id = self._primary_pose_group_id_for_robot(config.name)
-                    if pose_group_id is not None:
-                        pose_group = self._world_monitor.planning_groups.get(pose_group_id)
-                        target_frame = pose_group.tip_link
-                        ee_pose = self._world_monitor.get_group_ee_pose(pose_group_id)
-                    else:
-                        ee_pose = (
-                            self._world_monitor.get_link_pose(robot_id, target_frame)
-                            if target_frame is not None
-                            else None
-                        )
-                    if ee_pose is not None and target_frame is not None:
-                        ee_tf = Transform.from_pose(target_frame, ee_pose)
+                    # Publish world → each pose-targetable planning-group target frame.
+                    for pose_group in self._world_monitor.planning_groups.groups_for_robot(
+                        config.name
+                    ):
+                        if pose_group.tip_link is None:
+                            continue
+                        ee_pose = self._world_monitor.get_group_ee_pose(pose_group.id)
+                        ee_tf = Transform.from_pose(pose_group.tip_link, ee_pose)
                         ee_tf.frame_id = "world"
                         transforms.append(ee_tf)
 
@@ -480,13 +468,9 @@ class ManipulationModule(Module):
             robot_name: Robot to query (required if multiple robots configured)
         """
         if (robot := self._get_robot(robot_name)) and self._world_monitor:
-            _, robot_id, config, _ = robot
+            _, _, config, _ = robot
             pose_group_id = self._primary_pose_group_id_for_robot(config.name)
-            if pose_group_id is not None:
-                return self._world_monitor.get_group_ee_pose(pose_group_id, joint_state=None)
-            if config.end_effector_link is None:
-                return None
-            return self._world_monitor.get_link_pose(robot_id, config.end_effector_link)
+            return self._world_monitor.get_group_ee_pose(pose_group_id, joint_state=None)
         return None
 
     @rpc
@@ -535,10 +519,25 @@ class ManipulationModule(Module):
         )
         return None
 
-    def _primary_pose_group_id_for_robot(self, robot_name: RobotName) -> PlanningGroupID | None:
-        """Return the first pose-targetable group for robot-scoped compatibility paths."""
+    def _primary_pose_group_id_for_robot(self, robot_name: RobotName) -> PlanningGroupID:
+        """Return the unique pose-targetable group for robot-scoped compatibility paths."""
         assert self._world_monitor is not None
-        return self._world_monitor.planning_groups.primary_pose_group_id_for_robot(robot_name)
+        pose_group_ids = [
+            group.id
+            for group in self._world_monitor.planning_groups.groups_for_robot(robot_name)
+            if group.has_pose_target
+        ]
+        if not pose_group_ids:
+            raise ValueError(
+                f"Robot '{robot_name}' has no pose-targetable planning groups; "
+                "use explicit group APIs"
+            )
+        if len(pose_group_ids) > 1:
+            raise ValueError(
+                f"Robot '{robot_name}' has {len(pose_group_ids)} pose-targetable planning groups; "
+                "use explicit group APIs"
+            )
+        return pose_group_ids[0]
 
     def _selected_joint_state(self, group_ids: tuple[PlanningGroupID, ...]) -> JointState | None:
         """Collect current state for exactly the selected global joints."""
@@ -817,11 +816,10 @@ class ManipulationModule(Module):
         if robot is None:
             return IKResult(status=IKStatus.NO_SOLUTION, message="Robot not found")
         selected_robot_name, _, _, _ = robot
-        group_id = self._primary_pose_group_id_for_robot(selected_robot_name)
-        if group_id is None:
-            return IKResult(
-                status=IKStatus.NO_SOLUTION, message="No pose-targetable planning group"
-            )
+        try:
+            group_id = self._primary_pose_group_id_for_robot(selected_robot_name)
+        except ValueError as exc:
+            return IKResult(status=IKStatus.NO_SOLUTION, message=str(exc))
         target_pose = PoseStamped(
             frame_id="world",
             position=pose.position,
@@ -853,9 +851,7 @@ class ManipulationModule(Module):
         if robot is None:
             return False
         selected_robot_name, _, _, _ = robot
-        group_id = self._default_group_id_for_robot(selected_robot_name)
-        if group_id is None:
-            return False
+        group_id = self._primary_pose_group_id_for_robot(selected_robot_name)
         return self.plan_to_pose_targets({group_id: pose})
 
     @rpc
@@ -1038,7 +1034,6 @@ class ManipulationModule(Module):
             "world_robot_id": robot_id,
             "joint_names": config.joint_names,
             "planning_groups": planning_groups,
-            "end_effector_link": config.end_effector_link,
             "base_link": config.base_link,
             "max_velocity": config.max_velocity,
             "max_acceleration": config.max_acceleration,

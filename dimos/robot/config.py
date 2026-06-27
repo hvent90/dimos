@@ -24,7 +24,7 @@ from __future__ import annotations
 from pathlib import Path
 from typing import Any
 
-from pydantic import BaseModel, Field, PrivateAttr
+from pydantic import BaseModel, ConfigDict, Field, PrivateAttr, model_validator
 
 from dimos.control.components import HardwareComponent, HardwareType
 from dimos.control.coordinator import TaskConfig
@@ -53,12 +53,11 @@ class RobotConfig(BaseModel):
     Model parsing is lazy to avoid LFS downloads at import time.
     """
 
+    model_config = ConfigDict(extra="forbid")
+
     # Required fields
     name: str
     model_path: Path | None = None
-    # Compatibility robot-scoped target frame; new planning uses group tip links.
-    end_effector_link: str | None = None
-
     # Physical dimensions (meters)
     height_clearance: float | None = None  # max height
     width_clearance: float | None = None  # max width
@@ -79,7 +78,7 @@ class RobotConfig(BaseModel):
     # Optional overrides (derived from model if not set)
     joint_names: list[str] | None = None
     base_link: str | None = (
-        None  # Compatibility planning override; derived from model root when absent.
+        None  # Placement/weld link override; derived from model root when absent.
     )
     home_joints: list[float] | None = None
 
@@ -113,6 +112,23 @@ class RobotConfig(BaseModel):
     collision_exclusion_pairs: list[tuple[str, str]] = Field(default_factory=list)
 
     _parsed: ModelDescription | None = PrivateAttr(default=None)
+
+    @model_validator(mode="before")
+    @classmethod
+    def _reject_legacy_fields(cls, data: object) -> object:
+        if not isinstance(data, dict):
+            return data
+        if "base_pose_link" in data:
+            raise ValueError(
+                "RobotConfig.base_pose_link was removed; use base_link for robot "
+                "placement and PlanningGroupDefinition.base_link for planning chains"
+            )
+        if "end_effector_link" in data:
+            raise ValueError(
+                "RobotConfig.end_effector_link was removed; define pose target frames "
+                "with PlanningGroupDefinition.tip_link or SRDF planning groups"
+            )
+        return data
 
     def _ensure_parsed(self) -> ModelDescription:
         """Parse model lazily on first access."""
@@ -207,11 +223,6 @@ class RobotConfig(BaseModel):
             controllable_joint_names=joint_names,
             srdf_path=self.srdf_path,
         )
-        legacy_end_effector_link = self.end_effector_link or next(
-            (group.tip_link for group in planning_groups if group.tip_link is not None),
-            None,
-        )
-
         return RobotModelConfig(
             name=self.name,
             model_path=self.model_path,
@@ -219,7 +230,6 @@ class RobotConfig(BaseModel):
             base_pose=base_pose,
             strip_model_world_joint=self.strip_model_world_joint,
             joint_names=joint_names,
-            end_effector_link=legacy_end_effector_link,
             base_link=base_link,
             planning_groups=planning_groups,
             package_paths=self.package_paths,

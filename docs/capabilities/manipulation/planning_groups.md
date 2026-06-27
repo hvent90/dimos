@@ -23,7 +23,8 @@ use global joint names so multiple robots can safely share local names such as
 
 ## Discovering planning groups
 
-DimOS discovers planning groups for each `RobotModelConfig` in this order:
+High-level `RobotConfig.to_robot_model_config()` discovers planning groups in
+this order:
 
 1. Explicit `planning_groups` on the robot model config.
 2. Explicit `srdf_path` on the robot model config.
@@ -31,6 +32,9 @@ DimOS discovers planning groups for each `RobotModelConfig` in this order:
 4. Fallback generation of one `{robot_name}/manipulator` group when the
    configured controllable joints form exactly one unambiguous serial chain.
 5. Error if no SRDF or fallback chain can provide a single valid group.
+
+Direct `RobotModelConfig(...)` construction does not run discovery or synthesize
+groups in `model_post_init`; callers must pass explicit `planning_groups` there.
 
 Supported SRDF group forms:
 
@@ -56,9 +60,10 @@ unique serial target frame.
 
 ## Fallback behavior
 
-When no SRDF or explicit group config is available, fallback uses
-`RobotModelConfig.joint_names` as the candidate controllable set. This field is
-the robot's ordered local model joint set, not an implicit planning group.
+When no SRDF or explicit group config is available through `RobotConfig`,
+fallback uses `RobotModelConfig.joint_names` as the candidate controllable set.
+This field is the robot's ordered local model joint set, not an implicit
+planning group.
 
 Fallback succeeds only when those joints form one unambiguous serial chain. It
 allows prismatic joints in the middle of the chain and strips only terminal tip
@@ -139,12 +144,18 @@ Multi-task dispatch is not atomic: if one trajectory task accepts and a later
 task rejects, DimOS reports the rejection but does not roll back the accepted
 task.
 
-## Compatibility config fields
+## Robot placement config
 
-`RobotModelConfig.base_link`, `RobotModelConfig.base_pose`, and
-`RobotModelConfig.end_effector_link` remain compatibility fields for the current
-Drake weld/placement behavior and older robot-scoped helpers. New planning logic
-should prefer model/SRDF structure and planning group base/tip links.
+`RobotModelConfig.base_pose` and `RobotModelConfig.base_link` describe robot
+placement: `base_pose` places `base_link` in the world and current backends
+use that link for weld/placement and optional model-authored world-joint
+stripping. This is robot placement metadata, not planning-chain metadata.
+
+Planning-group `base_link` and `tip_link` values are the only source for chain
+bases and pose target frames. Robot-scoped end-effector config is no longer
+supported; robot-level EE helper APIs are wrappers over a unique pose-targetable
+planning group and should use explicit group APIs when multiple pose groups
+exist.
 
 Robot placement can be encoded either in model assets or in `base_pose`,
 depending on the blueprint. `joint_names` remains supported and should describe

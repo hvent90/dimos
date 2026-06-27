@@ -43,7 +43,6 @@ def _config(
         model_path=Path("robot.urdf"),
         base_pose=_pose(),
         joint_names=joint_names,
-        end_effector_link="tool0",
         base_link="base_link",
         planning_groups=groups,
     )
@@ -57,8 +56,6 @@ def _world(*configs: RobotModelConfig) -> DrakeWorld:
             config=config,
             model_instance=None,
             joint_indices=[],
-            ee_frame=None,
-            base_frame=None,
         )
         for index, config in enumerate(configs, start=1)
     }
@@ -101,7 +98,7 @@ def test_robot_model_config_allows_planning_groups_without_robot_scoped_ee() -> 
 
     groups = registry.list()
 
-    assert config.end_effector_link is None
+    assert not hasattr(config, "end_effector_link")
     assert groups[0].id == "left/arm"
 
 

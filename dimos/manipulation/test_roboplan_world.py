@@ -24,7 +24,9 @@ from typing import Any, ClassVar
 
 import numpy as np
 import pytest
+from pytest_mock import MockerFixture
 
+from dimos.manipulation.planning.groups.models import PlanningGroupDefinition
 from dimos.manipulation.planning.spec.config import RobotModelConfig
 from dimos.manipulation.planning.spec.enums import ObstacleType, PlanningStatus
 from dimos.manipulation.planning.spec.models import Obstacle
@@ -258,15 +260,24 @@ def robot_config(tmp_path: Path) -> RobotModelConfig:
         </robot>
         """
     )
-    return RobotModelConfig(
+    config = RobotModelConfig(
         name="arm",
         model_path=model_path,
         base_pose=PoseStamped(position=Vector3(), orientation=Quaternion()),  # type: ignore[call-arg]
         joint_names=["joint1", "joint2"],
-        end_effector_link="tcp",
+        planning_groups=[
+            PlanningGroupDefinition(
+                name="manipulator",
+                joint_names=("joint1", "joint2"),
+                base_link="base",
+                tip_link="tcp",
+                source="explicit",
+            )
+        ],
         joint_limits_lower=[-1.0, -2.0],
         joint_limits_upper=[1.0, 2.0],
     )
+    return config
 
 
 def _make_world(fake_roboplan: None, robot_config: RobotModelConfig) -> tuple[Any, str]:
@@ -312,6 +323,20 @@ def test_robot_registration_finalization_and_joint_limits(
 
     world.finalize()
     assert world.is_finalized
+
+
+def test_prepare_robot_urdf_strips_world_joint_to_base_link(
+    fake_roboplan: None, robot_config: RobotModelConfig, mocker: MockerFixture
+) -> None:
+    module = _import_roboplan_world(fake_roboplan)
+    prepared_path = robot_config.model_path
+    prepare = mocker.patch.object(module, "prepare_urdf_for_drake", return_value=str(prepared_path))
+    config = robot_config.model_copy(update={"strip_model_world_joint": True, "base_link": "link1"})
+
+    module.RoboPlanWorld()._prepare_robot_urdf(config)
+
+    prepare.assert_called_once()
+    assert prepare.call_args.kwargs["strip_world_joint_child_link"] == "link1"
 
 
 def test_scene_joint_limits_are_reordered_to_configured_joint_order(
@@ -364,15 +389,14 @@ def test_context_cloning_and_joint_state_round_trip(
     assert live_round_trip.position == [0.1, 0.2]
 
 
-def test_joint_name_mapping_is_applied_to_input_states(
+def test_global_joint_names_are_mapped_to_local_model_joint_order(
     fake_roboplan: None, robot_config: RobotModelConfig
 ) -> None:
-    robot_config.joint_name_mapping = {"arm/j1": "joint1", "arm/j2": "joint2"}
     world, robot_id = _make_world(fake_roboplan, robot_config)
     world.finalize()
 
     world.sync_from_joint_state(
-        robot_id, JointState(name=["arm/j1", "arm/j2"], position=[0.2, 0.3])
+        robot_id, JointState(name=["arm/joint1", "arm/joint2"], position=[0.2, 0.3])
     )
 
     live_round_trip = world.get_joint_state(world.get_live_context(), robot_id)
@@ -463,6 +487,60 @@ def test_fk_jacobian_and_explicit_min_distance_unsupported(
     assert world.get_jacobian(ctx, robot_id).shape == (6, 2)
     with pytest.raises(NotImplementedError, match="get_min_distance"):
         world.get_min_distance(ctx, robot_id)
+
+
+def test_group_jacobian_projects_subset_columns_in_group_order(
+    fake_roboplan: None,
+    robot_config: RobotModelConfig,
+    monkeypatch: pytest.MonkeyPatch,
+    mocker: MockerFixture,
+) -> None:
+    config = robot_config.model_copy(
+        update={
+            "joint_names": ["joint1", "joint2", "joint3"],
+            "planning_groups": [
+                PlanningGroupDefinition(
+                    name="wrist",
+                    joint_names=("joint3", "joint1"),
+                    base_link="base",
+                    tip_link="tcp",
+                    source="explicit",
+                )
+            ],
+            "joint_limits_lower": [-1.0, -2.0, -3.0],
+            "joint_limits_upper": [1.0, 2.0, 3.0],
+        }
+    )
+    monkeypatch.setattr(FakeScene, "joint_group_joint_names", ["joint2", "joint1", "joint3"])
+    monkeypatch.setattr(FakeScene, "position_limits_lower", [-2.0, -1.0, -3.0])
+    monkeypatch.setattr(FakeScene, "position_limits_upper", [2.0, 1.0, 3.0])
+    mocker.patch.object(
+        FakeScene,
+        "computeFrameJacobian",
+        lambda self, q, frame_name, local=True: np.arange(18, dtype=np.float64).reshape(6, 3),
+    )
+    world, robot_id = _make_world(fake_roboplan, config)
+    world.finalize()
+
+    jacobian = world.get_group_jacobian(world.get_live_context(), "arm/wrist")
+
+    expected = np.arange(18, dtype=np.float64).reshape(6, 3)[:, [2, 1]]
+    np.testing.assert_allclose(jacobian, expected)
+
+
+def test_group_jacobian_errors_when_joint_column_order_unknown(
+    fake_roboplan: None, robot_config: RobotModelConfig, mocker: MockerFixture
+) -> None:
+    mocker.patch.object(
+        FakeScene,
+        "computeFrameJacobian",
+        lambda self, q, frame_name, local=True: np.ones((6, 3), dtype=np.float64),
+    )
+    world, _ = _make_world(fake_roboplan, robot_config)
+    world.finalize()
+
+    with pytest.raises(ValueError, match="known joint-column order"):
+        world.get_group_jacobian(world.get_live_context(), "arm/manipulator")
 
 
 def test_native_planner_converts_path(fake_roboplan: None, robot_config: RobotModelConfig) -> None:

@@ -26,7 +26,7 @@ from dimos.manipulation.planning.spec.models import (
     RobotName,
 )
 
-PlanningGroupSource: TypeAlias = Literal["srdf", "fallback"]
+PlanningGroupSource: TypeAlias = Literal["srdf", "fallback", "explicit"]
 
 
 @dataclass(frozen=True)

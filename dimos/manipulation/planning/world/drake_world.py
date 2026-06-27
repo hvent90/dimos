@@ -114,8 +114,6 @@ class _RobotData:
     config: RobotModelConfig
     model_instance: Any  # ModelInstanceIndex
     joint_indices: list[int]  # Indices into plant's position vector
-    ee_frame: Any | None  # Compatibility robot-scoped end-effector frame
-    base_frame: Any  # Compatibility robot-scoped base frame
     preview_model_instance: Any = None  # ModelInstanceIndex for preview (yellow) robot
     preview_joint_indices: list[int] = field(default_factory=list)
 
@@ -225,9 +223,8 @@ class DrakeWorld(WorldSpec, VisualizationSpec):
         """Add a robot to the world. Returns robot_id.
 
         Same model_path + base_pose reuses the model instance (e.g. two arms in one URDF).
-        base_pose/base_link/end_effector_link remain compatibility fields for
-        placement and robot-scoped helpers; group-aware planning should use
-        planning group base/tip links.
+        base_pose/base_link define world placement and welding behavior;
+        planning group base/tip links define kinematic chains and target frames.
         """
         if self._finalized:
             raise RuntimeError("Cannot add robot after world is finalized")
@@ -241,8 +238,7 @@ class DrakeWorld(WorldSpec, VisualizationSpec):
 
             self._validate_joints(config, model_instance)
 
-            ee_frame = self._legacy_ee_frame(config, model_instance)
-            base_frame = self._plant.GetBodyByName(config.base_link, model_instance).body_frame()
+            self._plant.GetBodyByName(config.base_link, model_instance)
 
             # Preview (yellow ghost) — always a separate instance per robot
             preview_model_instance = None
@@ -255,20 +251,12 @@ class DrakeWorld(WorldSpec, VisualizationSpec):
                 config=config,
                 model_instance=model_instance,
                 joint_indices=[],
-                ee_frame=ee_frame,
-                base_frame=base_frame,
                 preview_model_instance=preview_model_instance,
             )
             self._planning_groups.add_robot(config)
 
             logger.info(f"Added robot '{robot_id}' ({config.name})")
             return robot_id
-
-    def _legacy_ee_frame(self, config: RobotModelConfig, model_instance: Any) -> Any | None:
-        """Resolve compatibility robot-scoped EE frame, if available."""
-        if config.end_effector_link is None:
-            return None
-        return self._plant.GetBodyByName(config.end_effector_link, model_instance).body_frame()
 
     def _load_model(self, config: RobotModelConfig) -> Any:
         """Load robot model (URDF/xacro/MJCF) and return model instance."""
@@ -362,6 +350,22 @@ class DrakeWorld(WorldSpec, VisualizationSpec):
         if len(matches) > 1:
             raise ValueError(f"Robot name '{robot_name}' is not unique in planning world")
         return matches[0]
+
+    def _unique_pose_group_id_for_robot(self, robot_id: WorldRobotID) -> PlanningGroupID:
+        if robot_id not in self._robots:
+            raise KeyError(f"Robot '{robot_id}' not found")
+        robot_name = self._robots[robot_id].config.name
+        pose_group_ids = [
+            group.id
+            for group in self._planning_groups.groups_for_robot(robot_name)
+            if group.has_pose_target
+        ]
+        if len(pose_group_ids) != 1:
+            raise ValueError(
+                f"Robot '{robot_name}' has {len(pose_group_ids)} pose-targetable planning groups; "
+                "call get_group_ee_pose/get_group_jacobian with an explicit planning group ID"
+            )
+        return pose_group_ids[0]
 
     def get_joint_limits(
         self, robot_id: WorldRobotID
@@ -893,11 +897,6 @@ class DrakeWorld(WorldSpec, VisualizationSpec):
             raise KeyError(f"Robot '{robot_id}' not found")
 
         robot_data = self._robots[robot_id]
-        if robot_data.ee_frame is None:
-            raise ValueError(
-                f"Robot '{robot_id}' has no robot-scoped end-effector link; "
-                "use get_group_ee_pose() with an explicit planning group ID"
-            )
         plant_ctx = self._diagram.GetSubsystemContext(self._plant, ctx)
         full_positions = self._plant.GetPositions(plant_ctx)
 
@@ -1007,24 +1006,8 @@ class DrakeWorld(WorldSpec, VisualizationSpec):
         return _pose_stamped_from_drake_transform(tip_pose)
 
     def get_ee_pose(self, ctx: Context, robot_id: WorldRobotID) -> PoseStamped:
-        """Get pose for a robot's compatibility end-effector frame."""
-        if not self._finalized:
-            raise RuntimeError("World must be finalized first")
-
-        if robot_id not in self._robots:
-            raise KeyError(f"Robot '{robot_id}' not found")
-
-        robot_data = self._robots[robot_id]
-        if robot_data.ee_frame is None:
-            raise ValueError(
-                f"Robot '{robot_id}' has no robot-scoped end-effector link; "
-                "use get_group_jacobian() with an explicit planning group ID"
-            )
-        plant_ctx = self._diagram.GetSubsystemContext(self._plant, ctx)
-
-        ee_body = robot_data.ee_frame.body()
-        X_WE = self._plant.EvalBodyPoseInWorld(plant_ctx, ee_body)
-        return _pose_stamped_from_drake_transform(X_WE)
+        """Get pose for a robot's unique pose-targetable planning group."""
+        return self.get_group_ee_pose(ctx, self._unique_pose_group_id_for_robot(robot_id))
 
     def get_link_pose(
         self, ctx: Context, robot_id: WorldRobotID, link_name: str
@@ -1050,40 +1033,8 @@ class DrakeWorld(WorldSpec, VisualizationSpec):
         return result  # type: ignore[no-any-return]
 
     def get_jacobian(self, ctx: Context, robot_id: WorldRobotID) -> NDArray[np.float64]:
-        """Get robot-scoped geometric Jacobian for the compatibility EE frame.
-
-        Rows: [vx, vy, vz, wx, wy, wz] (linear, then angular)
-        """
-        if not self._finalized:
-            raise RuntimeError("World must be finalized first")
-
-        if robot_id not in self._robots:
-            raise KeyError(f"Robot '{robot_id}' not found")
-
-        robot_data = self._robots[robot_id]
-        plant_ctx = self._diagram.GetSubsystemContext(self._plant, ctx)
-
-        # Compute full Jacobian
-        J_full = self._plant.CalcJacobianSpatialVelocity(
-            plant_ctx,
-            JacobianWrtVariable.kQDot,
-            robot_data.ee_frame,
-            np.array([0.0, 0.0, 0.0]),  # type: ignore[arg-type]  # Point on end-effector
-            self._plant.world_frame(),
-            self._plant.world_frame(),
-        )
-
-        # Extract columns for this robot's joints
-        n_joints = len(robot_data.joint_indices)
-        J_robot = np.zeros((6, n_joints))
-
-        for i, joint_idx in enumerate(robot_data.joint_indices):
-            J_robot[:, i] = J_full[:, joint_idx]
-
-        # Reorder rows: Drake uses [angular, linear], we want [linear, angular]
-        J_reordered = np.vstack([J_robot[3:6, :], J_robot[0:3, :]])
-
-        return J_reordered
+        """Get Jacobian for a robot's unique pose-targetable planning group."""
+        return self.get_group_jacobian(ctx, self._unique_pose_group_id_for_robot(robot_id))
 
     def get_group_jacobian(self, ctx: Context, group_id: PlanningGroupID) -> NDArray[np.float64]:
         """Get geometric Jacobian for a planning group's target frame.

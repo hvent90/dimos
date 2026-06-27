@@ -30,7 +30,6 @@ from dimos.msgs.geometry_msgs.PoseStamped import PoseStamped
 from dimos.msgs.geometry_msgs.Transform import Transform
 from dimos.msgs.sensor_msgs.JointState import JointState
 from dimos.utils.logging_config import setup_logger
-from dimos.utils.transform_utils import pose_to_matrix
 
 if TYPE_CHECKING:
     from numpy.typing import NDArray
@@ -79,11 +78,20 @@ class DrakeOptimizationIK:
         position_tolerance: float = 0.001,
         orientation_tolerance: float = 0.01,
         max_attempts: int = 10,
+        target_frame_name: str | None = None,
     ) -> IKResult:
         """Solve IK with multiple random restarts, returning the best solution."""
         error = self._validate_world(world)
         if error is not None:
             return error
+        target_frame_name = target_frame_name or _unique_pose_target_frame_for_robot(
+            world, robot_id
+        )
+        if target_frame_name is None:
+            return _create_failure_result(
+                IKStatus.NO_SOLUTION,
+                f"Robot '{robot_id}' does not have a unique pose-targetable planning group",
+            )
 
         # Convert PoseStamped to 4x4 matrix via Transform
         target_matrix = Transform(
@@ -121,6 +129,7 @@ class DrakeOptimizationIK:
             result = self._solve_single(
                 world=world,
                 robot_id=robot_id,
+                target_frame_name=target_frame_name,
                 target_transform=target_transform,
                 seed=current_seed,
                 joint_names=joint_names,
@@ -174,6 +183,11 @@ class DrakeOptimizationIK:
                 "DrakeOptimizationIK supports exactly one pose target",
             )
         group, target_pose = next(iter(pose_targets.items()))
+        if group.tip_link is None:
+            return _create_failure_result(
+                IKStatus.NO_SOLUTION,
+                f"Planning group '{group.id}' has no pose target frame",
+            )
         robot_id = _robot_id_for_name(world, group.robot_name)
         if robot_id is None:
             return _create_failure_result(
@@ -188,12 +202,14 @@ class DrakeOptimizationIK:
             position_tolerance=position_tolerance,
             orientation_tolerance=orientation_tolerance,
             max_attempts=max_attempts,
+            target_frame_name=group.tip_link,
         )
 
     def _solve_single(
         self,
         world: WorldSpec,
         robot_id: WorldRobotID,
+        target_frame_name: str,
         target_transform: RigidTransform,
         seed: NDArray[np.float64],
         joint_names: list[str],
@@ -209,12 +225,13 @@ class DrakeOptimizationIK:
         # Create IK problem
         ik = InverseKinematics(plant)
 
-        # Get end-effector frame
-        ee_frame = robot_data.ee_frame
+        target_frame = plant.GetBodyByName(
+            target_frame_name, robot_data.model_instance
+        ).body_frame()
 
         # Add position constraint
         ik.AddPositionConstraint(
-            frameB=ee_frame,
+            frameB=target_frame,
             p_BQ=np.array([0.0, 0.0, 0.0]),  # type: ignore[arg-type]
             frameA=plant.world_frame(),
             p_AQ_lower=target_transform.translation() - np.array([position_tolerance] * 3),
@@ -225,7 +242,7 @@ class DrakeOptimizationIK:
         ik.AddOrientationConstraint(
             frameAbar=plant.world_frame(),
             R_AbarA=target_transform.rotation(),
-            frameBbar=ee_frame,
+            frameBbar=target_frame,
             R_BbarB=RotationMatrix(),
             theta_bound=orientation_tolerance,
         )
@@ -260,10 +277,10 @@ class DrakeOptimizationIK:
         solution_state = JointState(name=joint_names, position=joint_solution.tolist())
         with world.scratch_context() as ctx:
             world.set_joint_state(ctx, robot_id, solution_state)
-            actual_pose = world.get_ee_pose(ctx, robot_id)
+            actual_matrix = world.get_link_pose(ctx, robot_id, target_frame_name)
 
         position_error, orientation_error = compute_pose_error(
-            pose_to_matrix(actual_pose),
+            actual_matrix,
             target_transform.GetAsMatrix4(),  # type: ignore[arg-type]
         )
 
@@ -298,6 +315,18 @@ def _robot_id_for_name(world: WorldSpec, robot_name: str) -> WorldRobotID | None
         if world.get_robot_config(robot_id).name == robot_name:
             return robot_id
     return None
+
+
+def _unique_pose_target_frame_for_robot(world: WorldSpec, robot_id: WorldRobotID) -> str | None:
+    config = world.get_robot_config(robot_id)
+    target_frames = [
+        group.tip_link
+        for group in config.planning_groups
+        if group.has_pose_target and group.tip_link is not None
+    ]
+    if len(target_frames) != 1:
+        return None
+    return target_frames[0]
 
 
 def _create_failure_result(

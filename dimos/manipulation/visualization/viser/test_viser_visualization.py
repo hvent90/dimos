@@ -22,10 +22,12 @@ from types import ModuleType, SimpleNamespace, TracebackType
 
 import numpy as np
 import pytest
+from pytest_mock import MockerFixture
 
 pytest.importorskip("viser", reason="Viser optional dependency is not installed")
 
-from dimos.manipulation.planning.groups.models import PlanningGroup
+from dimos.manipulation.planning.groups.models import PlanningGroup, PlanningGroupDefinition
+from dimos.manipulation.planning.spec.config import RobotModelConfig
 from dimos.manipulation.planning.spec.enums import IKStatus
 from dimos.manipulation.planning.spec.models import (
     CollisionCheckResult,
@@ -76,8 +78,8 @@ DEFAULT_GROUP_ID = "arm:manipulator"
 class RobotConfigStub:
     name: str = "arm"
     joint_names: list[str] | None = None
-    end_effector_link: str = "ee_link"
     base_link: str = "base_link"
+    planning_groups: list[PlanningGroupDefinition] | None = None
     home_joints: list[float] | None = None
     joint_limits_lower: list[float] | None = None
     joint_limits_upper: list[float] | None = None
@@ -85,6 +87,16 @@ class RobotConfigStub:
     def __post_init__(self) -> None:
         if self.joint_names is None:
             self.joint_names = ["j1", "j2"]
+        if self.planning_groups is None:
+            self.planning_groups = [
+                PlanningGroupDefinition(
+                    name="manipulator",
+                    joint_names=tuple(self.joint_names),
+                    base_link=self.base_link,
+                    tip_link="ee_link",
+                    source="explicit",
+                )
+            ]
 
 
 @dataclass
@@ -390,14 +402,24 @@ def make_planning_group_info(
     has_pose_target: bool = True,
 ) -> PlanningGroup:
     joint_names = [str(name) for name in config.joint_names]
+    planning_groups = config.planning_groups or [
+        PlanningGroupDefinition(
+            name=group_name,
+            joint_names=tuple(joint_names),
+            base_link="base_link",
+            tip_link="ee_link",
+            source="explicit",
+        )
+    ]
+    group = planning_groups[0]
     return PlanningGroup(
         id=f"{robot_name}:{group_name}",
         group_name=group_name,
         robot_name=robot_name,
         joint_names=tuple(f"{robot_name}/{name}" for name in joint_names),
         local_joint_names=tuple(joint_names),
-        base_link=str(config.base_link),
-        tip_link=str(config.end_effector_link) if has_pose_target else None,
+        base_link=str(group.base_link),
+        tip_link=str(group.tip_link) if has_pose_target else None,
         source="fallback",
     )
 
@@ -837,7 +859,46 @@ def test_viser_joint_configuration_maps_names_to_urdf_order() -> None:
     )
     scene.register_robot("robot1", cfg)
     scene.set_urdf_joints(urdf, cfg.joint_names, [1.5, 2.5])
+
     assert urdf.cfg == [1.5, 2.5, 0.0]
+
+
+def test_prepared_urdf_path_rejects_base_link_root_mismatch(
+    mocker: MockerFixture,
+) -> None:
+    server = FakeServer()
+    scene = ViserManipulationScene(
+        server, lambda *args, **kwargs: FakeUrdf(("joint1",)), preview_fps=10.0
+    )
+    prepared_path = "/tmp/prepared.urdf"
+    prepare = mocker.patch.object(
+        scene_module, "prepare_urdf_for_drake", return_value=prepared_path
+    )
+    mocker.patch.object(
+        scene_module, "parse_model", return_value=SimpleNamespace(root_link="world")
+    )
+    config = RobotModelConfig(
+        name="arm",
+        model_path="/tmp/arm.urdf",
+        base_pose=PoseStamped(),
+        joint_names=["joint1"],
+        base_link="base",
+        strip_model_world_joint=True,
+        planning_groups=[
+            PlanningGroupDefinition(
+                name="manipulator",
+                joint_names=("joint1",),
+                base_link="base",
+                tip_link="tool",
+                source="explicit",
+            )
+        ],
+    )
+
+    with pytest.raises(ValueError, match="base_link 'base'.*URDF root 'world'"):
+        scene.prepared_urdf_path(config)
+
+    assert prepare.call_args.kwargs["strip_world_joint_child_link"] == "base"
 
 
 def test_scene_adds_reference_grid_when_supported() -> None:

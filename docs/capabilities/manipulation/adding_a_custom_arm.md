@@ -529,11 +529,11 @@ def _make_yourarm_config(
                 joint_names=tuple(joint_names),
                 base_link="base_link",
                 tip_link="link6",
-                source="fallback",
+                source="explicit",
             )
         ],
-        base_pose=_make_base_pose(y=y_offset),  # Compatibility; prefer model placement
-        base_link="base_link",                 # Compatibility robot-scoped base
+        base_pose=_make_base_pose(y=y_offset),  # world -> base_link placement
+        base_link="base_link",                 # Robot-scoped placement/weld/strip link
         package_paths={"yourarm_description": _YOURARM_PACKAGE_PATH},
         xacro_args={},                  # Xacro arguments if using .xacro files
         collision_exclusion_pairs=[],   # Pairs of links that can touch (e.g., gripper fingers)
@@ -566,7 +566,8 @@ yourarm_planner = manipulation_module(
 |-------|-------------|
 | `model_path` | Path to `.urdf` or `.xacro` file |
 | `joint_names` | Ordered controllable local model joint set (must match URDF); not itself a planning group |
-| `planning_groups` / `srdf_path` | Explicit planning groups or SRDF source; fallback can generate `{robot_name}/manipulator` for an unambiguous single chain |
+| `planning_groups` / `srdf_path` | Explicit planning groups or SRDF source; direct `RobotModelConfig(...)` helpers should pass explicit groups, while high-level `RobotConfig.to_robot_model_config()` can discover groups from SRDF/fallback |
+| `base_pose` / `base_link` | Optional robot placement: `base_pose` places `base_link` in the world for weld/strip behavior |
 | `package_paths` | Maps `package://` URIs to filesystem paths (for xacro) |
 | `coordinator_task_name` | Must match the `TaskConfig.name` in your coordinator blueprint |
 | `collision_exclusion_pairs` | List of `(link_a, link_b)` tuples for links that may legitimately touch (e.g., gripper fingers) |
@@ -576,10 +577,10 @@ mechanically as `{robot_name}/{local_joint_name}` (for example, `arm/joint1`).
 Keep hardware-native name translation inside the hardware adapter; manipulation
 planning config uses local model joint names.
 
-`base_link`, `base_pose`, and `end_effector_link` are compatibility fields used
-by current placement and robot-scoped helper paths. New planning code should use
-SRDF/planning-group chain base/tip links and encode robot placement in the model. See
-[Planning Groups](/docs/capabilities/manipulation/planning_groups.md).
+Planning-group `base_link`/`tip_link` values define kinematic chains and pose
+target frames. `base_link` is only the robot-scoped link placed by
+`base_pose`; do not use it as a substitute for planning-group chain metadata.
+See [Planning Groups](/docs/capabilities/manipulation/planning_groups.md).
 
 ## Step 5: Register Blueprints
 
