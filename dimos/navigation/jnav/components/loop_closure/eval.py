@@ -15,8 +15,10 @@
 """Evaluate a loop-closure module against a recording.
 
 The raw-baseline robot trajectory comes from the recording's tf (the
-``world``->``base_link`` chain, sampled at each odom time) when the recording has
-tf; recordings without tf fall back to the odom stream's stored poses.
+``world``->``base_link`` chain, sampled at each odom time). tf is REQUIRED: a
+recording without a tf tree is an error (run ``add_tf`` first) — there is no
+odom-pose fallback. tf is allowed to come online within a short opening window
+(``--tf-startup-tolerance-s``).
 
 Two ground-truth-free scores, before vs after correction:
   * April-tag agreement — a fixed tag re-seen along the run should map to one
@@ -544,47 +546,49 @@ def run_module_graph(
 
 # Tolerance for composing world->body from the recording's tf at an odom time.
 TF_LOOKUP_TOLERANCE_S = 0.1
+# tf may come online slightly after the odom stream starts (sensor/static warmup);
+# odom samples before tf is available are skipped only within this opening window.
+TF_STARTUP_TOLERANCE_S = 2.0
 
 
-def _odom_pose_samples(db_path: Path, odom_stream: str) -> tuple[np.ndarray, np.ndarray]:
-    """Robot trajectory straight from the odometry stream's stored poses."""
-    times: list[float] = []
-    poses: list[list[float]] = []
-    for timestamp, payload in iterate_stream(db_path, odom_stream):
-        pose = RateReplay._payload_pose(payload)
-        times.append(timestamp)
-        poses.append(
-            [
-                pose.position.x,
-                pose.position.y,
-                pose.position.z,
-                pose.orientation.x,
-                pose.orientation.y,
-                pose.orientation.z,
-                pose.orientation.w,
-            ]
-        )
-    return (
-        np.asarray(times, dtype=np.float64),
-        np.asarray(poses, dtype=np.float64).reshape(-1, 7),
-    )
-
-
-def _tf_pose_samples(
-    db_path: Path, odom_stream: str, world_frame: str, body_frame: str
-) -> tuple[np.ndarray, np.ndarray] | None:
+def tf_pose_samples(
+    db_path: Path,
+    odom_stream: str,
+    *,
+    world_frame: str,
+    body_frame: str,
+    startup_tolerance_s: float = TF_STARTUP_TOLERANCE_S,
+) -> tuple[np.ndarray, np.ndarray]:
     """Robot trajectory composed from the recording's tf (``world_frame ->
-    body_frame``) sampled at each odom timestamp. ``None`` if the recording has no
-    tf, so the caller can fall back to raw odom poses."""
+    body_frame``) sampled at each odom timestamp.
+
+    tf is REQUIRED — this raises (no odom-pose fallback) when the recording has no
+    tf tree, or when tf never comes online within ``startup_tolerance_s`` of the
+    odom start. Missing samples after tf is online (sporadic lookup gaps) are
+    skipped."""
     db_store = store(db_path)
     if "tf" not in db_store.list_streams() or not db_store.tf.has_transforms():
-        return None
+        raise SystemExit(
+            f"{db_path}: no tf tree — eval requires tf (run add_tf first); odom fallback removed"
+        )
     times: list[float] = []
     poses: list[list[float]] = []
+    odom_t0: float | None = None
+    tf_online = False
     for timestamp, _payload in iterate_stream(db_path, odom_stream):
+        if odom_t0 is None:
+            odom_t0 = timestamp
         transform = db_store.tf.get(world_frame, body_frame, timestamp, TF_LOOKUP_TOLERANCE_S)
         if transform is None:
-            continue
+            if tf_online:
+                continue  # sporadic gap once tf is up — skip this sample
+            if timestamp - odom_t0 <= startup_tolerance_s:
+                continue  # opening warmup window — tf not online yet, tolerated
+            raise SystemExit(
+                f"{db_path}: tf did not come online within {startup_tolerance_s}s of the"
+                f" odom start (world={world_frame!r} body={body_frame!r})"
+            )
+        tf_online = True
         times.append(timestamp)
         poses.append(
             [
@@ -598,25 +602,11 @@ def _tf_pose_samples(
             ]
         )
     if not times:
-        return None
+        raise SystemExit(f"{db_path}: tf produced no {world_frame}->{body_frame} samples")
     return (
         np.asarray(times, dtype=np.float64),
         np.asarray(poses, dtype=np.float64).reshape(-1, 7),
     )
-
-
-def raw_pose_samples(
-    db_path: Path, odom_stream: str, *, world_frame: str, body_frame: str
-) -> tuple[np.ndarray, np.ndarray, str]:
-    """The raw-baseline trajectory as ``(times, [x,y,z,qx,qy,qz,qw], source)``.
-
-    Prefers the recording's tf (``world_frame -> body_frame``, world-registered);
-    falls back to the odometry stream's stored poses when there is no tf."""
-    tf_samples = _tf_pose_samples(db_path, odom_stream, world_frame, body_frame)
-    if tf_samples is not None:
-        return tf_samples[0], tf_samples[1], "tf"
-    times, poses = _odom_pose_samples(db_path, odom_stream)
-    return times, poses, "odom"
 
 
 def _subsampled_path(positions: np.ndarray) -> np.ndarray:
@@ -673,6 +663,7 @@ def evaluate(
     ignore_tags: set[int] | None = None,
     world_frame: str = "world",
     body_frame: str = "base_link",
+    tf_startup_tolerance_s: float = TF_STARTUP_TOLERANCE_S,
 ) -> dict[str, Any]:
     streams = list_streams(db_path)
     for required in (odom_stream, lidar_stream):
@@ -749,14 +740,16 @@ def evaluate(
     if not graph:
         raise SystemExit(f"{module_name} produced an empty pose graph")
 
-    # Raw-baseline trajectory: composed from the recording's tf (world->body) when
-    # present, else the odom stream's stored poses.
-    raw_times, raw_poses7, pose_source = raw_pose_samples(
-        db_path, odom_stream, world_frame=world_frame, body_frame=body_frame
+    # Raw-baseline trajectory: composed from the recording's tf (world->body).
+    # tf is required — no odom-pose fallback (see tf_pose_samples).
+    raw_times, raw_poses7 = tf_pose_samples(
+        db_path,
+        odom_stream,
+        world_frame=world_frame,
+        body_frame=body_frame,
+        startup_tolerance_s=tf_startup_tolerance_s,
     )
-    if raw_poses7.size == 0:
-        raise SystemExit(f"no raw baseline poses (tf nor {odom_stream!r}) in {db_path}")
-    print(f"raw baseline pose source: {pose_source} ({len(raw_times)} samples)")
+    print(f"raw baseline from tf {world_frame}->{body_frame} ({len(raw_times)} samples)")
     raw_xyz_base = trajectory_lookup(raw_times, raw_poses7[:, :3], ODOM_MATCH_TOLERANCE_S)
     raw_pose7_base = pose7_lookup(raw_times, raw_poses7, ODOM_MATCH_TOLERANCE_S)
 
@@ -831,7 +824,7 @@ def evaluate(
             db_path, pgo_config, lidar_stream, odom_stream, drift_per_sec
         ),
         "replay": replay_stats,
-        "pose_source": pose_source,
+        "pose_source": "tf",
         "world_frame": world_frame,
         "body_frame": body_frame,
         "april_tags": {
@@ -944,6 +937,12 @@ def main() -> None:
         default="base_link",
         help="tf frame tracking the robot body (the raw baseline is world_frame->body_frame)",
     )
+    parser.add_argument(
+        "--tf-startup-tolerance-s",
+        type=float,
+        default=TF_STARTUP_TOLERANCE_S,
+        help="grace window for tf to come online after the odom start before erroring",
+    )
     args = parser.parse_args()
 
     drift_per_sec = (
@@ -988,6 +987,7 @@ def main() -> None:
         ignore_tags=ignore_tags,
         world_frame=args.world_frame,
         body_frame=args.body_frame,
+        tf_startup_tolerance_s=args.tf_startup_tolerance_s,
     )
 
 
