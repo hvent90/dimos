@@ -42,10 +42,12 @@ from dimos.manipulation.planning.spec.enums import (
     TrajectoryDispatchStatus,
 )
 from dimos.manipulation.planning.spec.models import (
+    CartesianDelta,
     CollisionCheckResult,
     GeneratedPlan,
     GeneratedTrajectory,
     IKResult,
+    PlanningResult,
     PlanningSceneInfo,
 )
 from dimos.manipulation.planning.spec.protocols import VisualizationSpec
@@ -791,6 +793,14 @@ def _make_generated_plan(group_ids: tuple[str, ...], *points: list[float]) -> Ge
     )
 
 
+def _successful_planning_result(*points: list[float]) -> PlanningResult:
+    return PlanningResult(
+        path=[JointState(name=["left/j1", "left/j2"], position=list(point)) for point in points],
+        status=PlanningStatus.SUCCESS,
+        message="ok",
+    )
+
+
 def _trajectory_generator() -> MagicMock:
     generator = MagicMock()
     generator.generate.side_effect = lambda positions: JointTrajectory(
@@ -1124,6 +1134,116 @@ class TestManipulationPreview:
 
         module._world_monitor = MagicMock()
         assert module.preview_plan() is False
+
+
+class TestLinearTcpPosePlanning:
+    def test_plan_linear_to_pose_targets_calls_cartesian_planner(self):
+        config = _make_robot_config("left", ["j1", "j2"], "task")
+        module = _make_module_with_monitor(config)
+        module._planner = MagicMock()
+        module._world_monitor.world = MagicMock()
+        module._world_monitor.get_current_joint_state.return_value = JointState(
+            name=["j1", "j2"], position=[0.0, 0.0]
+        )
+        module._planner.plan_cartesian_path.return_value = _successful_planning_result(
+            [0.0, 0.0], [0.2, 0.3]
+        )
+
+        pose = Pose(position=Vector3(0.1, 0.2, 0.3), orientation=Quaternion())
+        ok = module.plan_linear_to_pose_targets({"left/manipulator": pose}, timeout=2.5)
+
+        assert ok is True
+        assert module._state == ManipulationState.COMPLETED
+        assert module._last_plan is not None
+        assert module._last_plan.group_ids == ("left/manipulator",)
+        call = module._planner.plan_cartesian_path.call_args
+        assert call.kwargs["world"] is module._world_monitor.world
+        assert call.kwargs["selection"].group_ids == ("left/manipulator",)
+        assert call.kwargs["start"].name == ["left/j1", "left/j2"]
+        assert tuple(call.kwargs["pose_targets"]) == ("left/manipulator",)
+        assert call.kwargs["auxiliary_groups"] == ()
+        assert call.kwargs["path_mode"] == "linear"
+        assert call.kwargs["timeout"] == 2.5
+
+    @pytest.mark.parametrize(
+        ("method_name", "expected_path_mode"),
+        [
+            ("plan_relative_to_pose_targets", "free"),
+            ("plan_linear_relative_to_pose_targets", "linear"),
+        ],
+    )
+    def test_relative_pose_target_methods_call_relative_cartesian_planner(
+        self,
+        method_name: str,
+        expected_path_mode: str,
+    ):
+        config = _make_robot_config("left", ["j1", "j2"], "task")
+        module = _make_module_with_monitor(config)
+        module._planner = MagicMock()
+        module._world_monitor.world = MagicMock()
+        module._world_monitor.get_current_joint_state.return_value = JointState(
+            name=["j1", "j2"], position=[0.0, 0.0]
+        )
+        module._planner.plan_relative_cartesian_path.return_value = _successful_planning_result(
+            [0.0, 0.0], [0.1, 0.1]
+        )
+        delta = CartesianDelta(translation=(0.1, 0.0, 0.0))
+
+        ok = getattr(module, method_name)({"left/manipulator": delta}, timeout=3.0)
+
+        assert ok is True
+        assert module._last_plan is not None
+        assert module._last_plan.group_ids == ("left/manipulator",)
+        call = module._planner.plan_relative_cartesian_path.call_args
+        assert call.kwargs["selection"].group_ids == ("left/manipulator",)
+        assert call.kwargs["start"].name == ["left/j1", "left/j2"]
+        assert call.kwargs["delta_targets"] == {"left/manipulator": delta}
+        assert call.kwargs["auxiliary_groups"] == ()
+        assert call.kwargs["path_mode"] == expected_path_mode
+        assert call.kwargs["timeout"] == 3.0
+
+    def test_explicit_cartesian_method_reports_planner_failure_without_fallback(self):
+        config = _make_robot_config("left", ["j1", "j2"], "task")
+        module = _make_module_with_monitor(config)
+        module._planner = MagicMock()
+        module._world_monitor.world = MagicMock()
+        module._world_monitor.get_current_joint_state.return_value = JointState(
+            name=["j1", "j2"], position=[0.0, 0.0]
+        )
+        module._planner.plan_cartesian_path.return_value = PlanningResult(
+            status=PlanningStatus.UNSUPPORTED,
+            message="linear unsupported",
+        )
+        pose = Pose(position=Vector3(0.1, 0.0, 0.0), orientation=Quaternion())
+
+        assert module.plan_linear_to_pose_targets({"left/manipulator": pose}) is False
+
+        assert module._state == ManipulationState.FAULT
+        assert "UNSUPPORTED" in module._error_message
+        assert "linear unsupported" in module._error_message
+        module._planner.plan_selected_joint_path.assert_not_called()
+
+    def test_existing_plan_to_pose_targets_stays_ik_then_joint_plan(self, mocker: MockerFixture):
+        config = _make_robot_config("left", ["j1", "j2"], "task")
+        module = _make_module_with_monitor(config)
+        module._planner = MagicMock()
+        module._kinematics = MagicMock()
+        module._world_monitor.get_current_joint_state.return_value = JointState(
+            name=["j1", "j2"], position=[0.0, 0.0]
+        )
+        ik = IKResult(
+            status=IKStatus.SUCCESS,
+            joint_state=JointState(name=["left/j1", "left/j2"], position=[0.2, 0.3]),
+        )
+        inverse_kinematics = mocker.patch.object(module, "inverse_kinematics", return_value=ik)
+        plan_selected_path = mocker.patch.object(module, "_plan_selected_path", return_value=True)
+        pose = Pose(position=Vector3(0.1, 0.0, 0.0), orientation=Quaternion())
+
+        assert module.plan_to_pose_targets({"left/manipulator": pose}) is True
+
+        inverse_kinematics.assert_called_once()
+        plan_selected_path.assert_called_once()
+        module._planner.plan_cartesian_path.assert_not_called()
 
 
 class TestGeneratedPlanProjection:

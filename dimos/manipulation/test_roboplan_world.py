@@ -39,7 +39,11 @@ from dimos.manipulation.planning.spec.enums import (
     ParametrizationStatus,
     PlanningStatus,
 )
-from dimos.manipulation.planning.spec.models import GeneratedPlan, Obstacle
+from dimos.manipulation.planning.spec.models import (
+    CartesianDelta,
+    GeneratedPlan,
+    Obstacle,
+)
 from dimos.msgs.geometry_msgs.PoseStamped import PoseStamped
 from dimos.msgs.geometry_msgs.Quaternion import Quaternion
 from dimos.msgs.geometry_msgs.Vector3 import Vector3
@@ -114,6 +118,33 @@ class FakePathParameterizerTOPPRA:
         return FakeJointTrajectory(list(path.joint_names), positions, times)
 
 
+class FakeCartesianConfiguration:
+    def __init__(self, *args: object) -> None:
+        self.base_frame = ""
+        self.tip_frame = ""
+        self.frame_name = ""
+        self.matrix = np.eye(4, dtype=np.float64)
+        self.tform = self.matrix
+        if len(args) == 0:
+            return
+        if len(args) == 2:
+            frame_name, matrix = args
+            self.tip_frame = str(frame_name)
+            self.frame_name = str(frame_name)
+            self.matrix = np.asarray(matrix, dtype=np.float64)
+            self.tform = self.matrix
+            return
+        if len(args) == 3:
+            base_frame, tip_frame, matrix = args
+            self.base_frame = str(base_frame)
+            self.tip_frame = str(tip_frame)
+            self.frame_name = str(tip_frame)
+            self.matrix = np.asarray(matrix, dtype=np.float64)
+            self.tform = self.matrix
+            return
+        raise TypeError("Unsupported FakeCartesianConfiguration constructor")
+
+
 class FakeJointGroupInfo:
     def __init__(self, joint_names: list[str]) -> None:
         self.joint_names = joint_names
@@ -123,12 +154,20 @@ class FakeScene:
     joint_group_joint_names: ClassVar[list[str] | None] = None
     position_limits_lower: ClassVar[list[float]] = [-1.0, -2.0]
     position_limits_upper: ClassVar[list[float]] = [1.0, 2.0]
+    fk_rotation: ClassVar[np.ndarray | None] = None
+    fail_unnamed_set_after_first: ClassVar[bool] = False
+    reject_unnamed_set_position_size: ClassVar[int | None] = None
+    reject_empty_group_to_full_size: ClassVar[int | None] = None
+    reject_group_set_joint_positions: ClassVar[bool] = False
+    group_to_full_size: ClassVar[int | None] = None
+    set_joint_position_calls: ClassVar[list[tuple[str | None, list[float]]]] = []
 
     def __init__(self, *args: Any) -> None:
         self.constructor_args = args
         self.models: list[tuple[str, str, dict[str, str]]] = []
         self.geometry: dict[str, np.ndarray] = {}
         self.current_positions: np.ndarray | None = None
+        self._unnamed_set_joint_positions_calls = 0
         self.joint_groups = self._parse_joint_groups(args[2] if len(args) > 2 else None)
 
     def _parse_joint_groups(self, srdf_path: Any) -> dict[str, list[str]]:
@@ -166,11 +205,59 @@ class FakeScene:
         return FakeJointGroupInfo(self.joint_groups[name])
 
     def toFullJointPositions(self, group_name: str, q: np.ndarray) -> np.ndarray:
-        _ = group_name
+        if (
+            group_name == ""
+            and self.reject_empty_group_to_full_size is not None
+            and len(np.asarray(q)) != self.reject_empty_group_to_full_size
+        ):
+            raise ValueError(
+                "Failed to get full joint positions: Joint group '' has "
+                f"nq={self.reject_empty_group_to_full_size} but the input positions "
+                f"is of size {len(np.asarray(q))}"
+            )
+        if group_name and self.group_to_full_size is not None:
+            q_array = np.asarray(q, dtype=np.float64)
+            full_q = np.zeros(self.group_to_full_size, dtype=np.float64)
+            full_q[: len(q_array)] = q_array
+            return full_q
         return q
 
-    def setJointPositions(self, q: np.ndarray) -> None:
-        self.current_positions = np.asarray(q, dtype=np.float64)
+    def setJointPositions(self, *args: object) -> None:
+        if len(args) == 1:
+            group_name = None
+            q = args[0]
+            self._unnamed_set_joint_positions_calls += 1
+            if (
+                self.reject_unnamed_set_position_size is not None
+                and len(np.asarray(q)) != self.reject_unnamed_set_position_size
+            ):
+                raise ValueError(
+                    "setJointPositions: expected "
+                    f"{self.reject_unnamed_set_position_size} configuration values "
+                    f"(model.nq), got {len(np.asarray(q))}. For robots with mimic joints, "
+                    "use the mimic-enabled model layout (not the expanded URDF DOF count)."
+                )
+            if self.fail_unnamed_set_after_first and self._unnamed_set_joint_positions_calls > 1:
+                raise ValueError(
+                    "Failed to get full joint positions: Joint group '' has nq=14 "
+                    f"but the input positions is of size {len(np.asarray(q))}"
+                )
+        elif len(args) == 2:
+            if self.reject_group_set_joint_positions:
+                raise TypeError("group-aware setJointPositions overload is unavailable")
+            group_name = str(args[0])
+            q = args[1]
+            expected_joint_names = self.joint_groups.get(group_name)
+            if expected_joint_names is not None and len(np.asarray(q)) != len(expected_joint_names):
+                raise ValueError(
+                    f"Joint group '{group_name}' has nq={len(expected_joint_names)} "
+                    f"but the input positions is of size {len(np.asarray(q))}"
+                )
+        else:
+            raise TypeError("setJointPositions expects q or group_name, q")
+        q_array = np.asarray(q, dtype=np.float64)
+        self.current_positions = q_array
+        self.set_joint_position_calls.append((group_name, q_array.tolist()))
 
     def addBoxGeometry(
         self, obstacle_id: str, width: float, height: float, depth: float, matrix: np.ndarray
@@ -188,6 +275,8 @@ class FakeScene:
     def forwardKinematics(self, q: np.ndarray, frame_name: str, base_frame: str = "") -> np.ndarray:
         _ = (frame_name, base_frame)
         mat = np.eye(4)
+        if self.fk_rotation is not None:
+            mat[:3, :3] = self.fk_rotation
         mat[0, 3] = float(np.sum(q))
         return mat
 
@@ -234,13 +323,124 @@ class FakeRRT:
         )
 
 
-def _install_fake_roboplan(monkeypatch: pytest.MonkeyPatch) -> None:
+class FakeSimpleIkOptions:
+    def __init__(self) -> None:
+        self.group_name = ""
+        self.max_time = 0.0
+        self.timeout = 0.0
+        self.max_solve_time = 0.0
+        self.max_iterations = 0
+
+
+class FakeSimpleIk:
+    last_options: ClassVar[FakeSimpleIkOptions | None] = None
+    last_goal: ClassVar[FakeCartesianConfiguration | None] = None
+    last_start: ClassVar[FakeJointConfiguration | None] = None
+    goals: ClassVar[list[FakeCartesianConfiguration]] = []
+
+    def __init__(self, scene: FakeScene, options: FakeSimpleIkOptions) -> None:
+        self.scene = scene
+        self.options = options
+        FakeSimpleIk.last_options = options
+
+    def solveIk(
+        self,
+        goal: FakeCartesianConfiguration,
+        start: FakeJointConfiguration,
+        solution: FakeJointConfiguration,
+    ) -> bool:
+        _ = self.scene
+        self.scene.toFullJointPositions(self.options.group_name, start.positions)
+        FakeSimpleIk.last_goal = goal
+        FakeSimpleIk.last_start = start
+        FakeSimpleIk.goals.append(goal)
+        joint_count = len(start.joint_names)
+        if joint_count == 0:
+            return False
+        solution.joint_names = list(start.joint_names)
+        solution.positions = np.full(joint_count, goal.matrix[0, 3] / joint_count)
+        return True
+
+
+class FakeFrameTaskOptions:
+    def __init__(self, **kwargs: object) -> None:
+        for name, value in kwargs.items():
+            setattr(self, name, value)
+
+
+class FakeFrameTask:
+    targets: ClassVar[list[FakeCartesianConfiguration]] = []
+
+    def __init__(
+        self,
+        oink: FakeOink,
+        scene: FakeScene,
+        target: FakeCartesianConfiguration,
+        options: FakeFrameTaskOptions,
+    ) -> None:
+        _ = (oink, scene, options)
+        self.target = target
+        self.targets.append(target)
+
+
+class FakePositionLimit:
+    def __init__(self, oink: FakeOink, gain: float = 1.0) -> None:
+        _ = (oink, gain)
+
+
+class FakeVelocityLimit:
+    def __init__(self, oink: FakeOink, dt: float, v_max: np.ndarray) -> None:
+        _ = (oink, dt, v_max)
+
+
+class FakeOink:
+    last_group_name: ClassVar[str | None] = None
+    solve_calls: ClassVar[int] = 0
+
+    def __init__(self, scene: FakeScene, group_name: str = "") -> None:
+        self.scene = scene
+        self.group_name = group_name
+        FakeOink.last_group_name = group_name
+
+    def solveIk(
+        self,
+        scene: FakeScene,
+        tasks: list[FakeFrameTask],
+        constraints: list[object],
+        barriers: list[object],
+        delta_q: np.ndarray,
+        regularization: float = 0.0,
+    ) -> None:
+        _ = (scene, constraints, barriers, regularization)
+        FakeOink.solve_calls += 1
+        target_x = float(tasks[0].target.tform[0, 3])
+        current_q = np.asarray(self.scene.current_positions, dtype=np.float64)
+        current_x = float(np.sum(current_q)) if current_q.size else 0.0
+        delta_q[:] = (target_x - current_x) / max(1, len(delta_q))
+
+
+def _install_fake_roboplan(
+    monkeypatch: pytest.MonkeyPatch,
+    *,
+    include_simple_ik: bool = False,
+    include_optimal_ik: bool = False,
+) -> None:
+    FakeScene.fail_unnamed_set_after_first = False
+    FakeScene.reject_unnamed_set_position_size = None
+    FakeScene.reject_empty_group_to_full_size = None
+    FakeScene.reject_group_set_joint_positions = False
+    FakeScene.group_to_full_size = None
+    FakeScene.set_joint_position_calls = []
+    FakeFrameTask.targets = []
+    FakeOink.last_group_name = None
+    FakeOink.solve_calls = 0
     roboplan_pkg = ModuleType("roboplan")
     roboplan_pkg.__path__ = []  # type: ignore[attr-defined]
     core = ModuleType("roboplan.core")
     core.Scene = FakeScene  # type: ignore[attr-defined]
     core.JointConfiguration = FakeJointConfiguration  # type: ignore[attr-defined]
     core.JointPath = FakeJointPath  # type: ignore[attr-defined]
+    core.CartesianConfiguration = FakeCartesianConfiguration  # type: ignore[attr-defined]
 
     def has_collisions_along_path(
         scene: FakeScene,
@@ -271,6 +471,21 @@ def _install_fake_roboplan(monkeypatch: pytest.MonkeyPatch) -> None:
     monkeypatch.setitem(sys.modules, "roboplan.core", core)
     monkeypatch.setitem(sys.modules, "roboplan.rrt", rrt)
     monkeypatch.setitem(sys.modules, "roboplan.toppra", toppra)
+    monkeypatch.delitem(sys.modules, "roboplan.simple_ik", raising=False)
+    monkeypatch.delitem(sys.modules, "roboplan.optimal_ik", raising=False)
+    if include_simple_ik:
+        simple_ik = ModuleType("roboplan.simple_ik")
+        simple_ik.SimpleIkOptions = FakeSimpleIkOptions  # type: ignore[attr-defined]
+        simple_ik.SimpleIk = FakeSimpleIk  # type: ignore[attr-defined]
+        monkeypatch.setitem(sys.modules, "roboplan.simple_ik", simple_ik)
+    if include_optimal_ik:
+        optimal_ik = ModuleType("roboplan.optimal_ik")
+        optimal_ik.Oink = FakeOink  # type: ignore[attr-defined]
+        optimal_ik.FrameTask = FakeFrameTask  # type: ignore[attr-defined]
+        optimal_ik.FrameTaskOptions = FakeFrameTaskOptions  # type: ignore[attr-defined]
+        optimal_ik.PositionLimit = FakePositionLimit  # type: ignore[attr-defined]
+        optimal_ik.VelocityLimit = FakeVelocityLimit  # type: ignore[attr-defined]
+        monkeypatch.setitem(sys.modules, "roboplan.optimal_ik", optimal_ik)
 
 
 @pytest.fixture
@@ -892,6 +1107,539 @@ def test_selected_native_planner_converts_path(
     assert FakeRRT.last_options.group_name == "manipulator"
     assert FakeRRT.last_options.collision_check_use_bisection is True
     assert FakeRRT.last_options.collision_check_step_size == pytest.approx(0.02)
+
+
+def test_robot_scoped_native_planner_satisfies_planner_spec(
+    fake_roboplan: None, robot_config: RobotModelConfig
+) -> None:
+    world, robot_id = _make_world(fake_roboplan, robot_config)
+    world.finalize()
+
+    start = JointState(name=["joint1", "joint2"], position=[0.0, 0.0])
+    goal = JointState(name=["joint1", "joint2"], position=[0.4, 0.2])
+    result = world.plan_joint_path(world, robot_id, start, goal, timeout=1.0)
+
+    assert result.status == PlanningStatus.SUCCESS
+    assert [state.position for state in result.path] == [[0.0, 0.0], [0.2, 0.1], [0.4, 0.2]]
+    assert [state.name for state in result.path] == [["joint1", "joint2"]] * 3
+    assert FakeRRT.last_options is not None
+    assert FakeRRT.last_options.group_name == "manipulator"
+
+
+def test_cartesian_free_requires_optional_simple_ik(
+    fake_roboplan: None, robot_config: RobotModelConfig
+) -> None:
+    world, _robot_id = _make_world(fake_roboplan, robot_config)
+    world.finalize()
+    selection = _default_selection(world, robot_config)
+
+    result = world.plan_cartesian_path(
+        world,
+        selection,
+        JointState(name=["arm/joint1", "arm/joint2"], position=[0.0, 0.0]),
+        {"arm/manipulator": PoseStamped(frame_id="world", position=Vector3(0.2, 0.0, 0.0))},  # type: ignore[call-arg]
+    )
+
+    assert result.status == PlanningStatus.UNSUPPORTED
+    assert "simple_ik" in result.message
+
+
+def test_cartesian_free_absolute_uses_simple_ik_then_rrt(
+    monkeypatch: pytest.MonkeyPatch, robot_config: RobotModelConfig
+) -> None:
+    _install_fake_roboplan(monkeypatch, include_simple_ik=True)
+    module = _import_roboplan_world(None)
+    FakeRRT.last_start = None
+    FakeRRT.last_goal = None
+    FakeSimpleIk.last_goal = None
+    world = module.RoboPlanWorld()
+    robot_id = world.add_robot(robot_config)
+    world.finalize()
+    world.set_joint_state(
+        world.get_live_context(), robot_id, JointState(name=[], position=[0.8, 0.1])
+    )
+    selection = _default_selection(world, robot_config)
+
+    result = world.plan_cartesian_path(
+        world,
+        selection,
+        JointState(name=["arm/joint1", "arm/joint2"], position=[0.1, 0.1]),
+        {"arm/manipulator": PoseStamped(frame_id="world", position=Vector3(0.4, 0.0, 0.0))},  # type: ignore[call-arg]
+        timeout=2.0,
+    )
+
+    assert result.status == PlanningStatus.SUCCESS
+    assert [state.name for state in result.path] == [["arm/joint1", "arm/joint2"]] * 3
+    assert result.path[-1].position == [0.2, 0.2]
+    assert FakeSimpleIk.last_options is not None
+    assert FakeSimpleIk.last_options.group_name == "manipulator"
+    assert FakeSimpleIk.last_options.max_time == pytest.approx(2.0)
+    assert FakeSimpleIk.last_goal is not None
+    assert FakeSimpleIk.last_goal.frame_name == "tcp"
+    assert FakeSimpleIk.last_goal.tip_frame == "tcp"
+    assert FakeRRT.last_start is not None
+    np.testing.assert_allclose(FakeRRT.last_start.positions, [0.1, 0.1])
+    np.testing.assert_allclose(world._scene.current_positions, [0.1, 0.1])
+
+
+def test_cartesian_free_relative_delta_uses_world_axes(
+    monkeypatch: pytest.MonkeyPatch, robot_config: RobotModelConfig
+) -> None:
+    _install_fake_roboplan(monkeypatch, include_simple_ik=True)
+    module = _import_roboplan_world(None)
+    rotation_z_90 = np.asarray(
+        [
+            [0.0, -1.0, 0.0],
+            [1.0, 0.0, 0.0],
+            [0.0, 0.0, 1.0],
+        ]
+    )
+    monkeypatch.setattr(FakeScene, "fk_rotation", rotation_z_90)
+    FakeSimpleIk.last_goal = None
+    world = module.RoboPlanWorld()
+    world.add_robot(robot_config)
+    world.finalize()
+    selection = _default_selection(world, robot_config)
+
+    result = world.plan_relative_cartesian_path(
+        world,
+        selection,
+        JointState(name=["arm/joint1", "arm/joint2"], position=[0.1, 0.2]),
+        {"arm/manipulator": CartesianDelta(translation=(0.2, 0.0, 0.0), frame_id="world")},
+    )
+
+    assert result.status == PlanningStatus.SUCCESS
+    assert FakeSimpleIk.last_goal is not None
+    np.testing.assert_allclose(FakeSimpleIk.last_goal.matrix[:3, 3], [0.5, 0.0, 0.0])
+    np.testing.assert_allclose(FakeSimpleIk.last_goal.matrix[:3, :3], rotation_z_90, atol=1e-12)
+
+
+def test_cartesian_free_relative_delta_composes_world_rotation(
+    monkeypatch: pytest.MonkeyPatch, robot_config: RobotModelConfig
+) -> None:
+    _install_fake_roboplan(monkeypatch, include_simple_ik=True)
+    module = _import_roboplan_world(None)
+    rotation_z_90 = np.asarray(
+        [
+            [0.0, -1.0, 0.0],
+            [1.0, 0.0, 0.0],
+            [0.0, 0.0, 1.0],
+        ]
+    )
+    rotation_z_180 = np.asarray(
+        [
+            [-1.0, 0.0, 0.0],
+            [0.0, -1.0, 0.0],
+            [0.0, 0.0, 1.0],
+        ]
+    )
+    monkeypatch.setattr(FakeScene, "fk_rotation", rotation_z_90)
+    FakeSimpleIk.last_goal = None
+    world = module.RoboPlanWorld()
+    world.add_robot(robot_config)
+    world.finalize()
+    selection = _default_selection(world, robot_config)
+
+    result = world.plan_relative_cartesian_path(
+        world,
+        selection,
+        JointState(name=["arm/joint1", "arm/joint2"], position=[0.1, 0.2]),
+        {"arm/manipulator": CartesianDelta(rotation_rpy=(0.0, 0.0, np.pi / 2.0), frame_id="world")},
+    )
+
+    assert result.status == PlanningStatus.NO_SOLUTION
+    assert "final TCP pose missed target" in result.message
+    assert FakeSimpleIk.last_goal is not None
+    np.testing.assert_allclose(FakeSimpleIk.last_goal.matrix[:3, :3], rotation_z_180, atol=1e-12)
+
+
+def test_cartesian_free_malformed_start_returns_invalid_start(
+    fake_roboplan: None, robot_config: RobotModelConfig
+) -> None:
+    world, _robot_id = _make_world(fake_roboplan, robot_config)
+    world.finalize()
+    selection = _default_selection(world, robot_config)
+
+    result = world.plan_cartesian_path(
+        world,
+        selection,
+        JointState(name=["arm/joint1"], position=[0.0]),
+        {"arm/manipulator": PoseStamped(frame_id="world", position=Vector3(0.4, 0.0, 0.0))},  # type: ignore[call-arg]
+    )
+
+    assert result.status == PlanningStatus.INVALID_START
+
+
+def test_cartesian_free_rejects_final_tcp_mismatch(
+    monkeypatch: pytest.MonkeyPatch, robot_config: RobotModelConfig
+) -> None:
+    _install_fake_roboplan(monkeypatch, include_simple_ik=True)
+
+    class MismatchedPoseSimpleIk(FakeSimpleIk):
+        def solveIk(
+            self,
+            goal: FakeCartesianConfiguration,
+            start: FakeJointConfiguration,
+            solution: FakeJointConfiguration,
+        ) -> bool:
+            FakeSimpleIk.last_goal = goal
+            FakeSimpleIk.last_start = start
+            solution.joint_names = list(start.joint_names)
+            solution.positions = np.zeros(len(start.joint_names), dtype=np.float64)
+            return True
+
+    monkeypatch.setattr(sys.modules["roboplan.simple_ik"], "SimpleIk", MismatchedPoseSimpleIk)
+    module = _import_roboplan_world(None)
+    world = module.RoboPlanWorld()
+    world.add_robot(robot_config)
+    world.finalize()
+    selection = _default_selection(world, robot_config)
+
+    result = world.plan_cartesian_path(
+        world,
+        selection,
+        JointState(name=["arm/joint1", "arm/joint2"], position=[0.1, 0.1]),
+        {"arm/manipulator": PoseStamped(frame_id="world", position=Vector3(0.4, 0.0, 0.0))},  # type: ignore[call-arg]
+    )
+
+    assert result.status == PlanningStatus.NO_SOLUTION
+    assert "final TCP pose missed target" in result.message
+
+
+def test_cartesian_free_requires_targets_and_auxiliaries_to_cover_selection(
+    fake_roboplan: None, robot_config: RobotModelConfig
+) -> None:
+    world, _robot_id = _make_world(fake_roboplan, robot_config)
+    world.finalize()
+    group = world._planning_groups.get("arm/manipulator")
+    selection = PlanningGroupSelection(
+        groups=(group,),
+        group_ids=(group.id, "other/manipulator"),
+        joint_names=group.joint_names,
+        robot_names=(group.robot_name,),
+    )
+
+    result = world.plan_cartesian_path(
+        world,
+        selection,
+        JointState(name=["arm/joint1", "arm/joint2"], position=[0.0, 0.0]),
+        {"arm/manipulator": PoseStamped(frame_id="world", position=Vector3(0.4, 0.0, 0.0))},  # type: ignore[call-arg]
+    )
+
+    assert result.status == PlanningStatus.INVALID_GOAL
+    assert "exactly cover selection.group_ids" in result.message
+
+
+def test_cartesian_free_rejects_target_auxiliary_overlap(
+    fake_roboplan: None, robot_config: RobotModelConfig
+) -> None:
+    world, _robot_id = _make_world(fake_roboplan, robot_config)
+    world.finalize()
+    selection = _default_selection(world, robot_config)
+
+    result = world.plan_cartesian_path(
+        world,
+        selection,
+        JointState(name=["arm/joint1", "arm/joint2"], position=[0.0, 0.0]),
+        {"arm/manipulator": PoseStamped(frame_id="world", position=Vector3(0.4, 0.0, 0.0))},  # type: ignore[call-arg]
+        auxiliary_groups=("arm/manipulator",),
+    )
+
+    assert result.status == PlanningStatus.INVALID_GOAL
+    assert "overlap auxiliary groups" in result.message
+
+
+def test_cartesian_free_accepts_explicit_auxiliary_group_coverage(
+    monkeypatch: pytest.MonkeyPatch, robot_config: RobotModelConfig
+) -> None:
+    _install_fake_roboplan(monkeypatch, include_simple_ik=True)
+    module = _import_roboplan_world(None)
+    second_model = Path(robot_config.model_path).with_name("robot2.urdf")
+    second_model.write_text(Path(robot_config.model_path).read_text())
+    right_config = robot_config.model_copy(update={"name": "right_arm", "model_path": second_model})
+    world = module.RoboPlanWorld()
+    world.add_robot(robot_config)
+    world.add_robot(right_config)
+    world.finalize()
+    selection = world._planning_groups.select(["arm/manipulator", "right_arm/manipulator"])
+
+    result = world.plan_cartesian_path(
+        world,
+        selection,
+        JointState(
+            name=["arm/joint1", "arm/joint2", "right_arm/joint1", "right_arm/joint2"],
+            position=[0.0, 0.0, 0.0, 0.0],
+        ),
+        {"arm/manipulator": PoseStamped(frame_id="world", position=Vector3(0.0, 0.0, 0.0))},  # type: ignore[call-arg]
+        auxiliary_groups=("right_arm/manipulator",),
+    )
+
+    assert result.status == PlanningStatus.SUCCESS
+    assert FakeRRT.last_options is not None
+    assert (
+        FakeRRT.last_options.group_name
+        == "_dimos_composite__arm_manipulator__right_arm_manipulator"
+    )
+
+
+def test_cartesian_linear_mode_supports_single_absolute_target(
+    monkeypatch: pytest.MonkeyPatch, robot_config: RobotModelConfig
+) -> None:
+    _install_fake_roboplan(monkeypatch, include_optimal_ik=True)
+    module = _import_roboplan_world(None)
+    FakeRRT.last_start = None
+    FakeSimpleIk.last_goal = None
+    world = module.RoboPlanWorld()
+    world.add_robot(robot_config)
+    world.finalize()
+    selection = _default_selection(world, robot_config)
+
+    result = world.plan_cartesian_path(
+        world,
+        selection,
+        JointState(name=["arm/joint1", "arm/joint2"], position=[0.0, 0.0]),
+        {"arm/manipulator": PoseStamped(frame_id="world", position=Vector3(0.04, 0.0, 0.0))},  # type: ignore[call-arg]
+        path_mode="linear",
+    )
+
+    assert result.status == PlanningStatus.SUCCESS
+    assert result.path[-1].position == [0.02, 0.02]
+    assert FakeRRT.last_start is None
+    assert FakeSimpleIk.last_goal is None
+    assert FakeOink.last_group_name == "manipulator"
+    assert [goal.tform[0, 3] for goal in FakeFrameTask.targets] == pytest.approx(
+        [0.01, 0.02, 0.03, 0.04]
+    )
+    assert {goal.base_frame for goal in FakeFrameTask.targets} == {""}
+    assert {goal.tip_frame for goal in FakeFrameTask.targets} == {"tcp"}
+
+
+def test_cartesian_linear_mode_sets_selected_group_state_by_group_name(
+    monkeypatch: pytest.MonkeyPatch, robot_config: RobotModelConfig
+) -> None:
+    _install_fake_roboplan(monkeypatch, include_optimal_ik=True)
+    monkeypatch.setattr(FakeScene, "fail_unnamed_set_after_first", True)
+    module = _import_roboplan_world(None)
+    world = module.RoboPlanWorld()
+    world.add_robot(robot_config)
+    world.finalize()
+    selection = _default_selection(world, robot_config)
+
+    result = world.plan_cartesian_path(
+        world,
+        selection,
+        JointState(name=["arm/joint1", "arm/joint2"], position=[0.0, 0.0]),
+        {"arm/manipulator": PoseStamped(frame_id="world", position=Vector3(0.04, 0.0, 0.0))},  # type: ignore[call-arg]
+        path_mode="linear",
+    )
+
+    assert result.status == PlanningStatus.SUCCESS
+    assert any(group_name == "manipulator" for group_name, _q in FakeScene.set_joint_position_calls)
+
+
+def test_cartesian_linear_mode_does_not_set_group_q_as_full_scene_state(
+    monkeypatch: pytest.MonkeyPatch, robot_config: RobotModelConfig
+) -> None:
+    _install_fake_roboplan(monkeypatch, include_optimal_ik=True)
+    monkeypatch.setattr(FakeScene, "reject_unnamed_set_position_size", 14)
+    monkeypatch.setattr(FakeScene, "reject_empty_group_to_full_size", 14)
+    module = _import_roboplan_world(None)
+    world = module.RoboPlanWorld()
+    world.add_robot(robot_config)
+    world.finalize()
+    selection = _default_selection(world, robot_config)
+
+    result = world.plan_cartesian_path(
+        world,
+        selection,
+        JointState(name=["arm/joint1", "arm/joint2"], position=[0.0, 0.0]),
+        {"arm/manipulator": PoseStamped(frame_id="world", position=Vector3(0.04, 0.0, 0.0))},  # type: ignore[call-arg]
+        path_mode="linear",
+    )
+
+    assert result.status == PlanningStatus.SUCCESS
+    unnamed_calls = [
+        q for group_name, q in FakeScene.set_joint_position_calls if group_name is None
+    ]
+    assert unnamed_calls == []
+
+
+def test_cartesian_linear_mode_expands_group_state_when_group_setter_unavailable(
+    monkeypatch: pytest.MonkeyPatch, robot_config: RobotModelConfig
+) -> None:
+    _install_fake_roboplan(monkeypatch, include_optimal_ik=True)
+    monkeypatch.setattr(FakeScene, "reject_group_set_joint_positions", True)
+    monkeypatch.setattr(FakeScene, "group_to_full_size", 14)
+    monkeypatch.setattr(FakeScene, "reject_unnamed_set_position_size", 14)
+    module = _import_roboplan_world(None)
+    world = module.RoboPlanWorld()
+    world.add_robot(robot_config)
+    world.finalize()
+    selection = _default_selection(world, robot_config)
+
+    result = world.plan_cartesian_path(
+        world,
+        selection,
+        JointState(name=["arm/joint1", "arm/joint2"], position=[0.0, 0.0]),
+        {"arm/manipulator": PoseStamped(frame_id="world", position=Vector3(0.04, 0.0, 0.0))},  # type: ignore[call-arg]
+        path_mode="linear",
+    )
+
+    assert result.status == PlanningStatus.SUCCESS
+    unnamed_calls = [
+        q for group_name, q in FakeScene.set_joint_position_calls if group_name is None
+    ]
+    assert unnamed_calls
+    assert all(len(q) == 14 for q in unnamed_calls)
+
+
+def test_cartesian_linear_mode_supports_single_relative_target(
+    monkeypatch: pytest.MonkeyPatch, robot_config: RobotModelConfig
+) -> None:
+    _install_fake_roboplan(monkeypatch, include_optimal_ik=True)
+    module = _import_roboplan_world(None)
+    FakeRRT.last_start = None
+    FakeSimpleIk.last_goal = None
+    world = module.RoboPlanWorld()
+    world.add_robot(robot_config)
+    world.finalize()
+    selection = _default_selection(world, robot_config)
+
+    result = world.plan_relative_cartesian_path(
+        world,
+        selection,
+        JointState(name=["arm/joint1", "arm/joint2"], position=[0.1, 0.1]),
+        {"arm/manipulator": CartesianDelta(translation=(0.04, 0.0, 0.0))},
+        path_mode="linear",
+    )
+
+    assert result.status == PlanningStatus.SUCCESS
+    assert result.path[-1].position == pytest.approx([0.12, 0.12])
+    assert FakeRRT.last_start is None
+    assert FakeSimpleIk.last_goal is None
+    goal_xs = [goal.tform[0, 3] for goal in FakeFrameTask.targets]
+    assert goal_xs[0] > 0.2
+    assert goal_xs == sorted(goal_xs)
+    assert goal_xs[-1] == pytest.approx(0.24)
+
+
+def test_cartesian_linear_mode_rejects_multi_target_without_free_fallback(
+    monkeypatch: pytest.MonkeyPatch, robot_config: RobotModelConfig
+) -> None:
+    _install_fake_roboplan(monkeypatch, include_optimal_ik=True)
+    module = _import_roboplan_world(None)
+    FakeRRT.last_start = None
+    FakeSimpleIk.last_goal = None
+    second_model = Path(robot_config.model_path).with_name("robot2.urdf")
+    second_model.write_text(Path(robot_config.model_path).read_text())
+    right_config = robot_config.model_copy(update={"name": "right_arm", "model_path": second_model})
+    world = module.RoboPlanWorld()
+    world.add_robot(robot_config)
+    world.add_robot(right_config)
+    world.finalize()
+    selection = world._planning_groups.select(["arm/manipulator", "right_arm/manipulator"])
+
+    result = world.plan_cartesian_path(
+        world,
+        selection,
+        JointState(
+            name=["arm/joint1", "arm/joint2", "right_arm/joint1", "right_arm/joint2"],
+            position=[0.0, 0.0, 0.0, 0.0],
+        ),
+        {
+            "arm/manipulator": PoseStamped(frame_id="world", position=Vector3(0.04, 0.0, 0.0)),  # type: ignore[call-arg]
+            "right_arm/manipulator": PoseStamped(
+                frame_id="world", position=Vector3(0.04, 0.0, 0.0)
+            ),  # type: ignore[call-arg]
+        },
+        path_mode="linear",
+    )
+
+    assert result.status == PlanningStatus.UNSUPPORTED
+    assert "at most one target group" in result.message
+    assert FakeSimpleIk.last_goal is None
+    assert FakeRRT.last_start is None
+
+
+@pytest.mark.parametrize(
+    ("mode", "target", "kwargs", "expected_status", "expected_message"),
+    [
+        (
+            "absolute",
+            PoseStamped(frame_id="world"),
+            {"path_mode": "nonsense"},
+            PlanningStatus.INVALID_GOAL,
+            "path_mode",
+        ),
+        (
+            "absolute",
+            PoseStamped(frame_id="world"),
+            {"timeout": 0.0},
+            PlanningStatus.INVALID_GOAL,
+            "timeout",
+        ),
+        (
+            "absolute",
+            CartesianDelta(),
+            {},
+            PlanningStatus.INVALID_GOAL,
+            "PoseStamped",
+        ),
+        (
+            "absolute",
+            PoseStamped(frame_id="map"),
+            {},
+            PlanningStatus.UNSUPPORTED,
+            "world-frame poses",
+        ),
+        (
+            "relative",
+            PoseStamped(frame_id="world"),
+            {},
+            PlanningStatus.INVALID_GOAL,
+            "CartesianDelta",
+        ),
+        (
+            "relative",
+            CartesianDelta(frame_id="tool"),
+            {},
+            PlanningStatus.UNSUPPORTED,
+            "world-frame deltas",
+        ),
+    ],
+)
+def test_cartesian_request_validation_branches(
+    fake_roboplan: None,
+    robot_config: RobotModelConfig,
+    mode: str,
+    target: object,
+    kwargs: dict[str, object],
+    expected_status: PlanningStatus,
+    expected_message: str,
+) -> None:
+    world, _robot_id = _make_world(fake_roboplan, robot_config)
+    world.finalize()
+    selection = _default_selection(world, robot_config)
+    start = JointState(name=["arm/joint1", "arm/joint2"], position=[0.0, 0.0])
+    if mode == "absolute":
+        result = world.plan_cartesian_path(
+            world,
+            selection,
+            start,
+            {"arm/manipulator": target},  # type: ignore[dict-item]
+            **kwargs,  # type: ignore[arg-type]
+        )
+    else:
+        result = world.plan_relative_cartesian_path(
+            world,
+            selection,
+            start,
+            {"arm/manipulator": target},  # type: ignore[dict-item]
+            **kwargs,  # type: ignore[arg-type]
+        )
+
+    assert result.status == expected_status
+    assert expected_message in result.message
 
 
 def test_selected_native_planner_handles_unnamed_group_states(

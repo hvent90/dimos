@@ -34,6 +34,7 @@ from dimos.manipulation.visualization.viser.state import (
     TargetEvaluationWorker,
     TargetStatus,
 )
+from dimos.msgs.geometry_msgs.Pose import Pose
 from dimos.msgs.sensor_msgs.JointState import JointState
 
 
@@ -155,6 +156,12 @@ class FakeOperationAdapter:
         return []
 
     def plan_to_joint_targets(self, joint_targets: dict[str, JointState]) -> bool:
+        return True
+
+    def plan_linear_to_pose_targets(
+        self, pose_targets: dict[str, Pose], auxiliary_groups: tuple[str, ...] = ()
+    ) -> bool:
+        del pose_targets, auxiliary_groups
         return True
 
 

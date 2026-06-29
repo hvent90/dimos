@@ -54,6 +54,7 @@ from dimos.manipulation.visualization.viser.state import (
     FeasibilityStatus,
     OperationWorker,
     PanelPlanState,
+    PlanRecipe,
     PlanStatus,
     TargetEvaluationRequest,
     TargetEvaluationWorker,
@@ -546,6 +547,17 @@ class FakeManipulationModule(SimpleNamespace):
         )
 
     def plan_to_joint_targets(self, _joint_targets: dict[str, JointState]) -> bool:
+        self.plan_to_joint_targets_calls = getattr(self, "plan_to_joint_targets_calls", 0) + 1
+        return True
+
+    def plan_linear_to_pose_targets(
+        self,
+        pose_targets: dict[str, Pose],
+        auxiliary_groups: Sequence[str] = (),
+    ) -> bool:
+        calls = list(getattr(self, "linear_pose_target_calls", []))
+        calls.append((dict(pose_targets), tuple(auxiliary_groups)))
+        self.linear_pose_target_calls = calls
         return True
 
     def reset(self) -> bool:
@@ -629,6 +641,7 @@ def test_gui_builds_controls_in_manipulation_panel_folder(
     assert "target_heading" in gui._handles
     assert "target_summary" in gui._handles
     assert "actions_heading" in gui._handles
+    assert "linear_tcp_path" in gui._handles
     assert "plan" in gui._handles
     assert "select_all_manipulators" not in gui._handles
     assert "clear_group_selection" not in gui._handles
@@ -662,6 +675,9 @@ def test_gui_builds_controls_in_manipulation_panel_folder(
     plan_button = gui._handles["plan"]
     assert isinstance(plan_button, GuiButtonHandle)
     assert plan_button.color == PRIMARY_ACTION_COLOR
+    linear_tcp_checkbox = gui._handles["linear_tcp_path"]
+    assert isinstance(linear_tcp_checkbox, GuiCheckboxHandle)
+    assert linear_tcp_checkbox.label == "Linear TCP path"
     group_button = gui._handles[f"group:{DEFAULT_GROUP_ID}"]
     assert isinstance(group_button, GuiButtonHandle)
     assert group_button.label == "arm"
@@ -707,6 +723,23 @@ def test_next_plan_speed_slider_is_disabled_during_panel_operation(
     gui.refresh()
 
     assert speed_slider.disabled is True
+
+
+def test_linear_tcp_checkbox_updates_next_plan_without_staling_current_plan(
+    make_panel: Callable[..., ViserPanelGui],
+) -> None:
+    server = FakeGuiServer()
+    gui = make_panel(server, make_module_with_robot(), ViserVisualizationConfig())
+    gui.state.plan_state = PanelPlanState(status=PlanStatus.FRESH, recipe=PlanRecipe.STANDARD)
+    checkbox = server.checkboxes["Linear TCP path"]
+
+    checkbox.value = True
+    assert checkbox.update_callback is not None
+    checkbox.update_callback(SimpleNamespace(target=checkbox))
+
+    assert gui.state.next_plan_linear_tcp is True
+    assert gui.state.plan_state.status == PlanStatus.FRESH
+    assert gui.state.plan_state.recipe is PlanRecipe.STANDARD
 
 
 def test_gui_scene_grid_checkbox_toggles_reference_grid(
@@ -1975,6 +2008,69 @@ def test_gui_resets_fault_before_replanning(
     assert calls == ["reset", "plan"]
     assert gui.state.plan_state.status == PlanStatus.FRESH
     assert gui.state.last_result == "plan_to_joints=True"
+
+
+def test_gui_linear_tcp_plan_uses_active_pose_targets_and_records_recipe(
+    make_panel: Callable[..., ViserPanelGui],
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    module_context = make_module_with_robot()
+    module = module_context[1]
+    gui = make_panel(FakeGuiServer(), module_context)
+    gui._operation_worker.stop()
+    monkeypatch.setattr(
+        gui,
+        "_operation_worker",
+        SimpleNamespace(
+            submit=lambda operation, **_kwargs: operation(), stop=lambda timeout=2.0: None
+        ),
+    )
+    pose = Pose(position=Vector3(0.1, 0.2, 0.3), orientation=Quaternion())
+    gui.state.next_plan_linear_tcp = True
+    gui.state.selected_group_ids = (DEFAULT_GROUP_ID,)
+    gui.state.auxiliary_group_ids = ("arm:auxiliary",)
+    gui.state.pose_targets = {DEFAULT_GROUP_ID: pose}
+    gui.state.cartesian_target = pose
+    gui.state.target_joints = JointState({"name": ["arm/j1"], "position": [1.0]})
+    gui.state.target_status = TargetStatus.FEASIBLE
+    gui.state.manipulation_state = "IDLE"
+
+    gui._submit_plan()
+
+    assert getattr(module, "plan_to_joint_targets_calls", 0) == 0
+    assert module.linear_pose_target_calls == [({DEFAULT_GROUP_ID: pose}, ("arm:auxiliary",))]
+    assert gui.state.plan_state.status == PlanStatus.FRESH
+    assert gui.state.plan_state.recipe is PlanRecipe.LINEAR_TCP
+    assert gui.state.last_result == "plan_linear_to_pose_targets=True"
+
+
+def test_gui_linear_tcp_plan_requires_active_pose_target(
+    make_panel: Callable[..., ViserPanelGui],
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    module_context = make_module_with_robot()
+    module = module_context[1]
+    gui = make_panel(FakeGuiServer(), module_context)
+    gui._operation_worker.stop()
+    monkeypatch.setattr(
+        gui,
+        "_operation_worker",
+        SimpleNamespace(
+            submit=lambda operation, **_kwargs: operation(), stop=lambda timeout=2.0: None
+        ),
+    )
+    gui.state.next_plan_linear_tcp = True
+    gui.state.selected_group_ids = (DEFAULT_GROUP_ID,)
+    gui.state.target_joints = JointState({"name": ["arm/j1"], "position": [1.0]})
+    gui.state.target_status = TargetStatus.FEASIBLE
+    gui.state.manipulation_state = "IDLE"
+
+    gui._submit_plan()
+
+    assert getattr(module, "linear_pose_target_calls", []) == []
+    assert gui.state.plan_state.status == PlanStatus.FAILED
+    assert gui.state.error == "Linear TCP path requires an active pose target"
+    assert gui.state.last_result == "plan_linear_to_pose_targets=False"
 
 
 def test_operation_worker_coalesces_pending_requests() -> None:

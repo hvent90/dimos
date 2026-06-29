@@ -46,6 +46,7 @@ from dimos.manipulation.visualization.viser.state import (
     PanelPlanState,
     PanelRuntime,
     PanelState,
+    PlanRecipe,
     PlanStatus,
     TargetEvaluationRequest,
     TargetEvaluationWorker,
@@ -280,6 +281,11 @@ class ViserPanelGui:
         )
         self._handles["actions_heading"] = gui.add_markdown("### Actions")
         self._build_motion_settings(gui)
+        linear_tcp_checkbox = gui.add_checkbox("Linear TCP path", initial_value=False)
+        linear_tcp_checkbox.on_update(
+            lambda event: self._set_next_plan_linear_tcp(bool(event.target.value))
+        )
+        self._handles["linear_tcp_path"] = linear_tcp_checkbox
         plan_button = gui.add_button("Plan", disabled=True, color=PRIMARY_ACTION_COLOR)
         plan_button.on_click(lambda _: self._submit_plan())
         self._handles["plan"] = plan_button
@@ -1004,6 +1010,8 @@ class ViserPanelGui:
             "### Status",
             f"**State:** {status_label}",
             f"Target: `{self.state.target_status.value}` · Plan: `{self.state.plan_state.status.value}`",
+            f"Plan recipe: `{self.state.plan_state.recipe.value if self.state.plan_state.recipe else 'none'}`",
+            f"Next Plan: `{'linear_tcp' if self.state.next_plan_linear_tcp else 'standard'}`",
         ]
         if self.state.selected_robot is not None:
             status.append(f"State stale: `{self._is_state_stale(self.state.selected_robot)}`")
@@ -1033,6 +1041,10 @@ class ViserPanelGui:
         self._set_disabled("cancel", not can_cancel)
         self._set_visible("cancel", can_cancel)
         self._update_target_visual_state()
+
+    def _set_next_plan_linear_tcp(self, enabled: bool) -> None:
+        self.state.next_plan_linear_tcp = enabled
+        self.refresh()
 
     def _update_target_visual_state(self) -> None:
         if self.scene is None:
@@ -1069,20 +1081,42 @@ class ViserPanelGui:
                 self.state.plan_state.status = PlanStatus.FAILED
                 self._finish_operation("reset=False", clear_error=False, operation_id=operation_id)
                 return
-            targets = self._target_set_from_sliders()
-            if targets is None:
-                self.state.plan_state.status = PlanStatus.FAILED
-                self._finish_operation(
-                    "plan_to_joints=False", clear_error=False, operation_id=operation_id
-                )
-                return
-            ok = self.manipulation_module.plan_to_joint_targets(
-                cast("Mapping[PlanningGroupID | PlanningGroup, JointState]", targets)
+            recipe = (
+                PlanRecipe.LINEAR_TCP if self.state.next_plan_linear_tcp else PlanRecipe.STANDARD
             )
+            finish_label = "plan_to_joints"
+            if recipe is PlanRecipe.LINEAR_TCP:
+                pose_targets = self._active_pose_targets()
+                if not pose_targets:
+                    self.state.plan_state.status = PlanStatus.FAILED
+                    self._set_recoverable_error("Linear TCP path requires an active pose target")
+                    self._finish_operation(
+                        "plan_linear_to_pose_targets=False",
+                        clear_error=False,
+                        operation_id=operation_id,
+                    )
+                    return
+                finish_label = "plan_linear_to_pose_targets"
+                ok = self.manipulation_module.plan_linear_to_pose_targets(
+                    cast("Mapping[PlanningGroupID | PlanningGroup, Pose]", pose_targets),
+                    auxiliary_groups=self.state.auxiliary_group_ids,
+                )
+            else:
+                targets = self._target_set_from_sliders()
+                if targets is None:
+                    self.state.plan_state.status = PlanStatus.FAILED
+                    self._finish_operation(
+                        "plan_to_joints=False", clear_error=False, operation_id=operation_id
+                    )
+                    return
+                ok = self.manipulation_module.plan_to_joint_targets(
+                    cast("Mapping[PlanningGroupID | PlanningGroup, JointState]", targets)
+                )
             if not self._operation_is_current(operation_id):
                 return
             if ok:
                 self.state.plan_state.status = PlanStatus.FRESH
+                self.state.plan_state.recipe = recipe
                 self.state.plan_state.group_ids = self.state.selected_group_ids
                 self.state.plan_state.robot = self.state.selected_robot
                 self.state.plan_state.target_joints = list(
@@ -1093,7 +1127,7 @@ class ViserPanelGui:
                 self.state.plan_state.planned_path = None
             else:
                 self.state.plan_state.status = PlanStatus.FAILED
-            self._finish_operation(f"plan_to_joints={ok}", operation_id=operation_id)
+            self._finish_operation(f"{finish_label}={ok}", operation_id=operation_id)
 
         self._operation_worker.submit(
             operation, on_error=lambda message: self._set_operation_error(message, operation_id)

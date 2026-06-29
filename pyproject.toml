@@ -619,6 +619,7 @@ ignore = [
     "dimos/manipulation/test_manipulation_unit.py",
     "dimos/manipulation/planning/world/drake_world.py",
     "dimos/manipulation/planning/world/roboplan_world.py",
+    "dimos/manipulation/test_roboplan_world.py",
     "dimos/manipulation/visualization/viser/gui.py",
     "dimos/manipulation/visualization/viser/test_viser_visualization.py",
     "dimos/navigation/cmu_nav/modules/*/main.cpp",

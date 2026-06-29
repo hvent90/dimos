@@ -68,6 +68,8 @@ from dimos.manipulation.planning.spec.enums import (
     TrajectoryDispatchStatus,
 )
 from dimos.manipulation.planning.spec.models import (
+    CartesianDelta,
+    CartesianPathMode,
     CollisionCheckResult,
     ForwardKinematicsResult,
     GeneratedPlan,
@@ -857,6 +859,43 @@ class ManipulationModule(Module):
         self._state = ManipulationState.COMPLETED
         return True
 
+    def _finish_cartesian_plan(
+        self,
+        group_ids: tuple[PlanningGroupID, ...],
+        result: PlanningResult,
+    ) -> bool:
+        """Store a successful Cartesian planner result or report its failure."""
+        if not result.is_success():
+            detail = f": {result.message}" if result.message else ""
+            return self._fail(f"Planning failed: {result.status.name}{detail}")
+        self._store_generated_plan(group_ids, result)
+        self._state = ManipulationState.COMPLETED
+        return True
+
+    def _resolve_group_ids_for_pose_targets(
+        self,
+        target_groups: Sequence[PlanningGroupID | PlanningGroup],
+        auxiliary_groups: Sequence[PlanningGroupID | PlanningGroup],
+    ) -> tuple[PlanningGroupID, ...]:
+        """Return selected planning group IDs with target groups before auxiliaries."""
+        target_ids = tuple(planning_group_id_from_selector(group) for group in target_groups)
+        auxiliary_ids = tuple(planning_group_id_from_selector(group) for group in auxiliary_groups)
+        return tuple(dict.fromkeys((*target_ids, *auxiliary_ids)))
+
+    def _selected_start_for_groups(
+        self, group_ids: tuple[PlanningGroupID, ...]
+    ) -> JointState | None:
+        """Resolve the selected global-joint start state for a group selection."""
+        try:
+            start = self._selected_joint_state(group_ids)
+        except Exception as exc:
+            self._fail(f"Failed to resolve planning groups: {exc}")
+            return None
+        if start is None:
+            self._fail("No joint state")
+            return None
+        return start
+
     def _dismiss_preview(self, group_ids: Sequence[PlanningGroupID]) -> None:
         """Hide the preview ghost if the world supports it."""
         if self._world_monitor is None:
@@ -1141,6 +1180,114 @@ class ManipulationModule(Module):
         if not ik.is_success() or ik.joint_state is None:
             return self._fail(f"IK failed: {ik.status.name}")
         return self._plan_selected_path(group_ids, start, ik.joint_state)
+
+    @rpc
+    def plan_linear_to_pose_targets(
+        self,
+        pose_targets: Mapping[PlanningGroupID | PlanningGroup, Pose],
+        auxiliary_groups: Sequence[PlanningGroupID | PlanningGroup] = (),
+        timeout: float = 10.0,
+    ) -> bool:
+        """Plan a linear TCP path to one or more absolute group pose targets."""
+        if self._world_monitor is None or self._planner is None:
+            return False
+        if not pose_targets:
+            return self._fail("At least one pose target is required")
+
+        stamped_targets = {
+            planning_group_id_from_selector(group): PoseStamped(
+                frame_id="world",
+                position=pose.position,
+                orientation=pose.orientation,
+            )
+            for group, pose in pose_targets.items()
+        }
+        auxiliary_ids = tuple(planning_group_id_from_selector(group) for group in auxiliary_groups)
+        group_ids = self._resolve_group_ids_for_pose_targets(
+            tuple(pose_targets.keys()), auxiliary_groups
+        )
+        if not self._begin_planning():
+            return False
+        start = self._selected_start_for_groups(group_ids)
+        if start is None:
+            return False
+
+        result = self._planner.plan_cartesian_path(
+            world=self._world_monitor.world,
+            selection=self._world_monitor.planning_groups.select(group_ids),
+            start=start,
+            pose_targets=stamped_targets,
+            auxiliary_groups=auxiliary_ids,
+            path_mode="linear",
+            timeout=timeout,
+        )
+        return self._finish_cartesian_plan(group_ids, result)
+
+    @rpc
+    def plan_relative_to_pose_targets(
+        self,
+        delta_targets: Mapping[PlanningGroupID | PlanningGroup, CartesianDelta],
+        auxiliary_groups: Sequence[PlanningGroupID | PlanningGroup] = (),
+        timeout: float = 10.0,
+    ) -> bool:
+        """Plan freely to one or more relative group pose deltas."""
+        return self._plan_relative_pose_targets(
+            delta_targets=delta_targets,
+            auxiliary_groups=auxiliary_groups,
+            path_mode="free",
+            timeout=timeout,
+        )
+
+    @rpc
+    def plan_linear_relative_to_pose_targets(
+        self,
+        delta_targets: Mapping[PlanningGroupID | PlanningGroup, CartesianDelta],
+        auxiliary_groups: Sequence[PlanningGroupID | PlanningGroup] = (),
+        timeout: float = 10.0,
+    ) -> bool:
+        """Plan a linear TCP path to one or more relative group pose deltas."""
+        return self._plan_relative_pose_targets(
+            delta_targets=delta_targets,
+            auxiliary_groups=auxiliary_groups,
+            path_mode="linear",
+            timeout=timeout,
+        )
+
+    def _plan_relative_pose_targets(
+        self,
+        delta_targets: Mapping[PlanningGroupID | PlanningGroup, CartesianDelta],
+        auxiliary_groups: Sequence[PlanningGroupID | PlanningGroup],
+        path_mode: CartesianPathMode,
+        timeout: float,
+    ) -> bool:
+        """Shared relative pose-target planner entrypoint."""
+        if self._world_monitor is None or self._planner is None:
+            return False
+        if not delta_targets:
+            return self._fail("At least one relative pose target is required")
+
+        target_ids = tuple(planning_group_id_from_selector(group) for group in delta_targets)
+        resolved_targets = {
+            planning_group_id_from_selector(group): delta for group, delta in delta_targets.items()
+        }
+        auxiliary_ids = tuple(planning_group_id_from_selector(group) for group in auxiliary_groups)
+        group_ids = tuple(dict.fromkeys((*target_ids, *auxiliary_ids)))
+        if not self._begin_planning():
+            return False
+        start = self._selected_start_for_groups(group_ids)
+        if start is None:
+            return False
+
+        result = self._planner.plan_relative_cartesian_path(
+            world=self._world_monitor.world,
+            selection=self._world_monitor.planning_groups.select(group_ids),
+            start=start,
+            delta_targets=resolved_targets,
+            auxiliary_groups=auxiliary_ids,
+            path_mode=path_mode,
+            timeout=timeout,
+        )
+        return self._finish_cartesian_plan(group_ids, result)
 
     @rpc
     def plan_to_joints(self, joints: JointState, robot_name: RobotName | None = None) -> bool:

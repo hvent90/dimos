@@ -1,4 +1,8 @@
-## ADDED Requirements
+## Purpose
+
+RoboPlan Oink kinematics lets RoboPlan-backed manipulation stacks use the existing RoboPlanWorld scene, planning-group metadata, joint ordering, and collision checks through the DimOS KinematicsSpec surface.
+
+## Requirements
 
 ### Requirement: RoboPlan kinematics configuration
 The manipulation kinematics configuration SHALL support a `roboplan` backend with typed Oink solver tuning fields.

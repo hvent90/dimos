@@ -25,7 +25,7 @@ from typing import TYPE_CHECKING, Any, Protocol, runtime_checkable
 from dimos.spec.utils import Spec
 
 if TYPE_CHECKING:
-    from collections.abc import Sequence
+    from collections.abc import Mapping, Sequence
     from contextlib import AbstractContextManager
 
     import numpy as np
@@ -34,6 +34,8 @@ if TYPE_CHECKING:
     from dimos.manipulation.planning.groups.models import PlanningGroup, PlanningGroupSelection
     from dimos.manipulation.planning.spec.config import RobotModelConfig
     from dimos.manipulation.planning.spec.models import (
+        CartesianDelta,
+        CartesianPathMode,
         GeneratedPlan,
         GeneratedTrajectory,
         IKResult,
@@ -292,6 +294,34 @@ class PlannerSpec(Protocol):
         timeout: float = 10.0,
     ) -> PlanningResult:
         """Plan over an explicit planning-group selection."""
+        ...
+
+    def plan_cartesian_path(
+        self,
+        world: WorldSpec,
+        selection: PlanningGroupSelection,
+        start: JointState,
+        pose_targets: Mapping[PlanningGroupID, PoseStamped],
+        *,
+        auxiliary_groups: Sequence[PlanningGroupID] = (),
+        path_mode: CartesianPathMode = "free",
+        timeout: float = 10.0,
+    ) -> PlanningResult:
+        """Plan over absolute Cartesian TCP targets for a selected group set."""
+        ...
+
+    def plan_relative_cartesian_path(
+        self,
+        world: WorldSpec,
+        selection: PlanningGroupSelection,
+        start: JointState,
+        delta_targets: Mapping[PlanningGroupID, CartesianDelta],
+        *,
+        auxiliary_groups: Sequence[PlanningGroupID] = (),
+        path_mode: CartesianPathMode = "free",
+        timeout: float = 10.0,
+    ) -> PlanningResult:
+        """Plan over relative Cartesian TCP deltas for a selected group set."""
         ...
 
     def get_name(self) -> str:

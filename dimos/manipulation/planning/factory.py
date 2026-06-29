@@ -24,6 +24,7 @@ from dimos.manipulation.planning.kinematics.config import (
     JacobianKinematicsConfig,
     ManipulationKinematicsConfig,
     PinkKinematicsConfig,
+    RoboPlanKinematicsConfig,
     kinematics_config_from_name,
 )
 from dimos.manipulation.visualization.config import (
@@ -51,7 +52,7 @@ class PlanningSpecs:
 
 SUPPORTED_WORLD_BACKENDS = ("drake", "roboplan")
 SUPPORTED_PLANNERS = ("rrt_connect", "roboplan")
-SUPPORTED_KINEMATICS = ("jacobian", "drake_optimization", "pink")
+SUPPORTED_KINEMATICS = ("jacobian", "drake_optimization", "pink", "roboplan")
 
 
 def validate_backend_combination(
@@ -76,6 +77,8 @@ def validate_backend_combination(
         raise ValueError('planner_name="roboplan" requires world_backend="roboplan"')
     if kinematics_name == "drake_optimization" and world_backend != "drake":
         raise ValueError('kinematics_name="drake_optimization" requires world_backend="drake"')
+    if kinematics_name == "roboplan" and world_backend != "roboplan":
+        raise ValueError('kinematics_name="roboplan" requires world_backend="roboplan"')
 
 
 def create_world(
@@ -102,6 +105,8 @@ def create_world(
 def create_kinematics(
     name: str = "pink",
     config: ManipulationKinematicsConfig | None = None,
+    world: WorldSpec | None = None,
+    world_backend: str | None = None,
     **kwargs: Any,
 ) -> KinematicsSpec:
     """Create IK solver from a backend name or typed kinematics config."""
@@ -122,6 +127,16 @@ def create_kinematics(
         from dimos.manipulation.planning.kinematics.pink_ik import PinkIK
 
         return PinkIK(config, **kwargs)
+    elif isinstance(config, RoboPlanKinematicsConfig):
+        if world_backend != "roboplan" or world is None:
+            raise ValueError('kinematics_name="roboplan" requires world_backend="roboplan"')
+        configure_kinematics = getattr(world, "configure_kinematics", None)
+        if configure_kinematics is None:
+            raise ValueError(
+                "RoboPlan kinematics requires a RoboPlan world with configure_kinematics(...)"
+            )
+        configure_kinematics(config)
+        return cast("KinematicsSpec", world)
     else:
         raise TypeError(f"Unsupported kinematics config: {type(config).__name__}")
 
@@ -176,7 +191,11 @@ def create_planning_specs(
 
     return PlanningSpecs(
         world_monitor=WorldMonitor(world=world),
-        kinematics=create_kinematics(config=kinematics),
+        kinematics=create_kinematics(
+            config=kinematics,
+            world=world,
+            world_backend=world_backend,
+        ),
         planner=create_planner(name=planner_name, world=world, world_backend=world_backend),
     )
 

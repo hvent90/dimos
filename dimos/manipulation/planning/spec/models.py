@@ -90,6 +90,22 @@ ForwardKinematicsStatus: TypeAlias = Literal[
 ]
 """Status for a group-scoped forward-kinematics query."""
 
+CartesianPathMode: TypeAlias = Literal["free", "linear"]
+"""Mode describing requested Cartesian path semantics."""
+
+
+@dataclass(frozen=True)
+class CartesianDelta:
+    """Relative TCP delta for Cartesian planning.
+
+    Translation is meters. Rotation is roll, pitch, yaw in radians. The frame is the
+    frame in which the delta is expressed.
+    """
+
+    translation: tuple[float, float, float] = (0.0, 0.0, 0.0)
+    rotation_rpy: tuple[float, float, float] = (0.0, 0.0, 0.0)
+    frame_id: str = "world"
+
 
 @dataclass(frozen=True)
 class CollisionCheckResult:

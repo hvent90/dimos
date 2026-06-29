@@ -20,6 +20,7 @@ with any physics backend (Drake, MuJoCo, PyBullet, etc.).
 
 from __future__ import annotations
 
+from collections.abc import Mapping, Sequence
 from dataclasses import dataclass, field
 import time
 from typing import TYPE_CHECKING
@@ -33,13 +34,17 @@ from dimos.manipulation.planning.groups.identifiers import (
 from dimos.manipulation.planning.groups.models import PlanningGroup, PlanningGroupSelection
 from dimos.manipulation.planning.spec.enums import PlanningStatus
 from dimos.manipulation.planning.spec.models import (
+    CartesianDelta,
+    CartesianPathMode,
     JointPath,
+    PlanningGroupID,
     PlanningResult,
     RobotName,
     WorldRobotID,
 )
 from dimos.manipulation.planning.spec.protocols import WorldSpec
 from dimos.manipulation.planning.utils.path_utils import compute_path_length
+from dimos.msgs.geometry_msgs.PoseStamped import PoseStamped
 from dimos.msgs.sensor_msgs.JointState import JointState
 from dimos.utils.logging_config import setup_logger
 
@@ -240,6 +245,42 @@ class RRTConnectPlanner:
             iterations=result.iterations,
             message=result.message,
             timestamps=result.timestamps,
+        )
+
+    def plan_cartesian_path(
+        self,
+        world: WorldSpec,
+        selection: PlanningGroupSelection,
+        start: JointState,
+        pose_targets: Mapping[PlanningGroupID, PoseStamped],
+        *,
+        auxiliary_groups: Sequence[PlanningGroupID] = (),
+        path_mode: CartesianPathMode = "free",
+        timeout: float = 10.0,
+    ) -> PlanningResult:
+        """Return explicit unsupported status for absolute Cartesian requests."""
+        _ = (world, selection, start, pose_targets, auxiliary_groups, path_mode, timeout)
+        return _create_failure_result(
+            PlanningStatus.UNSUPPORTED,
+            "Cartesian planning is not supported by this planner",
+        )
+
+    def plan_relative_cartesian_path(
+        self,
+        world: WorldSpec,
+        selection: PlanningGroupSelection,
+        start: JointState,
+        delta_targets: Mapping[PlanningGroupID, CartesianDelta],
+        *,
+        auxiliary_groups: Sequence[PlanningGroupID] = (),
+        path_mode: CartesianPathMode = "free",
+        timeout: float = 10.0,
+    ) -> PlanningResult:
+        """Return explicit unsupported status for relative Cartesian requests."""
+        _ = (world, selection, start, delta_targets, auxiliary_groups, path_mode, timeout)
+        return _create_failure_result(
+            PlanningStatus.UNSUPPORTED,
+            "Cartesian planning is not supported by this planner",
         )
 
     def _plan_multi_robot_selected_joint_path(

@@ -108,3 +108,4 @@ artifacts/
 
 # LIBERO-PRO downloaded benchmark assets
 /libero/
+.codegraph/

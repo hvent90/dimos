@@ -70,6 +70,11 @@ class PlanStatus(str, Enum):
     FAILED = "failed"
 
 
+class PlanRecipe(str, Enum):
+    STANDARD = "standard"
+    LINEAR_TCP = "linear_tcp"
+
+
 class ActionStatus(str, Enum):
     IDLE = "idle"
     RUNNING = "running"
@@ -93,6 +98,7 @@ class FeasibilityState:
 @dataclass
 class PanelPlanState:
     status: PlanStatus = PlanStatus.NONE
+    recipe: PlanRecipe | None = None
     group_ids: tuple[PlanningGroupID, ...] = ()
     robot: str | None = None
     target_pose: Pose | None = None
@@ -121,6 +127,7 @@ class PanelState:
     current_ee_pose: Pose | None = None
     cartesian_target: Pose | None = None
     joint_target: list[float] | None = None
+    next_plan_linear_tcp: bool = False
     feasibility: FeasibilityState = field(default_factory=FeasibilityState)
     latest_sequence_id: int = 0
     plan_state: PanelPlanState = field(default_factory=PanelPlanState)
