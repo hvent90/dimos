@@ -18,8 +18,11 @@ import pytest
 
 from dimos.core.runtime_environment import (
     CurrentProcessRuntimeEnvironment,
+    MissingPreparedPythonProjectError,
+    MissingPythonProjectFileError,
     NativeRuntimeEnvironment,
     NixNativeRuntimeEnvironment,
+    PythonProjectRuntimeEnvironment,
     PythonVenvRuntimeEnvironment,
     RuntimeEnvironmentRegistry,
 )
@@ -30,6 +33,88 @@ def test_register_and_resolve_environment() -> None:
     registry = RuntimeEnvironmentRegistry.with_current_process().register(env)
 
     assert registry.resolve("tools") is env
+
+
+def test_registry_resolves_python_project_runtime_environment(tmp_path: Path) -> None:
+    env = PythonProjectRuntimeEnvironment(name="worker", project=tmp_path)
+    registry = RuntimeEnvironmentRegistry.with_current_process().register(env)
+
+    assert registry.resolve("worker") is env
+
+
+def test_python_project_runtime_is_convention_only_and_normalizes_project_path(
+    tmp_path: Path,
+) -> None:
+    project = tmp_path / "project"
+    project.mkdir()
+    env = PythonProjectRuntimeEnvironment(name="worker", project=project / ".." / "project")
+
+    assert env.name == "worker"
+    assert env.project == project.resolve()
+    assert set(env.__dataclass_fields__) == {"name", "project"}
+
+
+def test_python_project_missing_pyproject_error_is_actionable(tmp_path: Path) -> None:
+    env = PythonProjectRuntimeEnvironment(name="worker", project=tmp_path)
+    missing_file = tmp_path / "pyproject.toml"
+
+    with pytest.raises(MissingPythonProjectFileError) as exc_info:
+        env.resolve_python_project()
+
+    message = str(exc_info.value)
+    assert "worker" in message
+    assert str(tmp_path) in message
+    assert str(missing_file) in message
+    assert "pyproject.toml" in message
+
+
+def test_python_project_uv_only_launch_material(tmp_path: Path) -> None:
+    (tmp_path / "pyproject.toml").write_text("[project]\nname = 'worker'\n")
+    prepared_python = tmp_path / ".venv" / "bin" / "python"
+    prepared_python.parent.mkdir(parents=True)
+    prepared_python.touch()
+    env = PythonProjectRuntimeEnvironment(name="worker", project=tmp_path)
+
+    material = env.resolve_python_project()
+
+    assert env.convention() == "uv"
+    assert material.argv_prefix == ["uv", "run", "--no-sync", "python"]
+    assert material.cwd == tmp_path.resolve()
+    assert material.env == {}
+    assert material.prepared_python == prepared_python
+
+
+def test_python_project_pixi_backed_launch_material(tmp_path: Path) -> None:
+    (tmp_path / "pyproject.toml").write_text("[project]\nname = 'worker'\n")
+    (tmp_path / "pixi.toml").write_text("[workspace]\n")
+    prepared_python = tmp_path / ".venv" / "bin" / "python"
+    prepared_python.parent.mkdir(parents=True)
+    prepared_python.touch()
+    env = PythonProjectRuntimeEnvironment(name="worker", project=tmp_path)
+
+    material = env.resolve_python_project()
+
+    assert env.convention() == "pixi-backed-uv"
+    assert material.argv_prefix == ["pixi", "run", "uv", "run", "--no-sync", "python"]
+    assert material.cwd == tmp_path.resolve()
+    assert material.env == {}
+    assert material.prepared_python == prepared_python
+
+
+def test_python_project_requires_prepared_venv_python(tmp_path: Path) -> None:
+    (tmp_path / "pyproject.toml").write_text("[project]\nname = 'worker'\n")
+    env = PythonProjectRuntimeEnvironment(name="worker", project=tmp_path)
+    missing_executable = tmp_path / ".venv" / "bin" / "python"
+
+    with pytest.raises(MissingPreparedPythonProjectError) as exc_info:
+        env.resolve_python_project()
+
+    message = str(exc_info.value)
+    assert "worker" in message
+    assert str(tmp_path) in message
+    assert str(missing_executable) in message
+    assert "uv" in message
+    assert "dimos runtime prepare <blueprint> --runtime worker" in message
 
 
 def test_current_process_python_material() -> None:

@@ -25,13 +25,17 @@ import threading
 from typing import TYPE_CHECKING, Any, NamedTuple, cast
 
 from dimos.core.coordination.coordinator_rpc import CoordinatorRPC
-from dimos.core.coordination.worker_launcher import VenvWorkerLauncher
+from dimos.core.coordination.worker_launcher import CommandWorkerLauncher, VenvWorkerLauncher
 from dimos.core.coordination.worker_manager import WorkerManager
 from dimos.core.coordination.worker_manager_python import WorkerManagerPython
 from dimos.core.global_config import GlobalConfig, global_config
 from dimos.core.module import ModuleBase, ModuleSpec
 from dimos.core.resource import Resource
-from dimos.core.runtime_environment import RuntimeEnvironmentRegistry
+from dimos.core.runtime_environment import (
+    PythonProjectRuntimeEnvironment,
+    PythonProjectRuntimeEnvironmentError,
+    RuntimeEnvironmentRegistry,
+)
 from dimos.core.transport import LCMTransport, PubSubTransport, pLCMTransport
 from dimos.spec.utils import is_spec, spec_annotation_compliance, spec_structural_compliance
 from dimos.utils.generic import short_id
@@ -201,7 +205,17 @@ class ModuleCoordinator(Resource):
         if manager_key in self._managers:
             return manager_key
         try:
-            material = self._runtime_environment_registry.resolve(env_name).resolve_python()
+            environment = self._runtime_environment_registry.resolve(env_name)
+        except Exception as exc:
+            raise RuntimeError(
+                f"Module placement references runtime environment {env_name!r}, but it could not "
+                "be resolved as a Python runtime capability. Register a Python runtime environment on the "
+                "blueprint with .runtime_environments(...)."
+            ) from exc
+        if isinstance(environment, PythonProjectRuntimeEnvironment):
+            return self._ensure_project_manager(env_name, environment, manager_key)
+        try:
+            material = environment.resolve_python()
         except Exception as exc:
             raise RuntimeError(
                 f"Module placement references runtime environment {env_name!r}, but it could not "
@@ -230,6 +244,38 @@ class ModuleCoordinator(Resource):
                 raise RuntimeError(
                     f"Failed to start runtime environment {env_name!r} Python capability "
                     f"with executable {executable!r}."
+                ) from exc
+        self._managers[manager_key] = manager
+        return manager_key
+
+    def _ensure_project_manager(
+        self,
+        env_name: str,
+        environment: PythonProjectRuntimeEnvironment,
+        manager_key: str,
+    ) -> str:
+        try:
+            material = environment.resolve_python_project()
+        except PythonProjectRuntimeEnvironmentError:
+            raise
+        except Exception as exc:
+            raise RuntimeError(
+                f"Module placement references runtime environment {env_name!r}, but it could not "
+                "be resolved as a Python project runtime capability. Register a Python project runtime "
+                "environment on the blueprint with .runtime_environments(...)."
+            ) from exc
+        manager = WorkerManagerPython(
+            g=self._global_config,
+            worker_launcher=CommandWorkerLauncher(material=material),
+        )
+        if self._started:
+            try:
+                manager.start()
+            except Exception as exc:
+                manager.stop()
+                raise RuntimeError(
+                    f"Failed to start runtime environment {env_name!r} Python project capability "
+                    f"with command prefix {material.argv_prefix!r} in project {material.cwd!s}."
                 ) from exc
         self._managers[manager_key] = manager
         return manager_key
@@ -305,11 +351,11 @@ class ModuleCoordinator(Resource):
                 if dep.startswith("python:"):
                     env_name = dep.removeprefix("python:")
                     try:
-                        executable = str(
-                            self._runtime_environment_registry.resolve(env_name)
-                            .resolve_python()
-                            .python_executable
-                        )
+                        environment = self._runtime_environment_registry.resolve(env_name)
+                        if isinstance(environment, PythonProjectRuntimeEnvironment):
+                            executable = " ".join(environment.resolve_python_project().argv_prefix)
+                        else:
+                            executable = str(environment.resolve_python().python_executable)
                     except Exception:
                         executable = "<unresolved>"
                     raise RuntimeError(
@@ -430,14 +476,18 @@ class ModuleCoordinator(Resource):
         coordinator = cls(g=global_config)
         coordinator.start()
 
-        _deploy_all_modules(blueprint, coordinator, global_config, blueprint_args)
-        coordinator._connect_streams(blueprint)
-        _connect_module_refs(blueprint, coordinator)
+        try:
+            _deploy_all_modules(blueprint, coordinator, global_config, blueprint_args)
+            coordinator._connect_streams(blueprint)
+            _connect_module_refs(blueprint, coordinator)
 
-        coordinator.build_all_modules()
-        coordinator.start_all_modules()
+            coordinator.build_all_modules()
+            coordinator.start_all_modules()
 
-        _log_blueprint_graph(blueprint, coordinator)
+            _log_blueprint_graph(blueprint, coordinator)
+        except Exception:
+            coordinator.stop()
+            raise
 
         return coordinator
 

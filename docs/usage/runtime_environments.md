@@ -2,7 +2,7 @@
 
 Runtime environments let a blueprint choose how selected processes launch without making that choice part of the module class.
 
-Use them when one module needs a different Python environment, or when a native module should get its executable settings from a named environment.
+Use them when one module needs a different Python environment, when a Python project owns its own worker environment, or when a native module should get its executable settings from a named environment.
 
 ## Python venv workers
 
@@ -59,6 +59,79 @@ class VenvOnlyModel(Module):
 
 The demo package at `packages/dimos-demo-worker-module/` follows this pattern. Its publisher imports a runtime helper only inside a worker-side RPC. The test `dimos/core/test_venv_module_demo.py` proves the coordinator can import and build the blueprint, while the placed worker runs the module through the named runtime environment.
 
+## Python project workers
+
+Use `PythonProjectRuntimeEnvironment(name, project)` when the worker module lives in a separate Python project that should own project-local state.
+
+```python skip
+from pathlib import Path
+
+from dimos.core.coordination.blueprints import autoconnect
+from dimos.core.runtime_environment import PythonProjectRuntimeEnvironment
+
+runtime = PythonProjectRuntimeEnvironment(
+    name="grasping",
+    project=Path("packages/my-grasping-worker"),
+)
+
+blueprint = (
+    autoconnect(GraspingModule.blueprint(), ConsumerModule.blueprint())
+    .runtime_environments(runtime)
+    .runtime_placements({GraspingModule: "grasping"})
+)
+```
+
+The project directory must contain `pyproject.toml`. DimOS uses these conventions only:
+
+- `.venv/` contains the uv-managed worker Python environment.
+- `.pixi/` is optional Pixi state. If `pixi.toml` exists, DimOS treats the project as Pixi-backed.
+
+Prepare project runtimes explicitly before running a blueprint:
+
+```bash
+dimos runtime prepare <blueprint>
+dimos runtime prepare <blueprint> --runtime grasping
+```
+
+Preparation is blueprint-scoped and acts only on runtimes used by active module placements. Direct `PythonVenvRuntimeEnvironment` entries are externally managed no-ops.
+
+`dimos run` is non-mutating. It does not install, sync, or update environments. If `.venv/bin/python` is missing, the run fails fast with a diagnostic telling you which `dimos runtime prepare` command to run. This is an existence-only staleness check: after changing `pyproject.toml`, `uv.lock`, `pixi.toml`, or `pixi.lock`, rerun `dimos runtime prepare` yourself.
+
+Prepare commands run from the project directory on every invocation:
+
+```bash
+# uv-only project
+uv venv --seed
+uv sync
+
+# Pixi-backed project
+pixi install
+pixi run uv venv -p .pixi/envs/default/bin/python --seed
+pixi run uv sync
+```
+
+Worker launch also stays non-mutating:
+
+- uv-only: `uv run --no-sync python -m dimos.core.coordination.venv_worker_entrypoint ...`
+- Pixi-backed: `pixi run uv run --no-sync python -m dimos.core.coordination.venv_worker_entrypoint ...`
+
+### GPD worker demo
+
+`packages/dimos-gpd-worker-demo/` is an import-safe project-runtime demo. It pins `gpd @ git+https://github.com/TomCC7/gpd.git@c088d8ae2f7965b067e9a12b3c0dacdbe9da924a`, includes optional Pixi native build dependencies, and exposes `GpdImportProbe.import_gpd_core()`. The RPC lazily imports `gpd.core` inside the worker runtime and returns `gpd import ok: ...` on success.
+
+Prepare the demo project when you want the optional integration to run:
+
+```bash
+cd packages/dimos-gpd-worker-demo
+pixi install
+pixi run uv venv -p .pixi/envs/default/bin/python --seed
+pixi run uv sync
+cd ../..
+uv run pytest dimos/core/test_gpd_worker_demo.py -q
+```
+
+The same blueprint pattern can be prepared through `dimos runtime prepare <blueprint> --runtime dimos-gpd-worker-demo` if you expose the demo blueprint in a registry entry. Without a prepared `.venv`, the Pixi/GPD integration tests skip; import-safety and placement tests still run.
+
 ## Packaging convention
 
 Place venv-deployable modules in their own Python package when they have a dependency closure that should not be installed in the coordinator environment.
@@ -112,9 +185,9 @@ Precedence is deterministic:
 
 Legacy native configs without `runtime_environment` continue to work.
 
-## Phase 1 limits
+## Current limits
 
 - Venv workers run on the same machine as the coordinator.
 - The venv must contain compatible DimOS worker runtime code. In phase 1, this usually means the venv can import the same source checkout or an equivalent installed `dimos` package.
-- DimOS does not create, install, or synchronize venvs for you yet. Prepare the environment before running the blueprint.
+- Direct `PythonVenvRuntimeEnvironment` entries are not created, installed, or synchronized by DimOS. Prepare those environments outside DimOS before running the blueprint.
 - There is no remote deployment agent yet. Runtime environments only select local process launch material.

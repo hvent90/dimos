@@ -26,6 +26,17 @@ class PythonLaunchMaterial:
 
 
 @dataclass(frozen=True)
+class PythonProjectLaunchMaterial:
+    argv_prefix: list[str]
+    cwd: Path
+    env: dict[str, str] = field(default_factory=dict)
+    runtime_name: str = ""
+    project: Path = Path()
+    convention: str = "uv"
+    prepared_python: Path = Path()
+
+
+@dataclass(frozen=True)
 class NativeLaunchMaterial:
     executable: str
     build_command: str | None = None
@@ -39,6 +50,11 @@ class RuntimeEnvironment:
     def resolve_python(self) -> PythonLaunchMaterial:
         raise RuntimeError(
             f"Runtime environment '{self.name}' does not provide Python launch material"
+        )
+
+    def resolve_python_project(self) -> PythonProjectLaunchMaterial:
+        raise RuntimeError(
+            f"Runtime environment '{self.name}' does not provide Python project launch material"
         )
 
     def resolve_native(self) -> NativeLaunchMaterial:
@@ -63,6 +79,101 @@ class PythonVenvRuntimeEnvironment(RuntimeEnvironment):
 
     def resolve_python(self) -> PythonLaunchMaterial:
         return PythonLaunchMaterial(python_executable=self.python_executable, env=dict(self.env))
+
+
+class PythonProjectRuntimeEnvironmentError(RuntimeError):
+    """Base error for invalid Python project runtime environments."""
+
+
+class MissingPythonProjectFileError(PythonProjectRuntimeEnvironmentError):
+    def __init__(self, *, runtime_name: str, project: Path, missing_file: Path) -> None:
+        self.runtime_name = runtime_name
+        self.project = project
+        self.missing_file = missing_file
+        super().__init__(
+            "Python project runtime "
+            f"'{runtime_name}' at '{project}' is missing required project file "
+            f"'{missing_file}'. First-slice Python project runtimes require pyproject.toml."
+        )
+
+
+class MissingPreparedPythonProjectError(PythonProjectRuntimeEnvironmentError):
+    def __init__(
+        self,
+        *,
+        runtime_name: str,
+        project: Path,
+        missing_executable: Path,
+        convention: str,
+    ) -> None:
+        self.runtime_name = runtime_name
+        self.project = project
+        self.missing_executable = missing_executable
+        self.convention = convention
+        prepare_command = f"dimos runtime prepare <blueprint> --runtime {runtime_name}"
+        super().__init__(
+            "Python project runtime "
+            f"'{runtime_name}' at '{project}' is not prepared; missing executable "
+            f"'{missing_executable}'. Detected convention: {convention}. "
+            f"Prepare it with: {prepare_command}"
+        )
+
+
+@dataclass(frozen=True)
+class PythonProjectRuntimeEnvironment(RuntimeEnvironment):
+    name: str
+    project: Path
+
+    def __post_init__(self) -> None:
+        object.__setattr__(self, "project", Path(self.project).expanduser().resolve())
+
+    @property
+    def pyproject_toml(self) -> Path:
+        return self.project / "pyproject.toml"
+
+    @property
+    def pixi_toml(self) -> Path:
+        return self.project / "pixi.toml"
+
+    @property
+    def prepared_python(self) -> Path:
+        return self.project / ".venv" / "bin" / "python"
+
+    def convention(self) -> str:
+        self._validate_project_file()
+        if self.pixi_toml.exists():
+            return "pixi-backed-uv"
+        return "uv"
+
+    def resolve_python_project(self) -> PythonProjectLaunchMaterial:
+        convention = self.convention()
+        if not self.prepared_python.exists():
+            raise MissingPreparedPythonProjectError(
+                runtime_name=self.name,
+                project=self.project,
+                missing_executable=self.prepared_python,
+                convention=convention,
+            )
+        argv_prefix = ["uv", "run", "--no-sync", "python"]
+        if convention == "pixi-backed-uv":
+            argv_prefix = ["pixi", "run", *argv_prefix]
+        return PythonProjectLaunchMaterial(
+            argv_prefix=argv_prefix,
+            cwd=self.project,
+            env={},
+            runtime_name=self.name,
+            project=self.project,
+            convention=convention,
+            prepared_python=self.prepared_python,
+        )
+
+    def _validate_project_file(self) -> None:
+        if not self.pyproject_toml.exists():
+            raise MissingPythonProjectFileError(
+                runtime_name=self.name,
+                project=self.project,
+                missing_file=self.pyproject_toml,
+            )
 
 
 @dataclass(frozen=True)

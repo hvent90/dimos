@@ -17,12 +17,14 @@ from dataclasses import dataclass
 from multiprocessing.connection import Connection, Listener, wait
 import os
 import secrets
+import signal
 import subprocess
 import tempfile
 import time
 from typing import Protocol
 
 from dimos.core.coordination.worker_messages import WorkerRequest, WorkerResponse
+from dimos.core.runtime_environment import PythonProjectLaunchMaterial
 
 
 class WorkerProcessHandle(Protocol):
@@ -218,3 +220,141 @@ class VenvWorkerLauncher:
                 f"Venv worker exited during startup with exit code {process.returncode}"
             )
         return result
+
+
+@dataclass
+class CommandWorkerProcessHandle(VenvWorkerProcessHandle):
+    process_group_id: int
+
+    def terminate(self) -> None:
+        _terminate_process_group(self.process, self.process_group_id, terminate_timeout=0.5)
+
+
+def _process_group_exists(process_group_id: int) -> bool:
+    try:
+        os.killpg(process_group_id, 0)
+    except ProcessLookupError:
+        return False
+    except PermissionError:
+        return True
+    return True
+
+
+def _terminate_process_group(
+    process: subprocess.Popen[bytes],
+    process_group_id: int,
+    *,
+    terminate_timeout: float,
+) -> None:
+    if _process_group_exists(process_group_id):
+        try:
+            os.killpg(process_group_id, signal.SIGTERM)
+        except ProcessLookupError:
+            pass
+        except OSError:
+            if process.poll() is None:
+                process.terminate()
+
+    deadline = time.monotonic() + terminate_timeout
+    while time.monotonic() < deadline:
+        if process.poll() is not None and not _process_group_exists(process_group_id):
+            return
+        time.sleep(0.02)
+
+    if _process_group_exists(process_group_id):
+        try:
+            os.killpg(process_group_id, signal.SIGKILL)
+        except ProcessLookupError:
+            pass
+        except OSError:
+            if process.poll() is None:
+                process.kill()
+
+    try:
+        process.wait(timeout=2)
+    except subprocess.TimeoutExpired:
+        pass
+    except ChildProcessError:
+        pass
+
+
+class CommandWorkerLauncher:
+    def __init__(
+        self,
+        material: PythonProjectLaunchMaterial,
+        startup_timeout: float = 10.0,
+    ) -> None:
+        self.material = material
+        self.startup_timeout = startup_timeout
+
+    def launch(self, worker_id: int) -> WorkerProcessHandle:
+        with tempfile.TemporaryDirectory(prefix="dimos-project-worker-") as temp_dir:
+            address = os.path.join(temp_dir, "worker.sock")
+            authkey = secrets.token_bytes(32)
+            listener = Listener(address=address, family="AF_UNIX", authkey=authkey)
+            process: subprocess.Popen[bytes] | None = None
+            try:
+                child_env = os.environ.copy()
+                child_env.update(self.material.env)
+                argv = [
+                    *self.material.argv_prefix,
+                    "-m",
+                    "dimos.core.coordination.venv_worker_entrypoint",
+                    "--address",
+                    address,
+                    "--authkey-hex",
+                    authkey.hex(),
+                    "--worker-id",
+                    str(worker_id),
+                ]
+                process = subprocess.Popen(
+                    argv,
+                    cwd=self.material.cwd,
+                    env=child_env,
+                    start_new_session=True,
+                )
+                process_group_id = os.getpgid(process.pid)
+                conn = self._accept_with_timeout(listener, process)
+                return CommandWorkerProcessHandle(
+                    process=process, connection=conn, process_group_id=process_group_id
+                )
+            except Exception:
+                if process is not None:
+                    self._terminate_process_group(process)
+                raise
+            finally:
+                listener.close()
+
+    def _accept_with_timeout(
+        self, listener: Listener, process: subprocess.Popen[bytes]
+    ) -> Connection:
+        deadline = time.monotonic() + self.startup_timeout
+        while True:
+            returncode = process.poll()
+            if returncode is not None:
+                command = str(process.args)
+                raise RuntimeError(
+                    "Command worker exited before connecting "
+                    f"with exit code {returncode}. Command: {command}"
+                )
+
+            remaining = deadline - time.monotonic()
+            if remaining <= 0:
+                raise TimeoutError(
+                    f"Timed out waiting {self.startup_timeout}s for command worker to connect"
+                )
+
+            ready = wait([listener._listener._socket], timeout=min(0.05, remaining))  # type: ignore[attr-defined]
+            if ready:
+                break
+
+        result = listener.accept()
+        if process.poll() is not None:
+            result.close()
+            raise RuntimeError(
+                f"Command worker exited during startup with exit code {process.returncode}"
+            )
+        return result
+
+    def _terminate_process_group(self, process: subprocess.Popen[bytes]) -> None:
+        _terminate_process_group(process, process.pid, terminate_timeout=2)

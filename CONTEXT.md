@@ -96,6 +96,22 @@ _Avoid_: automatic venv creation, package installation plan, blueprint-embedded 
 A runtime configuration map from stable environment names to environment backends that resolve interpreters, executables, command environment variables, and optional preparation steps for DimOS-managed processes.
 _Avoid_: venv-only config, blueprint-embedded machine paths, per-module ad hoc build commands
 
+**Runtime environment preparation**:
+An explicit pre-run action that prepares only the runtime environments used by active module placements in a loaded blueprint configuration.
+_Avoid_: implicit install during blueprint run, global environment-name command, preparing unused registry entries
+
+**Python project runtime environment**:
+A convention-driven runtime environment rooted at a Python project directory, where standard files such as `pyproject.toml`, `uv.lock`, and optionally `pixi.toml` determine how the worker Python environment is prepared and launched.
+_Avoid_: per-tool runtime backend taxonomy, blueprint-embedded setup command, manually enumerated manifest paths
+
+**Pixi-backed uv runtime**:
+A Python project runtime environment where Pixi prepares the native/toolchain layer and provides the Python interpreter used to create the project-local uv `.venv`; worker launch uses the `.venv` Python with Pixi activation environment applied.
+_Avoid_: Pixi-only Python environment, coordinator Python venv, launching without native activation environment
+
+**Toolchain-mediated worker launch**:
+A worker launch policy for convention-based Python project runtimes where DimOS invokes the project toolchain command, such as `pixi run uv run --no-sync python`, instead of reconstructing activation variables or launching the venv interpreter path directly.
+_Avoid_: hand-built Pixi activation env, mutating sync during blueprint run, bypassing project runtime conventions
+
 **Named runtime environment**:
 A stable label in the runtime environment registry that modules and worker placements reference when they need a non-default execution environment.
 _Avoid_: hardcoded venv path, Nix command string as identity, deployment type
