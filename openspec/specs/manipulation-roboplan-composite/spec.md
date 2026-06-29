@@ -1,4 +1,7 @@
-## ADDED Requirements
+## Purpose
+Define RoboPlan-backed composite multi-robot planning behavior as part of the manipulation backend surface.
+
+## Requirements
 
 ### Requirement: Multi-robot RoboPlan finalization
 `RoboPlanWorld` SHALL support registering multiple robot models before constructing the RoboPlan `Scene`, and SHALL construct one Composite RoboPlan model when two or more robots are registered.

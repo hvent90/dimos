@@ -1,4 +1,7 @@
-## ADDED Requirements
+## Purpose
+Define RoboPlan native joint-order and group adapter contracts as part of the manipulation backend surface.
+
+## Requirements
 
 ### Requirement: RoboPlan registers configured planning groups
 `RoboPlanWorld` SHALL register planning groups from `RobotModelConfig.planning_groups` using the existing public planning-group registry model.
