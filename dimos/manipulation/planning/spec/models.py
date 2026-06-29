@@ -93,6 +93,9 @@ ForwardKinematicsStatus: TypeAlias = Literal[
 CartesianPathMode: TypeAlias = Literal["free", "linear"]
 """Mode describing requested Cartesian path semantics."""
 
+PathConstraintKind: TypeAlias = Literal["linear_tcp"]
+"""Kind discriminator for geometric path constraints."""
+
 
 @dataclass(frozen=True)
 class CartesianDelta:
@@ -105,6 +108,27 @@ class CartesianDelta:
     translation: tuple[float, float, float] = (0.0, 0.0, 0.0)
     rotation_rpy: tuple[float, float, float] = (0.0, 0.0, 0.0)
     frame_id: str = "world"
+
+
+@dataclass(frozen=True)
+class LinearTcpPathConstraint:
+    """Straight-line TCP constraint carried by a geometric plan.
+
+    The constrained TCP must follow the world-frame segment from `start_pose` to
+    `target_pose` within the provided translational and rotational tolerances.
+    """
+
+    kind: PathConstraintKind = "linear_tcp"
+    group_id: PlanningGroupID = ""
+    tcp_frame: str = ""
+    start_pose: PoseStamped | None = None
+    target_pose: PoseStamped | None = None
+    max_translational_deviation: float = 1e-3
+    max_rotational_deviation: float = 1e-2
+
+
+PathConstraintMetadata: TypeAlias = LinearTcpPathConstraint
+"""Optional metadata declaring constraints a post-processor must preserve."""
 
 
 @dataclass(frozen=True)
@@ -140,6 +164,7 @@ class GeneratedPlan:
     path_length: float = 0.0
     iterations: int = 0
     message: str = ""
+    path_constraints: PathConstraintMetadata | None = None
 
     def is_success(self) -> bool:
         """Check if planning was successful."""
@@ -263,6 +288,7 @@ class PlanningResult:
     message: str = ""
     # Optional timing (set by optimization-based planners)
     timestamps: list[float] | None = None
+    path_constraints: PathConstraintMetadata | None = None
 
     def is_success(self) -> bool:
         """Check if planning was successful."""

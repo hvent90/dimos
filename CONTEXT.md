@@ -17,8 +17,28 @@ A planning group included in a planning request that may move as part of the pla
 _Avoid_: extra group, passive target group, unconstrained target
 
 **Linear TCP path**:
-A motion recipe where the tool center point follows a straight Cartesian segment from its start pose to its target pose.
+A motion recipe where the tool center point follows a straight Cartesian segment from its start pose to its target pose within configured Cartesian tolerance.
 _Avoid_: linear joint motion, linear motion
+
+**Linear TCP trajectory smoothing**:
+A manipulation-planning capability that makes a Linear TCP path executable without treating every intermediate Cartesian sample as a stop, while preserving Cartesian-line tolerance.
+_Avoid_: waypoint skipping, making linear motion faster
+
+**Adaptive-conservative smoothing**:
+A trajectory smoothing policy that starts with an aggressive simplification and, on validation failure, preserves more of the original path rather than relaxing correctness tolerances.
+_Avoid_: tolerance loosening, unsafe smoothing retry
+
+**Trajectory post-processing pipeline**:
+A staged manipulation-planning capability that may refine a geometric path, validate the refinement, assign timing, and apply execution-oriented smoothing while preserving the path's declared constraints.
+_Avoid_: hidden waypoint hack, one-off retiming step
+
+**Path-constraint metadata**:
+Optional planning metadata attached to a geometric path that declares the path constraints any post-processing must preserve.
+_Avoid_: planner debug data, visualization-only metadata
+
+**Non-blocking smoothing fallback**:
+A trajectory post-processing policy where smoothing failures fall back to the original geometric path rather than failing parametrization; the worst expected outcome is a slower valid trajectory.
+_Avoid_: strict smoothing gate, smoothing-required parametrization
 
 **Composite RoboPlan model**:
 A RoboPlan-facing robot model that represents multiple registered robot models as one planning scene.

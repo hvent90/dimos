@@ -196,6 +196,16 @@ RoboPlan builds one generated Composite RoboPlan model for the registered arms,
 keeps DimOS public joint names in `robot/joint` form, and returns planned paths in
 the caller's selected planning-group order.
 
+When RoboPlan trajectory parametrization is selected, conservative smoothing is
+enabled by default for eligible dense paths. The smoothing stage validates any
+refined path before TOPP-RA and falls back to the original geometric path if
+smoothing or validation fails, so the expected worst case is a slower valid
+trajectory rather than a failed preview. Disable it for debugging with:
+
+```bash
+-o manipulationmodule.trajectory_parametrization.roboplan_smoothing_enabled=false
+```
+
 ## Supported Robots
 
 | Robot | DOF | Teleop | Planning | Perception |

@@ -72,6 +72,7 @@ from dimos.manipulation.planning.spec.models import (
     GeneratedPlan,
     GeneratedTrajectory,
     IKResult,
+    LinearTcpPathConstraint,
     Obstacle,
     PlanningGroupID,
     PlanningResult,
@@ -972,17 +973,27 @@ class RoboPlanWorld:
         try:
             self._require_finalized()
             roboplan_toppra = importlib.import_module("roboplan.toppra")
+            selection = self._planning_groups.select(plan.group_ids)
             group_data = self._group_data_for_selection_ids(plan.group_ids)
-            joint_path = self._generated_plan_to_roboplan_joint_path(plan, group_data)
             options = self._roboplan_toppra_options(roboplan_toppra, speed_scale=speed_scale)
             self._set_scene_current_q(self._live_context)
-            native_trajectory = roboplan_toppra.PathParameterizerTOPPRA(
-                self._require_scene(), group_data.group_name
-            ).generate(joint_path, options)
-            return self._roboplan_trajectory_to_generated(
+            smoothed = self._maybe_parametrize_smoothed_path(
                 plan,
+                selection,
                 group_data,
-                native_trajectory,
+                roboplan_toppra,
+                options,
+                speed_scale=speed_scale,
+            )
+            if smoothed is not None:
+                return smoothed
+            return self._parametrize_roboplan_path(
+                plan,
+                plan.path,
+                selection,
+                group_data,
+                roboplan_toppra,
+                options,
                 speed_scale=speed_scale,
             )
         except ImportError:
@@ -1030,30 +1041,464 @@ class RoboPlanWorld:
     def _generated_plan_to_roboplan_joint_path(
         self,
         plan: GeneratedPlan,
+        selection: PlanningGroupSelection,
         group_data: _RoboPlanGroupData,
     ) -> Any:
-        expected_global_names = [
-            group_data.native_to_global_joint_name[native_name]
-            for native_name in group_data.native_joint_names
-        ]
         positions: list[list[float]] = []
         for waypoint in plan.path:
-            if len(waypoint.name) != len(waypoint.position):
-                raise ValueError("Generated-plan waypoint name and position lengths must match")
-            positions_by_name = {
-                name: float(position)
-                for name, position in zip(waypoint.name, waypoint.position, strict=True)
-            }
-            try:
-                positions.append([positions_by_name[name] for name in expected_global_names])
-            except KeyError as exc:
-                raise ValueError(
-                    f"GeneratedPlan waypoint is missing selected joint '{exc.args[0]}'"
-                ) from exc
+            positions_by_global = self._strict_selection_positions_by_global(selection, waypoint)
+            position = [
+                positions_by_global[group_data.native_to_global_joint_name[native_name]]
+                for native_name in group_data.native_joint_names
+            ]
+            if not np.all(np.isfinite(position)):
+                raise ValueError("Generated-plan waypoint positions must be finite")
+            positions.append(position)
         joint_path = roboplan_core.JointPath()
         joint_path.joint_names = list(group_data.native_joint_names)
         joint_path.positions = np.asarray(positions, dtype=np.float64)
         return joint_path
+
+    def _parametrize_roboplan_path(
+        self,
+        source_plan: GeneratedPlan,
+        path: list[JointState],
+        selection: PlanningGroupSelection,
+        group_data: _RoboPlanGroupData,
+        roboplan_toppra: Any,
+        options: Any,
+        *,
+        speed_scale: float,
+    ) -> GeneratedTrajectory:
+        path_plan = replace(source_plan, path=path)
+        joint_path = self._generated_plan_to_roboplan_joint_path(path_plan, selection, group_data)
+        native_trajectory = roboplan_toppra.PathParameterizerTOPPRA(
+            self._require_scene(), group_data.group_name
+        ).generate(joint_path, options)
+        return self._roboplan_trajectory_to_generated(
+            source_plan,
+            selection,
+            group_data,
+            native_trajectory,
+            speed_scale=speed_scale,
+        )
+
+    def _maybe_parametrize_smoothed_path(
+        self,
+        plan: GeneratedPlan,
+        selection: PlanningGroupSelection,
+        group_data: _RoboPlanGroupData,
+        roboplan_toppra: Any,
+        options: Any,
+        *,
+        speed_scale: float,
+    ) -> GeneratedTrajectory | None:
+        config = self._trajectory_parametrization_config
+        if not config.roboplan_smoothing_enabled:
+            return None
+        if len(plan.path) < config.roboplan_smoothing_min_waypoints:
+            return None
+        for candidate_path in self._adaptive_smoothing_candidates(plan.path):
+            if len(candidate_path) >= len(plan.path):
+                continue
+            try:
+                rejection = self._validate_smoothed_path(
+                    plan, selection, group_data, candidate_path
+                )
+            except Exception as exc:
+                rejection = f"smoothing candidate validation raised {type(exc).__name__}: {exc}"
+            if rejection is not None:
+                logger.info(
+                    "Rejected RoboPlan smoothed path (%d -> %d waypoints): %s",
+                    len(plan.path),
+                    len(candidate_path),
+                    rejection,
+                )
+                continue
+            try:
+                trajectory = self._parametrize_roboplan_path(
+                    plan,
+                    candidate_path,
+                    selection,
+                    group_data,
+                    roboplan_toppra,
+                    options,
+                    speed_scale=speed_scale,
+                )
+            except Exception as exc:
+                logger.info(
+                    "RoboPlan TOPPRA rejected smoothed path (%d -> %d waypoints): %s",
+                    len(plan.path),
+                    len(candidate_path),
+                    exc,
+                )
+                continue
+            try:
+                rejection = self._validate_smoothed_trajectory_output(
+                    plan, selection, group_data, candidate_path, trajectory
+                )
+            except Exception as exc:
+                rejection = f"smoothed trajectory validation raised {type(exc).__name__}: {exc}"
+            if rejection is not None:
+                logger.info(
+                    "Rejected RoboPlan smoothed trajectory (%d -> %d waypoints): %s",
+                    len(plan.path),
+                    len(candidate_path),
+                    rejection,
+                )
+                continue
+            trajectory.message = (
+                f"{trajectory.message}; smoothed RoboPlan path "
+                f"{len(plan.path)} -> {len(candidate_path)} waypoints"
+            )
+            return trajectory
+        return None
+
+    def _adaptive_smoothing_candidates(self, path: list[JointState]) -> list[list[JointState]]:
+        config = self._trajectory_parametrization_config
+        waypoint_count = len(path)
+        min_keep = max(2, ceil(waypoint_count * config.roboplan_smoothing_min_keep_fraction))
+        max_keep = max(min_keep, waypoint_count - 1)
+        if min_keep >= waypoint_count:
+            return []
+        if config.roboplan_smoothing_max_attempts == 1:
+            keep_counts = [min_keep]
+        else:
+            keep_counts = [
+                round(value)
+                for value in np.linspace(
+                    min_keep,
+                    max_keep,
+                    config.roboplan_smoothing_max_attempts,
+                )
+            ]
+        candidates: list[list[JointState]] = []
+        seen_counts: set[int] = set()
+        for keep_count in keep_counts:
+            keep_count = min(max(2, keep_count), waypoint_count - 1)
+            if keep_count in seen_counts:
+                continue
+            seen_counts.add(keep_count)
+            indices = sorted(
+                {round(index) for index in np.linspace(0, waypoint_count - 1, keep_count)}
+                | {0, waypoint_count - 1}
+            )
+            candidates.append([path[index] for index in indices])
+        return candidates
+
+    def _validate_smoothed_trajectory_output(
+        self,
+        source_plan: GeneratedPlan,
+        selection: PlanningGroupSelection,
+        group_data: _RoboPlanGroupData,
+        candidate_path: list[JointState],
+        trajectory: GeneratedTrajectory,
+    ) -> str | None:
+        if not trajectory.is_success():
+            return trajectory.message or "smoothed trajectory parametrization failed"
+        path = [
+            JointState(
+                name=list(trajectory.joint_names),
+                position=[float(value) for value in point.positions],
+            )
+            for point in trajectory.points
+        ]
+        if len(path) < 2:
+            return "smoothed trajectory output has fewer than two points"
+        config = self._trajectory_parametrization_config
+        try:
+            output_positions = self._strict_selection_positions_matrix(selection, path)
+            candidate_positions = self._strict_selection_positions_matrix(selection, candidate_path)
+        except ValueError as exc:
+            return str(exc)
+        output_deviation = self._max_joint_deviation_from_polyline(
+            output_positions, candidate_positions
+        )
+        if output_deviation > config.roboplan_smoothing_max_joint_deviation:
+            return (
+                "smoothed trajectory output deviates from accepted candidate by "
+                f"{output_deviation:.6f}, exceeding "
+                f"{config.roboplan_smoothing_max_joint_deviation:.6f}"
+            )
+        return self._validate_smoothed_path(source_plan, selection, group_data, path)
+
+    def _validate_smoothed_path(
+        self,
+        source_plan: GeneratedPlan,
+        selection: PlanningGroupSelection,
+        group_data: _RoboPlanGroupData,
+        candidate_path: list[JointState],
+    ) -> str | None:
+        config = self._trajectory_parametrization_config
+        try:
+            original_positions = self._strict_selection_positions_matrix(
+                selection, source_plan.path
+            )
+            candidate_positions = self._strict_selection_positions_matrix(selection, candidate_path)
+            self._strict_selection_native_positions_matrix(selection, group_data, candidate_path)
+        except ValueError as exc:
+            return str(exc)
+        if len(candidate_path) < 2:
+            return "candidate path must contain at least two waypoints"
+        if not np.allclose(candidate_positions[0], original_positions[0], atol=1e-9):
+            return "candidate path does not preserve the original start state"
+        if not np.allclose(candidate_positions[-1], original_positions[-1], atol=1e-9):
+            return "candidate path does not preserve the original goal state"
+        limits_error = self._validate_selection_path_within_limits(
+            selection, group_data, candidate_path
+        )
+        if limits_error is not None:
+            return limits_error
+        deviation = self._max_joint_deviation_from_polyline(original_positions, candidate_positions)
+        if deviation > config.roboplan_smoothing_max_joint_deviation:
+            return (
+                "candidate path deviates from original joint path by "
+                f"{deviation:.6f}, exceeding "
+                f"{config.roboplan_smoothing_max_joint_deviation:.6f}"
+            )
+        if not self._selection_path_collision_free(
+            selection, candidate_path, step_size=config.roboplan_smoothing_edge_step_size
+        ):
+            return "candidate path is in collision"
+        path_constraints = source_plan.path_constraints
+        if isinstance(path_constraints, LinearTcpPathConstraint):
+            return self._validate_linear_tcp_constraint(selection, candidate_path, path_constraints)
+        return None
+
+    def _strict_selection_positions_matrix(
+        self, selection: PlanningGroupSelection, path: list[JointState]
+    ) -> NDArray[np.float64]:
+        expected_names = tuple(selection.joint_names)
+        positions: list[list[float]] = []
+        for waypoint in path:
+            positions_by_global = self._strict_selection_positions_by_global(selection, waypoint)
+            positions.append([positions_by_global[name] for name in expected_names])
+        return np.asarray(positions, dtype=np.float64)
+
+    def _strict_selection_positions_by_global(
+        self, selection: PlanningGroupSelection, waypoint: JointState
+    ) -> dict[str, float]:
+        expected_names = tuple(selection.joint_names)
+        if tuple(waypoint.name) != expected_names:
+            raise ValueError(
+                "GeneratedPlan waypoint names must exactly match selected global joints"
+            )
+        if len(waypoint.position) != len(expected_names):
+            raise ValueError("GeneratedPlan waypoint position count must match selected joints")
+        values = [float(value) for value in waypoint.position]
+        if not np.all(np.isfinite(values)):
+            raise ValueError("GeneratedPlan waypoint positions must be finite")
+        return dict(zip(expected_names, values, strict=True))
+
+    def _strict_selection_native_positions_matrix(
+        self,
+        selection: PlanningGroupSelection,
+        group_data: _RoboPlanGroupData,
+        path: list[JointState],
+    ) -> NDArray[np.float64]:
+        rows: list[list[float]] = []
+        for waypoint in path:
+            positions_by_global = self._selection_positions_by_global(selection, waypoint)
+            rows.append(
+                [
+                    positions_by_global[group_data.native_to_global_joint_name[native_name]]
+                    for native_name in group_data.native_joint_names
+                ]
+            )
+        return np.asarray(rows, dtype=np.float64)
+
+    def _validate_selection_path_within_limits(
+        self,
+        selection: PlanningGroupSelection,
+        group_data: _RoboPlanGroupData,
+        path: list[JointState],
+    ) -> str | None:
+        lower_limits, upper_limits = self._selection_native_limits(selection, group_data)
+        native_positions = self._strict_selection_native_positions_matrix(
+            selection, group_data, path
+        )
+        if np.any(native_positions < lower_limits - 1e-9) or np.any(
+            native_positions > upper_limits + 1e-9
+        ):
+            return "candidate path violates selected joint limits"
+        return None
+
+    def _max_joint_deviation_from_polyline(
+        self,
+        original_positions: NDArray[np.float64],
+        candidate_positions: NDArray[np.float64],
+    ) -> float:
+        max_deviation = 0.0
+        for point in original_positions:
+            min_distance = min(
+                self._point_to_segment_distance(point, start, end)
+                for start, end in pairwise(candidate_positions)
+            )
+            max_deviation = max(max_deviation, min_distance)
+        return max_deviation
+
+    def _point_to_segment_distance(
+        self,
+        point: NDArray[np.float64],
+        start: NDArray[np.float64],
+        end: NDArray[np.float64],
+    ) -> float:
+        segment = end - start
+        length_squared = float(np.dot(segment, segment))
+        if length_squared <= 1e-16:
+            return float(np.linalg.norm(point - start))
+        alpha = float(np.clip(np.dot(point - start, segment) / length_squared, 0.0, 1.0))
+        projection = start + alpha * segment
+        return float(np.linalg.norm(point - projection))
+
+    def _validate_linear_tcp_constraint(
+        self,
+        selection: PlanningGroupSelection,
+        path: list[JointState],
+        constraint: LinearTcpPathConstraint,
+    ) -> str | None:
+        if constraint.group_id not in selection.group_ids:
+            return f"linear TCP constraint group '{constraint.group_id}' is not selected"
+        if constraint.start_pose is None or constraint.target_pose is None:
+            return "linear TCP constraint requires start_pose and target_pose"
+        metadata_error = self._validate_linear_tcp_constraint_metadata(selection, constraint)
+        if metadata_error is not None:
+            return metadata_error
+        config = self._trajectory_parametrization_config
+        with self.scratch_context() as ctx:
+            for joint_state in self._sample_selection_path(
+                selection, path, config.roboplan_smoothing_edge_step_size
+            ):
+                self._set_selection_state(ctx, selection, joint_state)
+                pose = self.get_group_ee_pose(ctx, constraint.group_id)
+                position_error, orientation_error = self._linear_tcp_pose_errors(pose, constraint)
+                if position_error > constraint.max_translational_deviation:
+                    return (
+                        "linear TCP candidate deviates from line by "
+                        f"{position_error:.6f}, exceeding "
+                        f"{constraint.max_translational_deviation:.6f}"
+                    )
+                if orientation_error > constraint.max_rotational_deviation:
+                    return (
+                        "linear TCP candidate orientation deviates by "
+                        f"{orientation_error:.6f}, exceeding "
+                        f"{constraint.max_rotational_deviation:.6f}"
+                    )
+        return None
+
+    def _validate_linear_tcp_constraint_metadata(
+        self,
+        selection: PlanningGroupSelection,
+        constraint: LinearTcpPathConstraint,
+    ) -> str | None:
+        group = next(
+            (
+                selected_group
+                for selected_group in selection.groups
+                if selected_group.id == constraint.group_id
+            ),
+            None,
+        )
+        if group is None:
+            return f"linear TCP constraint group '{constraint.group_id}' is not selected"
+        expected_tcp_frame = group.tip_link or ""
+        if constraint.tcp_frame != expected_tcp_frame:
+            return (
+                "linear TCP constraint tcp_frame must match selected group tip; "
+                f"expected '{expected_tcp_frame}', got '{constraint.tcp_frame}'"
+            )
+        assert constraint.start_pose is not None
+        assert constraint.target_pose is not None
+        if constraint.start_pose.frame_id != "world" or constraint.target_pose.frame_id != "world":
+            return "linear TCP constraint start_pose and target_pose must be in world frame"
+        tolerances = (
+            constraint.max_translational_deviation,
+            constraint.max_rotational_deviation,
+        )
+        if any(not np.isfinite(tolerance) or tolerance < 0.0 for tolerance in tolerances):
+            return "linear TCP constraint tolerances must be finite and nonnegative"
+        return None
+
+    def _sample_selection_path(
+        self,
+        selection: PlanningGroupSelection,
+        path: list[JointState],
+        step_size: float,
+    ) -> list[JointState]:
+        if len(path) < 2:
+            return path
+        samples: list[JointState] = []
+        for start, end in pairwise(path):
+            start_by_global = self._selection_positions_by_global(selection, start)
+            end_by_global = self._selection_positions_by_global(selection, end)
+            q_start = np.asarray(
+                [start_by_global[name] for name in selection.joint_names], dtype=np.float64
+            )
+            q_end = np.asarray(
+                [end_by_global[name] for name in selection.joint_names], dtype=np.float64
+            )
+            distance = float(np.linalg.norm(q_end - q_start))
+            n_steps = max(2, ceil(distance / step_size) + 1)
+            for index in range(n_steps):
+                if samples and index == 0:
+                    continue
+                alpha = index / (n_steps - 1)
+                q = q_start + alpha * (q_end - q_start)
+                samples.append(
+                    JointState(
+                        name=list(selection.joint_names),
+                        position=[float(value) for value in q],
+                    )
+                )
+        return samples
+
+    def _linear_tcp_pose_errors(
+        self,
+        pose: PoseStamped,
+        constraint: LinearTcpPathConstraint,
+    ) -> tuple[float, float]:
+        assert constraint.start_pose is not None
+        assert constraint.target_pose is not None
+        current_matrix = pose_to_matrix(pose)
+        start_matrix = pose_to_matrix(constraint.start_pose)
+        target_matrix = pose_to_matrix(constraint.target_pose)
+        alpha = self._linear_tcp_alpha(current_matrix, start_matrix, target_matrix)
+        expected_matrix = np.eye(4, dtype=np.float64)
+        expected_matrix[:3, 3] = start_matrix[:3, 3] + alpha * (
+            target_matrix[:3, 3] - start_matrix[:3, 3]
+        )
+        slerp = Slerp([0.0, 1.0], R.from_matrix([start_matrix[:3, :3], target_matrix[:3, :3]]))
+        expected_matrix[:3, :3] = slerp([alpha]).as_matrix()[0]
+        return compute_pose_error(current_matrix, expected_matrix)
+
+    def _linear_tcp_alpha(
+        self,
+        current_matrix: NDArray[np.float64],
+        start_matrix: NDArray[np.float64],
+        target_matrix: NDArray[np.float64],
+    ) -> float:
+        translation_delta = target_matrix[:3, 3] - start_matrix[:3, 3]
+        translation_distance_squared = float(np.dot(translation_delta, translation_delta))
+        if translation_distance_squared > 1e-16:
+            return float(
+                np.clip(
+                    np.dot(current_matrix[:3, 3] - start_matrix[:3, 3], translation_delta)
+                    / translation_distance_squared,
+                    0.0,
+                    1.0,
+                )
+            )
+        start_rotation = R.from_matrix(start_matrix[:3, :3])
+        target_rotation = R.from_matrix(target_matrix[:3, :3])
+        current_rotation = R.from_matrix(current_matrix[:3, :3])
+        total_rotvec = (target_rotation * start_rotation.inv()).as_rotvec()
+        total_distance_squared = float(np.dot(total_rotvec, total_rotvec))
+        if total_distance_squared <= 1e-16:
+            return 0.0
+        current_rotvec = (current_rotation * start_rotation.inv()).as_rotvec()
+        return float(
+            np.clip(np.dot(current_rotvec, total_rotvec) / total_distance_squared, 0.0, 1.0)
+        )
 
     def _roboplan_toppra_options(self, roboplan_toppra: Any, *, speed_scale: float) -> Any:
         config = self._trajectory_parametrization_config
@@ -1079,6 +1524,7 @@ class RoboPlanWorld:
     def _roboplan_trajectory_to_generated(
         self,
         plan: GeneratedPlan,
+        selection: PlanningGroupSelection,
         group_data: _RoboPlanGroupData,
         native_trajectory: Any,
         *,
@@ -1118,6 +1564,30 @@ class RoboPlanWorld:
         if np.any(~np.isfinite(positions)) or np.any(~np.isfinite(velocities)):
             raise ValueError("RoboPlan trajectory contains non-finite values")
 
+        native_indices_by_global = {
+            global_name: index for index, global_name in enumerate(global_joint_names)
+        }
+        selected_names = tuple(selection.joint_names)
+        selected_name_set = set(selected_names)
+        missing_selected = [
+            global_name
+            for global_name in selected_names
+            if global_name not in native_indices_by_global
+        ]
+        extra_returned = [
+            global_name
+            for global_name in global_joint_names
+            if global_name not in selected_name_set
+        ]
+        if missing_selected or extra_returned:
+            raise ValueError(
+                "RoboPlan trajectory joint_names must match selected global joints; "
+                f"missing={missing_selected}, extra={extra_returned}"
+            )
+        selected_indices = [native_indices_by_global[name] for name in selected_names]
+        positions = positions[:, selected_indices]
+        velocities = velocities[:, selected_indices]
+
         points = [
             TrajectoryPoint(
                 time_from_start=float(time_from_start),
@@ -1129,7 +1599,7 @@ class RoboPlanWorld:
             )
         ]
         return GeneratedTrajectory(
-            joint_names=global_joint_names,
+            joint_names=list(selected_names),
             points=points,
             duration=float(times[-1]),
             speed_scale=speed_scale,
@@ -1348,12 +1818,25 @@ class RoboPlanWorld:
                 planning_time=time.time() - start_time,
                 message="RoboPlan linear Cartesian planning failed: final TCP pose missed target",
             )
+        target_pose_world = PoseStamped(
+            frame_id="world",
+            position=target_pose.position,
+            orientation=target_pose.orientation,
+        )
         return PlanningResult(
             status=PlanningStatus.SUCCESS,
             path=path,
             planning_time=time.time() - start_time,
             path_length=compute_path_length(path),
             message="RoboPlan linear Cartesian path found",
+            path_constraints=LinearTcpPathConstraint(
+                group_id=group_id,
+                tcp_frame=group.tip_link or "",
+                start_pose=start_pose,
+                target_pose=target_pose_world,
+                max_translational_deviation=_CARTESIAN_POSITION_TOLERANCE,
+                max_rotational_deviation=_CARTESIAN_ORIENTATION_TOLERANCE,
+            ),
         )
 
     def _solve_linear_oink_waypoint(

@@ -55,6 +55,12 @@ class TrajectoryParametrizationConfig(ModuleConfig):
     roboplan_max_adaptive_iterations: int = Field(default=10, ge=1)
     roboplan_max_adaptive_step_size: float = Field(default=0.05, gt=0.0)
     roboplan_max_blend_deviation: float = Field(default=0.01, gt=0.0)
+    roboplan_smoothing_enabled: bool = True
+    roboplan_smoothing_min_waypoints: int = Field(default=8, ge=3)
+    roboplan_smoothing_max_attempts: int = Field(default=4, ge=1)
+    roboplan_smoothing_max_joint_deviation: float = Field(default=0.02, ge=0.0)
+    roboplan_smoothing_edge_step_size: float = Field(default=0.02, gt=0.0)
+    roboplan_smoothing_min_keep_fraction: float = Field(default=0.1, gt=0.0, le=1.0)
 
 
 class RobotModelConfig(ModuleConfig):

@@ -47,6 +47,7 @@ from dimos.manipulation.planning.spec.models import (
     GeneratedPlan,
     GeneratedTrajectory,
     IKResult,
+    LinearTcpPathConstraint,
     PlanningResult,
     PlanningSceneInfo,
 )
@@ -152,6 +153,29 @@ def _successful_generated_trajectory() -> GeneratedTrajectory:
         status=ParametrizationStatus.SUCCESS,
         source_group_ids=("test_arm/manipulator",),
     )
+
+
+def test_store_generated_plan_preserves_path_constraints() -> None:
+    module = _make_module()
+    constraint = LinearTcpPathConstraint(group_id="test_arm/manipulator", tcp_frame="link_tcp")
+    path = [JointState(name=["test_arm/joint1"], position=[0.1])]
+    result = PlanningResult(
+        status=PlanningStatus.SUCCESS,
+        path=path,
+        planning_time=0.2,
+        path_length=0.1,
+        iterations=3,
+        message="planned",
+        path_constraints=constraint,
+    )
+
+    module._store_generated_plan(("test_arm/manipulator",), result)
+
+    assert module._last_plan is not None
+    assert module._last_plan.path_constraints is constraint
+    assert module._last_plan.path is path
+    assert module._last_plan.message == "planned"
+    assert module._last_trajectory is None
 
 
 class TestTrajectoryDispatchPreparation:

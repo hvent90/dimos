@@ -640,6 +640,7 @@ class ManipulationModule(Module):
             path_length=result.path_length,
             iterations=result.iterations,
             message=result.message,
+            path_constraints=result.path_constraints,
         )
         self._last_trajectory = None
 

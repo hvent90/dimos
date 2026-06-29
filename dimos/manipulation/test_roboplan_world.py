@@ -25,6 +25,7 @@ import xml.etree.ElementTree as ET
 
 import numpy as np
 import pytest
+from pytest_mock import MockerFixture
 
 from dimos.manipulation.planning.groups.models import (
     PlanningGroupDefinition,
@@ -42,12 +43,15 @@ from dimos.manipulation.planning.spec.enums import (
 from dimos.manipulation.planning.spec.models import (
     CartesianDelta,
     GeneratedPlan,
+    GeneratedTrajectory,
+    LinearTcpPathConstraint,
     Obstacle,
 )
 from dimos.msgs.geometry_msgs.PoseStamped import PoseStamped
 from dimos.msgs.geometry_msgs.Quaternion import Quaternion
 from dimos.msgs.geometry_msgs.Vector3 import Vector3
 from dimos.msgs.sensor_msgs.JointState import JointState
+from dimos.msgs.trajectory_msgs.TrajectoryPoint import TrajectoryPoint
 from dimos.utils.transform_utils import pose_to_matrix
 
 
@@ -598,6 +602,256 @@ def test_roboplan_world_parametrizes_generated_plan_with_native_toppra(
     assert FakePathParameterizerTOPPRA.last_options.acceleration_scale == pytest.approx(0.1)
 
 
+def test_roboplan_parametrization_maps_selected_order_to_native_and_back(
+    fake_roboplan: None, robot_config: RobotModelConfig
+) -> None:
+    world, _robot_id = _make_world(fake_roboplan, robot_config)
+    world.finalize()
+    selection_key = frozenset(("arm/manipulator",))
+    group_data = world._roboplan_groups_by_selection[selection_key]
+    world._roboplan_groups_by_selection[selection_key] = type(group_data)(
+        group_ids=group_data.group_ids,
+        group_name=group_data.group_name,
+        native_joint_names=("joint2", "joint1"),
+        native_to_global_joint_name=group_data.native_to_global_joint_name,
+    )
+    world.configure_trajectory_parametrization(
+        TrajectoryParametrizationConfig(backend="roboplan", roboplan_smoothing_enabled=False)
+    )
+    plan = GeneratedPlan(
+        group_ids=("arm/manipulator",),
+        path=[
+            JointState(name=["arm/joint1", "arm/joint2"], position=[0.1, 0.2]),
+            JointState(name=["arm/joint1", "arm/joint2"], position=[0.3, 0.4]),
+        ],
+        status=PlanningStatus.SUCCESS,
+    )
+
+    trajectory = world.parametrize(plan)
+
+    assert trajectory.status == ParametrizationStatus.SUCCESS
+    assert FakePathParameterizerTOPPRA.last_path is not None
+    assert FakePathParameterizerTOPPRA.last_path.joint_names == ["joint2", "joint1"]
+    np.testing.assert_allclose(
+        FakePathParameterizerTOPPRA.last_path.positions,
+        [[0.2, 0.1], [0.4, 0.3]],
+    )
+    assert trajectory.joint_names == ["arm/joint1", "arm/joint2"]
+    assert [point.positions for point in trajectory.points] == [[0.1, 0.2], [0.3, 0.4]]
+
+
+def _long_generated_plan(waypoint_count: int = 12) -> GeneratedPlan:
+    return GeneratedPlan(
+        group_ids=("arm/manipulator",),
+        path=[
+            JointState(
+                name=["arm/joint1", "arm/joint2"],
+                position=[float(index) * 0.01, float(index) * 0.02],
+            )
+            for index in range(waypoint_count)
+        ],
+        status=PlanningStatus.SUCCESS,
+        message="source plan",
+    )
+
+
+def test_roboplan_parametrization_smoothing_reduces_long_paths_by_default(
+    fake_roboplan: None, robot_config: RobotModelConfig
+) -> None:
+    world, _robot_id = _make_world(fake_roboplan, robot_config)
+    world.finalize()
+    world.configure_trajectory_parametrization(TrajectoryParametrizationConfig(backend="roboplan"))
+    plan = _long_generated_plan()
+
+    trajectory = world.parametrize(plan)
+
+    assert trajectory.status == ParametrizationStatus.SUCCESS
+    assert FakePathParameterizerTOPPRA.last_path is not None
+    assert len(FakePathParameterizerTOPPRA.last_path.positions) < len(plan.path)
+    assert trajectory.source_group_ids == plan.group_ids
+    assert trajectory.source_plan_message == "source plan"
+    assert "smoothed RoboPlan path" in trajectory.message
+
+
+def test_roboplan_parametrization_uses_original_count_when_smoothing_disabled_or_short(
+    fake_roboplan: None, robot_config: RobotModelConfig
+) -> None:
+    world, _robot_id = _make_world(fake_roboplan, robot_config)
+    world.finalize()
+    world.configure_trajectory_parametrization(
+        TrajectoryParametrizationConfig(backend="roboplan", roboplan_smoothing_enabled=False)
+    )
+    disabled_plan = _long_generated_plan()
+
+    disabled_trajectory = world.parametrize(disabled_plan)
+
+    assert disabled_trajectory.status == ParametrizationStatus.SUCCESS
+    assert FakePathParameterizerTOPPRA.last_path is not None
+    assert len(FakePathParameterizerTOPPRA.last_path.positions) == len(disabled_plan.path)
+
+    world.configure_trajectory_parametrization(TrajectoryParametrizationConfig(backend="roboplan"))
+    short_plan = _long_generated_plan(waypoint_count=3)
+    short_trajectory = world.parametrize(short_plan)
+
+    assert short_trajectory.status == ParametrizationStatus.SUCCESS
+    assert FakePathParameterizerTOPPRA.last_path is not None
+    assert len(FakePathParameterizerTOPPRA.last_path.positions) == len(short_plan.path)
+
+
+def test_roboplan_parametrization_falls_back_when_smoothed_toppra_fails(
+    fake_roboplan: None, robot_config: RobotModelConfig, mocker: MockerFixture
+) -> None:
+    original_generate = FakePathParameterizerTOPPRA.generate
+
+    def fail_smoothed_once(
+        self: FakePathParameterizerTOPPRA, path: FakeJointPath, options: FakeTOPPRAOptions
+    ) -> FakeJointTrajectory:
+        if len(path.positions) < 12:
+            raise RuntimeError("smoothed rejected")
+        return original_generate(self, path, options)
+
+    mocker.patch.object(
+        FakePathParameterizerTOPPRA,
+        "generate",
+        autospec=True,
+        side_effect=fail_smoothed_once,
+    )
+    world, _robot_id = _make_world(fake_roboplan, robot_config)
+    world.finalize()
+    world.configure_trajectory_parametrization(TrajectoryParametrizationConfig(backend="roboplan"))
+    plan = _long_generated_plan()
+
+    trajectory = world.parametrize(plan)
+
+    assert trajectory.status == ParametrizationStatus.SUCCESS
+    assert FakePathParameterizerTOPPRA.last_path is not None
+    assert len(FakePathParameterizerTOPPRA.last_path.positions) == len(plan.path)
+    assert "smoothed RoboPlan path" not in trajectory.message
+
+
+def test_roboplan_parametrization_falls_back_when_candidate_validation_fails(
+    fake_roboplan: None, robot_config: RobotModelConfig
+) -> None:
+    world, _robot_id = _make_world(fake_roboplan, robot_config)
+    world.finalize()
+    world.configure_trajectory_parametrization(
+        TrajectoryParametrizationConfig(
+            backend="roboplan",
+            roboplan_smoothing_max_joint_deviation=0.0,
+        )
+    )
+    plan = _long_generated_plan()
+    for index, state in enumerate(plan.path):
+        state.position = [float(index) * 0.01, 0.05 if index % 2 else 0.0]
+
+    trajectory = world.parametrize(plan)
+
+    assert trajectory.status == ParametrizationStatus.SUCCESS
+    assert FakePathParameterizerTOPPRA.last_path is not None
+    assert len(FakePathParameterizerTOPPRA.last_path.positions) == len(plan.path)
+
+
+def test_roboplan_parametrization_falls_back_when_smoothing_validation_raises(
+    fake_roboplan: None, robot_config: RobotModelConfig, mocker: MockerFixture
+) -> None:
+    world, _robot_id = _make_world(fake_roboplan, robot_config)
+    world.finalize()
+    world.configure_trajectory_parametrization(TrajectoryParametrizationConfig(backend="roboplan"))
+    mocker.patch.object(
+        world,
+        "_validate_smoothed_path",
+        side_effect=RuntimeError("validation exploded"),
+    )
+    plan = _long_generated_plan()
+
+    trajectory = world.parametrize(plan)
+
+    assert trajectory.status == ParametrizationStatus.SUCCESS
+    assert FakePathParameterizerTOPPRA.last_path is not None
+    assert len(FakePathParameterizerTOPPRA.last_path.positions) == len(plan.path)
+
+
+def test_smoothed_trajectory_output_rejects_output_deviation_from_candidate(
+    fake_roboplan: None, robot_config: RobotModelConfig
+) -> None:
+    world, _robot_id = _make_world(fake_roboplan, robot_config)
+    world.finalize()
+    world.configure_trajectory_parametrization(
+        TrajectoryParametrizationConfig(
+            backend="roboplan",
+            roboplan_smoothing_max_joint_deviation=0.02,
+        )
+    )
+    selection = _default_selection(world, robot_config)
+    group_data = world._group_data_for_selection_ids(("arm/manipulator",))
+    source_plan = _long_generated_plan()
+    candidate_path = [source_plan.path[0], source_plan.path[-1]]
+    trajectory = GeneratedTrajectory(
+        joint_names=["arm/joint1", "arm/joint2"],
+        points=[
+            TrajectoryPoint(time_from_start=0.0, positions=[0.0, 0.0]),
+            TrajectoryPoint(time_from_start=0.5, positions=[0.05, 1.0]),
+            TrajectoryPoint(time_from_start=1.0, positions=[0.11, 0.22]),
+        ],
+        status=ParametrizationStatus.SUCCESS,
+    )
+
+    rejection = world._validate_smoothed_trajectory_output(
+        source_plan, selection, group_data, candidate_path, trajectory
+    )
+
+    assert rejection is not None
+    assert "deviates from accepted candidate" in rejection
+
+
+def test_linear_tcp_validation_rejects_inconsistent_metadata(
+    fake_roboplan: None, robot_config: RobotModelConfig
+) -> None:
+    world, _robot_id = _make_world(fake_roboplan, robot_config)
+    world.finalize()
+    world.configure_trajectory_parametrization(TrajectoryParametrizationConfig(backend="roboplan"))
+    selection = _default_selection(world, robot_config)
+    path = _long_generated_plan(waypoint_count=2).path
+    start_pose = PoseStamped(frame_id="world", position=Vector3(), orientation=Quaternion())  # type: ignore[call-arg]
+    target_pose = PoseStamped(frame_id="world", position=Vector3(x=0.1), orientation=Quaternion())  # type: ignore[call-arg]
+
+    wrong_frame = world._validate_linear_tcp_constraint(
+        selection,
+        path,
+        LinearTcpPathConstraint(
+            group_id="arm/manipulator",
+            tcp_frame="wrong_tcp",
+            start_pose=start_pose,
+            target_pose=target_pose,
+        ),
+    )
+    non_world_start = world._validate_linear_tcp_constraint(
+        selection,
+        path,
+        LinearTcpPathConstraint(
+            group_id="arm/manipulator",
+            tcp_frame="tcp",
+            start_pose=PoseStamped(frame_id="base", position=Vector3(), orientation=Quaternion()),  # type: ignore[call-arg]
+            target_pose=target_pose,
+        ),
+    )
+    invalid_tolerance = world._validate_linear_tcp_constraint(
+        selection,
+        path,
+        LinearTcpPathConstraint(
+            group_id="arm/manipulator",
+            tcp_frame="tcp",
+            start_pose=start_pose,
+            target_pose=target_pose,
+            max_translational_deviation=-1.0,
+        ),
+    )
+
+    assert wrong_frame is not None and "tcp_frame" in wrong_frame
+    assert non_world_start is not None and "world frame" in non_world_start
+    assert invalid_tolerance is not None and "finite and nonnegative" in invalid_tolerance
+
+
 def test_robot_registration_finalization_and_joint_limits(
     fake_roboplan: None, robot_config: RobotModelConfig
 ) -> None:
@@ -1067,6 +1321,7 @@ def test_generic_rrt_planner_uses_roboplan_world_collision_checks(
 
     assert result.status == PlanningStatus.SUCCESS
     assert len(result.path) >= 2
+    assert result.path_constraints is None
 
 
 def test_group_fk_jacobian_and_explicit_min_distance_unsupported(
@@ -1180,6 +1435,7 @@ def test_cartesian_free_absolute_uses_simple_ik_then_rrt(
     assert FakeRRT.last_start is not None
     np.testing.assert_allclose(FakeRRT.last_start.positions, [0.1, 0.1])
     np.testing.assert_allclose(world._scene.current_positions, [0.1, 0.1])
+    assert result.path_constraints is None
 
 
 def test_cartesian_free_relative_delta_uses_world_axes(
@@ -1412,6 +1668,17 @@ def test_cartesian_linear_mode_supports_single_absolute_target(
     )
     assert {goal.base_frame for goal in FakeFrameTask.targets} == {""}
     assert {goal.tip_frame for goal in FakeFrameTask.targets} == {"tcp"}
+    assert isinstance(result.path_constraints, LinearTcpPathConstraint)
+    assert result.path_constraints.group_id == "arm/manipulator"
+    assert result.path_constraints.tcp_frame == "tcp"
+    assert result.path_constraints.start_pose is not None
+    assert result.path_constraints.target_pose is not None
+    assert result.path_constraints.start_pose.frame_id == "world"
+    assert result.path_constraints.target_pose.frame_id == "world"
+    assert result.path_constraints.start_pose.position.x == pytest.approx(0.0)
+    assert result.path_constraints.target_pose.position.x == pytest.approx(0.04)
+    assert result.path_constraints.max_translational_deviation == pytest.approx(1e-3)
+    assert result.path_constraints.max_rotational_deviation == pytest.approx(1e-2)
 
 
 def test_cartesian_linear_mode_sets_selected_group_state_by_group_name(
@@ -1521,6 +1788,15 @@ def test_cartesian_linear_mode_supports_single_relative_target(
     assert goal_xs[0] > 0.2
     assert goal_xs == sorted(goal_xs)
     assert goal_xs[-1] == pytest.approx(0.24)
+    assert isinstance(result.path_constraints, LinearTcpPathConstraint)
+    assert result.path_constraints.group_id == "arm/manipulator"
+    assert result.path_constraints.tcp_frame == "tcp"
+    assert result.path_constraints.start_pose is not None
+    assert result.path_constraints.target_pose is not None
+    assert result.path_constraints.start_pose.frame_id == "world"
+    assert result.path_constraints.target_pose.frame_id == "world"
+    assert result.path_constraints.start_pose.position.x == pytest.approx(0.2)
+    assert result.path_constraints.target_pose.position.x == pytest.approx(0.24)
 
 
 def test_cartesian_linear_mode_rejects_multi_target_without_free_fallback(
