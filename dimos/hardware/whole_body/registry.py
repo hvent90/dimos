@@ -81,7 +81,8 @@ class WholeBodyAdapterRegistry:
         except ImportError as e:
             logger.warning(f"Skipping sim whole-body adapters: {e}")
             return
-        self._discover_flat("dimos.simulation.adapters.whole_body", sim_pkg.__path__[0])
+        for sim_root in sim_pkg.__path__:
+            self._discover_flat("dimos.simulation.adapters.whole_body", sim_root)
 
     def _discover_in(self, pkg_path: str, dir_path: str, *, max_depth: int) -> None:
         for entry in sorted(os.listdir(dir_path)):
