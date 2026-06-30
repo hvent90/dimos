@@ -8,7 +8,7 @@ from typing import Literal
 
 from fastapi import APIRouter, Depends, HTTPException
 from pydantic import BaseModel
-from sqlalchemy import select
+from sqlalchemy import or_, select, update
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from config import settings
@@ -373,6 +373,49 @@ async def list_sessions(
     ]
 
 
+async def _claim_operator_slot(db: AsyncSession, session_id: str, user_id: str) -> bool:
+    """Atomically take the operator slot on an active session.
+
+    Returns True if this caller now owns it (or already did — same user
+    re-joining is idempotent), False if another operator holds it or the row
+    has gone disconnected. The portable single-UPDATE pattern avoids the
+    read-then-write race where two concurrent /join calls both see the slot
+    free and both create transport-layer sessions (CF/LiveKit) that leak.
+    """
+    stmt = (
+        update(TeleopSession)
+        .where(
+            TeleopSession.id == session_id,
+            TeleopSession.state != "disconnected",
+            or_(
+                TeleopSession.operator_id.is_(None),
+                TeleopSession.operator_id == user_id,
+            ),
+        )
+        .values(operator_id=user_id, state="active")
+    )
+    result = await db.execute(stmt)
+    await db.commit()
+    return result.rowcount > 0
+
+
+async def _release_operator_slot(db: AsyncSession, session_id: str, user_id: str) -> None:
+    """Undo a claim when post-claim work (CF create / LiveKit mint) fails.
+
+    Guarded by the user_id in the WHERE so we never accidentally evict a
+    different operator who somehow ended up bound (defensive — shouldn't be
+    possible given the claim ordering)."""
+    await db.execute(
+        update(TeleopSession)
+        .where(
+            TeleopSession.id == session_id,
+            TeleopSession.operator_id == user_id,
+        )
+        .values(operator_id=None, state="idle")
+    )
+    await db.commit()
+
+
 @router.post(
     "/{session_id}/join",
     response_model=JoinSessionResponse | LiveKitSessionResponse,
@@ -390,20 +433,30 @@ async def join_session(
 
     user_id = user["sub"]
 
-    # Enforce single operator (transport-agnostic — lives in the broker, not CF).
+    # Operator role: take the slot atomically BEFORE any transport-layer work,
+    # so a losing concurrent /join never creates a CF/LiveKit session it can't
+    # use. Viewers don't claim and don't need ownership.
     if body.role == "operator":
-        if session.operator_id and session.operator_id != user_id:
+        if not await _claim_operator_slot(db, session_id, user_id):
+            # Re-read to disambiguate 404 (row gone/disconnected) from 409
+            # (another operator owns it).
+            current = await db.get(TeleopSession, session_id)
+            if not current or current.state == "disconnected":
+                raise HTTPException(status_code=404, detail="Session not found")
             raise HTTPException(
                 status_code=409,
-                detail=f"Session already has operator: {session.operator_id}",
+                detail=f"Session already has operator: {current.operator_id}",
             )
+        # The claim persisted operator_id/state; reflect that on the in-handler
+        # row so downstream code (and the final return) sees fresh values.
+        await db.refresh(session)
 
     if session.transport == "livekit":
         if not settings.livekit_configured:
+            if body.role == "operator":
+                await _release_operator_slot(db, session_id, user_id)
             raise HTTPException(status_code=503, detail="LiveKit backend not configured")
         room = livekit.room_name(session.id)
-        # Mint before binding: committing state='active' then failing the mint
-        # would wedge the session 'active' with no operator able to take it.
         try:
             token = livekit.mint_token(
                 identity=f"op-{user_id}",
@@ -412,11 +465,9 @@ async def join_session(
                 can_publish=False,  # operator drives via data; no media uplink
             )
         except LiveKitError as e:
+            if body.role == "operator":
+                await _release_operator_slot(db, session_id, user_id)
             raise HTTPException(status_code=503, detail=str(e))
-        if body.role == "operator":
-            session.operator_id = user_id
-            session.state = "active"
-            await db.commit()
         return LiveKitSessionResponse(
             session_id=session.id,
             url=settings.livekit_url,
@@ -426,6 +477,8 @@ async def join_session(
         )
 
     if not body.sdp_offer:
+        if body.role == "operator":
+            await _release_operator_slot(db, session_id, user_id)
         raise HTTPException(status_code=422, detail="sdp_offer required for cloudflare transport")
 
     # Join datachannels-clean (no video track here). Video is pulled after the
@@ -433,8 +486,12 @@ async def join_session(
     try:
         cf_result = await cf_client.create_session(body.sdp_offer)
     except CloudflareRealtimeError as e:
+        if body.role == "operator":
+            await _release_operator_slot(db, session_id, user_id)
         raise HTTPException(status_code=502, detail=f"Cloudflare error: {e.detail}")
     except Exception as e:
+        if body.role == "operator":
+            await _release_operator_slot(db, session_id, user_id)
         raise HTTPException(
             status_code=502,
             detail=f"Cloudflare session create failed ({type(e).__name__}): {e}",
@@ -443,9 +500,7 @@ async def join_session(
     operator_cf_id = cf_result["cf_session_id"]
 
     if body.role == "operator":
-        session.operator_id = user_id
         session.operator_cf_session_id = operator_cf_id
-        session.state = "active"
         await db.commit()
 
     return JoinSessionResponse(
