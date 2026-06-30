@@ -250,12 +250,7 @@ class GO2Connection(TfModule, Camera, Pointcloud):
         self.register_disposable(Disposable(self.cmd_vel.subscribe(self.move)))
 
         if self.config.camera:
-            self.register_disposable(self.connection.video_stream().subscribe(onimage))
-            self._camera_info_thread = Thread(
-                target=self.publish_camera_info,
-                daemon=True,
-            )
-            self._camera_info_thread.start()
+            self.register_disposable(self.connection.video_stream().subscribe(on_image))
 
         if self.config.motion_mode and isinstance(self.connection, UnitreeWebRTCConnection):
             self.connection.set_motion_mode(self.config.motion_mode)
