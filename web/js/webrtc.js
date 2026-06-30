@@ -290,8 +290,15 @@ function selectedIceType(report) {
 // consecutive 1s samples). Robot folds it into report.md.
 export function startVideoStats(channel) {
     state.videoStatsPrev = null;
+    // Re-entrancy guard: if getStats() ever takes >1s (CPU spike, ICE restart),
+    // setInterval can fire a new tick before the previous one finished. Two
+    // concurrent ticks racing on videoStatsPrev produces nonsense deltas
+    // (negative dt, mixed-sample diffs). Skip overlapping ticks entirely.
+    let inFlight = false;
     state.videoStatsTimer = setInterval(async () => {
+        if (inFlight) return;
         if (!channel || channel.readyState !== 'open' || !state.pc) return;
+        inFlight = true;
         let inbound = null;
         let report = null;
         try {
@@ -300,13 +307,16 @@ export function startVideoStats(channel) {
                 if (r.type === 'inbound-rtp' && r.kind === 'video') inbound = r;
             });
             state.liveStats.iceType = selectedIceType(report);  // direct/stun/turn
-        } catch (_) { return; }
-        if (!inbound) return;
+        } catch (_) {
+            inFlight = false;
+            return;
+        }
+        if (!inbound) { inFlight = false; return; }
 
         const now = inbound.timestamp;  // ms, getStats clock
         const prev = state.videoStatsPrev;
         state.videoStatsPrev = inbound;
-        if (!prev) return;  // need two samples for deltas
+        if (!prev) { inFlight = false; return; }  // need two samples for deltas
 
         const dt = (now - prev.timestamp) / 1000;
         if (dt <= 0) return;
@@ -338,6 +348,7 @@ export function startVideoStats(channel) {
         };
         try { channel.send(JSON.stringify(payload)); } catch (_) {}
         state.liveStats.video = payload;  // latest sample for the HUD/VR quad
+        inFlight = false;
     }, VIDEO_STATS_INTERVAL_MS);
 }
 
