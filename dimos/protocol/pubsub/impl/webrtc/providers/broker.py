@@ -266,16 +266,31 @@ class BrokerProvider(AsyncProviderBase):
 
     async def _heartbeat_loop(self) -> None:
         interval = 1.0 / max(self._config.heartbeat_hz, 0.1)
+        # Stop after 5 consecutive 401/404 — session force-deleted or key
+        # revoked; otherwise the loop log-floods at heartbeat_hz forever.
+        terminal_streak = 0
         while True:
             try:
-                await self._heartbeat_once()
+                status = await self._heartbeat_once()
             except Exception:
                 logger.exception("Broker heartbeat failed")
+                status = None
+            if status in (401, 404):
+                terminal_streak += 1
+                if terminal_streak >= 5:
+                    logger.error(
+                        "Heartbeat terminal: %d consecutive %d responses — stopping loop",
+                        terminal_streak, status,
+                    )
+                    return
+            else:
+                terminal_streak = 0
             await asyncio.sleep(interval)
 
-    async def _heartbeat_once(self) -> None:
+    async def _heartbeat_once(self) -> int | None:
+        """Return the HTTP status code (or None if skipped)."""
         if self._http is None or self.session_id is None:
-            return
+            return None
         r = await self._http.post(
             f"{self._broker_url}/api/v1/sessions/{self.session_id}/heartbeat",
             headers=self._headers,
@@ -283,7 +298,7 @@ class BrokerProvider(AsyncProviderBase):
         )
         if r.status_code != 200:
             logger.warning("Heartbeat failed: %d %s", r.status_code, r.text[:200])
-            return
+            return r.status_code
         ack = r.json()
         ids = {
             "cmd_unreliable": ack.get("cmd_channel_subscriber_id"),
@@ -299,6 +314,7 @@ class BrokerProvider(AsyncProviderBase):
                 self._dc_ids[name] = sctp_id
                 if sctp_id is not None:
                     self._open_channel(name, sctp_id)
+        return 200
 
     def _channel_options(self, name: str) -> dict[str, Any]:
         if name == "cmd_unreliable":
