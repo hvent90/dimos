@@ -366,7 +366,12 @@ function resolveAck(nonce, ok) {
     const POSTURE_STATE = { StandReady: 'StandReady', StandDown: 'StandDown', RecoveryStand: 'RecoveryStand', Sit: 'Sit' };
     if (ok && POSTURE_STATE[p.name]) ui.posture = POSTURE_STATE[p.name];
     btn.dataset.status = ok ? 'done' : 'error';
+    // Brief done/error flash, then return to idle. The timer can outlive the
+    // cockpit if the user disconnects within 700ms of the ack — bail if the
+    // view is gone so we don't write status to a detached node or call
+    // refreshControls() against the new view's DOM.
     setTimeout(() => {
+        if (!document.getElementById('hud-summary')) return;
         btn.dataset.status = 'idle';
         refreshControls();
     }, 700);
