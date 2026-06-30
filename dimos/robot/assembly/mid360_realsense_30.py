@@ -58,6 +58,7 @@ from dimos.msgs.geometry_msgs.Transform import Transform
 from dimos.msgs.sensor_msgs.CameraInfo import CameraInfo
 from dimos.msgs.sensor_msgs.Image import Image
 from dimos.msgs.sensor_msgs.PointCloud2 import PointCloud2
+from dimos.navigation.cmu_nav.frames import FRAME_ODOM
 from dimos.protocol.tf.static_tf_publisher import (
     FrameSpec,
     StaticTfPublisher,
@@ -157,7 +158,7 @@ mid360_realsense_record = autoconnect(
             (Mid360, "imu", "livox_imu"),
         ]
     ),
-    PointLio.blueprint(frame_id="world").remappings(
+    PointLio.blueprint(frame_mapping={FRAME_ODOM: "world"}).remappings(
         [
             (PointLio, "lidar", "pointlio_lidar"),
             (PointLio, "odometry", "pointlio_odometry"),
