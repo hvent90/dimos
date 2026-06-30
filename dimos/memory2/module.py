@@ -30,7 +30,7 @@ from dimos.agents.annotation import skill
 from dimos.constants import DIMOS_PROJECT_ROOT
 from dimos.core.core import rpc
 from dimos.core.module import Module, ModuleConfig
-from dimos.memory2.db_tf import TfGraphWriter
+from dimos.memory2.db_tf import TfGraph
 from dimos.memory2.embed import EmbedImages
 from dimos.memory2.store.null import NullStore
 from dimos.memory2.store.sqlite import SqliteStore
@@ -462,10 +462,17 @@ class Recorder(MemoryModule):
             logger.warning("Recorder: no pubsub tf available — not recording tf")
             return
         tf_stream = self.store.stream("tf", TFMessage)
+        graph_stream = self.store.stream("tf_graph", TfGraph)
+        # Running tf topology; a TfGraph snapshot is appended whenever it changes, so
+        # the "tf_graph" stream is the topology change-log transform lookups walk.
+        structure: dict[str, dict[str, Any]] = {}
 
-        # Topology change-log (the "tf_graph" stream) written alongside the tf rows.
-        graph_writer = TfGraphWriter(self.store, "tf")
-        self.register_disposable(Disposable(graph_writer.close))
+        def record_graph(child: str, parent: str, is_static: bool, ts: float) -> None:
+            entry = {"parent": parent, "static": bool(is_static)}
+            if structure.get(child) == entry:
+                return  # no structural change -> no new snapshot
+            structure[child] = entry
+            graph_stream.append(TfGraph(structure), ts=ts)
 
         def make_handler(is_static: bool) -> Any:
             def on_tf(msg: TFMessage, _topic: Any) -> None:
@@ -477,13 +484,12 @@ class Recorder(MemoryModule):
                             pose=None,
                             tags={"child_frame": transform.child_frame_id},
                         )
-                        if graph_writer is not None:
-                            graph_writer.record(
-                                transform.child_frame_id,
-                                transform.frame_id,
-                                is_static,
-                                transform.ts,
-                            )
+                        record_graph(
+                            transform.child_frame_id,
+                            transform.frame_id,
+                            is_static,
+                            transform.ts,
+                        )
                 except sqlite3.ProgrammingError:
                     # A late LCM callback raced teardown and hit the closed store.
                     pass
