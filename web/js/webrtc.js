@@ -17,6 +17,11 @@ const STUN_ONLY = [{ urls: 'stun:stun.cloudflare.com:3478' }];
 const CONNECT_TIMEOUT_MS = 20000;
 const CHANNEL_OPEN_TIMEOUT_MS = 10000;
 const GATHER_TIMEOUT_MS = 10000;
+// Overall ceiling so a hung api() call (fetch has no default timeout) or any
+// missed per-await guard can't wedge setupInProgress forever. Generous: sum
+// of per-step caps is ~60s; this gives headroom without being mistaken for
+// progress.
+const SETUP_TIMEOUT_MS = 90000;
 // After the first usable (srflx/relay) candidate, wait this long to scoop up
 // sibling candidates (the relay leg lands ~80ms after srflx) before proceeding.
 const GATHER_SETTLE_MS = 400;
@@ -33,9 +38,19 @@ export async function setupWebRTC(sessionId) {
         throw new Error('Connect already in progress — disconnect first to retry');
     }
     state.setupInProgress = true;
+    let timerId;
+    const timer = new Promise((_, reject) => {
+        timerId = setTimeout(() => reject(new Error('Connect timed out')), SETUP_TIMEOUT_MS);
+    });
     try {
-        return await _setupWebRTCInner(sessionId);
+        return await Promise.race([_setupWebRTCInner(sessionId), timer]);
+    } catch (err) {
+        // Close partial PC so a failure (timeout or otherwise) doesn't leak
+        // it past the next setupWebRTC entry.
+        if (state.pc) { try { state.pc.close(); } catch (_) {} state.pc = null; }
+        throw err;
     } finally {
+        clearTimeout(timerId);
         state.setupInProgress = false;
     }
 }
