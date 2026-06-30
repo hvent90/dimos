@@ -756,7 +756,7 @@ def _set_controller_use_delta(env: object) -> None:
     for robot in getattr(env, "robots", ()) or ():
         controller = getattr(robot, "controller", None)
         if controller is not None and hasattr(controller, "use_delta"):
-            setattr(controller, "use_delta", True)
+            controller.use_delta = True
 
 
 def _load_init_states(

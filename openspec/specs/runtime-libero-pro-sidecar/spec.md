@@ -1,9 +1,7 @@
 ## Purpose
 
 Define the LIBERO-PRO runtime sidecar package, registered-suite task selection, asset preparation boundary, motor-control contract, observation export, scoring, and verification split for LIBERO-PRO benchmark demos.
-
 ## Requirements
-
 ### Requirement: LIBERO-PRO sidecar package
 The system SHALL provide a first-class LIBERO-PRO runtime sidecar package in the monorepo that depends on the runtime protocol package and isolates LIBERO-PRO-specific dependencies from the main DimOS package.
 
@@ -42,15 +40,15 @@ The system SHALL support explicit opt-in LIBERO-PRO runtime asset bootstrap whil
 - **THEN** the system may retrieve and stage supported external assets and then validates the resulting layout before sidecar use
 
 ### Requirement: LIBERO-PRO motor surface validation
-The LIBERO-PRO sidecar SHALL expose the full-control v1 path only when the selected task and controller provide a Panda joint-position plus gripper whole-body motor surface compatible with DimOS motor action frames.
+The LIBERO-PRO sidecar SHALL expose the full-control motor-frame path only when the selected task and LIBERO action mode provide a Panda joint-position plus gripper whole-body motor surface compatible with DimOS motor action frames.
 
 #### Scenario: Compatible motor surface is described
-- **WHEN** the selected LIBERO-PRO environment exposes the expected Panda joint-position plus gripper action surface
+- **WHEN** the selected LIBERO-PRO environment exposes the expected Panda joint-position plus gripper action surface for motor-frame mode
 - **THEN** the runtime description reports a stable ordered motor surface with supported position command mode and the expected motor count
 
-#### Scenario: Incompatible controller fails fast
-- **WHEN** the selected LIBERO-PRO environment exposes only OSC pose control or an action dimension that cannot be mapped to Panda joint-position plus gripper commands
-- **THEN** the sidecar rejects the episode setup with a clear protocol error before accepting step requests
+#### Scenario: Incompatible motor mode fails fast
+- **WHEN** motor-frame mode is selected but the LIBERO environment exposes only a native end-effector action surface or an action dimension that cannot be mapped to Panda joint-position plus gripper commands
+- **THEN** the sidecar rejects the episode setup with a clear protocol error before accepting motor-frame step requests
 
 ### Requirement: LIBERO-PRO step ownership and observation export
 The LIBERO-PRO sidecar SHALL own backend-native environment reset and step calls and SHALL translate runtime protocol action frames into LIBERO-PRO actions while exporting motor state, reward, done, success, and observation metadata.
@@ -84,3 +82,33 @@ The system SHALL verify LIBERO-PRO sidecar behavior with always-on contract test
 #### Scenario: Manual integration exercises real LIBERO-PRO
 - **WHEN** a developer runs the optional real LIBERO-PRO integration with prepared dependencies and assets
 - **THEN** it launches the real sidecar, runs the full ControlCoordinator and SHM demo path for one registered task, fetches camera payloads, and writes score and artifacts
+
+### Requirement: Native LIBERO action mode
+The LIBERO sidecar SHALL support a native LIBERO action mode that follows the official LeRobot LIBERO action setup for relative end-effector delta plus gripper actions.
+
+#### Scenario: Native action mode validates environment action spec
+- **WHEN** the sidecar starts in native LIBERO action mode
+- **THEN** it inspects the LIBERO environment action spec and requires action dimension `(7,)` with bounds compatible with `[-1, 1]`
+
+#### Scenario: Native action mode is described
+- **WHEN** the sidecar description is requested in native LIBERO action mode
+- **THEN** it reports the native action surface identifier, action shape, action bounds, action mode metadata, task metadata, language, horizon, and camera configuration
+
+#### Scenario: Native action mode accepts runtime action frame
+- **WHEN** DimOS sends a runtime action frame with `space_id` `libero.ee_delta_6d_gripper.normalized.v1` and valid `float32[7]` values
+- **THEN** the sidecar maps the values directly to the LIBERO environment step action and returns observations, reward, done, and success metadata
+
+#### Scenario: Native action mode rejects motor frame
+- **WHEN** the sidecar is running in native LIBERO action mode and receives a motor action frame
+- **THEN** it rejects the step request with a clear protocol error
+
+### Requirement: Native LIBERO observation export for policy rollout
+The LIBERO sidecar SHALL export the observations needed by the VLA-JEPA LIBERO policy contract when running native LIBERO action mode.
+
+#### Scenario: Policy observations are available after reset
+- **WHEN** the sidecar resets a registered task in native LIBERO action mode
+- **THEN** the reset response includes agent-view camera observation metadata, wrist or eye-in-hand camera observation metadata when available, robot state observation metadata, and task language metadata for contract conversion
+
+#### Scenario: Policy observations are available after step
+- **WHEN** the sidecar completes a native runtime action step
+- **THEN** the step response includes updated camera and robot state observations needed for the next policy inference tick

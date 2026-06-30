@@ -149,7 +149,10 @@ def test_initialize_falls_back_to_manual_vla_jepa_processors(mocker) -> None:
         if name == "lerobot.policies.factory":
             raise ImportError(name)
         if name == "lerobot.policies.vla_jepa.processor_vla_jepa":
-            def manual_factory(config: object, dataset_stats: object = None) -> tuple[object, object]:
+
+            def manual_factory(
+                config: object, dataset_stats: object = None
+            ) -> tuple[object, object]:
                 manual_calls.append(dataset_stats)
                 return (lambda batch: _record(preprocessor_calls, batch), lambda output: output)
 
@@ -197,7 +200,7 @@ def test_lerobot_backend_can_route_to_action_chunk(mocker) -> None:
 
 
 def test_lerobot_backend_tensorizes_numpy_inputs_before_lerobot_preprocessor() -> None:
-    torch_module = cast(Any, pytest.importorskip("torch"))
+    torch_module = cast("Any", pytest.importorskip("torch"))
     image = np.full((2, 3, 3), 255, dtype=np.uint8)
     state = np.zeros((8,), dtype=np.float32)
 
@@ -209,8 +212,8 @@ def test_lerobot_backend_tensorizes_numpy_inputs_before_lerobot_preprocessor() -
         }
     )
 
-    prepared_image = cast(Any, prepared["observation.images.image"])
-    prepared_state = cast(Any, prepared["observation.state"])
+    prepared_image = cast("Any", prepared["observation.images.image"])
+    prepared_state = cast("Any", prepared["observation.state"])
     assert isinstance(prepared_image, torch_module.Tensor)
     assert prepared_image.shape == (3, 2, 3)
     assert prepared_image.dtype == torch_module.float32

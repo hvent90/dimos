@@ -263,7 +263,7 @@ def _tensorized_preprocessor_input(payload: Mapping[str, object]) -> dict[str, o
 
 
 def _to_torch_tensor(key: str, value: np.ndarray) -> object:
-    torch_module = cast(Any, importlib.import_module("torch"))
+    torch_module = cast("Any", importlib.import_module("torch"))
     array = value
     if key.startswith("observation.images.") and array.ndim == 3:
         if array.shape[-1] in (1, 3):
