@@ -40,6 +40,7 @@ from dimos.memory2.transform import QualityWindow
 from dimos.memory2.type.observation import EmbeddedObservation, Observation
 from dimos.models.embedding.base import EmbeddingModel
 from dimos.msgs.geometry_msgs.PoseStamped import PoseStamped
+from dimos.msgs.nav_msgs.DeformationNode import DeformationNode
 from dimos.msgs.sensor_msgs.Image import Image
 from dimos.msgs.tf2_msgs.TFMessage import TFMessage
 from dimos.utils.data import backup_file
@@ -324,6 +325,12 @@ class Recorder(MemoryModule):
     # no-op (today nothing publishes it). Folded into tf, not recorded as its own stream.
     tf_static: In[TFMessage]
 
+    # Optional pose-graph deformation stream: a loop-closure backend (e.g. gsc_pgo)
+    # publishes one DeformationNode per keyframe on create and again whenever the
+    # optimizer moves it. Recorded into its own "tf_deformation_nodes" stream so a
+    # query can later correct tf for loop closure. Unconnected = no-op.
+    tf_deformation_nodes: In[DeformationNode]
+
     _pose_setters: dict[str, Any] = {}
     # Per-stream count of frames lost to the dispatcher's LATEST coalescing
     # (sink slower than input). Populated lazily as drops happen.
@@ -371,6 +378,8 @@ class Recorder(MemoryModule):
         for name, port in self.inputs.items():
             if name == "tf_static":
                 continue  # folded into the "tf" stream + graph by _record_tf
+            if name == "tf_deformation_nodes":
+                continue  # recorded by _record_tf into its own stream (carries its own pose)
             stream_name = self.config.stream_remapping.get(name, name)
             stream: Stream[Any] = self.store.stream(stream_name, port.type)
             self._port_to_stream(name, port, stream)
@@ -431,6 +440,7 @@ class Recorder(MemoryModule):
         targets = {self.config.stream_remapping.get(name, name) for name in self.inputs}
         if self.config.record_tf:
             targets.add("tf")
+            targets.add("tf_deformation_nodes")
         for stream in targets.intersection(self.store.list_streams()):
             self.store.delete_stream(stream)
 
@@ -500,6 +510,8 @@ class Recorder(MemoryModule):
 
             self.process_observable(self.tf_static.pure_observable(), on_static)
 
+        self._record_deformation_nodes()
+
         # dynamic tf: the module's live tf interface
         topic = getattr(self.tf.config, "topic", None)
         pubsub = getattr(self.tf, "pubsub", None)
@@ -509,3 +521,27 @@ class Recorder(MemoryModule):
         self.register_disposable(
             Disposable(pubsub.subscribe(topic, lambda msg, _t: record(msg, False)))
         )
+
+    def _record_deformation_nodes(self) -> None:
+        """Record the optional ``tf_deformation_nodes`` In-port into its own stream.
+
+        Each DeformationNode is one pose-graph keyframe; the backend re-publishes a
+        node (same ``id``) when the optimizer moves it, so rows accumulate and a query
+        takes the latest per ``id``. Tagged by ``tf_id`` (which transform edge) and
+        ``id`` so lookups can filter by edge and dedup by node. Unconnected = no-op."""
+        if self.tf_deformation_nodes.transport is None:
+            return
+        stream = self.store.stream("tf_deformation_nodes", DeformationNode)
+
+        async def on_node(node: DeformationNode) -> None:
+            try:
+                stream.append(
+                    node,
+                    ts=node.pose.ts,
+                    pose=None,
+                    tags={"tf_id": str(node.tf_id), "id": str(node.id)},
+                )
+            except sqlite3.ProgrammingError:
+                pass  # late callback raced teardown and hit the closed store
+
+        self.process_observable(self.tf_deformation_nodes.pure_observable(), on_node)
