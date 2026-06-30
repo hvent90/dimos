@@ -84,6 +84,14 @@ class Go2HostedConnection(GO2Connection):
     def start(self) -> None:
         super().start()
         self._stop_event.clear()
+        # Force the firmware out of Rage so _rage_active=False matches reality.
+        # A prior session may have left it on; otherwise the set_mode
+        # short-circuit (want_rage == self._rage_active) returns "already in
+        # right FSM" and the user can never exit Rage from the speed bar.
+        try:
+            self.connection.set_rage_mode(False)
+        except Exception:
+            logger.exception("startup set_rage_mode(False) failed")
         # Sync subscribes (not async handle_*): keep-latest would drop bursts.
         for stream, cb in (
             (self.state_json, self._on_state_json),
