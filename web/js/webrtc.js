@@ -27,6 +27,23 @@ export function timeout(ms, label) {
 }
 
 export async function setupWebRTC(sessionId) {
+    // Refuse re-entry. Two concurrent setups (double-click Connect, click
+    // mid-reconnect) used to overwrite state.pc, leak the first PC's listeners
+    // + sctpPlaceholder, and confuse disconnect() (which only closes the
+    // current state.pc). Cleared in finally so a failed setup doesn't wedge
+    // future connects.
+    if (state.setupInProgress) {
+        throw new Error('Connect already in progress — disconnect first to retry');
+    }
+    state.setupInProgress = true;
+    try {
+        return await _setupWebRTCInner(sessionId);
+    } finally {
+        state.setupInProgress = false;
+    }
+}
+
+async function _setupWebRTCInner(sessionId) {
     setStatus('Negotiating WebRTC...');
     // TURN must be in the PC's config at construction for relay candidates
     // to gather with the offer. Best-effort: a broker without TURN

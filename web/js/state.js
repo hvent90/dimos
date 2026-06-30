@@ -14,6 +14,7 @@ export const state = {
     brokerOverride: isLocalDev ? brokerParam : '',
 
     // WebRTC + WebXR
+    setupInProgress: false,  // setupWebRTC re-entry guard
     pc: null,
     room: null,          // LiveKit Room (livekit transport only; null for cloudflare)
     cmdChannel: null,
