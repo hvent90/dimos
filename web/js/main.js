@@ -16,8 +16,6 @@ register('go2', renderGo2);
 register('keyboard', renderKeyboard);
 register('teleop', renderTeleop);
 
-// Best-effort /leave on tab close/reload so a returning user doesn't see
-// their own stale active binding on the dashboard.
 installPagehideLeave();
 
 if (state.token) navigate('dashboard');

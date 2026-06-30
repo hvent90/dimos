@@ -170,11 +170,7 @@ async function loadRobots() {
             return;
         }
         listEl.innerHTML = arr.map(s => {
-            // "Reclaim" — same user has an active binding (likely a stale
-            // session from a tab reload that bypassed /leave). The broker's
-            // atomic operator-claim treats operator_id==me as idempotent, so
-            // hitting Connect here just re-uses the slot we already own. Other
-            // operators still see "Busy".
+            // "Reclaim" when it's our own stale binding (idempotent re-join).
             const mine = s.state === 'active' && s.operator_id === state.userEmail;
             const busy = s.state === 'active' && !mine;
             return `

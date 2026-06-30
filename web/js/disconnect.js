@@ -54,11 +54,8 @@ export async function disconnect() {
     navigate('dashboard');
 }
 
-// Tab close / reload bypasses the Disconnect button, so operator_id used to
-// stick on the row forever (next dashboard visit showed it as "Busy" against
-// our own session). Fire a best-effort /leave on pagehide using fetch with
-// `keepalive: true` — the browser lets the request complete after the page
-// unloads. sendBeacon would be simpler but can't set Authorization headers.
+// Best-effort /leave on tab close/reload. fetch+keepalive lets the request
+// finish after the page unloads; sendBeacon can't set Authorization.
 let _pagehideInstalled = false;
 
 export function installPagehideLeave() {
@@ -77,8 +74,6 @@ export function installPagehideLeave() {
                 body: JSON.stringify({ reason: 'pagehide' }),
                 keepalive: true,
             }).catch(() => {});
-        } catch (_) {
-            // Some browsers throw synchronously on keepalive misuse — swallow.
-        }
+        } catch (_) {}
     });
 }

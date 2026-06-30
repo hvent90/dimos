@@ -1,8 +1,7 @@
 // Shared mutable state — every other module imports from here.
 
-// Only honor ?broker= when served from localhost. In production it would let a
-// phishing link redirect every api() call (and the Cognito bearer token) to an
-// attacker-controlled origin — same TLS, same address bar, no warning.
+// ?broker= is dev-only — in prod it would let a phishing link redirect every
+// api() call (and the Cognito bearer token) to an attacker-controlled origin.
 const isLocalDev = ['localhost', '127.0.0.1', '0.0.0.0'].includes(window.location.hostname);
 const brokerParam = new URLSearchParams(window.location.search).get('broker') || '';
 

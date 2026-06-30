@@ -59,11 +59,8 @@ export async function setupLiveKit(sessionId) {
         }
     });
 
-    // Drop our refs when the SDK reports terminal disconnection (server-side
-    // close, network drop after auto-reconnect gives up). Otherwise state.room
-    // / state.cmdChannel keep pointing at a dead Room — send() would publish
-    // into the void, and a fresh setupLiveKit would skip cleanup that
-    // disconnect() relies on.
+    // Drop refs on terminal disconnect so send() doesn't fire into a dead
+    // Room and a fresh setupLiveKit doesn't skip teardown.
     room.on(LK.RoomEvent.Disconnected, () => {
         console.info('[livekit] room disconnected');
         if (state.room === room) {

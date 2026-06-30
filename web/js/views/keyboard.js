@@ -136,10 +136,7 @@ function updateKeyVisuals() {
 }
 
 export function startKeyboardLoop() {
-    // Idempotent: callers (Go2 cockpit on every render, keyboard view on
-    // reconnect) used to stack window listeners and orphan the prior interval,
-    // tripling key counts and ramping CPU after a few reconnects. Tear down
-    // any prior state first.
+    // Idempotent — callers re-render and would otherwise stack listeners.
     stopKeyboardLoop();
     window.addEventListener('keydown', onKeyDown);
     window.addEventListener('keyup', onKeyUp);

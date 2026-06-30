@@ -25,10 +25,7 @@ api_key_header = APIKeyHeader(name="X-Robot-API-Key", auto_error=False)
 # In-memory robot API keys (dev bootstrap only — prod uses dtk_* keys in DB)
 ROBOT_API_KEYS: dict[str, str] = {}
 
-# --- Cognito JWKS cache ---
-# Refresh hourly so a key rotation doesn't require a broker restart. The old
-# code cached forever AND used sync httpx.get from an async handler, blocking
-# the event loop on the cold-cache request.
+# --- Cognito JWKS cache. Hourly TTL so a key rotation doesn't need a restart.
 _JWKS_TTL_SEC = 3600
 
 _jwks_lock = asyncio.Lock()
@@ -45,13 +42,12 @@ async def _fetch_jwks() -> dict[str, dict]:
 
 
 async def _get_jwk(kid: str) -> dict | None:
-    # Fast path: known kid and cache still fresh — no lock, no I/O.
+    # Fast path: cached + fresh, no lock or I/O.
     global _jwks_fetched_at
     now = time.monotonic()
     if kid in _jwks_keys and now - _jwks_fetched_at < _JWKS_TTL_SEC:
         return _jwks_keys[kid]
-    # Miss or stale: refresh under the lock so a burst of concurrent misses
-    # (boot, key rotation) collapses into one HTTP fetch.
+    # Lock collapses concurrent misses into one fetch.
     async with _jwks_lock:
         if kid in _jwks_keys and time.monotonic() - _jwks_fetched_at < _JWKS_TTL_SEC:
             return _jwks_keys[kid]
@@ -123,13 +119,7 @@ async def get_robot_id(api_key: str | None = Security(api_key_header)) -> str:
             key_record = await validate_api_key(db, api_key)
             if key_record:
                 if not key_record.robot_id:
-                    # Multiple robots whose API keys both lack robot_id will
-                    # share the owner_id as identity (TURN credentials,
-                    # get_operator_or_robot's "sub"). create_session's
-                    # reconnect-dedup is already gated on non-empty robot_id
-                    # so distinct robots don't disconnect each other there,
-                    # but the identity collapse is still worth surfacing so
-                    # ops can fix the key.
+                    # Multiple such keys share owner_id as identity; ops should fix.
                     log.warning(
                         "API key %s... has no robot_id; using owner_id as identity",
                         api_key[:12],

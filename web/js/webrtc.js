@@ -27,11 +27,8 @@ export function timeout(ms, label) {
 }
 
 export async function setupWebRTC(sessionId) {
-    // Refuse re-entry. Two concurrent setups (double-click Connect, click
-    // mid-reconnect) used to overwrite state.pc, leak the first PC's listeners
-    // + sctpPlaceholder, and confuse disconnect() (which only closes the
-    // current state.pc). Cleared in finally so a failed setup doesn't wedge
-    // future connects.
+    // Re-entry would overwrite state.pc and leak the prior PC; the second
+    // caller is rejected, the first finishes (or its finally clears the flag).
     if (state.setupInProgress) {
         throw new Error('Connect already in progress — disconnect first to retry');
     }
@@ -74,20 +71,17 @@ async function _setupWebRTCInner(sessionId) {
     pc.addTransceiver('video', { direction: 'recvonly' });
     pc.ontrack = (e) => {
         if (e.track.kind !== 'video') return;
-        // Keyboard view has a static <video>; VR has none and uses a hidden
-        // one as a GL texture source. Only the keyboard one is shown.
+        // Keyboard has a static <video>; VR uses a hidden one as a GL source.
         const existed = !!document.getElementById('robot-cam');
         const v = ensureRobotCam();
-        // Stop any prior MediaStream attached to the element so a track
-        // replacement during renegotiation doesn't leak the old track (it
-        // would keep decoding RTP into a stream nothing reads).
+        // Stop the prior stream so renegotiation track-swaps don't leak.
         const prior = v.srcObject;
         if (prior && prior.getTracks) {
             for (const t of prior.getTracks()) t.stop();
         }
         v.srcObject = e.streams[0] || new MediaStream([e.track]);
         if (existed) v.style.display = 'block';
-        v.play?.().catch(() => {});  // immersive: no user-gesture; nudge autoplay
+        v.play?.().catch(() => {});  // immersive has no user-gesture; nudge autoplay
     };
 
     // Resolve gather as soon as we have a routable (srflx/relay) candidate plus
@@ -109,10 +103,8 @@ async function _setupWebRTCInner(sessionId) {
             `url=${e.url || ''} host=${e.address || ''}:${e.port || ''}`);
     };
 
-    // Only reject on a real ICE failure. 'disconnected' is transient — WebRTC
-    // flaps it on brief network blips (roaming, sleep/wake) and recovers to
-    // 'connected' within ~1s. Treating it as terminal aborts setup mid-flight
-    // and tears down a connection that would have come back on its own.
+    // 'disconnected' is transient (network blips recover in ~1s); only
+    // 'failed' is terminal.
     const iceFailed = new Promise((_, reject) => {
         pc.oniceconnectionstatechange = () => {
             if (pc.iceConnectionState === 'failed') {
@@ -249,9 +241,7 @@ async function _setupWebRTCInner(sessionId) {
 // ─── Clock sync ──────────────────────────────────────────────────────────
 // Burst of N pings to converge fast, then one every 30s to track drift.
 export function startClockSync(channel) {
-    // Reset bestRttMs decay state so the first pong of a new session is
-    // compared against a fresh Infinity, not the previous session's floor.
-    _lastBestUpdateMs = 0;
+    _lastBestUpdateMs = 0;  // reset decay state for the new session
     let sent = 0;
     const sendPing = () => {
         if (!channel || channel.readyState !== 'open') return;
@@ -300,10 +290,8 @@ function selectedIceType(report) {
 // consecutive 1s samples). Robot folds it into report.md.
 export function startVideoStats(channel) {
     state.videoStatsPrev = null;
-    // Re-entrancy guard: if getStats() ever takes >1s (CPU spike, ICE restart),
-    // setInterval can fire a new tick before the previous one finished. Two
-    // concurrent ticks racing on videoStatsPrev produces nonsense deltas
-    // (negative dt, mixed-sample diffs). Skip overlapping ticks entirely.
+    // Skip overlapping ticks — if getStats() blocks >1s, two concurrent
+    // bodies race on videoStatsPrev and emit nonsense deltas.
     let inFlight = false;
     state.videoStatsTimer = setInterval(async () => {
         if (inFlight) return;
@@ -393,11 +381,8 @@ export function handleStateMessage(data) {
     else if (msg.type === 'cmd_ack') state.onCmdAck?.(msg);
 }
 
-// NTP-style min-RTT with slow decay. The plain "best ever" approach would let
-// one early sub-10ms outlier pin clockOffsetMs forever; if the link later
-// steadies at 60ms the offset stays calibrated to a 30-minute-old, no-longer-
-// representative sample. Grow the floor by ~1ms per real second so it follows
-// the link's drift on a multi-minute timescale.
+// NTP-style min-RTT. Decay the floor ~1ms/s so a stale outlier doesn't pin
+// clockOffsetMs forever — let the offset track link drift over minutes.
 const BEST_RTT_DECAY_MS_PER_SEC = 1;
 let _lastBestUpdateMs = 0;
 

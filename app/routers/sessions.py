@@ -37,12 +37,8 @@ STATE_BACK_CHANNEL_NAME = "state_reliable_back"
 # id under a role-appropriate field name.
 _robot_channel_ids: dict[str, dict[str, int]] = {}
 
-# Per-session asyncio.Lock. Serializes the bridge handler so two concurrent
-# /bridge-datachannel calls (e.g. operator double-click) can't both read
-# session.state_back_channel_id stale, both close it, then both create new
-# pushes — the second hitting repeated_local_track_error and leaving the
-# session permanently un-bridgeable. dict.setdefault is GIL-atomic; we never
-# delete entries (small memory cost vs. correctness — sessions are bounded).
+# Serializes bridge writes against leave/delete per session. setdefault is
+# GIL-atomic; never deleted (sessions are bounded).
 _session_locks: dict[str, asyncio.Lock] = {}
 
 
@@ -50,10 +46,7 @@ def _session_lock(session_id: str) -> asyncio.Lock:
     return _session_locks.setdefault(session_id, asyncio.Lock())
 
 
-# session_ids with a video-pull offer awaiting the operator's answer. Set by
-# bridge_datachannel when _pull_robot_video returns a video_offer; consumed by
-# renegotiate_answer. Without this, a replayed or fabricated answer would be
-# forwarded to CF and could 4xx the session mid-stream.
+# session_ids awaiting the operator's video-pull SDP answer.
 _pending_video_renegotiations: set[str] = set()
 
 
@@ -299,14 +292,9 @@ async def create_session(
         await db.commit()
         await db.refresh(session)
     except Exception:
-        # The CF session is already minted; commit failed (constraint, disk,
-        # ...). CF has no "delete session" — sessions GC only when all tracks
-        # close. The robot's PC will tear down on the 502, which kills the
-        # transport, but the SFU may keep session metadata for a while. Log
-        # so the leak is auditable.
+        # CF has no delete-session; log the leak (auto-reaped when tracks GC).
         log.exception(
-            "DB commit failed after CF session create — leaking cf_session=%s "
-            "robot=%s owner=%s",
+            "DB commit failed; leaking cf_session=%s robot=%s owner=%s",
             cf_result["cf_session_id"], robot_id, owner_id,
         )
         raise HTTPException(status_code=502, detail="Session persist failed")
@@ -365,16 +353,9 @@ async def delete_session(
     if not session or session.owner_id != owner_id:
         raise HTTPException(status_code=404, detail="Session not found")
 
-    # Lock against a concurrent bridge — without it, the bridge could write
-    # _robot_channel_ids[session_id] AFTER we pop, leaving stale ids visible
-    # via heartbeat for a session that's already marked disconnected.
     async with _session_lock(session_id):
-        # Close the robot's state_reliable_back push so a future reconnect
-        # under the same robot doesn't hit repeated_local_track. The operator's
-        # local pushes on the operator CF session die with the operator's PC
-        # tearing down. CF has no /sessions delete; both CF sessions stay
-        # registered until the SFU's track-GC reaps them — log so an operator
-        # can clean up manually if needed.
+        # CF has no session-delete; close the state_back push (else next
+        # reconnect hits repeated_local_track) and log the orphans for ops.
         if session.transport == "cloudflare":
             if session.state_back_channel_id is not None and session.cf_session_id:
                 await cf_client.close_datachannels(
@@ -382,13 +363,10 @@ async def delete_session(
                 )
             if session.cf_session_id or session.operator_cf_session_id:
                 log.info(
-                    "delete_session: orphaning CF sessions (no delete API) "
-                    "robot_cf=%s operator_cf=%s",
+                    "delete_session: orphaning CF sessions robot_cf=%s operator_cf=%s",
                     session.cf_session_id, session.operator_cf_session_id,
                 )
         session.state = "disconnected"
-        # Clear operator binding so any orphaned operator client gets a clean
-        # 404/409 on subsequent calls instead of seeing themselves still bound.
         session.operator_id = None
         session.operator_cf_session_id = None
         session.state_back_channel_id = None
@@ -433,14 +411,8 @@ async def list_sessions(
 
 
 async def _claim_operator_slot(db: AsyncSession, session_id: str, user_id: str) -> bool:
-    """Atomically take the operator slot on an active session.
-
-    Returns True if this caller now owns it (or already did — same user
-    re-joining is idempotent), False if another operator holds it or the row
-    has gone disconnected. The portable single-UPDATE pattern avoids the
-    read-then-write race where two concurrent /join calls both see the slot
-    free and both create transport-layer sessions (CF/LiveKit) that leak.
-    """
+    """Atomic claim. True on success (or idempotent same-user re-join),
+    False if another operator holds it or the row is disconnected."""
     stmt = (
         update(TeleopSession)
         .where(
@@ -459,11 +431,8 @@ async def _claim_operator_slot(db: AsyncSession, session_id: str, user_id: str) 
 
 
 async def _release_operator_slot(db: AsyncSession, session_id: str, user_id: str) -> None:
-    """Undo a claim when post-claim work (CF create / LiveKit mint) fails.
-
-    Guarded by the user_id in the WHERE so we never accidentally evict a
-    different operator who somehow ended up bound (defensive — shouldn't be
-    possible given the claim ordering)."""
+    """Undo a claim when post-claim work fails. user_id in WHERE guards
+    against evicting a different operator who slipped in."""
     await db.execute(
         update(TeleopSession)
         .where(
@@ -492,13 +461,10 @@ async def join_session(
 
     user_id = user["sub"]
 
-    # Operator role: take the slot atomically BEFORE any transport-layer work,
-    # so a losing concurrent /join never creates a CF/LiveKit session it can't
-    # use. Viewers don't claim and don't need ownership.
+    # Claim before any transport-layer work; a losing concurrent /join
+    # otherwise creates a CF/LiveKit session it can't use.
     if body.role == "operator":
         if not await _claim_operator_slot(db, session_id, user_id):
-            # Re-read to disambiguate 404 (row gone/disconnected) from 409
-            # (another operator owns it).
             current = await db.get(TeleopSession, session_id)
             if not current or current.state == "disconnected":
                 raise HTTPException(status_code=404, detail="Session not found")
@@ -563,12 +529,8 @@ async def join_session(
         try:
             await db.commit()
         except Exception:
-            # The operator's CF session is already minted; commit failed. Log
-            # so the leak is auditable, then release the operator slot and
-            # surface a 502 — the client will retry from scratch.
             log.exception(
-                "DB commit failed after operator CF session create — leaking "
-                "cf_session=%s session=%s operator=%s",
+                "DB commit failed; leaking operator cf_session=%s session=%s operator=%s",
                 operator_cf_id, session_id, user_id,
             )
             await _release_operator_slot(db, session_id, user_id)
@@ -670,11 +632,6 @@ async def bridge_datachannel(
     if not session.operator_cf_session_id or not session.cf_session_id:
         raise HTTPException(status_code=409, detail="CF sessions not ready")
 
-    # Serialize per-session: prevents the close-then-republish race on
-    # state_reliable_back when two bridges run concurrently for the same
-    # session (operator double-click, retry). Without it both bridges close
-    # the stale push id, both repush, the second hits repeated_local_track
-    # and leaves the session permanently un-bridgeable.
     async with _session_lock(session_id):
         return await _bridge_datachannel_locked(session, db)
 
@@ -682,26 +639,19 @@ async def bridge_datachannel(
 async def _bridge_datachannel_locked(
     session: TeleopSession, db: AsyncSession
 ) -> BridgeDatachannelResponse:
-    # CF requires each /datachannels/new call to be one direction (all local OR
-    # all remote) — mixing errors "Pushing and Pulling ... unsupported". Hence 4
-    # separate calls below, not 2; don't re-bundle.
+    # CF requires each /datachannels/new call to be one direction (all local
+    # OR all remote) — hence 4 separate calls, don't re-bundle.
     forward_names = [CMD_CHANNEL_NAME, STATE_CHANNEL_NAME]
-    # The robot's CF session is long-lived, so its previous state_reliable_back
-    # local push lingers across a disconnect (CF doesn't auto-reap datachannel
-    # pushes). If we re-push without closing it → repeated_local_track_error.
-    # So close the stale push (by its stored id) before re-pushing fresh, then
-    # the new operator can subscribe cleanly. cmd/state are operator-published
-    # (robot just re-subscribes), so they don't have this problem.
+    # Close prior state_reliable_back push (CF doesn't auto-reap) or the
+    # re-push hits repeated_local_track_error. cmd/state are
+    # operator-published and replaced when the operator's CF session changes.
     if session.state_back_channel_id is not None:
         await cf_client.close_datachannels(
             session.cf_session_id, [session.state_back_channel_id]
         )
         session.state_back_channel_id = None
-    # Track every local push we successfully created so far. If a later step
-    # (next add_datachannels, parsing, or the missing-name check) fails, close
-    # them — otherwise the next reconnect re-pushes under the same names and
-    # hits repeated_local_track_error. Remote subscriptions are not tracked:
-    # they're cheap and don't block reconnects.
+    # Track local pushes so a later failure can close them (remotes don't
+    # need rollback — only locals block re-push with repeated_local_track).
     created_pushes: list[tuple[str, list[int]]] = []
 
     async def _rollback_pushes() -> None:
@@ -791,11 +741,8 @@ async def _bridge_datachannel_locked(
     session.state_back_channel_id = robot_pub_ids[STATE_BACK_CHANNEL_NAME]
     await db.commit()
 
-    # Pull the robot's video onto the operator session (best-effort: a failure
-    # degrades to no-video, never 502s the now-working datachannel bridge).
+    # Best-effort video pull — datachannels stay up if it fails.
     video_offer, video_status = await _pull_robot_video(session)
-    # Track the pending renegotiation so a stale/forged answer can't reach CF
-    # via /renegotiate-answer; clear any leftover from a prior bridge.
     if video_offer:
         _pending_video_renegotiations.add(session.id)
     else:
@@ -834,8 +781,7 @@ async def renegotiate_answer(
             detail="No pending video renegotiation — re-bridge to get a fresh offer",
         )
 
-    # Consume the pending marker either way: a failed renegotiate shouldn't
-    # let the client retry the same stale answer (CF would reject again).
+    # Consume the marker either way — a stale answer won't pass CF on retry.
     _pending_video_renegotiations.discard(session_id)
     try:
         await cf_client.renegotiate(session.operator_cf_session_id, body.sdp_answer)

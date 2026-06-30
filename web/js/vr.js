@@ -208,9 +208,7 @@ function sampleCmdHz(nowMs) {
 }
 
 export async function startVR() {
-    // Reset module-level sample state so cmdHz's first delta isn't computed
-    // against the previous session's timestamp.
-    lastCmdSampleMs = 0;
+    lastCmdSampleMs = 0;  // fresh session: don't delta against the last one's timestamp
     const canvas = document.getElementById('canvas');
     canvas.style.display = 'block';
     initGL();
