@@ -1,6 +1,6 @@
 // Single teardown path — wraps every connect-time side effect.
 
-import { api } from './api.js';
+import { api, brokerOrigin } from './api.js';
 import { unmountHud } from './hud.js';
 import { navigate } from './router.js';
 import { state } from './state.js';
@@ -51,4 +51,33 @@ export async function disconnect() {
     canvas.style.display = 'none';
     state.activeRobot = null;
     navigate('dashboard');
+}
+
+// Tab close / reload bypasses the Disconnect button, so operator_id used to
+// stick on the row forever (next dashboard visit showed it as "Busy" against
+// our own session). Fire a best-effort /leave on pagehide using fetch with
+// `keepalive: true` — the browser lets the request complete after the page
+// unloads. sendBeacon would be simpler but can't set Authorization headers.
+let _pagehideInstalled = false;
+
+export function installPagehideLeave() {
+    if (_pagehideInstalled) return;
+    _pagehideInstalled = true;
+    window.addEventListener('pagehide', () => {
+        if (!state.activeRobot || !state.token) return;
+        const url = `${brokerOrigin()}/api/v1/sessions/${state.activeRobot.session_id}/leave`;
+        try {
+            fetch(url, {
+                method: 'POST',
+                headers: {
+                    'Content-Type': 'application/json',
+                    'Authorization': `Bearer ${state.token}`,
+                },
+                body: JSON.stringify({ reason: 'pagehide' }),
+                keepalive: true,
+            }).catch(() => {});
+        } catch (_) {
+            // Some browsers throw synchronously on keepalive misuse — swallow.
+        }
+    });
 }
