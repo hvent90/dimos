@@ -522,20 +522,14 @@ int main(int argc, char** argv) {
             // so the first overload reports immediately.
             static std::chrono::steady_clock::time_point last_warn{};
             static double window_peak_ratio = 0.0;
-            static double window_peak_backlog_ms = 0.0;
-            static double window_peak_wall_ms = 0.0;
-            if (realtime_ratio > window_peak_ratio) {
-                window_peak_ratio = realtime_ratio;
-                window_peak_backlog_ms = static_cast<double>(backlog_ns) / 1e6;
-                window_peak_wall_ms = wall_elapsed_s * 1e3;
-            }
+            if (realtime_ratio > window_peak_ratio) { window_peak_ratio = realtime_ratio; }
             if (window_peak_ratio > overload_warn_ratio &&
                 now - last_warn >= std::chrono::seconds(warn_throttle_sec)) {
                 fprintf(stderr,
-                        "[pointlio] WARNING: input arriving up to %.1fx real-time "
-                        "(peak %.0f ms of data drained in %.0f ms over last %ds) — UDP "
-                        "packets may be dropping, expect odometry drift\n",
-                        window_peak_ratio, window_peak_backlog_ms, window_peak_wall_ms, warn_throttle_sec);
+                        "[pointlio] WARNING: high risk of odom drift - pointlio can't "
+                        "process fast enough. Try reducing CPU load. (input up to %.1fx "
+                        "real-time over last %ds)\n",
+                        window_peak_ratio, warn_throttle_sec);
                 last_warn = now;
                 window_peak_ratio = 0.0;
             }
