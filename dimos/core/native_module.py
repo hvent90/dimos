@@ -457,10 +457,7 @@ class NativeModule(Module):
 
     def _collect_topics(self) -> dict[str, str]:
         topics: dict[str, str] = {}
-        for name in list(self.inputs) + list(self.outputs):
-            stream = getattr(self, name, None)
-            if stream is None:
-                continue
+        for name, stream in {**self.inputs, **self.outputs}.items():
             transport = getattr(stream, "_transport", None)
             if transport is None:
                 continue
