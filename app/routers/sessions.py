@@ -362,7 +362,29 @@ async def delete_session(
     # _robot_channel_ids[session_id] AFTER we pop, leaving stale ids visible
     # via heartbeat for a session that's already marked disconnected.
     async with _session_lock(session_id):
+        # Close the robot's state_reliable_back push so a future reconnect
+        # under the same robot doesn't hit repeated_local_track. The operator's
+        # local pushes on the operator CF session die with the operator's PC
+        # tearing down. CF has no /sessions delete; both CF sessions stay
+        # registered until the SFU's track-GC reaps them — log so an operator
+        # can clean up manually if needed.
+        if session.transport == "cloudflare":
+            if session.state_back_channel_id is not None and session.cf_session_id:
+                await cf_client.close_datachannels(
+                    session.cf_session_id, [session.state_back_channel_id]
+                )
+            if session.cf_session_id or session.operator_cf_session_id:
+                log.info(
+                    "delete_session: orphaning CF sessions (no delete API) "
+                    "robot_cf=%s operator_cf=%s",
+                    session.cf_session_id, session.operator_cf_session_id,
+                )
         session.state = "disconnected"
+        # Clear operator binding so any orphaned operator client gets a clean
+        # 404/409 on subsequent calls instead of seeing themselves still bound.
+        session.operator_id = None
+        session.operator_cf_session_id = None
+        session.state_back_channel_id = None
         _robot_channel_ids.pop(session_id, None)
         await db.commit()
 
