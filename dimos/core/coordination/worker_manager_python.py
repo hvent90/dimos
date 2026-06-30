@@ -14,7 +14,7 @@
 
 from __future__ import annotations
 
-from collections.abc import Callable, Iterable, Mapping
+from collections.abc import Callable, Iterable
 from typing import TYPE_CHECKING, Any
 
 from dimos.core.coordination.python_worker import PythonWorker
@@ -145,9 +145,7 @@ class WorkerManagerPython:
             self._workers.remove(target)
             self._n_workers = max(0, self._n_workers - 1)
 
-    def deploy_parallel(
-        self, specs: Iterable[ModuleSpec], blueprint_args: Mapping[str, Mapping[str, Any]]
-    ) -> list[ModuleProxyProtocol]:
+    def deploy_parallel(self, specs: Iterable[ModuleSpec]) -> list[ModuleProxyProtocol]:
         if self._closed:
             raise RuntimeError("WorkerManager is closed")
 
@@ -171,7 +169,6 @@ class WorkerManagerPython:
             module_class, _, kwargs = specs[i]
             worker = self._select_worker(dedicated=module_class.dedicated_worker)
             worker.reserve_slot()
-            kwargs.update(blueprint_args.get(module_class.name, {}))
             workers_by_index[i] = worker
 
         assignments = [(workers_by_index[i], specs[i]) for i in range(len(specs))]

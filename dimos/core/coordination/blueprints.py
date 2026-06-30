@@ -27,7 +27,12 @@ if TYPE_CHECKING:
     from dimos.protocol.service.system_configurator.base import SystemConfigurator
 
 from dimos.core.global_config import GlobalConfig
-from dimos.core.module import ModuleBase, is_module_type
+from dimos.core.module import (
+    ModuleBase,
+    ModuleIOContract,
+    is_module_type,
+    resolve_module_type_hints,
+)
 from dimos.core.runtime_environment import RuntimeEnvironment, RuntimeEnvironmentRegistry
 from dimos.core.stream import In, Out
 from dimos.core.transport import PubSubTransport
@@ -89,37 +94,21 @@ class BlueprintAtom:
 
     @classmethod
     def create(cls, module: type[ModuleBase], kwargs: dict[str, Any]) -> Self:
-        streams: list[StreamRef] = []
         module_refs: list[ModuleRef] = []
 
-        # Resolve annotations using namespaces from the full MRO chain so that
-        # In/Out behind TYPE_CHECKING + `from __future__ import annotations` work.
-        # Iterate reversed MRO so the most specific class's namespace wins when
-        # parent modules shadow names (e.g. spec.perception.Image vs sensor_msgs.Image).
-        globalns: dict[str, Any] = {}
-        for c in reversed(module.__mro__):
-            if c.__module__ in sys.modules:
-                globalns.update(sys.modules[c.__module__].__dict__)
-        try:
-            all_annotations = get_type_hints(module, globalns=globalns)
-        except Exception:
-            # Fallback to raw annotations if get_type_hints fails.
-            all_annotations = {}
-            for base_class in reversed(module.__mro__):
-                if hasattr(base_class, "__annotations__"):
-                    all_annotations.update(base_class.__annotations__)
+        annotation_contract = ModuleIOContract.from_annotations(module)
+        streams = [
+            StreamRef(name=stream.name, type=stream.type, direction=stream.direction)
+            for stream in annotation_contract.streams
+        ]
+        all_annotations = resolve_module_type_hints(module)
 
         for name, annotation in all_annotations.items():
             origin = get_origin(annotation)
-            # Streams
-            if origin in (In, Out):
-                direction = "in" if origin == In else "out"
-                type_ = get_args(annotation)[0]
-                streams.append(
-                    StreamRef(name=name, type=type_, direction=direction)  # type: ignore[arg-type]
-                )
             # linking to unknown module via Spec
-            elif is_spec(annotation):
+            if origin in (In, Out):
+                continue
+            if is_spec(annotation):
                 module_refs.append(ModuleRef(name=name, spec=annotation))
             # linking to specific/known module directly
             elif is_module_type(annotation):

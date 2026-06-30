@@ -35,13 +35,15 @@ from dimos.core.coordination.module_coordinator import (
     ModuleCoordinator,
     _all_name_types,
     _check_requirements,
+    _resolve_module_plans,
     _verify_no_conflicts_with_existing,
     _verify_no_name_conflicts,
+    _verify_stream_remappings,
 )
 from dimos.core.coordination.worker_manager_python import WorkerManagerPython
 from dimos.core.core import rpc
 from dimos.core.global_config import GlobalConfig
-from dimos.core.module import Module
+from dimos.core.module import Module, ModuleConfig, ModuleIOContract, StreamDecl
 from dimos.core.runtime_environment import (
     MissingPythonProjectFileError,
     PythonLaunchMaterial,
@@ -104,6 +106,21 @@ class SourceModule(Module):
 
 class TargetModule(Module):
     remapped_data: In[Data1]
+
+
+class DynamicIOConfig(ModuleConfig):
+    emit_data2: bool = False
+
+
+class ConfiguredIOModule(Module):
+    config: DynamicIOConfig  # type: ignore[assignment]
+
+    @classmethod
+    def io_contract(cls, config: DynamicIOConfig) -> ModuleIOContract:
+        stream_type = Data2 if config.emit_data2 else Data1
+        return ModuleIOContract(
+            streams=(StreamDecl(name="configured", type=stream_type, direction="out"),)
+        )
 
 
 # ModuleRef / RPC tests
@@ -281,6 +298,40 @@ def test_that_remapping_can_resolve_conflicts() -> None:
     _verify_no_name_conflicts(blueprint_set_remapped)
 
 
+def test_resolved_module_plans_honor_blueprint_args_before_wiring() -> None:
+    blueprint_set = ConfiguredIOModule.blueprint()
+
+    default_plans = _resolve_module_plans(blueprint_set, GlobalConfig(viewer="none"), {})
+    override_plans = _resolve_module_plans(
+        blueprint_set,
+        GlobalConfig(viewer="none"),
+        {ConfiguredIOModule.name: {"emit_data2": True}},
+    )
+
+    assert default_plans[0].streams == (StreamDecl(name="configured", type=Data1, direction="out"),)
+    assert override_plans[0].streams == (
+        StreamDecl(name="configured", type=Data2, direction="out"),
+    )
+    assert override_plans[0].final_kwargs["emit_data2"] is True
+
+
+def test_verify_stream_remappings_uses_resolved_io_contract() -> None:
+    blueprint_set = ConfiguredIOModule.blueprint().remappings(
+        [(ConfiguredIOModule, "configured", "renamed")]
+    )
+    plans = _resolve_module_plans(blueprint_set, GlobalConfig(viewer="none"), {})
+
+    _verify_stream_remappings(blueprint_set, plans)
+    assert _all_name_types(blueprint_set, plans) == {("renamed", Data1)}
+
+    stale_blueprint = ConfiguredIOModule.blueprint().remappings(
+        [(ConfiguredIOModule, "missing", "renamed")]
+    )
+    stale_plans = _resolve_module_plans(stale_blueprint, GlobalConfig(viewer="none"), {})
+    with pytest.raises(ValueError, match="absent from the resolved IO contract"):
+        _verify_stream_remappings(stale_blueprint, stale_plans)
+
+
 def test_remapping() -> None:
     """Test that remapping streams works correctly."""
 
@@ -317,6 +368,8 @@ def test_remapping() -> None:
         # Both should have transports set
         assert source_instance.color_image.transport is not None
         assert target_instance.remapped_data.transport is not None
+        assert set(source_instance.outputs) == {"color_image"}
+        assert source_instance.outputs["color_image"].name == "color_image"
 
         # They should be using the same transport (connected)
         assert (
@@ -992,6 +1045,8 @@ def test_restart_module_basic(dynamic_coordinator) -> None:
     assert new_proxy is not old_proxy
     assert dynamic_coordinator.get_instance(ModuleA) is new_proxy
     assert new_proxy.get_name() == "A, Module A"
+    assert "g" in dynamic_coordinator._resolved_module_plans[ModuleA].final_kwargs
+    assert "g" not in dynamic_coordinator._deployed_atoms[ModuleA].kwargs
 
 
 def test_restart_module_preserves_stream_wiring(dynamic_coordinator) -> None:

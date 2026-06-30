@@ -439,8 +439,7 @@ def test_worker_manager_parallel_deployment(create_worker_manager):
             (SimpleModule, global_config, {}),
             (AnotherModule, global_config, {}),
             (ThirdModule, global_config, {}),
-        ],
-        {},
+        ]
     )
 
     assert len(modules) == 3

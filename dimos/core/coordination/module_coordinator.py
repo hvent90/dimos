@@ -16,7 +16,7 @@ from __future__ import annotations
 
 from collections import defaultdict
 from collections.abc import Callable, Mapping, MutableMapping
-from dataclasses import replace
+from dataclasses import dataclass
 import importlib
 import inspect
 import shutil
@@ -29,7 +29,7 @@ from dimos.core.coordination.worker_launcher import CommandWorkerLauncher, VenvW
 from dimos.core.coordination.worker_manager import WorkerManager
 from dimos.core.coordination.worker_manager_python import WorkerManagerPython
 from dimos.core.global_config import GlobalConfig, global_config
-from dimos.core.module import ModuleBase, ModuleSpec
+from dimos.core.module import ModuleBase, ModuleConfig, ModuleIOContract, ModuleSpec, StreamDecl
 from dimos.core.resource import Resource
 from dimos.core.runtime_environment import (
     PythonProjectRuntimeEnvironment,
@@ -57,6 +57,19 @@ class ModuleDescriptor(NamedTuple):
     rpc_names: list[str]
 
 
+@dataclass(frozen=True)
+class ResolvedModulePlan:
+    atom: BlueprintAtom
+    module: type[ModuleBase]
+    final_kwargs: dict[str, Any]
+    config: ModuleConfig
+    io_contract: ModuleIOContract
+
+    @property
+    def streams(self) -> tuple[StreamDecl, ...]:
+        return self.io_contract.streams
+
+
 class ModuleCoordinator(Resource):
     _managers: dict[str, WorkerManager]
     _global_config: GlobalConfig
@@ -71,6 +84,7 @@ class ModuleCoordinator(Resource):
         self._managers = {cls.deployment_identifier: cls(g=g) for cls in manager_types}
         self._deployed_modules = {}
         self._deployed_atoms: dict[type[ModuleBase], BlueprintAtom] = {}
+        self._resolved_module_plans: dict[type[ModuleBase], ResolvedModulePlan] = {}
         self._resolved_module_refs: dict[tuple[type[ModuleBase], str], type[ModuleBase]] = {}
         self._transport_registry: dict[tuple[str, type], PubSubTransport[Any]] = {}
         self._class_aliases: dict[type[ModuleBase], type[ModuleBase]] = {}
@@ -293,7 +307,6 @@ class ModuleCoordinator(Resource):
     def deploy_parallel(
         self,
         module_specs: list[ModuleSpec],
-        blueprint_args: Mapping[str, Mapping[str, Any]],
         runtime_environment_registry: RuntimeEnvironmentRegistry | None = None,
         runtime_placement_map: Mapping[type[ModuleBase], str] | None = None,
     ) -> list[ModuleProxy]:
@@ -328,7 +341,6 @@ class ModuleCoordinator(Resource):
                 module_class, spec_global_config, kwargs = spec
                 dep = self._manager_key_for_module(module_class)
                 effective_kwargs = dict(kwargs)
-                effective_kwargs.update(blueprint_args.get(module_class.name, {}))
                 effective_kwargs = self._inject_native_runtime_registry(
                     module_class, effective_kwargs
                 )
@@ -346,7 +358,7 @@ class ModuleCoordinator(Resource):
 
         def _deploy_group(dep: str) -> None:
             try:
-                deployed = self._managers[dep].deploy_parallel(specs_by_deployment[dep], {})
+                deployed = self._managers[dep].deploy_parallel(specs_by_deployment[dep])
             except Exception as exc:
                 if dep.startswith("python:"):
                     env_name = dep.removeprefix("python:")
@@ -426,21 +438,21 @@ class ModuleCoordinator(Resource):
             if hasattr(module, "on_system_modules"):
                 module.on_system_modules(modules)
 
-    def _connect_streams(self, blueprint: Blueprint) -> None:
+    def _connect_streams(self, blueprint: Blueprint, plans: tuple[ResolvedModulePlan, ...]) -> None:
         streams: dict[tuple[str, type], list[tuple[type, str]]] = defaultdict(list)
 
-        for bp in blueprint.active_blueprints:
-            for conn in bp.streams:
-                remapped_name = blueprint.remapping_map.get((bp.module, conn.name), conn.name)
+        for plan in plans:
+            for conn in plan.streams:
+                remapped_name = blueprint.remapping_map.get((plan.module, conn.name), conn.name)
                 if isinstance(remapped_name, str):
-                    streams[remapped_name, conn.type].append((bp.module, conn.name))
+                    streams[remapped_name, conn.type].append((plan.module, conn.name))
 
         for remapped_name, stream_type in streams.keys():
             key = (remapped_name, stream_type)
             if key in self._transport_registry:
                 transport = self._transport_registry[key]
             else:
-                transport = _get_transport_for(blueprint, remapped_name, stream_type)
+                transport = _get_transport_for(blueprint, plans, remapped_name, stream_type)
             self._transport_registry[key] = transport
             for module, original_name in streams[key]:
                 instance = self.get_instance(module)  # type: ignore[assignment]
@@ -466,25 +478,27 @@ class ModuleCoordinator(Resource):
         global_config.update(**dict(blueprint.global_config_overrides))
         blueprint_args = blueprint_args or {}
         if "g" in blueprint_args:
-            global_config.update(**blueprint_args.pop("g"))
+            global_config.update(**dict(blueprint_args["g"]))
 
         _run_configurators(blueprint)
         _check_requirements(blueprint)
-        _verify_no_name_conflicts(blueprint)
+        plans = _resolve_module_plans(blueprint, global_config, blueprint_args)
+        _verify_stream_remappings(blueprint, plans)
+        _verify_no_name_conflicts(blueprint, plans)
 
         logger.info("Starting the modules")
         coordinator = cls(g=global_config)
         coordinator.start()
 
         try:
-            _deploy_all_modules(blueprint, coordinator, global_config, blueprint_args)
-            coordinator._connect_streams(blueprint)
+            _deploy_all_modules(plans, coordinator, global_config, blueprint)
+            coordinator._connect_streams(blueprint, plans)
             _connect_module_refs(blueprint, coordinator)
 
             coordinator.build_all_modules()
             coordinator.start_all_modules()
 
-            _log_blueprint_graph(blueprint, coordinator)
+            _log_blueprint_graph(blueprint, coordinator, plans)
         except Exception:
             coordinator.stop()
             raise
@@ -517,7 +531,7 @@ class ModuleCoordinator(Resource):
         self._global_config.update(**dict(blueprint.global_config_overrides))
         blueprint_args = blueprint_args or {}
         if "g" in blueprint_args:
-            self._global_config.update(**blueprint_args.pop("g"))
+            self._global_config.update(**dict(blueprint_args["g"]))
 
         # Scale worker pool.
         n_extra = int(blueprint.global_config_overrides.get("n_workers", 0))
@@ -529,8 +543,10 @@ class ModuleCoordinator(Resource):
 
         _run_configurators(blueprint)
         _check_requirements(blueprint)
-        _verify_no_name_conflicts(blueprint)
-        _verify_no_conflicts_with_existing(blueprint, self._transport_registry)
+        plans = _resolve_module_plans(blueprint, self._global_config, blueprint_args)
+        _verify_stream_remappings(blueprint, plans)
+        _verify_no_name_conflicts(blueprint, plans)
+        _verify_no_conflicts_with_existing(blueprint, self._transport_registry, plans)
 
         # Reject duplicate modules.
         for bp in blueprint.active_blueprints:
@@ -541,8 +557,8 @@ class ModuleCoordinator(Resource):
 
         before = set(self._deployed_modules)
 
-        _deploy_all_modules(blueprint, self, self._global_config, blueprint_args)
-        self._connect_streams(blueprint)
+        _deploy_all_modules(plans, self, self._global_config, blueprint)
+        self._connect_streams(blueprint, plans)
         _connect_module_refs(blueprint, self, existing_modules=before)
 
         new_modules = [proxy for cls, proxy in self._deployed_modules.items() if cls not in before]
@@ -615,6 +631,7 @@ class ModuleCoordinator(Resource):
         if not preserve_placement:
             self._clear_runtime_placement_aliases(module_class)
         self._deployed_atoms.pop(module_class, None)
+        self._resolved_module_plans.pop(module_class, None)
         self._module_transports.pop(module_class, None)
         self._class_aliases = {
             k: v for k, v in self._class_aliases.items() if v is not module_class
@@ -690,8 +707,9 @@ class ModuleCoordinator(Resource):
                 f"restart_module only supports python deployment, got {module_class.deployment!r}"
             )
 
-        old_atom = self._deployed_atoms[module_class]
-        kwargs = self._inject_native_runtime_registry(module_class, old_atom.kwargs)
+        old_plan = self._resolved_module_plans[module_class]
+        kwargs = dict(old_plan.final_kwargs)
+        kwargs["g"] = self._global_config
         runtime_env_name = self._runtime_placement_map.get(module_class)
         saved_transports = dict(self._module_transports.get(module_class, {}))
         inbound_refs = [
@@ -729,20 +747,31 @@ class ModuleCoordinator(Resource):
             new_class
         )
         python_wm = cast("WorkerManagerPython", self._managers[manager_key])
-        new_proxy = python_wm.deploy_fresh(new_class, self._global_config, kwargs)
+        deployment_kwargs = self._inject_native_runtime_registry(new_class, kwargs)
+        new_proxy = python_wm.deploy_fresh(new_class, self._global_config, deployment_kwargs)
         self._deployed_modules[new_class] = new_proxy
         self._module_manager_keys[new_class] = manager_key
 
-        new_bp = new_class.blueprint(**kwargs)
+        blueprint_kwargs = {k: v for k, v in kwargs.items() if k != "g"}
+        new_bp = new_class.blueprint(**blueprint_kwargs)
         new_atom = new_bp.active_blueprints[0]
         self._deployed_atoms[new_class] = new_atom
+        config = new_class.resolve_config(kwargs)
+        new_plan = ResolvedModulePlan(
+            atom=new_atom,
+            module=new_class,
+            final_kwargs=kwargs,
+            config=config,
+            io_contract=new_class.io_contract(config),
+        )
+        self._resolved_module_plans[new_class] = new_plan
 
-        for stream_ref in new_atom.streams:
+        for stream_ref in new_plan.streams:
             transport = saved_transports.get(stream_ref.name)
             if transport is not None:
                 new_proxy.set_transport(stream_ref.name, transport)
         self._module_transports[new_class] = {
-            s.name: t for s in new_atom.streams if (t := saved_transports.get(s.name)) is not None
+            s.name: t for s in new_plan.streams if (t := saved_transports.get(s.name)) is not None
         }
 
         for consumer_class, ref_name in inbound_refs:
@@ -778,41 +807,101 @@ class ModuleCoordinator(Resource):
             self.stop()
 
 
-def _all_name_types(blueprint: Blueprint) -> set[tuple[str, type]]:
-    result = set()
+def _resolve_module_plans(
+    blueprint: Blueprint,
+    gc: GlobalConfig,
+    blueprint_args: Mapping[str, Any],
+) -> tuple[ResolvedModulePlan, ...]:
+    plans: list[ResolvedModulePlan] = []
     for bp in blueprint.active_blueprints:
-        for conn in bp.streams:
-            remapped_name = blueprint.remapping_map.get((bp.module, conn.name), conn.name)
+        module_overrides = blueprint_args.get(bp.module.name, {})
+        if module_overrides is None:
+            module_overrides = {}
+        if not isinstance(module_overrides, Mapping):
+            raise TypeError(
+                f"Blueprint args for {bp.module.name} must be a mapping, got "
+                f"{type(module_overrides).__name__}"
+            )
+        final_kwargs = {**bp.kwargs, **dict(module_overrides)}
+        final_kwargs["g"] = gc
+        config = bp.module.resolve_config(final_kwargs)
+        io_contract = bp.module.io_contract(config)
+        plans.append(
+            ResolvedModulePlan(
+                atom=bp,
+                module=bp.module,
+                final_kwargs=final_kwargs,
+                config=config,
+                io_contract=io_contract,
+            )
+        )
+    return tuple(plans)
+
+
+def _verify_stream_remappings(blueprint: Blueprint, plans: tuple[ResolvedModulePlan, ...]) -> None:
+    plans_by_module = {plan.module: plan for plan in plans}
+    for (module, name), replacement in blueprint.remapping_map.items():
+        if not isinstance(replacement, str):
+            continue
+        plan = plans_by_module.get(module)
+        if plan is None:
+            continue
+        resolved_names = {stream.name for stream in plan.streams}
+        if name not in resolved_names:
+            raise ValueError(
+                f"Stream remapping for {module.__name__}.{name} references a stream absent "
+                "from the resolved IO contract"
+            )
+
+
+def _all_name_types(
+    blueprint: Blueprint, plans: tuple[ResolvedModulePlan, ...] | None = None
+) -> set[tuple[str, type]]:
+    plans = plans or _resolve_module_plans(blueprint, global_config, {})
+    result = set()
+    for plan in plans:
+        for conn in plan.streams:
+            remapped_name = blueprint.remapping_map.get((plan.module, conn.name), conn.name)
             if isinstance(remapped_name, str):
                 result.add((remapped_name, conn.type))
     return result
 
 
-def _is_name_unique(blueprint: Blueprint, name: str) -> bool:
-    return sum(1 for n, _ in _all_name_types(blueprint) if n == name) == 1
+def _is_name_unique(blueprint: Blueprint, plans: tuple[ResolvedModulePlan, ...], name: str) -> bool:
+    return sum(1 for n, _ in _all_name_types(blueprint, plans) if n == name) == 1
 
 
-def _get_transport_for(blueprint: Blueprint, name: str, stream_type: type) -> PubSubTransport[Any]:
+def _get_transport_for(
+    blueprint: Blueprint,
+    plans: tuple[ResolvedModulePlan, ...],
+    name: str,
+    stream_type: type,
+) -> PubSubTransport[Any]:
     transport = blueprint.transport_map.get((name, stream_type), None)
     if transport:
         return transport
 
     use_pickled = getattr(stream_type, "lcm_encode", None) is None
-    topic = f"/{name}" if _is_name_unique(blueprint, name) else f"/{short_id()}"
+    topic = f"/{name}" if _is_name_unique(blueprint, plans, name) else f"/{short_id()}"
     transport = pLCMTransport(topic) if use_pickled else LCMTransport(topic, stream_type)
 
     return transport
 
 
-def _verify_no_name_conflicts(blueprint: Blueprint) -> None:
+def _verify_no_name_conflicts(
+    blueprint: Blueprint, plans: tuple[ResolvedModulePlan, ...] | None = None
+) -> None:
+    plans = plans or _resolve_module_plans(blueprint, global_config, {})
     name_to_types: dict[Any, set[type]] = defaultdict(set)
     name_to_modules: dict[Any, list[tuple[type, type]]] = defaultdict(list)
 
-    for bp in blueprint.active_blueprints:
-        for conn in bp.streams:
-            stream_name = blueprint.remapping_map.get((bp.module, conn.name), conn.name)
+    for plan in plans:
+        for conn in plan.streams:
+            stream_name = blueprint.remapping_map.get((plan.module, conn.name), conn.name)
+            if not isinstance(stream_name, str):
+                continue
             name_to_types[stream_name].add(conn.type)
-            name_to_modules[stream_name].append((bp.module, conn.type))
+            name_to_modules[stream_name].append((plan.module, conn.type))
 
     conflicts: dict[Any, dict[type, list[type]]] = {}
     for conn_name, types in name_to_types.items():
@@ -843,6 +932,7 @@ def _verify_no_name_conflicts(blueprint: Blueprint) -> None:
 def _verify_no_conflicts_with_existing(
     blueprint: Blueprint,
     existing_registry: dict[tuple[str, type], PubSubTransport[Any]],
+    plans: tuple[ResolvedModulePlan, ...] | None = None,
 ) -> None:
     """Check that a new blueprint's streams don't conflict with already-registered transports."""
     if not existing_registry:
@@ -852,14 +942,15 @@ def _verify_no_conflicts_with_existing(
     for name, stream_type in existing_registry:
         existing_names[name].add(stream_type)
 
-    for bp in blueprint.active_blueprints:
-        for conn in bp.streams:
-            remapped_name = blueprint.remapping_map.get((bp.module, conn.name), conn.name)
+    plans = plans or _resolve_module_plans(blueprint, global_config, {})
+    for plan in plans:
+        for conn in plan.streams:
+            remapped_name = blueprint.remapping_map.get((plan.module, conn.name), conn.name)
             if isinstance(remapped_name, str) and remapped_name in existing_names:
                 for existing_type in existing_names[remapped_name]:
                     if existing_type != conn.type:
                         raise ValueError(
-                            f"Stream '{remapped_name}' in {bp.module.__name__} has type "
+                            f"Stream '{remapped_name}' in {plan.module.__name__} has type "
                             f"{conn.type.__module__}.{conn.type.__name__} but an existing "
                             f"transport uses {existing_type.__module__}.{existing_type.__name__}"
                         )
@@ -899,29 +990,24 @@ def _check_requirements(blueprint: Blueprint) -> None:
 
 
 def _deploy_all_modules(
-    blueprint: Blueprint,
+    plans: tuple[ResolvedModulePlan, ...],
     module_coordinator: ModuleCoordinator,
     gc: GlobalConfig,
-    blueprint_args: Mapping[str, Mapping[str, Any]],
+    blueprint: Blueprint,
 ) -> None:
     module_specs: list[ModuleSpec] = []
-    for bp in blueprint.active_blueprints:
-        module_specs.append((bp.module, gc, bp.kwargs.copy()))
+    for plan in plans:
+        module_specs.append((plan.module, gc, plan.final_kwargs.copy()))
 
     module_coordinator.deploy_parallel(
         module_specs,
-        blueprint_args,
         runtime_environment_registry=blueprint.runtime_environment_registry,
         runtime_placement_map=blueprint.runtime_placement_map,
     )
 
-    for bp in blueprint.active_blueprints:
-        effective_kwargs = dict(bp.kwargs)
-        effective_kwargs.update(blueprint_args.get(bp.module.name, {}))
-        effective_kwargs = module_coordinator._inject_native_runtime_registry(
-            bp.module, effective_kwargs
-        )
-        module_coordinator._deployed_atoms[bp.module] = replace(bp, kwargs=effective_kwargs)
+    for plan in plans:
+        module_coordinator._deployed_atoms[plan.module] = plan.atom
+        module_coordinator._resolved_module_plans[plan.module] = plan
 
 
 def _ref_msg(module_name: str, ref: object, spec_name: str, detail: str) -> str:
@@ -1101,7 +1187,11 @@ def _async_methods_of_spec(spec: Any) -> frozenset[str]:
     return frozenset(names)
 
 
-def _log_blueprint_graph(blueprint: Blueprint, module_coordinator: ModuleCoordinator) -> None:
+def _log_blueprint_graph(
+    blueprint: Blueprint,
+    module_coordinator: ModuleCoordinator,
+    plans: tuple[ResolvedModulePlan, ...],
+) -> None:
     """Log the module graph to Rerun if a RerunBridgeModule is active."""
     from dimos.visualization.rerun.bridge import RerunBridgeModule
 
@@ -1117,8 +1207,8 @@ def _log_blueprint_graph(blueprint: Blueprint, module_coordinator: ModuleCoordin
     try:
         from dimos.core.introspection.blueprint.dot import render
 
-        dot_code = render(blueprint)
-        module_names = [bp.module.__name__ for bp in blueprint.active_blueprints]
+        dot_code = render(blueprint, plans)
+        module_names = [plan.module.__name__ for plan in plans]
         bridge = module_coordinator.get_instance(RerunBridgeModule)  # type: ignore[arg-type]
         bridge.log_blueprint_graph(dot_code, module_names)
     except Exception:
