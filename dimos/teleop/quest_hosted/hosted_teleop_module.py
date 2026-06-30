@@ -218,9 +218,13 @@ class HostedTeleopModule(Module):
         async def _on_state() -> None:
             if self._pc is None:
                 return
-            logger.info(f"PC state: {self._pc.connectionState}")
-            if self._pc.connectionState == "connected":
+            cs = self._pc.connectionState
+            logger.info(f"PC state: {cs}")
+            if cs == "connected":
                 self._video_track.arm()
+            elif cs in ("failed", "closed"):
+                # Terminal — orchestrator decides whether to reconnect.
+                logger.error("PC entered terminal state %s — connection lost", cs)
 
         offer = await self._pc.createOffer()
         await self._pc.setLocalDescription(offer)
