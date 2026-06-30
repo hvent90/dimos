@@ -131,12 +131,13 @@ unitree_go2_nav_3d = autoconnect(
             (GO2Connection, "odom", "odom_go2"),
         ]
     ),
-    # gravity_align is off (no_gravity_align.yaml) so pointlio runs in the raw mount
-    # frame; the transform rewrites its cloud + odometry (and odom->body TF) into the
-    # normal mount before publishing.
+    # gravity_align is off so pointlio runs in the raw mount frame; the transform
+    # rewrites its cloud + odometry (and odom->body TF) into the normal mount before
+    # publishing. auto_build recompiles the native binary for the transform support.
     PointLio.blueprint(
-        config="no_gravity_align.yaml",
+        gravity_align=False,
         space_down_sample=False,
+        auto_build=True,
         transform=_mount_correction,
     ),
     # Record the corrected (normal-mount) cloud + odometry, not PointLio's raw
