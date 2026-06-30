@@ -355,14 +355,26 @@ export function handleStateMessage(data) {
     else if (msg.type === 'cmd_ack') state.onCmdAck?.(msg);
 }
 
-// NTP-style min-RTT: accept only samples below the running best, ignore
-// clearly-bogus ones.
+// NTP-style min-RTT with slow decay. The plain "best ever" approach would let
+// one early sub-10ms outlier pin clockOffsetMs forever; if the link later
+// steadies at 60ms the offset stays calibrated to a 30-minute-old, no-longer-
+// representative sample. Grow the floor by ~1ms per real second so it follows
+// the link's drift on a multi-minute timescale.
+const BEST_RTT_DECAY_MS_PER_SEC = 1;
+let _lastBestUpdateMs = 0;
+
 function applyPong(pong) {
     const recvTsSec = Date.now() / 1000;
     const rttMs = (recvTsSec - pong.client_ts) * 1000;
     if (rttMs < 0 || rttMs > 5000) return;
+    const nowMs = Date.now();
+    if (_lastBestUpdateMs && Number.isFinite(state.bestRttMs)) {
+        const dtSec = (nowMs - _lastBestUpdateMs) / 1000;
+        state.bestRttMs += dtSec * BEST_RTT_DECAY_MS_PER_SEC;
+    }
     if (rttMs >= state.bestRttMs) return;
     state.bestRttMs = rttMs;
+    _lastBestUpdateMs = nowMs;
     const offsetSec =
         ((pong.robot_ts - pong.client_ts) + (pong.robot_ts - recvTsSec)) / 2;
     state.clockOffsetMs = offsetSec * 1000;
