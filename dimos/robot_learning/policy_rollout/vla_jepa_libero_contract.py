@@ -95,8 +95,9 @@ class VlaJepaLiberoRobotContract:
                 "agentview_stream": self._agentview_stream,
                 "wrist_stream_candidates": list(self._wrist_stream_candidates),
                 "state_stream": self._state_stream,
-                "image_shape": [128, 128, 3],
-                "image_dtype": "uint8",
+                "image_shape": [3, 128, 128],
+                "image_dtype": "float32",
+                "image_value_range": [0.0, 1.0],
                 "state_shape": [8],
                 "language_source": "runtime_description.metadata.language",
             },
@@ -136,7 +137,8 @@ class VlaJepaLiberoRobotContract:
             raise ValueError(f"image stream {stream!r} must have HWC RGB shape")
         if image.dtype != np.uint8:
             raise ValueError(f"image stream {stream!r} must have dtype uint8")
-        return image
+        flipped = np.flip(image, axis=(0, 1)).copy()
+        return np.transpose(flipped, (2, 0, 1)).astype(np.float32) / 255.0
 
     def _state_vector(
         self, frames: Mapping[str, ObservationFrame], metadata: Mapping[str, object]

@@ -13,10 +13,15 @@
 # limitations under the License.
 
 from types import SimpleNamespace
+from typing import Any, cast
 
+import numpy as np
 import pytest
 
-from dimos.robot_learning.policy_rollout.lerobot_backend import LeRobotBackend
+from dimos.robot_learning.policy_rollout.lerobot_backend import (
+    LeRobotBackend,
+    _tensorized_preprocessor_input,
+)
 from dimos.robot_learning.policy_rollout.models import BackendBatch
 
 
@@ -83,17 +88,22 @@ def test_initialize_loads_policy_sets_device_eval_and_processors(mocker) -> None
     FakePolicyClass.checkpoint_ids = []
     preprocessor_calls: list[object] = []
     postprocessor_calls: list[object] = []
+    factory_calls: list[dict[str, object]] = []
+
+    def make_pre_post_processors(**kwargs: object) -> tuple[object, object]:
+        factory_calls.append(dict(kwargs))
+        return (
+            lambda batch: _record(preprocessor_calls, batch),
+            lambda output: _record(postprocessor_calls, output),
+        )
 
     def fake_import_module(name: str) -> object:
         if name == "lerobot.policies.vla_jepa.modeling_vla_jepa":
             return SimpleNamespace(VLAJEPAPolicy=FakePolicyClass)
+        if name == "lerobot.policies.factory":
+            return SimpleNamespace(make_pre_post_processors=make_pre_post_processors)
         if name == "lerobot.policies.vla_jepa.processor_vla_jepa":
-            return SimpleNamespace(
-                make_vla_jepa_pre_post_processors=lambda config, dataset_stats=None: (
-                    lambda batch: _record(preprocessor_calls, batch),
-                    lambda output: _record(postprocessor_calls, output),
-                )
-            )
+            raise AssertionError("manual VLA-JEPA processor factory should not be used")
         if name == "torch":
             return SimpleNamespace(no_grad=FakeNoGrad)
         raise ImportError(name)
@@ -107,6 +117,13 @@ def test_initialize_loads_policy_sets_device_eval_and_processors(mocker) -> None
     description = backend.describe()
 
     assert FakePolicyClass.checkpoint_ids == ["lerobot/VLA-JEPA-LIBERO"]
+    assert factory_calls == [
+        {
+            "policy_cfg": policy.config,
+            "pretrained_path": "lerobot/VLA-JEPA-LIBERO",
+            "preprocessor_overrides": {"device_processor": {"device": "cpu"}},
+        }
+    ]
     assert policy.eval_called
     assert policy.to_devices == ["cpu"]
     assert policy.reset_called
@@ -117,6 +134,39 @@ def test_initialize_loads_policy_sets_device_eval_and_processors(mocker) -> None
     assert output.metadata["output_shape"] == [7]
     assert description.policy_class is not None
     assert description.device == "cpu"
+    assert description.metadata["processor_source"] == "checkpoint"
+
+
+def test_initialize_falls_back_to_manual_vla_jepa_processors(mocker) -> None:
+    policy = FakePolicy()
+    FakePolicyClass.policy = policy
+    preprocessor_calls: list[object] = []
+    manual_calls: list[object] = []
+
+    def fake_import_module(name: str) -> object:
+        if name == "lerobot.policies.vla_jepa.modeling_vla_jepa":
+            return SimpleNamespace(VLAJEPAPolicy=FakePolicyClass)
+        if name == "lerobot.policies.factory":
+            raise ImportError(name)
+        if name == "lerobot.policies.vla_jepa.processor_vla_jepa":
+            def manual_factory(config: object, dataset_stats: object = None) -> tuple[object, object]:
+                manual_calls.append(dataset_stats)
+                return (lambda batch: _record(preprocessor_calls, batch), lambda output: output)
+
+            return SimpleNamespace(make_vla_jepa_pre_post_processors=manual_factory)
+        if name == "torch":
+            return SimpleNamespace(no_grad=FakeNoGrad)
+        raise ImportError(name)
+
+    mocker.patch("importlib.import_module", side_effect=fake_import_module)
+    backend = LeRobotBackend(dataset_stats={"stats": "fixture"})
+
+    backend.initialize()
+    backend.infer_batch(BackendBatch(payload={"observation.state": "state"}))
+
+    assert manual_calls == [{"stats": "fixture"}]
+    assert preprocessor_calls == [{"observation.state": "state"}]
+    assert backend.describe().metadata["processor_source"] == "manual_vla_jepa"
 
 
 def test_lerobot_backend_can_route_to_action_chunk(mocker) -> None:
@@ -127,6 +177,8 @@ def test_lerobot_backend_can_route_to_action_chunk(mocker) -> None:
     def fake_import_module(name: str) -> object:
         if name == "lerobot.policies.vla_jepa.modeling_vla_jepa":
             return SimpleNamespace(VLAJEPAPolicy=FakePolicyClass)
+        if name == "lerobot.policies.factory":
+            raise ImportError(name)
         if name == "lerobot.policies.vla_jepa.processor_vla_jepa":
             raise ImportError(name)
         if name == "torch":
@@ -142,6 +194,30 @@ def test_lerobot_backend_can_route_to_action_chunk(mocker) -> None:
     assert policy.chunk_batches == [{"observation.state": "state"}]
     assert output.metadata["inference_method"] == "predict_action_chunk"
     assert output.metadata["output_shape"] == [1, 7]
+
+
+def test_lerobot_backend_tensorizes_numpy_inputs_before_lerobot_preprocessor() -> None:
+    torch_module = cast(Any, pytest.importorskip("torch"))
+    image = np.full((2, 3, 3), 255, dtype=np.uint8)
+    state = np.zeros((8,), dtype=np.float32)
+
+    prepared = _tensorized_preprocessor_input(
+        {
+            "observation.images.image": image,
+            "observation.state": state,
+            "task": "pick up the object",
+        }
+    )
+
+    prepared_image = cast(Any, prepared["observation.images.image"])
+    prepared_state = cast(Any, prepared["observation.state"])
+    assert isinstance(prepared_image, torch_module.Tensor)
+    assert prepared_image.shape == (3, 2, 3)
+    assert prepared_image.dtype == torch_module.float32
+    assert torch_module.max(prepared_image) == 1.0
+    assert isinstance(prepared_state, torch_module.Tensor)
+    assert prepared_state.shape == (8,)
+    assert prepared["task"] == "pick up the object"
 
 
 def test_lerobot_backend_missing_dependency_error(mocker) -> None:

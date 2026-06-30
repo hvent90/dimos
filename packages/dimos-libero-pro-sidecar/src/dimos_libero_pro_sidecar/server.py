@@ -52,6 +52,7 @@ from dimos_runtime_protocol import (
 ActionMode = Literal["motor", "native"]
 NATIVE_ACTION_SPACE_ID = "libero.ee_delta_6d_gripper.normalized.v1"
 NATIVE_LIBERO_CONTROLLER = "OSC_POSE"
+NATIVE_RESET_SETTLE_STEPS = 10
 
 
 def require_libero(*, visualize: bool = False) -> tuple[object, LiberoEnvFactory]:
@@ -165,6 +166,7 @@ class RealLiberoBackend:
         bddl_file = _task_bddl_file(config, benchmark, task)
         init_states = _load_init_states(config, benchmark, task)
         self._init_states = init_states
+        self._action_mode = config.action_mode
         self._env: LiberoEnv = env_cls(
             bddl_file_name=str(bddl_file),
             robots=["Panda"],
@@ -176,15 +178,21 @@ class RealLiberoBackend:
             camera_names=list(config.camera_names),
             controller=_env_controller(config),
             control_freq=config.control_freq,
-            horizon=config.horizon,
+            horizon=config.horizon + _reset_settle_steps(config),
             render_camera=config.camera_names[0] if config.camera_names else None,
         )
+        if config.action_mode == "native":
+            _set_controller_use_delta(self._env)
         self.action_low, self.action_high = _action_bounds(self._env)
 
     def reset(self, init_state_index: int) -> dict[str, object]:
         obs = self._env.reset()
         set_init_state = self._env.set_init_state
         obs = set_init_state(self._init_states[init_state_index])
+        if self._action_mode == "native":
+            for _ in range(NATIVE_RESET_SETTLE_STEPS):
+                obs, _, _, _ = self._env.step([0.0, 0.0, 0.0, 0.0, 0.0, 0.0, -1.0])
+            _set_controller_use_delta(self._env)
         return cast("dict[str, object]", obs)
 
     def step(
@@ -298,6 +306,9 @@ class LiberoProRuntimeState:
                 "init_states_root": str(self.config.init_states_root),
                 "init_state_index": self.config.init_state_index,
                 "controller": self.config.controller,
+                "effective_controller": _env_controller(self.config),
+                "effective_horizon": self.config.horizon + _reset_settle_steps(self.config),
+                "reset_settle_steps": _reset_settle_steps(self.config),
                 "action_mode": self.config.action_mode,
                 "horizon": self.config.horizon,
                 "visualize": self.config.visualize,
@@ -735,6 +746,17 @@ def _env_controller(config: LiberoProRuntimeConfig) -> str:
     if config.action_mode == "native":
         return NATIVE_LIBERO_CONTROLLER
     return config.controller
+
+
+def _reset_settle_steps(config: LiberoProRuntimeConfig) -> int:
+    return NATIVE_RESET_SETTLE_STEPS if config.action_mode == "native" else 0
+
+
+def _set_controller_use_delta(env: object) -> None:
+    for robot in getattr(env, "robots", ()) or ():
+        controller = getattr(robot, "controller", None)
+        if controller is not None and hasattr(controller, "use_delta"):
+            setattr(controller, "use_delta", True)
 
 
 def _load_init_states(

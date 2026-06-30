@@ -1,7 +1,7 @@
 # LeRobot LIBERO policy rollout gate handoff
 
-This handoff captures the current state for resuming the real 50-episode
-`lerobot/VLA-JEPA-LIBERO` benchmark gate on another machine.
+This handoff captures the verified real 50-episode
+`lerobot/VLA-JEPA-LIBERO` benchmark gate and the command needed to reproduce it.
 
 ## Goal
 
@@ -26,6 +26,33 @@ Expected artifact directory:
 artifacts/benchmark/lerobot-vla-jepa-libero-real-gate-full
 ```
 
+## Verified local result
+
+The real non-fake 50-episode gate passed locally with checkpoint
+`lerobot/VLA-JEPA-LIBERO` on CUDA:
+
+```text
+episodes=50 successes=45 success_rate=0.900 passed=True
+```
+
+Verified summary artifact:
+
+```json
+{
+  "episodes": 50,
+  "passed": true,
+  "success_rate": 0.9,
+  "success_threshold": 0.5,
+  "successes": 45
+}
+```
+
+Artifact directory:
+
+```text
+artifacts/benchmark/lerobot-vla-jepa-libero-real-gate-full
+```
+
 ## Current repo state
 
 Implementation is complete for the OpenSpec change
@@ -41,10 +68,17 @@ Implementation is complete for the OpenSpec change
 - optional MP4 video artifacts
 - standard LIBERO package asset auto-discovery
 - noninteractive LIBERO config creation
+- checkpoint-saved LeRobot processor loading for VLA-JEPA normalization stats
+- LIBERO image orientation parity with LeRobot's `LiberoProcessorStep`
+- native reset parity: 10 no-op settle steps, relative `OSC_POSE` control, and
+  an effective simulator horizon that preserves the requested policy horizon
 
 Validation already run locally:
 
 ```text
+real 50-episode gate: 45/50 successes, success_rate=0.900, passed=True
+5-episode smoke: 5/5 successes, success_rate=1.000, passed=True
+targeted pytest: 25 passed
 ruff: passed
 pytest targeted: 44 passed earlier; 16 passed after LIBERO setup/doc updates
 openspec validate add-lerobot-libero-policy-rollout --type change: passed earlier
@@ -99,6 +133,7 @@ From the repo root:
 
 ```bash
 CMAKE_POLICY_VERSION_MINIMUM=3.5 \
+MUJOCO_GL=egl \
 uv run \
   --with libero \
   --with 'lerobot[vla_jepa] @ git+https://github.com/huggingface/lerobot.git' \
@@ -113,6 +148,7 @@ If the direct-reference extra syntax fails in `uv`, fall back to explicit deps:
 
 ```bash
 CMAKE_POLICY_VERSION_MINIMUM=3.5 \
+MUJOCO_GL=egl \
 uv run \
   --with libero \
   --with git+https://github.com/huggingface/lerobot.git \
@@ -128,6 +164,39 @@ If more missing VLA-JEPA dependencies appear, prefer the first command form with
 `lerobot[vla_jepa]` from GitHub main rather than adding packages one by one.
 
 ## Local attempts already made
+
+### Final real 50-episode gate
+
+Command:
+
+```bash
+CMAKE_POLICY_VERSION_MINIMUM=3.5 \
+MUJOCO_GL=egl \
+uv run \
+  --with libero \
+  --with 'lerobot[vla_jepa] @ git+https://github.com/huggingface/lerobot.git' \
+  python scripts/benchmarks/demo_lerobot_libero_policy_rollout.py \
+  --device cuda \
+  --save-videos \
+  --startup-timeout-s 240 \
+  --artifact-dir artifacts/benchmark/lerobot-vla-jepa-libero-real-gate-full
+```
+
+Result:
+
+```text
+episodes=50 successes=45 success_rate=0.900 passed=True
+```
+
+Key fixes needed to reach this result:
+
+- `LeRobotBackend` loads checkpoint-saved policy pre/postprocessors so VLA-JEPA
+  state normalization and action unnormalization use checkpoint stats.
+- `VlaJepaLiberoRobotContract` flips LIBERO images on height and width axes and
+  emits contiguous CHW float32 `[0, 1]` tensors.
+- The sidecar native reset mirrors LeRobot's 10 no-op settle steps and relative
+  `OSC_POSE` control; the simulator horizon is extended by those settle steps so
+  the benchmark still gets the configured policy horizon.
 
 ### Setup-blocked attempt before fixes
 
@@ -264,5 +333,6 @@ Common likely issues:
 
 ## Reminder
 
-This is not complete until a real non-fake run writes a 50-episode `summary.json`
-with `success_rate > 0.50`.
+This gate is complete when a real non-fake run writes a 50-episode `summary.json`
+with `success_rate > 0.50`. The verified local artifact currently satisfies that
+condition with `success_rate=0.900`.

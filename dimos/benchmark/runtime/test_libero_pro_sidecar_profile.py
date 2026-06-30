@@ -38,6 +38,7 @@ from dimos_libero_pro_sidecar.server import (
     NATIVE_ACTION_SPACE_ID,
     LiberoProRuntimeConfig,
     LiberoProRuntimeState,
+    RealLiberoBackend,
     ensure_libero_config,
     make_server,
     validate_assets,
@@ -99,6 +100,39 @@ class _FakeNativeBackend(_FakeLiberoBackend):
 class _BadNativeBoundsBackend(_FakeNativeBackend):
     action_low = [-0.5] * 7
     action_high = [1.0] * 7
+
+
+class _FakeController:
+    def __init__(self) -> None:
+        self.use_delta = False
+
+
+class _FakeRobot:
+    def __init__(self) -> None:
+        self.controller = _FakeController()
+
+
+class _FakeNativeEnv:
+    action_spec = ([-1.0] * 7, [1.0] * 7)
+
+    def __init__(self, **kwargs: object) -> None:
+        self.kwargs = kwargs
+        self.robots = [_FakeRobot()]
+        self.actions: list[list[float]] = []
+
+    def reset(self) -> dict[str, object]:
+        self.robots[0].controller.use_delta = False
+        return {"reset": True}
+
+    def set_init_state(self, state: object) -> dict[str, object]:
+        return {"state": state}
+
+    def step(
+        self, action: Sequence[float]
+    ) -> tuple[dict[str, object], float, bool, dict[str, object]]:
+        values = [float(item) for item in action]
+        self.actions.append(values)
+        return {"noop_count": len(self.actions)}, 0.0, False, {}
 
 
 def test_libero_pro_profile_maps_actions_states_score_and_payloads(tmp_path: Path) -> None:
@@ -165,6 +199,8 @@ def test_libero_pro_native_mode_description_advertises_runtime_action_surface(
     assert description.metadata["action_shape"] == [7]
     assert description.metadata["action_low"] == [-1.0] * 7
     assert description.metadata["action_high"] == [1.0] * 7
+    assert description.metadata["controller"] == "JOINT_POSITION"
+    assert description.metadata["effective_controller"] == "OSC_POSE"
     assert description.metadata["task_metadata"] == {
         "benchmark_name": "libero_pro",
         "task_order_index": 0,
@@ -174,6 +210,8 @@ def test_libero_pro_native_mode_description_advertises_runtime_action_surface(
     }
     assert description.metadata["language"] == "pick up the black bowl"
     assert description.metadata["horizon"] == 1000
+    assert description.metadata["effective_horizon"] == 1010
+    assert description.metadata["reset_settle_steps"] == 10
     assert description.metadata["camera_config"] == {
         "names": ["agentview"],
         "height": 128,
@@ -207,6 +245,41 @@ def test_libero_pro_native_mode_steps_runtime_action_directly(tmp_path: Path) ->
 
     assert backend.last_action == [0.1, 0.2, 0.3, 0.4, 0.5, 0.6, 0.7]
     assert response.reward == 0.5
+
+
+def test_real_backend_native_reset_runs_lerobot_noops_and_use_delta(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    envs: list[_FakeNativeEnv] = []
+
+    class FakeBenchmark:
+        def get_task(self, task_index: int) -> object:
+            return type("Task", (), {"name": "task", "language": "language"})()
+
+    def fake_env_cls(**kwargs: object) -> _FakeNativeEnv:
+        env = _FakeNativeEnv(**kwargs)
+        envs.append(env)
+        return env
+
+    monkeypatch.setattr(
+        "dimos_libero_pro_sidecar.server.require_libero",
+        lambda *, visualize=False: (
+            type("BenchmarkModule", (), {"get_benchmark": lambda self, name: lambda order: FakeBenchmark()})(),
+            fake_env_cls,
+        ),
+    )
+    monkeypatch.setattr("dimos_libero_pro_sidecar.server.ensure_libero_config", lambda *_: None)
+    monkeypatch.setattr("dimos_libero_pro_sidecar.server._load_init_states", lambda *_: ["init"])
+
+    backend = RealLiberoBackend(_config(tmp_path, action_mode="native"))
+    obs = backend.reset(0)
+
+    env = envs[0]
+    assert env.kwargs["controller"] == "OSC_POSE"
+    assert env.kwargs["horizon"] == 1010
+    assert env.robots[0].controller.use_delta is True
+    assert env.actions == [[0.0, 0.0, 0.0, 0.0, 0.0, 0.0, -1.0]] * 10
+    assert obs == {"noop_count": 10}
 
 
 def test_libero_pro_native_mode_rejects_motor_frame(tmp_path: Path) -> None:

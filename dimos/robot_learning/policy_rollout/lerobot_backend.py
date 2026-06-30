@@ -17,7 +17,9 @@ from __future__ import annotations
 from collections.abc import Callable, Mapping
 from contextlib import nullcontext
 import importlib
-from typing import Protocol, cast
+from typing import Any, Protocol, cast
+
+import numpy as np
 
 from dimos.robot_learning.policy_rollout.models import (
     BackendBatch,
@@ -83,6 +85,7 @@ class LeRobotBackend:
         self._preprocessor: Callable[[Mapping[str, object]], Mapping[str, object]] | None = None
         self._postprocessor: Callable[[object], object] | None = None
         self._policy_class_name: str | None = None
+        self._processor_source: str | None = None
 
     def initialize(self) -> None:
         if self._policy is not None:
@@ -101,7 +104,7 @@ class LeRobotBackend:
 
     def infer_batch(self, batch: BackendBatch) -> BackendOutputEnvelope:
         policy = self._require_policy()
-        backend_batch: Mapping[str, object] = dict(batch.payload)
+        backend_batch: Mapping[str, object] = _tensorized_preprocessor_input(batch.payload)
         if self._preprocessor is not None:
             backend_batch = self._preprocessor(backend_batch)
         with self._no_grad():
@@ -141,6 +144,7 @@ class LeRobotBackend:
                 "policy_family": "vla_jepa",
                 "use_action_chunk": self._use_action_chunk,
                 "use_processors": self._use_processors,
+                "processor_source": self._processor_source,
             },
         )
 
@@ -172,6 +176,34 @@ class LeRobotBackend:
     def _prepare_processors(self, policy: _LeRobotPolicy) -> None:
         if not self._use_processors:
             return
+        if self._prepare_checkpoint_processors(policy):
+            return
+        self._prepare_manual_vla_jepa_processors(policy)
+
+    def _prepare_checkpoint_processors(self, policy: _LeRobotPolicy) -> bool:
+        try:
+            module = importlib.import_module("lerobot.policies.factory")
+        except ImportError:
+            return False
+        factory = getattr(module, "make_pre_post_processors", None)
+        if not callable(factory):
+            return False
+        device = self._resolved_device()
+        try:
+            processors = factory(
+                policy_cfg=policy.config,
+                pretrained_path=self._checkpoint_id,
+                preprocessor_overrides={"device_processor": {"device": str(device)}}
+                if device is not None
+                else None,
+            )
+        except (AttributeError, ImportError, TypeError, RuntimeError):
+            return False
+        self._install_processors(processors)
+        self._processor_source = "checkpoint"
+        return True
+
+    def _prepare_manual_vla_jepa_processors(self, policy: _LeRobotPolicy) -> None:
         try:
             module = importlib.import_module(_VLA_JEPA_PROCESSOR_MODULE)
         except ImportError:
@@ -179,11 +211,12 @@ class LeRobotBackend:
         factory = getattr(module, "make_vla_jepa_pre_post_processors", None)
         if not callable(factory):
             return
-        processors = cast(
-            "tuple[object, object]",
-            factory(policy.config, dataset_stats=self._dataset_stats),
-        )
-        preprocessor, postprocessor = processors
+        processors = factory(policy.config, dataset_stats=self._dataset_stats)
+        self._install_processors(processors)
+        self._processor_source = "manual_vla_jepa"
+
+    def _install_processors(self, processors: object) -> None:
+        preprocessor, postprocessor = cast("tuple[object, object]", processors)
         if callable(preprocessor):
             self._preprocessor = cast(
                 "Callable[[Mapping[str, object]], Mapping[str, object]]", preprocessor
@@ -217,6 +250,27 @@ class LeRobotBackend:
 def _qualified_name(value: object) -> str:
     cls = value.__class__
     return f"{cls.__module__}.{cls.__qualname__}"
+
+
+def _tensorized_preprocessor_input(payload: Mapping[str, object]) -> dict[str, object]:
+    prepared: dict[str, object] = {}
+    for key, value in payload.items():
+        if isinstance(value, np.ndarray):
+            prepared[key] = _to_torch_tensor(key, value)
+        else:
+            prepared[key] = value
+    return prepared
+
+
+def _to_torch_tensor(key: str, value: np.ndarray) -> object:
+    torch_module = cast(Any, importlib.import_module("torch"))
+    array = value
+    if key.startswith("observation.images.") and array.ndim == 3:
+        if array.shape[-1] in (1, 3):
+            array = np.transpose(array, (2, 0, 1))
+        if array.dtype == np.uint8:
+            array = array.astype(np.float32) / 255.0
+    return torch_module.as_tensor(array, dtype=torch_module.float32)
 
 
 def _shape_of(value: object) -> list[int]:

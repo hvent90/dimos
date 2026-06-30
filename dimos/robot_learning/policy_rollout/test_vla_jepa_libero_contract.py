@@ -14,6 +14,7 @@
 
 from dimos_runtime_protocol import ObservationFrame, ObservationKind, RuntimeDescription
 import numpy as np
+from numpy.typing import NDArray
 import pytest
 
 from dimos.robot_learning.policy_rollout.evaluation import RuntimeObservationSample
@@ -30,12 +31,47 @@ def test_contract_converts_runtime_sample_to_backend_batch() -> None:
 
     batch = contract.to_backend_batch(sample)
 
-    assert batch.payload["observation.images.image"].shape == (128, 128, 3)
-    assert batch.payload["observation.images.image2"].shape == (128, 128, 3)
-    assert batch.payload["observation.state"].shape == (8,)
+    agentview = batch.payload["observation.images.image"]
+    wrist = batch.payload["observation.images.image2"]
+    state = batch.payload["observation.state"]
+    assert isinstance(agentview, np.ndarray)
+    assert isinstance(wrist, np.ndarray)
+    assert isinstance(state, np.ndarray)
+    agentview_array: NDArray[np.float32] = agentview
+    wrist_array: NDArray[np.float32] = wrist
+    assert agentview_array.shape == (3, 128, 128)
+    assert agentview_array.dtype == np.float32
+    assert np.max(agentview_array) <= 1.0
+    assert wrist_array.shape == (3, 128, 128)
+    assert state.shape == (8,)
     assert batch.payload["task"] == "pick up the object"
     assert batch.metadata["agentview_stream"] == "agentview"
     assert batch.metadata["wrist_stream"] == "eye_in_hand"
+
+
+def test_contract_flips_images_height_and_width_before_chw() -> None:
+    image = np.array(
+        [
+            [[10, 0, 0], [20, 0, 0], [30, 0, 0]],
+            [[40, 0, 0], [50, 0, 0], [60, 0, 0]],
+        ],
+        dtype=np.uint8,
+    )
+    contract = VlaJepaLiberoRobotContract()
+
+    batch = contract.to_backend_batch(_sample(agentview=image))
+
+    agentview = batch.payload["observation.images.image"]
+
+    assert isinstance(agentview, np.ndarray)
+    assert agentview.shape == (3, 2, 3)
+    assert np.allclose(
+        agentview[0],
+        np.array(
+            [[60 / 255.0, 50 / 255.0, 40 / 255.0], [30 / 255.0, 20 / 255.0, 10 / 255.0]],
+            dtype=np.float32,
+        ),
+    )
 
 
 def test_contract_rejects_missing_or_wrong_inputs() -> None:
@@ -77,6 +113,8 @@ def test_contract_description_documents_expected_io() -> None:
     assert description.contract_type == "vla_jepa_libero"
     assert description.output_description["space_id"] == VLA_JEPA_LIBERO_ACTION_SPACE_ID
     assert description.input_description["state_shape"] == [8]
+    assert description.input_description["image_shape"] == [3, 128, 128]
+    assert description.input_description["image_dtype"] == "float32"
 
 
 def _sample(
