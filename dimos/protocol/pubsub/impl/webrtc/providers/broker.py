@@ -180,61 +180,65 @@ class BrokerProvider(AsyncProviderBase):
         )
         import httpx
 
-        self._http = httpx.AsyncClient(timeout=30.0)
-        # MAX_BUNDLE + the id=0 throwaway channel are CF/aiortc workarounds —
-        # see dimos/teleop/quest_hosted/README.md before changing.
-        self._pc = RTCPeerConnection(
-            RTCConfiguration(
-                iceServers=await self._fetch_ice_servers(),
-                bundlePolicy=RTCBundlePolicy.MAX_BUNDLE,
+        # Roll back partial state on failure so a retry doesn't leak.
+        try:
+            self._http = httpx.AsyncClient(timeout=30.0)
+            # MAX_BUNDLE + the id=0 throwaway channel are CF/aiortc workarounds —
+            # see dimos/teleop/quest_hosted/README.md before changing.
+            self._pc = RTCPeerConnection(
+                RTCConfiguration(
+                    iceServers=await self._fetch_ice_servers(),
+                    bundlePolicy=RTCBundlePolicy.MAX_BUNDLE,
+                )
             )
-        )
-        # addTrack must precede createDataChannel (CF/aiortc workaround — see
-        # the quest_hosted README).
-        self._pc.addTrack(self._video_track)
-        self._pc.createDataChannel("_sctp_init", negotiated=True, id=0)
+            # addTrack must precede createDataChannel (CF/aiortc workaround).
+            self._pc.addTrack(self._video_track)
+            self._pc.createDataChannel("_sctp_init", negotiated=True, id=0)
 
-        offer = await self._pc.createOffer()
-        await self._pc.setLocalDescription(offer)
-        if self._pc.iceGatheringState != "complete":
-            ev = asyncio.Event()
-            pc = self._pc
+            offer = await self._pc.createOffer()
+            await self._pc.setLocalDescription(offer)
+            if self._pc.iceGatheringState != "complete":
+                ev = asyncio.Event()
+                pc = self._pc
 
-            @pc.on("icegatheringstatechange")
-            def _on_gathering() -> None:
-                if pc.iceGatheringState == "complete":
-                    ev.set()
+                @pc.on("icegatheringstatechange")
+                def _on_gathering() -> None:
+                    if pc.iceGatheringState == "complete":
+                        ev.set()
 
-            await asyncio.wait_for(ev.wait(), 10.0)
+                await asyncio.wait_for(ev.wait(), 10.0)
 
-        r = await self._http.post(
-            f"{self._broker_url}/api/v1/sessions",
-            headers=self._headers,
-            json={
-                # robot_id is optional — the broker derives it from the API
-                # key; sending it only adds a consistency check.
-                **({"robot_id": self._robot_id} if self._robot_id else {}),
-                "robot_name": self._robot_name,
-                "sdp_offer": self._pc.localDescription.sdp,
-            },
-        )
-        if r.status_code not in (200, 201):
-            raise RuntimeError(f"Broker session create failed: {r.status_code} {r.text[:500]}")
-        data = r.json()
-        self.session_id = data["session_id"]
-        await self._pc.setRemoteDescription(
-            RTCSessionDescription(
-                sdp=propagate_bundle_candidates(data["sdp_answer"]), type="answer"
+            r = await self._http.post(
+                f"{self._broker_url}/api/v1/sessions",
+                headers=self._headers,
+                json={
+                    # robot_id is optional — broker derives it from the API key.
+                    **({"robot_id": self._robot_id} if self._robot_id else {}),
+                    "robot_name": self._robot_name,
+                    "sdp_offer": self._pc.localDescription.sdp,
+                },
             )
-        )
-        await wait_connected(self._pc)
-        self._video_track.arm()  # deliver frames from "now", not boot
-        logger.info(
-            "Broker provider connected: session=%s robot=%s",
-            self.session_id,
-            self._robot_id or "(derived from API key)",
-        )
-        self._hb_task = asyncio.get_running_loop().create_task(self._heartbeat_loop())
+            if r.status_code not in (200, 201):
+                # 200-char cap — SDP carries short-lived ICE ufrag/pwd.
+                raise RuntimeError(f"Broker session create failed: {r.status_code} {r.text[:200]}")
+            data = r.json()
+            self.session_id = data["session_id"]
+            await self._pc.setRemoteDescription(
+                RTCSessionDescription(
+                    sdp=propagate_bundle_candidates(data["sdp_answer"]), type="answer"
+                )
+            )
+            await wait_connected(self._pc)
+            self._video_track.arm()  # deliver frames from "now", not boot
+            logger.info(
+                "Broker provider connected: session=%s robot=%s",
+                self.session_id,
+                self._robot_id or "(derived from API key)",
+            )
+            self._hb_task = asyncio.get_running_loop().create_task(self._heartbeat_loop())
+        except Exception:
+            await self._disconnect()
+            raise
 
     async def _disconnect(self) -> None:
         if self._hb_task is not None:
