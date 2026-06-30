@@ -18,8 +18,14 @@ from __future__ import annotations
 
 import math
 
+from dimos_gpd_grasp_demo.blueprint import gpd_grasp_gen_blueprint
+from dimos_gpd_grasp_demo.gpd_grasp_gen_module import GPDGraspGenModule
+
 from dimos.core.coordination.blueprints import autoconnect
 from dimos.manipulation.grasping.grasping import GraspingModule
+from dimos.manipulation.grasping.pointcloud_grasp_demo_controller import (
+    PointcloudGraspDemoController,
+)
 from dimos.manipulation.grasping.target_grasp_demo_controller import TargetGraspDemoController
 from dimos.manipulation.grasping.vgn_grasp_gen_module import VGNGraspGenModule
 from dimos.manipulation.pick_and_place_module import PickAndPlaceModule
@@ -118,5 +124,33 @@ vgn_mujoco_grasp_demo = autoconnect(
     [
         (SceneReconstructionModule, "tsdf", "tsdf_surface"),
         (VGNGraspGenModule, "tsdf", "tsdf_surface"),
+    ]
+)
+
+gpd_mujoco_grasp_demo = autoconnect(
+    MujocoSimModule.blueprint(
+        address=str(XARM7_SIM_PATH),
+        headless=False,
+        dof=7,
+        camera_name="wrist_camera",
+        base_frame_id="link7",
+        enable_depth=True,
+        enable_color=True,
+        enable_pointcloud=True,
+        camera_info_fps=5.0,
+        initial_joint_positions=XARM7_VGN_OBSERVATION_HOME,
+    ),
+    ObjectSceneRegistrationModule.blueprint(
+        target_frame="world",
+        min_detections_for_permanent=1,
+        use_aabb=True,
+    ),
+    gpd_grasp_gen_blueprint(),
+    GraspingModule.blueprint(),
+    PointcloudGraspDemoController.blueprint(target_name="sphere", filter_collisions=False),
+    RerunBridgeModule.blueprint(),
+).remappings(
+    [
+        (GPDGraspGenModule, "grasp_candidates", "gpd_grasp_candidates"),
     ]
 )

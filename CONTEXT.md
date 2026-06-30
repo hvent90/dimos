@@ -160,6 +160,14 @@ _Avoid_: censored TSDF, object-only scene
 A world-frame axis-aligned bounding region used as a rough attention area for a Grasp target before grasp generation.
 _Avoid_: perfect object geometry, grasp geometry
 
+**Grasp candidate**:
+A proposed end-effector grasp pose for a Grasp target, optionally carrying ranking metadata such as score, width, or approach information.
+_Avoid_: executed grasp, final pick action, object pose
+
+**Pointcloud grasp generator**:
+A grasp-generation component that consumes point cloud observations of a Grasp target, optionally with scene context, and proposes Grasp candidates.
+_Avoid_: TSDF grasp generator, robot execution controller, perception registration module
+
 **SHM runtime data plane**:
 A local shared-memory command/state channel between a ControlCoordinator-facing hardware adapter and a DimOS simulator client module, used when high-rate motor control must cross local process boundaries without RPC.
 _Avoid_: remote sidecar protocol, public simulator API, benchmark control plane, module object sharing

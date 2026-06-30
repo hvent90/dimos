@@ -97,7 +97,7 @@ class GraspingModule(Module):
             return msg
 
         if result is None or len(result.poses) == 0:
-            msg = f"No grasps generated for '{object_name}'"
+            msg = f"Pointcloud grasp generator returned no grasps for '{object_name}'."
             logger.info(msg)
             return msg
 
@@ -193,7 +193,7 @@ class GraspingModule(Module):
         pos = best.position
         rpy = quaternion_to_euler(best.orientation, degrees=True)
         return (
-            f"Generated {len(grasps.poses)}"
+            f"Generated {len(grasps.poses)} grasp(s). "
             f"Best grasp: pos=({pos.x:.4f}, {pos.y:.4f}, {pos.z:.4f}), "
             f"rpy=({rpy.x:.1f}, {rpy.y:.1f}, {rpy.z:.1f}) degrees"
         )

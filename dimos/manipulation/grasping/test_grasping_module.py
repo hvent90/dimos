@@ -14,6 +14,7 @@
 
 from collections.abc import Generator
 
+import numpy as np
 import pytest
 from pytest_mock import MockerFixture
 
@@ -24,7 +25,24 @@ from dimos.msgs.geometry_msgs.Vector3 import Vector3
 from dimos.msgs.grasping_msgs.GraspCandidate import GraspCandidate
 from dimos.msgs.grasping_msgs.GraspCandidateArray import GraspCandidateArray
 from dimos.msgs.perception_msgs.RegisteredObject import RegisteredObject
+from dimos.msgs.sensor_msgs.PointCloud2 import PointCloud2
 from dimos.msgs.std_msgs.Header import Header
+
+
+class FakeGPDGraspGenModule:
+    def __init__(self, result: object) -> None:
+        self.result = result
+        self.calls: list[tuple[PointCloud2, PointCloud2 | None]] = []
+
+    def generate_grasps(
+        self,
+        pointcloud: PointCloud2,
+        scene_pointcloud: PointCloud2 | None = None,
+    ) -> object:
+        self.calls.append((pointcloud, scene_pointcloud))
+        if isinstance(self.result, Exception):
+            raise self.result
+        return self.result
 
 
 @pytest.fixture(autouse=True)
@@ -129,3 +147,77 @@ def test_generate_grasps_pointcloud_flow_unchanged(mocker: MockerFixture) -> Non
     grasp_gen.generate_grasps.assert_called_once_with(object_pc, scene_pc)
     assert len(published) == 1
     assert "Generated 1" in message
+
+
+def test_generate_grasps_routes_registered_object_pointcloud_through_gpd_detector(
+    mocker: MockerFixture,
+) -> None:
+    module = GraspingModule()
+    scene_registration = mocker.Mock()
+    object_pc = PointCloud2.from_numpy(
+        np.array([[0.0, 0.0, 0.0], [0.02, 0.0, 0.0]], dtype=np.float32),
+        frame_id="object",
+    )
+    scene_pc = PointCloud2.from_numpy(
+        np.array([[1.0, 1.0, 1.0]], dtype=np.float32),
+        frame_id="scene",
+    )
+    scene_registration.get_object_pointcloud_by_object_id.return_value = object_pc
+    scene_registration.get_full_scene_pointcloud.return_value = scene_pc
+    pose_array = _candidate_array().to_pose_array()
+    gpd_detector = FakeGPDGraspGenModule(pose_array)
+    mocker.patch.object(module, "_scene_registration", scene_registration, create=True)
+    mocker.patch.object(module, "_grasp_gen", gpd_detector, create=True)
+    published = []
+    module.grasps.subscribe(published.append)
+
+    message = module.generate_grasps(object_name="mug", object_id="obj-1", filter_collisions=True)
+
+    assert gpd_detector.calls == [(object_pc, scene_pc)]
+    assert len(published) == 1
+    assert published[0] is pose_array
+    assert "Generated 1" in message
+
+
+def test_generate_grasps_empty_gpd_output_returns_clear_message_and_does_not_publish(
+    mocker: MockerFixture,
+) -> None:
+    module = GraspingModule()
+    scene_registration = mocker.Mock()
+    object_pc = PointCloud2.from_numpy(
+        np.array([[0.0, 0.0, 0.0]], dtype=np.float32),
+        frame_id="object",
+    )
+    scene_registration.get_object_pointcloud_by_name.return_value = object_pc
+    gpd_detector = FakeGPDGraspGenModule(None)
+    mocker.patch.object(module, "_scene_registration", scene_registration, create=True)
+    mocker.patch.object(module, "_grasp_gen", gpd_detector, create=True)
+    publish = mocker.patch.object(module.grasps, "publish")
+
+    message = module.generate_grasps(object_name="mug", filter_collisions=False)
+
+    assert gpd_detector.calls == [(object_pc, None)]
+    publish.assert_not_called()
+    assert message == "Pointcloud grasp generator returned no grasps for 'mug'."
+
+
+def test_generate_grasps_failed_gpd_output_returns_clear_message_and_does_not_publish(
+    mocker: MockerFixture,
+) -> None:
+    module = GraspingModule()
+    scene_registration = mocker.Mock()
+    object_pc = PointCloud2.from_numpy(
+        np.array([[0.0, 0.0, 0.0]], dtype=np.float32),
+        frame_id="object",
+    )
+    scene_registration.get_object_pointcloud_by_name.return_value = object_pc
+    gpd_detector = FakeGPDGraspGenModule(RuntimeError("GPD backend unavailable"))
+    mocker.patch.object(module, "_scene_registration", scene_registration, create=True)
+    mocker.patch.object(module, "_grasp_gen", gpd_detector, create=True)
+    publish = mocker.patch.object(module.grasps, "publish")
+
+    message = module.generate_grasps(object_name="mug", filter_collisions=False)
+
+    assert gpd_detector.calls == [(object_pc, None)]
+    publish.assert_not_called()
+    assert message == "Grasp generation failed: GPD backend unavailable"

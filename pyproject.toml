@@ -21,8 +21,12 @@ build-backend = "setuptools.build_meta"
 include-package-data = false
 
 [tool.setuptools.packages.find]
-where = [".", "packages/dimos-runtime-protocol/src"]
-include = ["dimos*", "dimos_runtime_protocol*"]
+where = [
+    ".",
+    "packages/dimos-runtime-protocol/src",
+    "packages/dimos-gpd-grasp-demo/src",
+]
+include = ["dimos*", "dimos_runtime_protocol*", "dimos_gpd_grasp_demo*"]
 # Web frontends / vendored node_modules: not part of the Python runtime
 # (MANIFEST.in already prunes these from the sdist; this keeps their stray
 # .py modules out of the wheel too).
@@ -607,6 +611,8 @@ exclude_also = [
 max_size_kb = 50
 ignore = [
     "uv.lock",
+    "packages/dimos-gpd-grasp-demo/pixi.lock",
+    "packages/dimos-gpd-grasp-demo/uv.lock",
     "packages/dimos-gpd-worker-demo/pixi.lock",
     "packages/dimos-gpd-worker-demo/uv.lock",
     "*/package-lock.json",
