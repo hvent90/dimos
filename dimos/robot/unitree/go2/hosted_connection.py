@@ -56,6 +56,7 @@ ALLOWED_SPORT_CMDS: dict[str, int] = {
 
 class Go2HostedConnectionConfig(ConnectionConfig):
     telemetry_hz: float = 3.0  # robot → operator HUD telemetry push rate
+    cmd_stale_after_sec: float = 0.5  # cmd_vel twists older than this are dropped
 
 
 class Go2HostedConnection(GO2Connection):
@@ -76,6 +77,7 @@ class Go2HostedConnection(GO2Connection):
         self._telemetry_thread: threading.Thread | None = None
         self._stop_event = threading.Event()
         self._rage_active = False  # tracks firmware Rage Mode (speed bar)
+        self._last_cmd_ts = 0.0  # newest cmd_vel ts seen (drops out-of-order)
         self._cam_lock = threading.Lock()
         self._cam_frames: dict[str, Image] = {}  # "cam1"/"cam2" → latest frame
         self._cam_selected = ["cam1"]  # operator tab selection
@@ -84,10 +86,9 @@ class Go2HostedConnection(GO2Connection):
     def start(self) -> None:
         super().start()
         self._stop_event.clear()
-        # Force the firmware out of Rage so _rage_active=False matches reality.
-        # A prior session may have left it on; otherwise the set_mode
-        # short-circuit (want_rage == self._rage_active) returns "already in
-        # right FSM" and the user can never exit Rage from the speed bar.
+        # Force firmware out of Rage so _rage_active=False matches reality —
+        # a prior session may have left it on, and the set_mode short-circuit
+        # then locks the user in Rage.
         try:
             self.connection.set_rage_mode(False)
         except Exception:
@@ -282,6 +283,19 @@ class Go2HostedConnection(GO2Connection):
             logger.debug("cmd_ack publish failed", exc_info=True)
 
     # ─── Command-plane health (robot → operator) ─────────────────────
+
+    def move(self, twist: Any, duration: float = 0.0) -> bool:
+        """Drop stale + out-of-order cmd_vel from the unreliable wire."""
+        ts = float(twist.ts)
+        age = time.time() - ts
+        if age > self.config.cmd_stale_after_sec:
+            logger.debug("dropping stale cmd_vel: age=%.3fs", age)
+            return False
+        if ts <= self._last_cmd_ts:
+            logger.debug("dropping out-of-order cmd_vel: ts=%.3f last=%.3f", ts, self._last_cmd_ts)
+            return False
+        self._last_cmd_ts = ts
+        return super().move(twist, duration)
 
     def _on_cmd_raw(self, data: Any) -> None:
         """Read the send-stamp off the header for one-way latency stats."""
