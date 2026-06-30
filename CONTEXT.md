@@ -335,3 +335,19 @@ _Avoid_: Treating a bus as owned by a single joint group when multiple groups ma
 **OpenArm**:
 An OpenArm robot configuration built from Damiao motors, with OpenArm-specific joints, side naming, limits, and robot description.
 _Avoid_: Damiao robot when referring to OpenArm-specific geometry or naming
+
+**Teleop adapter**:
+A device-specific bridge from a human teleoperation source, such as a headset controller, phone, keyboard, or physical leader arm, into DimOS coordinator-facing command streams.
+_Avoid_: teleop backend when the component emits coordinator command types, teleop module when referring only to the device adapter, controller when the device is not a robot controller
+
+**Teleop profile**:
+A configured teleoperation behavior that selects one primary way human intent drives robot motion while allowing secondary engagement, status, and diagnostic signals.
+_Avoid_: backend when referring to behavior selection, mode when the distinction affects routing and safety semantics
+
+**Primary motion output**:
+The single motion-control path a teleoperation behavior uses to drive robot movement, so one human input source does not unintentionally command the same robot through multiple motion abstractions at once.
+_Avoid_: all active outputs, debug stream, secondary status output
+
+**Teleop command envelope**:
+A small wrapper around a coordinator-facing teleoperation command that distinguishes an active command from no command and from an explicit stop command.
+_Avoid_: using a missing command as a stop signal, overloading raw motion-message contents with teleop authority state
