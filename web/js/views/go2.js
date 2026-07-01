@@ -1,11 +1,9 @@
 // Go2 teleop cockpit — big video left, control column right.
 //
-// LAYOUT ONLY for now. The posture/action controls and the
-// telemetry/battery readouts are wired to a local placeholder state so the
-// view is demonstrable, but nothing talks to the robot yet — functionality
-// gets added one piece at a time (commands over state_reliable, real telemetry
-// over state_reliable_back, video track). Drive (WASD) reuses the existing
-// keyboard loop / cmdChannel exactly as views/keyboard.js does.
+// Fully wired: posture/action commands go over state_reliable (acked on
+// state_reliable_back), telemetry + battery come back over state_reliable_back,
+// video is the WebRTC track, and drive (WASD/QE) reuses the keyboard loop /
+// cmdChannel exactly as views/keyboard.js does.
 //
 // Preview with no broker:  window._teleopDev.previewGo2()
 
@@ -379,8 +377,16 @@ function resolveAck(nonce, ok) {
 
 // Posture/gesture button → {type:sport_cmd, name, nonce} on state_reliable.
 // Robot allow-lists + dispatches, then acks on state_reliable_back (→ resolveAck).
+// Acrobatic actions make the robot leap — confirm before firing so a stray
+// click doesn't launch it. (Matches the robot-side allow-list entries.)
+const CONFIRM_ACTIONS = new Set(['FrontPounce', 'FrontJump']);
+
 function sendCommand(name, btn) {
     if (!cmdReady()) return;
+    if (CONFIRM_ACTIONS.has(name) &&
+        !confirm(`${name} makes the robot leap — clear the area. Continue?`)) {
+        return;
+    }
     const nonce = ++ui.nonce;
     btn.dataset.status = 'pending';
     state.stateChannel.send(JSON.stringify({ type: 'sport_cmd', name, nonce }));
