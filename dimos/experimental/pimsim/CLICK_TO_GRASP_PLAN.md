@@ -77,7 +77,7 @@ perception under Babylon-physics authority (Phase 3).
   so a browser pick can report which entity_id was hit.
 
 **Entity stream (privileged poses):**
-- `dimos/experimental/pimsim/entity.py`: `EntityDescriptor` (:45 — entity_id, kind,
+- `dimos/simulation/scene/entity.py`: `EntityDescriptor` (:45 — entity_id, kind,
   mesh_ref, shape_hint, extents, mass, rgba), `EntityStateBatch` (:201 — entries of
   `(EntityDescriptor, Pose)`, JSON-over-LCM).
 - Sim publishers: `MujocoSimModule.entity_state_batch` (mujoco_sim_module.py:349, `_publish_entity_states` ~:916);

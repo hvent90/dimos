@@ -47,7 +47,6 @@ from scipy.spatial.transform import Rotation as R
 from dimos.core.core import rpc
 from dimos.core.module import Module, ModuleConfig
 from dimos.core.stream import In, Out
-from dimos.experimental.pimsim.entity import EntityDescriptor, EntityStateBatch
 from dimos.hardware.sensors.camera.spec import DepthCameraConfig, DepthCameraHardware
 from dimos.msgs.geometry_msgs.Pose import Pose
 from dimos.msgs.geometry_msgs.PoseStamped import PoseStamped
@@ -71,6 +70,7 @@ from dimos.simulation.engines.mujoco_shm import (
     shm_key_from_path,
 )
 from dimos.simulation.engines.robot_sim_binding import RobotSimSpec
+from dimos.simulation.scene.entity import EntityDescriptor, EntityStateBatch
 from dimos.spec import perception
 from dimos.utils.logging_config import setup_logger
 

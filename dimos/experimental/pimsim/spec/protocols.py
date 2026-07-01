@@ -41,7 +41,7 @@ Three protocols, by role:
   which is exactly the "sim == hardware" property.
 
 The data shapes these traffic in live in ``models.py`` / ``../entity.py`` /
-``simulation/scene_assets/spec.py`` (``ScenePackage``): one description
+``simulation/scene/package.py`` (``ScenePackage``): one description
 (``SceneObject`` / ``EntityDescriptor``), one streaming snapshot
 (``EntityStateBatch``), one portable package (``ScenePackage``).
 """
@@ -50,8 +50,8 @@ from __future__ import annotations
 
 from typing import TYPE_CHECKING, Protocol, runtime_checkable
 
-from dimos.experimental.pimsim.entity import EntityDescriptor, EntityStateBatch
 from dimos.experimental.pimsim.spec.enums import AuthorityMode
+from dimos.simulation.scene.entity import EntityDescriptor, EntityStateBatch
 
 if TYPE_CHECKING:
     # Typing-only so the spec stays import-light. ``In``/``Out`` are the dimos

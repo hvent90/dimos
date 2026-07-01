@@ -56,7 +56,10 @@ from dimos.experimental.pimsim.babylon.robot_meshes import (
     apply_state,
     load_robot_meshes,
 )
-from dimos.experimental.pimsim.entity import (
+from dimos.msgs.geometry_msgs.Pose import Pose
+from dimos.msgs.geometry_msgs.PoseStamped import PoseStamped
+from dimos.msgs.sensor_msgs.JointState import JointState
+from dimos.simulation.scene.entity import (
     EntityDescriptor,
     EntityState,
     EntityStateBatch,
@@ -64,9 +67,6 @@ from dimos.experimental.pimsim.entity import (
     pose_to_wire,
     twist_to_wire,
 )
-from dimos.msgs.geometry_msgs.Pose import Pose
-from dimos.msgs.geometry_msgs.PoseStamped import PoseStamped
-from dimos.msgs.sensor_msgs.JointState import JointState
 from dimos.utils.logging_config import setup_logger
 
 logger = setup_logger()

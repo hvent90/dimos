@@ -26,7 +26,7 @@ import json
 from pathlib import Path
 from typing import Any
 
-from dimos.simulation.scene_assets.mesh_scene import SceneMeshAlignment
+from dimos.simulation.scene.mesh_scene import SceneMeshAlignment
 
 ARTIFACT_FRAMES = {
     "browser_visual": "source",
@@ -153,7 +153,7 @@ def _validate_artifact_frames(raw: dict[str, Any], metadata_path: Path) -> None:
     if frames is None:
         raise ValueError(
             f"scene package is missing artifact frame metadata: {metadata_path}. "
-            "Recook it with dimos.experimental.pimsim.scene.cook."
+            "Recook it with dimos.simulation.scene.cook."
         )
 
     artifacts = raw.get("artifacts", {})

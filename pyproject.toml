@@ -335,7 +335,7 @@ mapping = [
 
 # Pimsim browser viewer + offline scene-asset cooker.  Opt-in.
 # Powers dimos.experimental.pimsim (browser-based MuJoCo viewer at :8091)
-# and dimos.simulation.scene_assets.cook (cook a source mesh into a
+# and dimos.simulation.scene.cook (cook a source mesh into a
 # browser visual GLB, a browser collision GLB, and a MuJoCo wrapper).
 #
 # Heavy native deps (open3d for collision simplification, mujoco for the

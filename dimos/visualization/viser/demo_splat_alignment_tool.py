@@ -38,13 +38,13 @@ from typing import Any
 import mujoco
 import numpy as np
 from scipy.spatial.transform import Rotation as R
+import viser
 
-from dimos.simulation.scene_assets.mesh_scene import (
+from dimos.simulation.scene.mesh_scene import (
     SceneMeshAlignment,
     load_scene_mesh,
 )
 from dimos.visualization.viser.splat import SplatAlignment, load_splat
-import viser
 
 
 @dataclass

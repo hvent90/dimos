@@ -52,7 +52,7 @@ real-hardware run; only the flag changes.
 ### 2. Scenes — cook any mesh/map into a portable package
 
 ```bash
-python -m dimos.experimental.pimsim.scene.cook <mesh.glb> [--cook-spec <scene>.cook.json]
+python -m dimos.simulation.scene.cook <mesh.glb> [--cook-spec <scene>.cook.json]
 # → data/scene_packages/<name>/  { browser/visual.glb, browser/collision.glb,
 #   browser/objects.json, mujoco/<key>/wrapper.xml + hull OBJs, scene.meta.json }
 ```
@@ -66,10 +66,10 @@ this way). Reference a package by catalog name or path via `--scene`.
 All defined in code; import them, don't reinvent:
 
 ```python
-from dimos.experimental.pimsim.entity import EntityDescriptor, EntityStateBatch
+from dimos.simulation.scene.entity import EntityDescriptor, EntityStateBatch
 from dimos.experimental.pimsim.spec.models import SceneObject       # proposed unified noun
 from dimos.experimental.pimsim.spec.enums import AuthorityMode      # OWNS | MIRROR
-from dimos.simulation.scene_assets.spec import ScenePackage         # the cooked package
+from dimos.simulation.scene.package import ScenePackage         # the cooked package
 
 # what an entity IS (identity + how to instantiate; no pose):
 EntityDescriptor(entity_id="cup", kind="dynamic", mesh_ref="cup.glb",
@@ -84,7 +84,7 @@ EntityStateBatch(entries=[(descriptor, pose), ...])
 | `EntityDescriptor` | what an entity *is* (id, kind, mesh/shape, mass) | `entity.py` |
 | `EntityStateBatch` | where everything *is now* (timestamped `(descriptor, pose)` snapshot) | `entity.py` |
 | `SceneObject` | the proposed merge of `Obstacle`+`EntityDescriptor` (identity+geometry, no pose) | `spec/models.py` |
-| `ScenePackage` | the cooked, portable scene (visual+collision GLB, hulls, objects, MJCF) | `simulation/scene_assets/spec.py` |
+| `ScenePackage` | the cooked, portable scene (visual+collision GLB, hulls, objects, MJCF) | `simulation/scene/package.py` |
 
 ### 4. Drive & observe — backend-agnostic, identical to hardware
 
@@ -173,7 +173,7 @@ That's it — consumers, blueprints, and the agent are untouched.
 | Requirement | Status |
 |---|---|
 | Sim interfaces exactly like hardware (Dimos-agnostic) | ✅ `PhysicsAuthority` + `SceneControl`; e2e tests parametrized over backends |
-| Easy 3rd-party 3D/map import | ✅ `scene_assets.cook` (office + TDM sketchfab map cooked) |
+| Easy 3rd-party 3D/map import | ✅ `scene.cook` (office + TDM sketchfab map cooked) |
 | Good visual fidelity (VLMs) | ✅ Babylon + splat cameras |
 | Low-fidelity physics / collisions | ✅ Havok (browser) / MuJoCo; rust lidar vs collision GLB |
 | Basic nav eval on PimSim | ✅ `test_walk_forward` parametrized over `pimsim` |
@@ -220,7 +220,7 @@ experimental/pimsim/
 
 core (shared — NOT in pimsim, by design):
   simulation/engines/mujoco_sim_module.py       MujocoSimModule — the other authority (headless)
-  simulation/scene_assets/{spec,mesh_scene}.py  ScenePackage format/loader (what the cooker emits)
+  simulation/scene/{package,mesh_scene}.py  ScenePackage format/loader (what the cooker emits)
   e2e_tests/test_dimsim_*.py                     agentic-eval tests, parametrized over backends
 ```
 

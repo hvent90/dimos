@@ -33,7 +33,7 @@ _G1_ASSETS = _REPO_ROOT / "data" / "mujoco_sim" / "g1_gear_wbc.xml"
 
 
 def _entity_batch(entity_id: str, position: list[float]):
-    from dimos.experimental.pimsim.entity import EntityDescriptor, EntityStateBatch
+    from dimos.simulation.scene.entity import EntityDescriptor, EntityStateBatch
 
     descriptor = EntityDescriptor(entity_id=entity_id, kind="dynamic", mass=1.0)
     pose = PoseStamped(position=position, orientation=[0.0, 0.0, 0.0, 1.0])

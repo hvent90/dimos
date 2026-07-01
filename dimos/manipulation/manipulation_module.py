@@ -38,7 +38,6 @@ from dimos.constants import DEFAULT_THREAD_JOIN_TIMEOUT
 from dimos.core.core import rpc
 from dimos.core.module import Module, ModuleConfig
 from dimos.core.stream import In
-from dimos.experimental.pimsim.entity import EntityStateBatch
 from dimos.manipulation.planning.factory import create_kinematics, create_planner
 from dimos.manipulation.planning.monitor.world_monitor import WorldMonitor
 from dimos.manipulation.planning.spec.config import RobotModelConfig
@@ -54,6 +53,7 @@ from dimos.msgs.geometry_msgs.Quaternion import Quaternion
 from dimos.msgs.geometry_msgs.Vector3 import Vector3
 from dimos.msgs.sensor_msgs.JointState import JointState
 from dimos.msgs.trajectory_msgs.JointTrajectory import JointTrajectory
+from dimos.simulation.scene.entity import EntityStateBatch
 from dimos.utils.logging_config import setup_logger
 
 if TYPE_CHECKING:

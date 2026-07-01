@@ -49,7 +49,6 @@ from dimos.control.tasks.g1_groot_wbc_task.g1_groot_wbc_task import (
 from dimos.core.coordination.blueprints import Blueprint, autoconnect
 from dimos.core.global_config import global_config
 from dimos.core.transport import JpegLcmTransport, LCMTransport
-from dimos.experimental.pimsim.entity import EntityStateBatch
 from dimos.hardware.whole_body.spec import WholeBodyConfig
 from dimos.msgs.geometry_msgs.PointStamped import PointStamped
 from dimos.msgs.geometry_msgs.PoseStamped import PoseStamped
@@ -64,6 +63,7 @@ from dimos.msgs.sensor_msgs.MotorCommandArray import MotorCommandArray
 from dimos.msgs.sensor_msgs.PointCloud2 import PointCloud2
 from dimos.robot.catalog.g1 import g1_left_arm, g1_right_arm
 from dimos.robot.unitree.g1.wholebody_connection import G1WholeBodyConnection
+from dimos.simulation.scene.entity import EntityStateBatch
 from dimos.teleop.quest.quest_types import Buttons
 from dimos.utils.data import LfsPath
 from dimos.web.websocket_vis.websocket_vis_module import WebsocketVisModule
@@ -240,7 +240,7 @@ def _native_scene_lidar_build_command() -> str | None:
 def _scene_package_config() -> Any | None:
     scene = os.environ.get("DIMOS_SCENE_PACKAGE_PATH") or global_config.scene
 
-    from dimos.simulation.scenes.catalog import resolve_scene_package
+    from dimos.simulation.scene.catalog import resolve_scene_package
 
     return resolve_scene_package(
         scene,

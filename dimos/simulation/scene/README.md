@@ -11,7 +11,7 @@ inside `MujocoSimModule.start`.
 The lifecycle is three steps:
 
 1. **Author** — drop a `<scene>.cook.json` sidecar next to the source mesh.
-2. **Cook** — `python -m dimos.experimental.pimsim.scene.cook` bakes the package.
+2. **Cook** — `python -m dimos.simulation.scene.cook` bakes the package.
 3. **Compose** — at runtime the sim module loads the wrapper, attaches the
    robot, and adds entities as first-class MuJoCo bodies.
 
@@ -158,7 +158,7 @@ rebake, or the scanned props vanish.
 ## Cooking
 
 ```bash
-python -m dimos.experimental.pimsim.scene.cook \
+python -m dimos.simulation.scene.cook \
     path/to/my_scene.glb \
     --output-dir=data/scene_packages/my_scene
 ```
@@ -177,7 +177,7 @@ For `physics.shape: "mesh"` entities, collision geometry is **cooked into
 the package** — there is no runtime decomposition and no per-machine
 cache:
 
-1. **Cook** — `dimos/simulation/scene_assets/entity_collision.py` runs
+1. **Cook** — `dimos/simulation/scene/entity_collision.py` runs
    CoACD on each entity's `visual.glb` and writes the convex hulls to
    `entities/<id>/mujoco_collision/hull_*.obj`, recorded per entity as
    `collision_paths` in `scene.meta.json`. Chair legs / seat / back each
@@ -226,7 +226,7 @@ Blueprint-side wiring:
 
 ```python
 from dimos.simulation.engines.mujoco_sim_module import MujocoSimModule
-from dimos.simulation.scenes.catalog import resolve_scene_package
+from dimos.simulation.scene.catalog import resolve_scene_package
 
 pkg = resolve_scene_package("dimos-office")
 
@@ -274,7 +274,7 @@ published states as kinematic bodies.
 | `lowpoly-tdm` | `lowpoly_tdm` | Lightweight nav stress test |
 | `mall-babylon-nolights` | `mall_babylon_nolights` | Large indoor nav |
 
-Aliases live in `dimos/simulation/scenes/catalog.py` (`office`, `street`,
+Aliases live in `dimos/simulation/scene/catalog.py` (`office`, `street`,
 `mall`, `tdm`, …). Cooked a new scene? Add it to `_PACKAGE_DIRS` and
 `_ALIASES` so the rest of the stack finds it by name.
 
@@ -289,13 +289,13 @@ Aliases live in `dimos/simulation/scenes/catalog.py` (`office`, `street`,
 
 ## Reference
 
-- `dimos/simulation/scene_assets/sidecar.py` — `<scene>.cook.json` schema
-- `dimos/simulation/scene_assets/plan.py` — sidecar → resolved cook plan
-- `dimos/simulation/scene_assets/cook.py` — cook entry point + CLI
-- `dimos/simulation/scene_assets/spec.py` — `ScenePackage` dataclass + on-disk JSON shape
-- `dimos/simulation/scene_assets/browser_collision.py` — fused collision GLB + `objects.json`
-- `dimos/simulation/scene_assets/entity_collision.py` — cook-time CoACD hulls per entity
-- `dimos/simulation/scene_assets/visual_blender.py` — Blender pass for per-entity GLBs
+- `dimos/simulation/scene/sidecar.py` — `<scene>.cook.json` schema
+- `dimos/simulation/scene/plan.py` — sidecar → resolved cook plan
+- `dimos/simulation/scene/cook.py` — cook entry point + CLI
+- `dimos/simulation/scene/package.py` — `ScenePackage` dataclass + on-disk JSON shape
+- `dimos/simulation/scene/browser_collision.py` — fused collision GLB + `objects.json`
+- `dimos/simulation/scene/entity_collision.py` — cook-time CoACD hulls per entity
+- `dimos/simulation/scene/visual_blender.py` — Blender pass for per-entity GLBs
 - `dimos/simulation/mujoco/collision_spec.py` — static-collision policy types
 - `dimos/simulation/mujoco/entity_scene.py` — runtime entity composition + spawn audit
-- `dimos/simulation/scenes/catalog.py` — `resolve_scene_package(name | path)`
+- `dimos/simulation/scene/catalog.py` — `resolve_scene_package(name | path)`

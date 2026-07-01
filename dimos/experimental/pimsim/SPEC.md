@@ -78,7 +78,7 @@ Three types describe "a shaped thing at a pose," and they overlap:
 | Concept | Where | Carries | Purpose |
 |---|---|---|---|
 | `Obstacle` | `planning/spec/models.py` | name, type, pose, dims, color, mesh_path | planning collision input (static add) |
-| `EntityDescriptor` + `EntityStateBatch` | `experimental/pimsim/entity.py` | id, kind, shape, extents, mesh_ref, rgba, mass + streamed pose | live scene state from an authority |
+| `EntityDescriptor` + `EntityStateBatch` | `simulation/scene/entity.py` | id, kind, shape, extents, mesh_ref, rgba, mass + streamed pose | live scene state from an authority |
 | `Object` | `perception/.../detection3d/object.py` | object_id, center, size, pose, pointcloud, mask | perception detection output |
 
 `Obstacle` and `EntityDescriptor` are the same data under two names.

@@ -44,8 +44,8 @@ from dimos.msgs.geometry_msgs.Point import Point
 from dimos.msgs.geometry_msgs.PoseStamped import PoseStamped
 
 if TYPE_CHECKING:
-    from dimos.experimental.pimsim.entity import EntityDescriptor, EntityKind, EntityStateBatch
     from dimos.msgs.geometry_msgs.Pose import Pose
+    from dimos.simulation.scene.entity import EntityDescriptor, EntityKind, EntityStateBatch
 
 # What a caller can hand the resolver: a stable object id, or a world-frame point
 # (``PointStamped`` is a ``Point`` subclass, so both satisfy ``Point``).

@@ -99,7 +99,7 @@ def _policy_onnx_path() -> Path:
 def _scene_package_config() -> Any | None:
     scene = os.environ.get("DIMOS_SCENE_PACKAGE_PATH") or global_config.scene
 
-    from dimos.simulation.scenes.catalog import resolve_scene_package
+    from dimos.simulation.scene.catalog import resolve_scene_package
 
     return resolve_scene_package(scene)
 

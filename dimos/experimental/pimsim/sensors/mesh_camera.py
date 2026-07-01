@@ -60,7 +60,7 @@ from dimos.msgs.geometry_msgs.PoseStamped import PoseStamped
 from dimos.msgs.sensor_msgs.CameraInfo import CameraInfo
 from dimos.msgs.sensor_msgs.Image import Image, ImageFormat
 from dimos.msgs.sensor_msgs.JointState import JointState
-from dimos.simulation.scene_assets.mesh_scene import (
+from dimos.simulation.scene.mesh_scene import (
     SceneMeshAlignment,
     load_scene_mesh,
     make_raycasting_scene,

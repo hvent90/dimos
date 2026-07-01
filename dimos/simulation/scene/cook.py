@@ -27,26 +27,26 @@ import json
 from pathlib import Path
 from typing import Any
 
-from dimos.experimental.pimsim.scene.browser_collision import cook_browser_collision
-from dimos.experimental.pimsim.scene.entity_collision import (
+from dimos.simulation.scene.browser_collision import cook_browser_collision
+from dimos.simulation.scene.collision_spec import CollisionSpec
+from dimos.simulation.scene.entity_collision import (
     COLLISION_DIR_NAME,
     cook_entity_collision_hulls,
 )
-from dimos.experimental.pimsim.scene.inspect import inspect_scene_asset
-from dimos.experimental.pimsim.scene.plan import build_scene_cook_plan
-from dimos.experimental.pimsim.scene.sidecar import SceneCookSidecar
-from dimos.experimental.pimsim.scene.visual_blender import cook_plan_visual_assets
-from dimos.experimental.pimsim.scene.visual_glb import cook_browser_visual
-from dimos.simulation.mujoco.collision_spec import CollisionSpec
-from dimos.simulation.mujoco.scene_mesh_to_mjcf import load_or_bake
-from dimos.simulation.scene_assets.mesh_scene import SceneMeshAlignment
-from dimos.simulation.scene_assets.spec import (
+from dimos.simulation.scene.inspect import inspect_scene_asset
+from dimos.simulation.scene.mesh_scene import SceneMeshAlignment
+from dimos.simulation.scene.package import (
     BrowserCollisionSpec,
     BrowserVisualSpec,
     MujocoSceneSpec,
     SceneCookSpec,
     ScenePackage,
 )
+from dimos.simulation.scene.plan import build_scene_cook_plan
+from dimos.simulation.scene.scene_mesh_to_mjcf import load_or_bake
+from dimos.simulation.scene.sidecar import SceneCookSidecar
+from dimos.simulation.scene.visual_blender import cook_plan_visual_assets
+from dimos.simulation.scene.visual_glb import cook_browser_visual
 from dimos.utils.data import get_data_dir
 from dimos.utils.logging_config import setup_logger
 

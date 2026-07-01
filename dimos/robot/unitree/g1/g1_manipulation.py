@@ -34,7 +34,6 @@ from reactivex.disposable import Disposable
 from dimos.agents.annotation import skill
 from dimos.core.core import rpc
 from dimos.core.stream import In, Out
-from dimos.experimental.pimsim.entity import EntityStateBatch
 from dimos.manipulation.pick_and_place_module import PickAndPlaceModule
 from dimos.manipulation.pointing import solve_pointing
 from dimos.manipulation.scene_objects import ObjectPoseSource, PrivilegedObjectSource
@@ -44,6 +43,7 @@ from dimos.msgs.geometry_msgs.PoseStamped import PoseStamped
 from dimos.msgs.geometry_msgs.Vector3 import Vector3
 from dimos.msgs.trajectory_msgs.JointTrajectory import JointTrajectory
 from dimos.msgs.trajectory_msgs.TrajectoryPoint import TrajectoryPoint
+from dimos.simulation.scene.entity import EntityStateBatch
 from dimos.utils.logging_config import setup_logger
 from dimos.utils.transform_utils import (
     compose_transforms,

@@ -15,7 +15,7 @@
 """Bake a scene mesh into an MJCF wrapper around a robot MJCF.
 
 The bake walks every prim returned by :func:`load_scene_prims` and asks
-:func:`dimos.simulation.mujoco.collision_spec.decide_for_prim` what to
+:func:`dimos.simulation.scene.collision_spec.decide_for_prim` what to
 emit for it.  The dispatcher returns one of three modes:
 
 - ``"primitive"`` -- a single MuJoCo primitive ``<geom>`` (box / sphere /
@@ -72,11 +72,11 @@ from typing import Any
 import numpy as np
 import open3d as o3d  # type: ignore[import-untyped]
 
-from dimos.simulation.mujoco.collision_spec import (
+from dimos.simulation.scene.collision_spec import (
     CollisionSpec,
     decide_for_prim,
 )
-from dimos.simulation.scene_assets.mesh_scene import (
+from dimos.simulation.scene.mesh_scene import (
     SceneMeshAlignment,
     ScenePrimMesh,
     load_scene_prims,
@@ -917,12 +917,12 @@ def _write_wrapper(
 
 
 def cli_main() -> None:
-    """``python -m dimos.simulation.mujoco.scene_mesh_to_mjcf <scene> <robot> [opts]``.
+    """``python -m dimos.simulation.scene.scene_mesh_to_mjcf <scene> <robot> [opts]``.
 
     Bake (or load from cache), optionally launch the MuJoCo viewer.
     """
     p = argparse.ArgumentParser(
-        prog="python -m dimos.simulation.mujoco.scene_mesh_to_mjcf",
+        prog="python -m dimos.simulation.scene.scene_mesh_to_mjcf",
         description="Bake a USD/GLB/OBJ scene into a robot-agnostic scene-only MJCF wrapper.",
     )
     p.add_argument("scene", type=Path, help="scene mesh path (.usda, .usdz, .glb, ...)")

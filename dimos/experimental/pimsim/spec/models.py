@@ -30,18 +30,18 @@ there is a single source of truth and the protocols read against real types:
                        (visual GLB, decimated collision GLB, per-entity GLBs,
                        CoACD hulls, objects.json, MuJoCo wrapper MJCF). A
                        concrete dataclass, imported where you cook/resolve a
-                       package. (dimos/simulation/scene_assets/spec.py)
+                       package. (dimos/simulation/scene/package.py)
 
 ``ScenePackage`` is deliberately NOT re-exported here — importing it pulls the
 scene-asset cooking dependencies, which referencing the type should not
-require. Import it directly from ``dimos.simulation.scene_assets.spec``.
+require. Import it directly from ``dimos.simulation.scene.package``.
 """
 
 from __future__ import annotations
 
 from dataclasses import dataclass
 
-from dimos.experimental.pimsim.entity import (
+from dimos.simulation.scene.entity import (
     EntityDescriptor,
     EntityKind,
     EntityStateBatch,

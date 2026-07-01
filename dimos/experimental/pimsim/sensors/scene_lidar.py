@@ -18,9 +18,9 @@ from __future__ import annotations
 
 from dimos.core.native_module import NativeModule, NativeModuleConfig
 from dimos.core.stream import In, Out
-from dimos.experimental.pimsim.entity import EntityStateBatch
 from dimos.msgs.geometry_msgs.PoseStamped import PoseStamped
 from dimos.msgs.sensor_msgs.PointCloud2 import PointCloud2
+from dimos.simulation.scene.entity import EntityStateBatch
 
 
 class SceneLidarConfig(NativeModuleConfig):

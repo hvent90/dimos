@@ -18,9 +18,9 @@ from __future__ import annotations
 
 from pathlib import Path
 
-from dimos.simulation.scene_assets.mesh_scene import SceneMeshAlignment
-from dimos.simulation.scene_assets.spec import ScenePackage, load_scene_package
-from dimos.simulation.scenes.office import get_dimos_office
+from dimos.simulation.scene.mesh_scene import SceneMeshAlignment
+from dimos.simulation.scene.office import get_dimos_office
+from dimos.simulation.scene.package import ScenePackage, load_scene_package
 from dimos.utils.data import get_data
 
 SCENE_PACKAGE_DIR = get_data("scene_packages")
@@ -118,7 +118,7 @@ def _resolve_dimos_office() -> ScenePackage:
     if not metadata_path.exists():
         raise FileNotFoundError(
             "dimos-office scene package is not cooked yet: "
-            f"{metadata_path}. Run dimos.experimental.pimsim.scene.cook first."
+            f"{metadata_path}. Run dimos.simulation.scene.cook first."
         )
 
     package = load_scene_package(metadata_path)

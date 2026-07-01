@@ -14,7 +14,7 @@
 
 import numpy as np
 
-from dimos.simulation.mujoco.collision_spec import CollisionSpec, decide_for_prim
+from dimos.simulation.scene.collision_spec import CollisionSpec, decide_for_prim
 
 
 def test_rectangular_flat_sheet_stays_single_horizontal_box() -> None:

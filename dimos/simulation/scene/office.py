@@ -21,7 +21,7 @@ import json
 from pathlib import Path
 from typing import Any
 
-from dimos.simulation.scene_assets.spec import ScenePackage
+from dimos.simulation.scene.package import ScenePackage
 from dimos.utils.data import get_data
 
 

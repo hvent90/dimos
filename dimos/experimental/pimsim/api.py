@@ -107,8 +107,8 @@ class PimSim(PimSimClient):
         viewer (asset upload is a follow-on). ``kind="dynamic"`` is physics-
         driven; ``"static"`` / ``"kinematic"`` are not.
         """
-        from dimos.experimental.pimsim.entity import EntityDescriptor, pose_to_wire
         from dimos.msgs.geometry_msgs.Pose import Pose
+        from dimos.simulation.scene.entity import EntityDescriptor, pose_to_wire
 
         descriptor = EntityDescriptor(
             entity_id=object_id,

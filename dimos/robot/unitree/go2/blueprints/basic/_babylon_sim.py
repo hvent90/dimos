@@ -34,10 +34,10 @@ from typing import Any
 from dimos.core.coordination.blueprints import Blueprint
 from dimos.core.global_config import global_config
 from dimos.core.transport import LCMTransport
-from dimos.experimental.pimsim.entity import EntityStateBatch
 from dimos.msgs.geometry_msgs.PoseStamped import PoseStamped
 from dimos.msgs.sensor_msgs.JointState import JointState
 from dimos.msgs.sensor_msgs.PointCloud2 import PointCloud2
+from dimos.simulation.scene.entity import EntityStateBatch
 from dimos.utils.logging_config import setup_logger
 
 logger = setup_logger()
@@ -122,7 +122,7 @@ def _scene_package() -> Any:
     # Reuse the same catalog as the G1 path. The Go2 doesn't care about
     # the MuJoCo wrapper artifact (Babylon owns physics in pimsim mode),
     # so robot_mjcf_path stays None — same cooked package serves both.
-    from dimos.simulation.scenes.catalog import resolve_scene_package
+    from dimos.simulation.scene.catalog import resolve_scene_package
 
     try:
         return resolve_scene_package(scene, robot_mjcf_path=None, meshdir=None)

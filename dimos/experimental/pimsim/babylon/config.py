@@ -17,7 +17,7 @@ from __future__ import annotations
 from typing import Protocol
 
 from dimos.core.module import ModuleConfig
-from dimos.simulation.scenes.office import SceneAsset
+from dimos.simulation.scene.office import SceneAsset
 from dimos.spec.utils import Spec
 
 

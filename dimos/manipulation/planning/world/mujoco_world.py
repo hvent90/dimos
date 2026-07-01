@@ -65,7 +65,7 @@ if TYPE_CHECKING:
     from numpy.typing import NDArray
 
     from dimos.msgs.geometry_msgs.Pose import Pose
-    from dimos.simulation.scene_assets.spec import ScenePackage
+    from dimos.simulation.scene.package import ScenePackage
 
 try:
     import mujoco
@@ -183,7 +183,7 @@ class MujocoWorld(WorldSpec):
         pkg = None
         if scene_package is not None:
             if isinstance(scene_package, str | Path):
-                from dimos.simulation.scenes.catalog import resolve_scene_package
+                from dimos.simulation.scene.catalog import resolve_scene_package
 
                 pkg = resolve_scene_package(scene_package)
             else:

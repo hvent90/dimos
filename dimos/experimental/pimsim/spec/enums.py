@@ -25,7 +25,7 @@ from __future__ import annotations
 from enum import Enum
 
 # Canonical literals for the entity wire format — defined where the format is.
-from dimos.experimental.pimsim.entity import EntityKind, ShapeHint
+from dimos.simulation.scene.entity import EntityKind, ShapeHint
 
 
 class AuthorityMode(Enum):

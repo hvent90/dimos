@@ -35,7 +35,6 @@ from dimos.control.coordinator import ControlCoordinator
 from dimos.core.coordination.blueprints import autoconnect
 from dimos.core.global_config import global_config
 from dimos.core.transport import LCMTransport
-from dimos.experimental.pimsim.entity import EntityStateBatch
 from dimos.hardware.sensors.camera.realsense.camera import RealSenseCamera
 from dimos.manipulation.manipulation_module import ManipulationModule
 from dimos.manipulation.pick_and_place_module import PickAndPlaceModule
@@ -49,6 +48,7 @@ from dimos.perception.object_scene_registration import ObjectSceneRegistrationMo
 from dimos.robot.catalog.g1 import g1_left_arm, g1_right_arm
 from dimos.robot.catalog.ufactory import xarm6 as _catalog_xarm6, xarm7 as _catalog_xarm7
 from dimos.robot.unitree.g1.g1_manipulation import G1ManipulationModule
+from dimos.simulation.scene.entity import EntityStateBatch
 
 # Single XArm6 planner (standalone, no coordinator)
 _xarm6_planner_cfg = _catalog_xarm6(
