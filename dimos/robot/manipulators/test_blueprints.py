@@ -15,6 +15,8 @@
 from pathlib import Path
 from typing import Any
 
+import pytest
+
 from dimos.control.coordinator import ControlCoordinator, TaskConfig
 from dimos.core.coordination.blueprints import Blueprint
 from dimos.manipulation.manipulation_module import ManipulationModule, ManipulationModuleConfig
@@ -93,22 +95,26 @@ def test_eef_twist_task_helper_uses_hardware_joints_and_default_name() -> None:
     assert task.params == {"model_path": Path("fake.urdf"), "ee_joint_id": 6}
 
 
-def test_manipulator_keyboard_blueprints_use_eef_twist_and_light_keyboard_kwargs() -> None:
-    blueprints = (
-        keyboard_teleop_xarm6,
-        keyboard_teleop_xarm7,
-        keyboard_teleop_piper,
-        keyboard_teleop_openarm_mock,
-        keyboard_teleop_openarm,
-        keyboard_teleop_a750,
-    )
-    for blueprint in blueprints:
-        keyboard_kwargs = _module_kwargs(blueprint, KeyboardTeleopModule)
-        coordinator_tasks = _coordinator_tasks(blueprint)
+@pytest.mark.parametrize(
+    "blueprint",
+    [
+        pytest.param(keyboard_teleop_xarm6, id="xarm6"),
+        pytest.param(keyboard_teleop_xarm7, id="xarm7"),
+        pytest.param(keyboard_teleop_piper, id="piper"),
+        pytest.param(keyboard_teleop_openarm_mock, id="openarm-mock"),
+        pytest.param(keyboard_teleop_openarm, id="openarm"),
+        pytest.param(keyboard_teleop_a750, id="a750"),
+    ],
+)
+def test_manipulator_keyboard_blueprint_uses_eef_twist_and_light_keyboard_kwargs(
+    blueprint: Blueprint,
+) -> None:
+    keyboard_kwargs = _module_kwargs(blueprint, KeyboardTeleopModule)
+    coordinator_tasks = _coordinator_tasks(blueprint)
 
-        assert "model_path" not in keyboard_kwargs
-        assert "ee_joint_id" not in keyboard_kwargs
-        assert "joint_names" not in keyboard_kwargs
-        assert "home_joints" not in keyboard_kwargs
-        assert any(task.type == "eef_twist" for task in coordinator_tasks)
-        assert all(task.type != "cartesian_ik" for task in coordinator_tasks)
+    assert "model_path" not in keyboard_kwargs
+    assert "ee_joint_id" not in keyboard_kwargs
+    assert "joint_names" not in keyboard_kwargs
+    assert "home_joints" not in keyboard_kwargs
+    assert any(task.type == "eef_twist" for task in coordinator_tasks)
+    assert all(task.type != "cartesian_ik" for task in coordinator_tasks)

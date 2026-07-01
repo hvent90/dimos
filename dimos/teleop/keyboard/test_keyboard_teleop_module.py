@@ -23,6 +23,15 @@ from dimos.robot.manipulators.common.topics import EEF_TWIST_TASK_NAME
 from dimos.teleop.keyboard.keyboard_teleop_module import KeyboardTeleopConfig, KeyboardTeleopModule
 
 
+def _keyboard_module_with_publish(publish) -> KeyboardTeleopModule:
+    return cast(
+        "KeyboardTeleopModule",
+        SimpleNamespace(
+            coordinator_ee_twist_command=cast("Out[TwistStamped]", SimpleNamespace(publish=publish))
+        ),
+    )
+
+
 def test_keyboard_config_has_no_joint_state_or_fk_dependencies() -> None:
     config_fields = set(KeyboardTeleopConfig.model_fields)
 
@@ -35,12 +44,7 @@ def test_keyboard_config_has_no_joint_state_or_fk_dependencies() -> None:
 
 def test_publish_twist_emits_routed_twist_stamped(mocker) -> None:
     publish = mocker.Mock()
-    module = cast(
-        "KeyboardTeleopModule",
-        SimpleNamespace(
-            coordinator_ee_twist_command=cast("Out[TwistStamped]", SimpleNamespace(publish=publish))
-        ),
-    )
+    module = _keyboard_module_with_publish(publish)
 
     KeyboardTeleopModule._publish_twist(
         module, "custom_eef", linear=(0.1, 0.2, 0.3), angular=(0.4, 0.5, 0.6)
@@ -55,12 +59,7 @@ def test_publish_twist_emits_routed_twist_stamped(mocker) -> None:
 
 def test_publish_twist_zero_stop_uses_task_frame_id(mocker) -> None:
     publish = mocker.Mock()
-    module = cast(
-        "KeyboardTeleopModule",
-        SimpleNamespace(
-            coordinator_ee_twist_command=cast("Out[TwistStamped]", SimpleNamespace(publish=publish))
-        ),
-    )
+    module = _keyboard_module_with_publish(publish)
 
     KeyboardTeleopModule._publish_twist(
         module,

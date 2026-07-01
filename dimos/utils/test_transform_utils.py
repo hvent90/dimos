@@ -72,6 +72,7 @@ class TestTwistToNumpy:
 
         result = transform_utils.twist_to_numpy(twist)
 
+        assert result.dtype == np.float64
         assert np.array_equal(result, np.array([-1.0, 0.0, 1.0, 0.1, 0.2, 0.3]))
 
 
