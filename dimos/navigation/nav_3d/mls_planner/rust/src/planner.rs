@@ -156,6 +156,7 @@ pub fn plan(
         entry = select_entry(
             plg,
             start_cell,
+            goal_cell,
             goal_node,
             &cost_to_go,
             &pred_to_goal,
@@ -185,7 +186,13 @@ pub fn plan(
         buffer_weight: config.wall_buffer_weight,
         voxel_size,
     };
-    let cells = assemble_cells(plg, &node_seq, &lead_in, &goal_segment);
+    // A direct goal connection carries the whole route in its lead-in.
+    let goal_segment: &[CellId] = if node_seq.is_empty() {
+        &[]
+    } else {
+        &goal_segment
+    };
+    let cells = assemble_cells(plg, &node_seq, &lead_in, goal_segment);
     let cells = string_pull(plg, &cells, step_cells, &wall_cost);
     let waypoints = cells_to_waypoints(plg, &cells, start_pose, goal_pose, voxel_size);
     let path_cells: Vec<VoxelKey> = cells.iter().map(|&id| plg.cells.coord(id)).collect();
@@ -398,10 +405,13 @@ fn point_segment_dist2(a: (f32, f32), b: (f32, f32), p: (f32, f32)) -> f32 {
 }
 
 /// Pick the entry node by connect cost plus cost-to-go, with its on-surface
-/// lead-in and the node sequence to the goal.
+/// lead-in and the node sequence to the goal. A goal cell inside the search
+/// radius connects directly instead, signalled by an empty node sequence.
+#[allow(clippy::too_many_arguments)]
 fn select_entry(
     plg: &PlannerGraph,
     start_cell: CellId,
+    goal_cell: CellId,
     goal_node: NodeId,
     cost_to_go: &AHashMap<NodeId, f32>,
     pred_to_goal: &AHashMap<NodeId, NodeId>,
@@ -409,6 +419,12 @@ fn select_entry(
     radius_m: f32,
 ) -> Option<(Vec<CellId>, Vec<NodeId>)> {
     let (connect_dist, connect_pred) = robot_search(&plg.cells, start_cell, radius_m);
+
+    if connect_dist.contains_key(&goal_cell) {
+        let mut lead = walk_local_preds(&connect_pred, goal_cell);
+        lead.reverse();
+        return Some((lead, Vec::new()));
+    }
 
     let mut entry_node = NO_NODE;
     let mut best_score = f32::INFINITY;
@@ -1204,6 +1220,33 @@ mod tests {
         assert!(
             guarded.contains(&mid),
             "smoothed path must still traverse the low-clearance cell"
+        );
+    }
+
+    #[test]
+    fn select_entry_connects_straight_to_in_radius_goal() {
+        // The only node is behind the robot and the goal is just ahead.
+        // Entry must connect straight to the goal, not dogleg via the node.
+        let plg = graph_with_nodes(&strip(20), &[(2, 0, 0)]);
+        let start = plg.cells.id((10, 0, 0)).unwrap();
+        let goal = plg.cells.id((15, 0, 0)).unwrap();
+        let goal_node = plg.nodes[0].cell_id;
+        let node_cells: AHashSet<NodeId> = plg.nodes.iter().map(|n| n.cell_id).collect();
+        let (ctg, pred) = node_dijkstra(&plg, goal_node);
+
+        let (lead, node_seq) =
+            select_entry(&plg, start, goal, goal_node, &ctg, &pred, &node_cells, 3.0).unwrap();
+
+        assert!(
+            node_seq.is_empty(),
+            "endgame routed via nodes: {node_seq:?}"
+        );
+        assert_eq!(lead.first(), Some(&start));
+        assert_eq!(lead.last(), Some(&goal));
+        let xs: Vec<i32> = lead.iter().map(|&c| plg.cells.coord(c).0).collect();
+        assert!(
+            xs.windows(2).all(|p| p[1] >= p[0]),
+            "lead-in walked backward: {xs:?}"
         );
     }
 
