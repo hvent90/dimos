@@ -15,9 +15,10 @@
 """Render a memory2 recording (.db) into rerun.
 
 Loads the TF tree if the recording has one, then logs every PointCloud2 and
-Odometry stream. Point clouds are placed via TF (by their ``frame_id``) when a
-TF stream is present, otherwise logged as-is. ``--seconds`` bounds the window
-from the start of the recording.
+Odometry stream. Clouds are drawn in their stored coordinates (Point-LIO's cloud
+is already registered into its world frame); each odom stream gets a moving pose
+frame plus its full path as a trail. ``--seconds`` bounds the window from the
+start of the recording.
 """
 
 from __future__ import annotations
@@ -90,7 +91,6 @@ def main(
         if t0 is None:
             print("no PointCloud2 / Odometry / TF streams found in this recording")
             raise typer.Exit(1)
-        has_tf = bool(tfs)
         print(f"clouds={clouds}")
         print(f"odoms={odoms}")
         print(f"tf={tfs or '(none)'}")
@@ -114,6 +114,9 @@ def main(
                 for path, archetype in obs.data.to_rerun():
                     rr.log(path, archetype)
 
+        # Clouds are logged in their stored coordinates (Point-LIO's cloud is
+        # already registered into its world frame). Each stream is its own entity
+        # so you can toggle them independently in the viewer.
         for name in clouds:
             entity = f"world/clouds/{name}"
             for obs in store.streams[name]:
@@ -123,14 +126,9 @@ def main(
                 if cloud is None:
                     continue
                 rr.set_time(TIMELINE, duration=obs.ts - t0)
-                # With a TF tree, place the cloud in its own frame; rerun resolves
-                # it to world. Without TF, log it in whatever frame it was stored.
-                if has_tf and cloud.frame_id:
-                    rr.log(entity, rr.Transform3D(parent_frame=f"tf#/{cloud.frame_id}"))
                 rr.log(entity, cloud.to_rerun(mode="points"))
 
         for name in odoms:
-            entity = f"world/odom/{name}"
             trail: list[list[float]] = []
             for obs in store.streams[name]:
                 if not in_window(obs.ts):
@@ -139,10 +137,13 @@ def main(
                 if odom is None:
                     continue
                 rr.set_time(TIMELINE, duration=obs.ts - t0)
-                rr.log(entity, odom.to_rerun())
+                # Moving pose frame (has its own transform)...
+                rr.log(f"world/poses/{name}", odom.to_rerun())
                 trail.append([odom.x, odom.y, odom.z])
+            # ...and the full path as a static line in world coords (kept off the
+            # posed entity so it isn't transformed by the pose).
             if trail:
-                rr.log(f"{entity}/trail", rr.LineStrips3D([trail]), static=True)
+                rr.log(f"world/trails/{name}", rr.LineStrips3D([trail]), static=True)
 
         rr.rerun_shutdown()
         print(f"wrote {rrd_path}")
