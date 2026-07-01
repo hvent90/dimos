@@ -268,6 +268,12 @@ def main(
     max_range: float = typer.Option(30.0, "--max-range", help="Max ray cast distance (m)"),
     ray_subsample: int = typer.Option(1, "--ray-subsample", help="Keep every Nth ray"),
     emit_every: int = typer.Option(1, "--emit-every", help="Replan every N lidar frames"),
+    min_health: int = typer.Option(
+        -1,
+        "--min-health",
+        help="Voxel health floor; more negative needs more hits to appear and more misses to clear",
+    ),
+    max_health: int = typer.Option(1, "--max-health", help="Voxel health ceiling"),
     robot_height: float = typer.Option(0.3, "--robot-height", help="Robot height (m)"),
     surface_closing_radius: float = typer.Option(
         0.8,
@@ -338,6 +344,8 @@ def main(
                 max_range=max_range,
                 ray_subsample=ray_subsample,
                 emit_every=emit_every,
+                min_health=min_health,
+                max_health=max_health,
             )
         )
 

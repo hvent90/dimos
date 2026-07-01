@@ -203,7 +203,7 @@ fn close_at_z(
     closing_passes: u32,
     clearance_cells: i32,
 ) -> Vec<VoxelKey> {
-    let pad = (2 * closing_passes) as i32;
+    let pad = closing_passes as i32;
     let mut min_x = i32::MAX;
     let mut max_x = i32::MIN;
     let mut min_y = i32::MAX;

@@ -86,6 +86,13 @@ impl Config {
     }
 }
 
+/// Whether the MLS_PERF env var is set, gating per-frame stage timing to stderr.
+pub(crate) fn perf_on() -> bool {
+    use std::sync::OnceLock;
+    static ON: OnceLock<bool> = OnceLock::new();
+    *ON.get_or_init(|| std::env::var("MLS_PERF").is_ok())
+}
+
 /// Cylindrical region the planner re-derives from a local map slice.
 pub struct RegionBounds {
     pub origin_x: f32,
@@ -163,7 +170,9 @@ impl Planner {
         let clearance = config.headroom_cells();
         let pad = (2 * config.closing_passes()) as i32;
 
+        let t = std::time::Instant::now();
         let changed = self.replace_region_voxels(local_points, bounds, voxel_size);
+        let t_vox = t.elapsed();
 
         // No voxel changed, so surfaces and the graph are untouched.
         let Some((bx0, bx1, by0, by1)) = changed else {
@@ -172,11 +181,25 @@ impl Planner {
 
         // A changed column shifts surfaces only within pad of it.
         let write = (bx0 - pad, bx1 + pad, by0 - pad, by1 + pad);
+        let t = std::time::Instant::now();
         let new_cells =
             extract_surfaces_region(&self.by_col, clearance, config.closing_passes(), write);
+        let t_surf = t.elapsed();
+        let t = std::time::Instant::now();
         let (added, removed) = self.replace_surface_region(write, &new_cells);
+        let t_repl = t.elapsed();
 
+        let t = std::time::Instant::now();
         self.rebuild_region_graph(added, removed, config);
+        if perf_on() {
+            eprintln!(
+                "MLS_PERF vox={:.1} surf={:.1} repl={:.1} graph={:.1}",
+                t_vox.as_secs_f64() * 1e3,
+                t_surf.as_secs_f64() * 1e3,
+                t_repl.as_secs_f64() * 1e3,
+                t.elapsed().as_secs_f64() * 1e3,
+            );
+        }
     }
 
     /// Patch changed cells, then re-place nodes and edges over the change
@@ -200,7 +223,20 @@ impl Planner {
         if seeds.is_empty() {
             return;
         }
+        let n_seeds = seeds.len();
+        if perf_on() {
+            use std::sync::atomic::{AtomicBool, Ordering};
+            static DUMPED: AtomicBool = AtomicBool::new(false);
+            if n_seeds > 2000 && !DUMPED.swap(true, Ordering::Relaxed) {
+                let mut s = String::new();
+                for &(ix, iy, _) in &seeds {
+                    s.push_str(&format!("{} {}\n", ix, iy));
+                }
+                std::fs::write("/tmp/seeds.txt", s).ok();
+            }
+        }
 
+        let t = std::time::Instant::now();
         rebuild_edges_around(
             &mut self.graph.cells,
             &self.graph.surface_lookup,
@@ -208,7 +244,11 @@ impl Planner {
             config.voxel_size,
             step,
         );
+        let t_edges = t.elapsed();
+        let t = std::time::Instant::now();
         let window = self.node_window(&seeds, config);
+        let t_win = t.elapsed();
+        let t = std::time::Instant::now();
         place_nodes_region(
             &mut self.graph.cells,
             &self.by_col,
@@ -225,6 +265,8 @@ impl Planner {
             &mut self.graph.node_scratch,
             &mut self.graph.nodes,
         );
+        let t_nodes = t.elapsed();
+        let t = std::time::Instant::now();
         build_node_edges_region(
             &self.graph.cells,
             &self.graph.nodes,
@@ -233,6 +275,18 @@ impl Planner {
             &mut self.graph.node_edges,
             &mut self.graph.node_adj,
         );
+        if perf_on() {
+            eprintln!(
+                "MLS_PERF_GRAPH edges={:.1} win={:.1} nodes={:.1} nedges={:.1} cells={} window={}",
+                t_edges.as_secs_f64() * 1e3,
+                t_win.as_secs_f64() * 1e3,
+                t_nodes.as_secs_f64() * 1e3,
+                t.elapsed().as_secs_f64() * 1e3,
+                self.graph.cells.slot_capacity(),
+                window.len(),
+            );
+            eprintln!("MLS_PERF_SEEDS seeds={} window={}", n_seeds, window.len());
+        }
     }
 
     /// Replace the cylinder's voxels with the local map points, ignoring

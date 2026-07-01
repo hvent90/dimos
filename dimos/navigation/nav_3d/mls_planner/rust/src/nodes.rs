@@ -124,6 +124,8 @@ pub fn place_nodes_region(
     scratch: &mut NodeScratch,
     nodes: &mut Vec<NodeData>,
 ) {
+    let perf = crate::mls_planner::perf_on();
+    let t = std::time::Instant::now();
     let mut wall_seeds: Vec<CellId> = Vec::new();
     collect_wall_adjacent_in_window(
         cells,
@@ -133,8 +135,12 @@ pub fn place_nodes_region(
         window,
         &mut wall_seeds,
     );
+    let t_collect = t.elapsed();
+    let t = std::time::Instant::now();
     dijkstra_region(cells, &wall_seeds, window, wall_state, Weight::Base);
+    let t_dij = t.elapsed();
 
+    let t = std::time::Instant::now();
     nodes.retain(|n| cells.is_live(n.cell_id) && !window.contains(&n.cell_id));
     let kept: Vec<CellId> = nodes.iter().map(|n| n.cell_id).collect();
 
@@ -153,14 +159,18 @@ pub fn place_nodes_region(
         node_spacing_m,
         nodes,
     );
+    let t_nms = t.elapsed();
 
+    let t = std::time::Instant::now();
     let domain: Vec<CellId> = window
         .iter()
         .copied()
         .filter(|&id| cells.is_live(id))
         .collect();
     ensure_node_per_component(cells, &wall_state.dist, voxel_size, &domain, scratch, nodes);
+    let t_ensure = t.elapsed();
 
+    let t = std::time::Instant::now();
     apply_wall_safe_penalty_region(
         cells,
         &wall_state.dist,
@@ -171,6 +181,16 @@ pub fn place_nodes_region(
         window,
         scratch,
     );
+    if perf {
+        eprintln!(
+            "MLS_PERF_NODES collect={:.1} dijkstra={:.1} nms={:.1} ensure={:.1} penalty={:.1}",
+            t_collect.as_secs_f64() * 1e3,
+            t_dij.as_secs_f64() * 1e3,
+            t_nms.as_secs_f64() * 1e3,
+            t_ensure.as_secs_f64() * 1e3,
+            t.elapsed().as_secs_f64() * 1e3,
+        );
+    }
 }
 
 /// Wall-adjacency over a cell subset, matching collect_wall_adjacent_cells.
