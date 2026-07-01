@@ -23,5 +23,5 @@
 - [x] 4.1 Update targeted unit tests for renamed models, moved modules, constrained backend outputs, and removed contract descriptions.
 - [x] 4.2 Fix the md-babel docs snippet so executable docs no longer fail on missing imports.
 - [x] 4.3 Run targeted policy rollout tests, ruff, and OpenSpec validation.
-- [ ] 4.4 Commit and push the review cleanup.
+- [x] 4.4 Commit and push the review cleanup.
 - [ ] 4.5 Reply to addressed PR review comments and explicitly leave the image transport/performance question for separate design follow-up.
