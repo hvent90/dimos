@@ -27,7 +27,7 @@ from typing import Any
 
 from dimos.core.coordination.blueprints import autoconnect
 from dimos.core.global_config import global_config
-from dimos.simulation.unity.module import UnityBridgeModule
+from dimos.simulation.bridges.unity.module import UnityBridgeModule
 from dimos.visualization.vis_module import vis_module
 
 

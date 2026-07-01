@@ -37,7 +37,7 @@ import pytest
 from dimos.constants import DEFAULT_THREAD_JOIN_TIMEOUT
 from dimos.msgs.geometry_msgs.Twist import Twist
 from dimos.msgs.sensor_msgs.PointCloud2 import PointCloud2
-from dimos.simulation.unity.module import (
+from dimos.simulation.bridges.unity.module import (
     UnityBridgeConfig,
     UnityBridgeModule,
     _validate_platform,

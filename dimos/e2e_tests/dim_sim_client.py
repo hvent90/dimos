@@ -15,7 +15,7 @@
 from dimos.core.transport import LCMTransport
 from dimos.experimental.pimsim.spec.protocols import SceneControl
 from dimos.msgs.geometry_msgs.PoseStamped import PoseStamped
-from dimos.simulation.dimsim.scene_client import SceneClient
+from dimos.simulation.bridges.dimsim.scene_client import SceneClient
 
 
 class DimSimClient(SceneControl):

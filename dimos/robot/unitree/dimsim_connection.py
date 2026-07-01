@@ -29,7 +29,7 @@ from dimos.msgs.sensor_msgs.CameraInfo import CameraInfo
 from dimos.msgs.sensor_msgs.Image import Image
 from dimos.msgs.sensor_msgs.PointCloud2 import PointCloud2
 from dimos.protocol.tf.tf import LCMTF
-from dimos.simulation.dimsim.dimsim_process import DimSimProcess
+from dimos.simulation.bridges.dimsim.dimsim_process import DimSimProcess
 from dimos.utils.logging_config import setup_logger
 
 logger = setup_logger()
