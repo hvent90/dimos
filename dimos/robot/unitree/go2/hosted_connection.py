@@ -62,8 +62,11 @@ class Go2HostedConnectionConfig(ConnectionConfig):
 
 
 # Frame-embedded capture time for glass-to-glass latency, read back by the
-# operator (webrtc.js readLatencyStamp). B/W cells, MSB-first: SYNC then time.
-_STAMP_CELL_PX = 16
+# operator (webrtc.js readLatencyStamp). Encoded as B/W cells in a strip
+# APPENDED below the frame (video content untouched; operator reads then crops).
+# MSB-first: SYNC then time. Constants MUST match webrtc.js readLatencyStamp.
+_STAMP_CELL_PX = 16  # cell width — big enough to survive H.264 compression
+_STAMP_STRIP_PX = 16  # height of the appended timestamp band, in rows
 _STAMP_SYNC = (1, 0, 1, 0)  # both sides must agree
 _STAMP_TIME_BITS = 44  # ms since epoch (~41 bits) + headroom
 _STAMP_CELLS = len(_STAMP_SYNC) + _STAMP_TIME_BITS
@@ -151,7 +154,12 @@ class Go2HostedConnection(GO2Connection):
         )
 
     def _stamp(self, img: Image) -> Image:
-        """Paint capture time into the top-left corner as B/W cells (benchmark)."""
+        """Append a bottom strip encoding capture time as B/W cells (benchmark).
+
+        Rows are ADDED below the frame (height grows by ``_STAMP_STRIP_PX``), so
+        the video content is never overwritten — the operator reads the strip,
+        then crops it on display. No-op unless ``config.latency_stamp``.
+        """
         if not self.config.latency_stamp:
             return img
 
@@ -162,12 +170,16 @@ class Go2HostedConnection(GO2Connection):
 
         s = _STAMP_CELL_PX
         data = img.data
-        if data.ndim < 2 or data.shape[1] < _STAMP_CELLS * s or data.shape[0] < s:
+        if data.ndim < 2 or data.shape[1] < _STAMP_CELLS * s:
             return img
 
-        out = data.copy()
+        # Build the strip (black), paint cells across it, then stack below.
+        strip_shape = (_STAMP_STRIP_PX, data.shape[1], *data.shape[2:])
+        strip = np.zeros(strip_shape, dtype=data.dtype)
         for i, bit in enumerate(bits):
-            out[0:s, i * s : (i + 1) * s] = 255 if bit else 0
+            if bit:
+                strip[:, i * s : (i + 1) * s] = 255
+        out = np.vstack([data, strip])
         return Image(data=out, format=img.format, frame_id=img.frame_id)
 
     def _set_cam_selection(self, cams: list[str]) -> None:
