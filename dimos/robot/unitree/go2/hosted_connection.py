@@ -144,7 +144,9 @@ class Go2HostedConnection(GO2Connection):
             tiles.append(
                 cv2.resize(im.data, (int(w * target_h / h), target_h)) if h != target_h else im.data
             )
-        return self._stamp(Image(data=np.hstack(tiles), format=imgs[0].format, frame_id="camera_mux"))
+        return self._stamp(
+            Image(data=np.hstack(tiles), format=imgs[0].format, frame_id="camera_mux")
+        )
 
     def _stamp(self, img: Image) -> Image:
         """Paint capture time into the top-left corner as B/W cells (benchmark)."""

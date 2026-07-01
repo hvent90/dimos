@@ -208,9 +208,7 @@ class VideoStats(Timestamped):
             and math.isclose(self.decode_ms, other.decode_ms, rel_tol=1e-4, abs_tol=1e-5)
             and self.frames_dropped == other.frames_dropped
             and self.freezes == other.freezes
-            and math.isclose(
-                self.e2e_latency_ms, other.e2e_latency_ms, rel_tol=1e-4, abs_tol=1e-5
-            )
+            and math.isclose(self.e2e_latency_ms, other.e2e_latency_ms, rel_tol=1e-4, abs_tol=1e-5)
         )
 
 
