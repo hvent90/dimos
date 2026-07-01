@@ -202,12 +202,14 @@ fn collect_wall_adjacent_in_window(
     window: &AHashSet<CellId>,
     out: &mut Vec<CellId>,
 ) {
-    out.clear();
-    for &id in window {
-        if cells.is_live(id) && real_wall_adjacent(cells, by_col, id, clearance_cells, step_cells) {
-            out.push(id);
-        }
-    }
+    let win: Vec<CellId> = window.iter().copied().collect();
+    *out = win
+        .par_iter()
+        .filter(|&&id| {
+            cells.is_live(id) && real_wall_adjacent(cells, by_col, id, clearance_cells, step_cells)
+        })
+        .copied()
+        .collect();
 }
 
 /// Empty columns a gap may span before it counts as a real edge, not a hole.
@@ -286,23 +288,32 @@ fn apply_wall_safe_penalty_region(
     // The window and its boundary, deduped via a dense mask reset only over the
     // cells it touched rather than reallocated across the whole map per frame.
     scratch.ensure_capacity(cells.slot_capacity());
-    let seen = &mut scratch.seen;
     let mut affected: Vec<CellId> = Vec::with_capacity(window.len() * 2);
-    for &w in window {
-        if !seen[w as usize] {
-            seen[w as usize] = true;
-            affected.push(w);
-        }
-        for e in cells.neighbors(w) {
-            if !seen[e.dest as usize] {
-                seen[e.dest as usize] = true;
-                affected.push(e.dest);
+    {
+        let seen = &mut scratch.seen;
+        for &w in window {
+            if !seen[w as usize] {
+                seen[w as usize] = true;
+                affected.push(w);
+            }
+            for e in cells.neighbors(w) {
+                if !seen[e.dest as usize] {
+                    seen[e.dest as usize] = true;
+                    affected.push(e.dest);
+                }
             }
         }
     }
-    for &id in &affected {
+    // Rescale the affected cells in parallel. iter_edges_mut yields disjoint
+    // edge lists, so writing them concurrently is sound.
+    let seen = &scratch.seen;
+    let subset: Vec<(CellId, &mut Vec<Edge>)> = cells
+        .iter_edges_mut()
+        .filter(|(id, _)| seen[*id as usize])
+        .collect();
+    subset.into_par_iter().for_each(|(id, edges)| {
         scale_edges(
-            cells.edges_mut(id),
+            edges,
             id,
             dist,
             clearance_m,
@@ -310,7 +321,7 @@ fn apply_wall_safe_penalty_region(
             buffer_weight,
             step_weight,
         );
-    }
+    });
     for &id in &affected {
         scratch.seen[id as usize] = false;
     }
@@ -325,12 +336,12 @@ fn collect_wall_adjacent_cells(
     step_cells: i32,
     out: &mut Vec<CellId>,
 ) {
-    out.clear();
-    for id in cells.ids() {
-        if real_wall_adjacent(cells, by_col, id, clearance_cells, step_cells) {
-            out.push(id);
-        }
-    }
+    let ids: Vec<CellId> = cells.ids().collect();
+    *out = ids
+        .par_iter()
+        .filter(|&&id| real_wall_adjacent(cells, by_col, id, clearance_cells, step_cells))
+        .copied()
+        .collect();
     if out.is_empty() {
         if let Some(c) = cells.ids().next() {
             out.push(c);
