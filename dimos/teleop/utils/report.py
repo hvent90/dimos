@@ -62,10 +62,11 @@ _STREAM_TYPES = {
 
 
 def generate_report(db_path: Path, out_dir: Path | None = None) -> Path:
-    """Write ``report.json`` for the recording at *db_path*.
+    """Write ``report_<ts>.json`` for the recording at *db_path*.
 
-    Output lands in *out_dir* if given, else next to the .db. Returns the
-    written report.json path. Raises if the .db is missing or unreadable.
+    Named after the .db stem so runs don't clobber. Output lands in *out_dir*
+    if given, else next to the .db. Returns the written path. Raises if the .db
+    is missing or unreadable.
     """
     if not db_path.exists():
         raise FileNotFoundError(f"Recording not found: {db_path}")
@@ -97,7 +98,11 @@ def generate_report(db_path: Path, out_dir: Path | None = None) -> Path:
         "video": video_summary,
     }
 
-    report_path = out_dir / "report.json"
+    # Name the report after the .db stem so runs don't clobber and the pair
+    # stays together: recording_teleop_<ts>.db → report_<ts>.json.
+    suffix = db_path.stem.replace("recording_teleop", "").replace("recording", "").lstrip("_")
+    report_name = f"report_{suffix}.json" if suffix else "report.json"
+    report_path = out_dir / report_name
     report_path.write_text(json.dumps(report, indent=2, sort_keys=True))
     logger.info("Report written to %s", report_path)
     return report_path
