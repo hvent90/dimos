@@ -12,20 +12,6 @@
 # See the License for the specific language governing permissions and
 # limitations under the License.
 
-"""Shared control naming conventions for manipulator blueprints."""
+from dimos.control.tasks.eef_twist_task.eef_twist_task import EEFTwistTask, EEFTwistTaskConfig
 
-from __future__ import annotations
-
-from typing import TypeAlias
-
-FrameId: TypeAlias = str
-TaskName: TypeAlias = str
-
-COORDINATOR_FRAME_ID: FrameId = "coordinator"
-CARTESIAN_IK_TASK_NAME: TaskName = "cartesian_ik_arm"
-EEF_TWIST_TASK_NAME: TaskName = "eef_twist_arm"
-DEFAULT_TRAJECTORY_TASK_NAME: TaskName = "traj_arm"
-
-
-def trajectory_task_name(hardware_id: str) -> TaskName:
-    return f"traj_{hardware_id}"
+__all__ = ["EEFTwistTask", "EEFTwistTaskConfig"]

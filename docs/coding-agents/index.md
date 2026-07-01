@@ -9,3 +9,7 @@
 │   ├── doclinks.md
 │   └── index.md
 └── index.md
+
+## Control and Teleop Boundary
+
+For manipulator keyboard teleop, keep keyboard modules as input devices: they should publish routed spatial EEF twist intent only. Robot state, FK, IK, workspace/safety checks, target integration, and timeouts belong in coordinator tasks such as `EEFTwistTask`.
