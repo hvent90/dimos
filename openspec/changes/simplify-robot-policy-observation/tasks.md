@@ -24,4 +24,4 @@
 - [x] 4.2 Fix the md-babel docs snippet so executable docs no longer fail on missing imports.
 - [x] 4.3 Run targeted policy rollout tests, ruff, and OpenSpec validation.
 - [x] 4.4 Commit and push the review cleanup.
-- [ ] 4.5 Reply to addressed PR review comments and explicitly leave the image transport/performance question for separate design follow-up.
+- [x] 4.5 Reply to addressed PR review comments and explicitly leave the image transport/performance question for separate design follow-up.
