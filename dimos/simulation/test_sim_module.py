@@ -21,7 +21,7 @@ import pytest
 
 mujoco = pytest.importorskip("mujoco")
 
-from dimos.simulation.engines.mujoco_sim_module import (
+from dimos.simulation.sim_module import (
     MujocoSimModule,
     MujocoSimModuleConfig,
     _find_sensor_slice,

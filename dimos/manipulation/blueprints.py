@@ -323,7 +323,7 @@ xarm_perception_agent = autoconnect(
 # ShmMujocoAdapter attaches to the same SHM buffers by MJCF path.
 
 from dimos.robot.catalog.ufactory import XARM7_SIM_PATH
-from dimos.simulation.engines.mujoco_sim_module import MujocoSimModule
+from dimos.simulation.sim_module import MujocoSimModule
 from dimos.visualization.rerun.bridge import RerunBridgeModule
 
 _xarm7_sim_cfg = _catalog_xarm7(

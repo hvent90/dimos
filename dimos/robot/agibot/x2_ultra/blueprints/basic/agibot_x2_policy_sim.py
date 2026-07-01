@@ -44,7 +44,7 @@ from dimos.simulation.backend.mujoco.robot_sim_binding import (
     RobotSimSpec,
     mjcf_joint_names_from_hardware,
 )
-from dimos.simulation.engines.mujoco_sim_module import MujocoSimModule
+from dimos.simulation.sim_module import MujocoSimModule
 from dimos.utils.data import LfsPath
 from dimos.visualization.babylon_scene_viewer import BabylonSceneViewerModule
 

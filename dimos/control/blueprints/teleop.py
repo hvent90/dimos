@@ -49,7 +49,7 @@ from dimos.robot.catalog.ufactory import (
     xarm6 as _catalog_xarm6,
     xarm7 as _catalog_xarm7,
 )
-from dimos.simulation.engines.mujoco_sim_module import MujocoSimModule
+from dimos.simulation.sim_module import MujocoSimModule
 from dimos.teleop.quest.quest_types import Buttons
 
 _is_sim = global_config.simulation

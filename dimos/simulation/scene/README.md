@@ -225,7 +225,7 @@ new code should not use it.
 Blueprint-side wiring:
 
 ```python
-from dimos.simulation.engines.mujoco_sim_module import MujocoSimModule
+from dimos.simulation.sim_module import MujocoSimModule
 from dimos.simulation.scene.catalog import resolve_scene_package
 
 pkg = resolve_scene_package("dimos-office")

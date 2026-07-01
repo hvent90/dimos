@@ -337,7 +337,7 @@ def _select_backend() -> _BackendSelection:
         RobotSimSpec,
         mjcf_joint_names_from_hardware,
     )
-    from dimos.simulation.engines.mujoco_sim_module import MujocoSimModule
+    from dimos.simulation.sim_module import MujocoSimModule
 
     g1_model_joints = mjcf_joint_names_from_hardware(tuple(g1_joints))
     g1_sim_spec = RobotSimSpec(
