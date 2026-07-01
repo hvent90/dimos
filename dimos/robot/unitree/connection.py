@@ -350,23 +350,12 @@ class UnitreeWebRTCConnection(Resource):
 
         # Settle both directions — FSM transition needs time before SwitchJoystick.
         time.sleep(2.0)
-        joy_ok = bool(
+        return bool(
             self.publish_request(
                 RTC_TOPIC["SPORT_MOD"],
                 {"api_id": SPORT_CMD["SwitchJoystick"], "parameter": {"data": enable}},
             )
         )
-        if joy_ok and not enable:
-            # SwitchJoystick(False) leaves the robot in a static standup posture.
-            # Nudge back into drive-ready: BalanceStand alone isn't enough on
-            # real hardware; RecoveryStand reliably lands the FSM there.
-            time.sleep(0.5)
-            self.balance_stand()
-            time.sleep(0.3)
-            self.publish_request(
-                RTC_TOPIC["SPORT_MOD"], {"api_id": SPORT_CMD["RecoveryStand"]}
-            )
-        return joy_ok
 
     def liedown(self) -> bool:
         return bool(
