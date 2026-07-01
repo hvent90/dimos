@@ -46,8 +46,9 @@ def _bare_connection() -> Go2HostedConnection:
 
 
 def _twist(ts: float) -> Any:
-    return SimpleNamespace(ts=ts, linear=SimpleNamespace(x=0, y=0, z=0),
-                           angular=SimpleNamespace(x=0, y=0, z=0))
+    return SimpleNamespace(
+        ts=ts, linear=SimpleNamespace(x=0, y=0, z=0), angular=SimpleNamespace(x=0, y=0, z=0)
+    )
 
 
 # ─── sport-command allow-list ────────────────────────────────────────
@@ -112,7 +113,7 @@ def test_move_drops_out_of_order_cmd() -> None:
     conn = _bare_connection()
     now = time.time()
     conn._last_cmd_ts = now
-    assert conn.move(_twist(now)) is False        # equal → drop
+    assert conn.move(_twist(now)) is False  # equal → drop
     assert conn.move(_twist(now - 0.1)) is False  # older → drop
 
 
