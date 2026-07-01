@@ -64,23 +64,23 @@ class Go2HostedConnection(GO2Connection):
 
     config: Go2HostedConnectionConfig
 
-    state_json: In[bytes]  # operator → robot control JSON (state_reliable)
-    cmd_raw: In[bytes]  # operator → robot command bytes (stats tap)
-    video_stats: Out[VideoStats]  # operator video health, for recorders
-    telemetry_out: Out[bytes]  # robot → operator telemetry + acks (state_reliable_back)
-    cam2_in: In[Image]  # extra camera (RealSense) for the mux
-    mux_image: Out[Image]  # composited cam1(Go2)+cam2 → video transport
+    state_json: In[bytes]
+    cmd_raw: In[bytes]
+    video_stats: Out[VideoStats]
+    telemetry_out: Out[bytes]
+    cam2_in: In[Image]
+    mux_image: Out[Image]
 
     def __init__(self, **kwargs: Any) -> None:
         super().__init__(**kwargs)
         self._cmd_stats = LiveStreamStats()
         self._telemetry_thread: threading.Thread | None = None
         self._stop_event = threading.Event()
-        self._rage_active = False  # tracks firmware Rage Mode (speed bar)
-        self._last_cmd_ts = 0.0  # newest cmd_vel ts seen (drops out-of-order)
+        self._rage_active = False
+        self._last_cmd_ts = 0.0
         self._cam_lock = threading.Lock()
-        self._cam_frames: dict[str, Image] = {}  # "cam1"/"cam2" → latest frame
-        self._cam_selected = ["cam1"]  # operator tab selection
+        self._cam_frames: dict[str, Image] = {}
+        self._cam_selected = ["cam1"]
 
     @rpc
     def start(self) -> None:
@@ -281,12 +281,15 @@ class Go2HostedConnection(GO2Connection):
         threading.Thread(target=runner, daemon=True, name="Go2ObstacleAvoid").start()
 
     def _send_ack(self, nonce: Any, ok: bool) -> None:
+        # Best-effort: the ack rides state_reliable_back, which doesn't exist
+        # while no operator is connected — a dropped ack there is expected, but
+        # a failure once connected means the operator's button spins, so warn.
         try:
             self.telemetry_out.publish(
                 json.dumps({"type": "cmd_ack", "nonce": nonce, "ok": ok}).encode()
             )
         except Exception:
-            logger.debug("cmd_ack publish failed", exc_info=True)
+            logger.warning("cmd_ack publish failed", exc_info=True)
 
     # ─── Command-plane health (robot → operator) ─────────────────────
 
@@ -339,6 +342,9 @@ class Go2HostedConnection(GO2Connection):
                             "robot_ts": time.time(),
                         }
                     )
+                    # debug (not warning): this fires at telemetry_hz with no
+                    # operator connected, so a failed publish here is the norm
+                    # and would flood the log at a higher level.
                     try:
                         self.telemetry_out.publish(payload.encode())
                     except Exception:

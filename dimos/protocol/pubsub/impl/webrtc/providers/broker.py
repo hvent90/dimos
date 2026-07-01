@@ -389,6 +389,8 @@ class BrokerProvider(AsyncProviderBase):
     def publish(self, topic: str, data: bytes) -> None:
         """Robot → operator. Only outbound channels are publishable; messages
         drop while no operator is connected (the channel doesn't exist yet)."""
+        from aiortc.exceptions import InvalidStateError
+
         if topic not in self.OUTBOUND_CHANNELS:
             raise ValueError(
                 f"Robot can only publish on {self.OUTBOUND_CHANNELS}; "
@@ -407,14 +409,19 @@ class BrokerProvider(AsyncProviderBase):
                 return
             self._dropped_publish_warned = False
 
-            # Recheck readyState on the loop thread — channel can close
-            # between here and the tick; ch.send on a closed channel raises.
-            def _send_safe(c=ch, d=data) -> None:
-                if c.readyState == "open":
-                    try:
-                        c.send(d)
-                    except Exception:
-                        logger.debug("publish dropped: send raised", exc_info=True)
+            # Recheck readyState on the loop thread — the channel can close
+            # between here and the tick; aiortc's send() raises InvalidStateError
+            # on a closed channel. Best-effort: a lost publish to a just-closed
+            # operator channel is expected on disconnect, so warn (not raise).
+            channel: RTCDataChannel = ch  # narrowed non-None above; capture for the closure
+
+            def _send_safe() -> None:
+                if channel.readyState != "open":
+                    return
+                try:
+                    channel.send(data)
+                except InvalidStateError:
+                    logger.warning("Dropping %s publish: channel closed mid-send", topic)
 
             self._loop.call_soon_threadsafe(_send_safe)
 

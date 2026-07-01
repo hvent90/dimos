@@ -44,38 +44,6 @@ def pcts(values: Sequence[float]) -> dict[str, float] | None:
     }
 
 
-# Loss / reorder helpers — kept for when command loss gets wired (needs a
-# send-count). Not used by snapshot() currently.
-def loss_pct(seqs: Sequence[int]) -> float | None:
-    """Loss % from gaps in a monotonic sequence; None if fewer than 2 seqs.
-
-    ``loss = 1 - distinct_received / (max_seq - min_seq + 1)``. Reorders and
-    duplicates don't inflate it — only genuinely missing seq values count.
-    Tail loss (packets after the last one seen) is invisible: we can only
-    measure gaps inside the observed ``[min, max]`` range.
-    """
-    valid = [s for s in seqs if s is not None]
-    if len(valid) < 2:
-        return None
-    expected = max(valid) - min(valid) + 1
-    received = len(set(valid))
-    return max(0.0, (1.0 - received / expected) * 100.0)
-
-
-def reorder_count(seqs: Sequence[int]) -> int:
-    """Count messages that arrived with a seq below an already-seen maximum."""
-    count = 0
-    running_max = -1
-    for s in seqs:
-        if s is None:
-            continue
-        if s < running_max:
-            count += 1
-        else:
-            running_max = s
-    return count
-
-
 class LiveStreamStats:
     """Rolling-window health of an inbound stream, for forwarding to a remote HUD.
 
@@ -122,4 +90,4 @@ class LiveStreamStats:
         }
 
 
-__all__ = ["LiveStreamStats", "loss_pct", "pcts", "reorder_count"]
+__all__ = ["LiveStreamStats", "pcts"]
