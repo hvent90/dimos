@@ -215,7 +215,11 @@ class Go2HostedConnection(GO2Connection):
         threading.Thread(target=runner, daemon=True, name=f"Go2SportCmd-{name}").start()
 
     def _stand_ready(self, nonce: Any) -> None:
-        """Standup → settle → BalanceStand (drive-ready). Acks when balanced."""
+        """Standup → settle → BalanceStand → RecoveryStand (drive-ready).
+
+        BalanceStand alone doesn't always leave the FSM accepting velocity
+        after transitions from Sit / Rage / StandDown; RecoveryStand does.
+        """
 
         def runner() -> None:
             ok = False
@@ -223,6 +227,8 @@ class Go2HostedConnection(GO2Connection):
                 self.connection.standup()
                 time.sleep(3.0)  # standup must finish before balance_stand
                 self.connection.balance_stand()
+                time.sleep(0.3)
+                self.connection.sport_command(ALLOWED_SPORT_CMDS["RecoveryStand"])
                 ok = True
             except Exception:
                 logger.exception("StandReady failed")
