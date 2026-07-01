@@ -400,7 +400,15 @@ async def list_sessions(
     db: AsyncSession = Depends(get_db),
 ):
     """List available robots (active sessions) the caller owns."""
-    q = select(TeleopSession).where(TeleopSession.state.in_(["idle", "active"]))
+    # Hide sessions whose heartbeat has gone stale — the reaper runs at
+    # ROBOT_HEARTBEAT_TIMEOUT_SEC / OP_REAPER_INTERVAL_SEC cadence, but
+    # filtering here closes the window between silence and disconnected state.
+    fresh = datetime.now(timezone.utc) - timedelta(seconds=ROBOT_HEARTBEAT_TIMEOUT_SEC)
+    q = select(TeleopSession).where(
+        TeleopSession.state.in_(["idle", "active"]),
+        TeleopSession.last_heartbeat.is_not(None),
+        TeleopSession.last_heartbeat >= fresh,
+    )
     if user.get("role") != "admin":
         q = q.where(TeleopSession.owner_id == user["sub"])
     result = await db.execute(q)
@@ -473,6 +481,12 @@ async def join_session(
     session = await db.get(TeleopSession, session_id)
     if not session or session.state == "disconnected" or not _owns(session, user):
         raise HTTPException(status_code=404, detail="Session not found")
+    # Refuse a stale robot even if the reaper hasn't caught up yet.
+    if session.last_heartbeat is None or (
+        datetime.now(timezone.utc) - session.last_heartbeat
+        > timedelta(seconds=ROBOT_HEARTBEAT_TIMEOUT_SEC)
+    ):
+        raise HTTPException(status_code=404, detail="Robot heartbeat stale — reconnect required")
 
     user_id = user["sub"]
 
