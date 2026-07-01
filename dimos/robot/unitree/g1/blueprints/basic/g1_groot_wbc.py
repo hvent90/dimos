@@ -104,7 +104,7 @@ _RAYTRACE_EXECUTABLE_PATH = (
     _REPO_ROOT / "dimos/mapping/ray_tracing/rust/target/release/voxel_ray_tracing"
 )
 _SCENE_LIDAR_EXECUTABLE_PATH = (
-    _REPO_ROOT / "dimos/experimental/pimsim/sensors/rust/scene_lidar/target/release/scene_lidar"
+    _REPO_ROOT / "dimos/simulation/sensors/rust/scene_lidar/target/release/scene_lidar"
 )
 
 
@@ -524,7 +524,7 @@ def _sim_support_blueprints() -> tuple[Blueprint, ...]:
 
     lidar_stack: tuple[Blueprint, ...] = ()
     if native_scene_lidar_enabled:
-        from dimos.experimental.pimsim.sensors.scene_lidar import SceneLidarModule
+        from dimos.simulation.sensors.scene_lidar import SceneLidarModule
 
         assert scene_package is not None
         lidar_stack = (
@@ -854,7 +854,7 @@ def _splat_camera_blueprint() -> Blueprint | None:
         return None
     splat_ply, runtime_alignment_yaml = assets
 
-    from dimos.experimental.pimsim.sensors.splat_camera import SplatCameraModule
+    from dimos.simulation.sensors.splat_camera import SplatCameraModule
     from dimos.visualization.viser.camera import g1_d435_default, g1_d435_forward
 
     # Use the C++ Metal kernel by default (~2x perf, monkey-patched to drop
@@ -907,7 +907,7 @@ def _splat_workspace_camera_blueprint() -> Blueprint | None:
         return None
     splat_ply, runtime_alignment_yaml = assets
 
-    from dimos.experimental.pimsim.sensors.splat_camera import WorkspaceSplatCameraModule
+    from dimos.simulation.sensors.splat_camera import WorkspaceSplatCameraModule
     from dimos.visualization.viser.camera import g1_d435_default
 
     os.environ.setdefault("DIMOS_MLX_RASTERIZER", "cpp")

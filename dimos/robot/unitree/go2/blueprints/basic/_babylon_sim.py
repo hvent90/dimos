@@ -238,7 +238,7 @@ def go2_scene_lidar_blueprint() -> Blueprint | None:
     if not _env_bool("DIMOS_ENABLE_NATIVE_SCENE_LIDAR", True):
         return None
 
-    from dimos.experimental.pimsim.sensors.scene_lidar import SceneLidarModule
+    from dimos.simulation.sensors.scene_lidar import SceneLidarModule
 
     return SceneLidarModule.blueprint(
         scene_metadata_path=str(scene_package.metadata_path),
