@@ -47,6 +47,8 @@ from collections import defaultdict
 from collections.abc import Callable
 import contextlib
 import importlib.util
+import json
+import time
 from typing import TYPE_CHECKING, Any
 
 from dimos.protocol.pubsub.impl.webrtc.providers.spec import (
@@ -304,6 +306,8 @@ class LiveKitBrokerProvider(AsyncProviderBase):
         payload = getattr(packet, "data", b"")
         if isinstance(payload, (bytearray, memoryview)):
             payload = bytes(payload)
+        if topic == "state_reliable":
+            self._maybe_answer_ping(payload)
         with self._lock:
             callbacks = list(self._callbacks.get(topic, ()))
         for cb in callbacks:
@@ -311,6 +315,31 @@ class LiveKitBrokerProvider(AsyncProviderBase):
                 cb(payload, topic)
             except Exception:
                 logger.exception("LiveKit subscriber callback error")
+
+    def _maybe_answer_ping(self, payload: bytes) -> None:
+        """Answer the operator's clock-sync ping inline on the loop thread.
+
+        Mirrors BrokerProvider._maybe_answer_ping so LiveKit robots produce
+        the same {client_ts, robot_ts} pong on state_reliable_back — without
+        this the operator's RTT/offset never converge.
+        """
+        if not payload.startswith(b"{"):
+            return
+        try:
+            msg = json.loads(payload)
+        except ValueError:
+            return
+        if msg.get("type") != "ping" or msg.get("client_ts") is None:
+            return
+        pong = json.dumps(
+            {"type": "pong", "client_ts": msg["client_ts"], "robot_ts": time.time()}
+        ).encode()
+        if self._room is None or self._loop is None:
+            return
+        coro = self._room.local_participant.publish_data(
+            pong, reliable=True, topic="state_reliable_back"
+        )
+        asyncio.run_coroutine_threadsafe(coro, self._loop)
 
     # ─── Public API (Provider) ───────────────────────────────────────
 
