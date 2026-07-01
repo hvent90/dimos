@@ -29,12 +29,15 @@ Keyboard controls:
 
 import os
 import threading
-from typing import Any, Protocol
+from typing import Any
 
 try:
     import pygame  # type: ignore[import-not-found]
-except ImportError:
-    pygame = None  # type: ignore[assignment]
+    from pygame.key import ScancodeWrapper  # type: ignore[attr-defined, import-not-found]
+except ImportError as exc:
+    raise ImportError(
+        "pygame is required for keyboard teleop. Install it with: pip install pygame"
+    ) from exc
 
 from dimos.constants import DEFAULT_THREAD_JOIN_TIMEOUT
 from dimos.core.core import rpc
@@ -54,10 +57,6 @@ LINEAR_SPEED = 0.05  # m/s
 ANGULAR_SPEED = 0.5  # rad/s
 
 TwistVector = tuple[float, float, float]
-
-
-class KeyState(Protocol):
-    def __getitem__(self, key: int) -> bool: ...
 
 
 class KeyboardTeleopConfig(ModuleConfig):
@@ -84,9 +83,6 @@ class KeyboardTeleopModule(Module):
     @rpc
     def start(self) -> None:
         super().start()
-        if pygame is None:
-            raise ImportError("pygame not installed. Install with: pip install pygame")
-
         self._stop_event.clear()
         self._thread = threading.Thread(target=self._pygame_loop, daemon=True)
         self._thread.start()
@@ -99,7 +95,6 @@ class KeyboardTeleopModule(Module):
         super().stop()
 
     def _pygame_loop(self) -> None:
-        assert pygame is not None
         task_name = self.config.task_name
 
         pygame.init()
@@ -183,8 +178,7 @@ class KeyboardTeleopModule(Module):
         )
 
 
-def _twist_from_keys(keys: KeyState) -> tuple[TwistVector, TwistVector]:
-    assert pygame is not None
+def _twist_from_keys(keys: ScancodeWrapper) -> tuple[TwistVector, TwistVector]:
     linear = [0.0, 0.0, 0.0]
     angular = [0.0, 0.0, 0.0]
     bindings = {
