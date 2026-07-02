@@ -166,7 +166,9 @@ def joint_state_to_ordered_positions(
             if resolved_name not in joint_name_set:
                 raise ValueError(f"Unknown global joint name: {name}")
         else:
-            raise ValueError(f"Unrecognized joint name '{name}': not a known local name, not in joint_name_mapping, and not a global name")
+            raise ValueError(
+                f"Unrecognized joint name '{name}': not a known local name, not in joint_name_mapping, and not a global name"
+            )
 
         if resolved_name in name_to_pos:
             raise ValueError(f"JointState resolves duplicate joint '{resolved_name}'")
