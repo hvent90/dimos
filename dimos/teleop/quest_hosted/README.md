@@ -101,12 +101,12 @@ the call sites but the *why* lives here:
 
 ## Reconnect
 
-Operator-side reconnect is handled in the broker (`fix3/reconnection`) — it
-closes the stale `state_reliable_back` push (CF `datachannels/close`, not in
-prose docs but in the OpenAPI spec) before re-pushing. CF does **not** auto-reap
-datachannel pushes (the 30s GC is media-only), so without that close, the long-
-lived robot session accumulates half-dead pushes and the second bridge 502s
-with `repeated_local_track_error`.
+Operator-side reconnect is handled in the broker — it closes the stale
+`state_reliable_back` push (CF `datachannels/close`, not in prose docs but in
+the OpenAPI spec) before re-pushing. CF does **not** auto-reap datachannel
+pushes (the 30s GC is media-only), so without that close, the long-lived robot
+session accumulates half-dead pushes and the second bridge 502s with
+`repeated_local_track_error`.
 
-Robot-side auto-redial (R2b in the roadmap) is not yet implemented and is
-gated behind TURN landing first.
+Robot-side auto-redial is not yet implemented and is gated behind TURN
+landing first.

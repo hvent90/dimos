@@ -237,17 +237,16 @@ class Go2HostedConnection(GO2Connection, HostedConnectionMixin):
         dedicated thread: a stop must never wait behind a 3s StandReady.
         """
 
-        # E-STOP latch: only urgent work (Damp itself) may run while latched;
-        # estop_clear is handled upstream and never reaches here.
+        # E-STOP latch: only urgent work (Damp itself) may run while latched.
         if self._estopped and not urgent:
             logger.warning("%s rejected: E-STOP latched", label)
             self._send_ack(nonce, False)
             return
 
-        # Nonce dedup (B2): a duplicate of a finished command re-acks its
-        # result; a duplicate of an in-flight command is dropped (the original
-        # will ack). Transient rejections below UNWIND the reservation so a
-        # genuine retry can still execute.
+        # Nonce dedup: a duplicate of a finished command re-acks its result;
+        # a duplicate of an in-flight one is dropped (the original will ack).
+        # Transient rejections below unwind the reservation so a genuine
+        # retry can still execute.
         if nonce is not None:
             now = time.monotonic()
             with self._cmd_lock:
