@@ -74,4 +74,8 @@ def g1_arm_trajectory_task(side: str, priority: int = G1_ARM_TRAJECTORY_PRIORITY
         type="trajectory",
         joint_names=_g1_arm_coordinator_joints(side),
         priority=priority,
+        # Without this the servo hold reclaims the arm the tick after a
+        # trajectory finishes and snaps it back to the default pose.
+        # reset() (or a new trajectory) releases the hold.
+        params={"hold_on_complete": True},
     )
