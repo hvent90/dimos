@@ -27,6 +27,7 @@ from dimos.navigation.nav_3d.mls_planner.goal_relay import GoalRelay
 from dimos.navigation.nav_3d.mls_planner.mls_planner_native import MLSPlannerNative
 from dimos.robot.unitree.go2.blueprints.basic.unitree_go2_basic import rerun_config
 from dimos.robot.unitree.go2.connection import GO2Connection
+from dimos.robot.unitree.go2.go2_mid360_static_transforms import Go2Mid360StaticTf
 from dimos.visualization.vis_module import vis_module
 
 voxel_size = 0.08
@@ -91,7 +92,9 @@ unitree_go2_nav_3d = autoconnect(
             (GO2Connection, "odom", "odom_go2"),
         ]
     ),
-    PointLio.blueprint(body_frame_id="body"),
+    PointLio.blueprint(),
+    # Publishes the rig's mount frames onto tf.
+    Go2Mid360StaticTf.blueprint(),
     RayTracingVoxelMap.blueprint(
         voxel_size=voxel_size,
         emit_every=1,

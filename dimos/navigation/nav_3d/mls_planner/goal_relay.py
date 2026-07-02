@@ -25,11 +25,14 @@ from dimos.msgs.nav_msgs.Odometry import Odometry
 
 
 class GoalRelayConfig(ModuleConfig):
-    pass
+    base_frame: str = "base_link"
 
 
 class GoalRelay(Module):
-    """Adapt odometry and goal points to the planner's PoseStamped inputs."""
+    """Adapt odometry and goal points to the planner's PoseStamped inputs.
+
+    Odometry is corrected to the robot base frame via tf.
+    """
 
     config: GoalRelayConfig
 
@@ -46,7 +49,10 @@ class GoalRelay(Module):
         self.register_disposable(Disposable(self.goal.subscribe(self._on_goal)))
 
     def _on_odometry(self, msg: Odometry) -> None:
-        self.start_pose.publish(msg.to_pose_stamped())
+        base = self.tf.get(msg.frame_id, self.config.base_frame, msg.ts, 1.0)
+        if base is None:
+            return
+        self.start_pose.publish(base.to_pose(ts=msg.ts))
 
     def _on_goal(self, point: PointStamped) -> None:
         self.goal_pose.publish(point.to_pose_stamped())

@@ -28,6 +28,7 @@ import os
 import time
 from typing import TYPE_CHECKING, Literal
 
+import numpy as np
 from pydantic import Field
 from reactivex.disposable import Disposable
 
@@ -147,6 +148,7 @@ class FastLio2(NativeModule, perception.Lidar, perception.Odometry):
         )
 
     def _on_odom_for_tf(self, msg: Odometry) -> None:
+        ts = msg.ts or time.time()
         self.tf.publish(
             Transform(
                 frame_id=self.frame_id,
@@ -162,8 +164,18 @@ class FastLio2(NativeModule, perception.Lidar, perception.Odometry):
                     msg.pose.orientation.z,
                     msg.pose.orientation.w,
                 ),
-                ts=msg.ts or time.time(),
-            )
+                ts=ts,
+            ),
+            # The IMU-to-lidar extrinsic.
+            Transform(
+                frame_id=self.config.child_frame_id,
+                child_frame_id=self.config.sensor_frame_id,
+                translation=Vector3(*self.config.extrinsic_t),
+                rotation=Quaternion.from_rotation_matrix(
+                    np.asarray(self.config.extrinsic_r).reshape(3, 3)
+                ),
+                ts=ts,
+            ),
         )
 
     @rpc

@@ -40,6 +40,7 @@ logger = setup_logger()
 
 
 class BasicPathFollowerConfig(ModuleConfig):
+    base_frame: str = "base_link"
     speed: float = 0.5
     control_frequency: float = 10.0
     goal_tolerance: float = 0.3
@@ -98,8 +99,12 @@ class BasicPathFollower(Module):
         super().stop()
 
     def _on_odometry(self, msg: Odometry) -> None:
+        # Steer from the robot base pose, not the LIO body frame.
+        base = self.tf.get(msg.frame_id, self.config.base_frame, msg.ts, 1.0)
+        if base is None:
+            return
         with self._lock:
-            self._current_odom = msg.to_pose_stamped()
+            self._current_odom = base.to_pose(ts=msg.ts)
 
     def _on_path(self, path: Path) -> None:
         # The planner owns path safety: it sends the route as far as it is safe,

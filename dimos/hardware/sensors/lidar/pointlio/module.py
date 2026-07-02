@@ -34,6 +34,7 @@ from __future__ import annotations
 import os
 from typing import TYPE_CHECKING, Literal
 
+import numpy as np
 from pydantic import Field
 from reactivex.disposable import Disposable
 
@@ -201,7 +202,17 @@ class PointLio(NativeModule, perception.Lidar, perception.Odometry):
                 # Match the odometry ts exactly; no `or time.time()` fallback (a
                 # real ts of 0.0 must not become wall time).
                 ts=msg.ts,
-            )
+            ),
+            # The IMU-to-lidar extrinsic.
+            Transform(
+                frame_id=self.config.child_frame_id,
+                child_frame_id=self.config.sensor_frame_id,
+                translation=Vector3(*self.config.extrinsic_t),
+                rotation=Quaternion.from_rotation_matrix(
+                    np.asarray(self.config.extrinsic_r).reshape(3, 3)
+                ),
+                ts=msg.ts,
+            ),
         )
 
     @rpc
