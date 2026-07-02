@@ -133,7 +133,10 @@ tracked separately.)
   entry); restrict 22 to an admin CIDR var (or SSM Session Manager and drop
   22). Change `config.py` default to `127.0.0.1`.
 
-### C2. Rate limiting — `M` **P1** (BUG_AUDIT N5)
+### C2. Rate limiting — `M` **P1** (BUG_AUDIT N5) — ✅ shipped PASSIVE
+(token buckets on keys-write / join+create / turn-credentials; dry buckets
+log the would-be 429. Flip `RATE_LIMIT_ENFORCE=true` after a week of clean
+logs. Tests: app/test_ratelimit.py.)
 - **Issue:** No limits on `/keys` (mint), `/join`, `/turn-credentials`
   (TURN quota burn), auth-failure probing.
 - **Plan:** `slowapi` (or a 20-line token bucket keyed on

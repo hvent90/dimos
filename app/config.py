@@ -35,6 +35,10 @@ class Settings(BaseSettings):
     # CORS
     public_origin: str = "https://teleop.dimensionalos.com"
 
+    # Rate limiting (ratelimit.py). Passive by default: dry buckets only log
+    # the would-be 429. Flip to true after the logs show clean limits.
+    rate_limit_enforce: bool = False
+
     # Database
     database_url: str = "sqlite+aiosqlite:///./teleop.db"
 
