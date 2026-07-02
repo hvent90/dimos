@@ -20,7 +20,7 @@ from rclpy.qos import QoSProfile, ReliabilityPolicy, DurabilityPolicy, HistoryPo
 import time
 from geometry_msgs.msg import Twist
 
-VELOCITY = -0.2   # m/s forward — small and safe
+VELOCITY = 0.2  # m/s forward — small and safe
 DURATION = 2.0   # seconds of movement
 PUBLISH_HZ = 20  # match gatekeeper tick rate
 DISCOVERY_WAIT = 3.0

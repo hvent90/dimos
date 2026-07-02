@@ -33,6 +33,7 @@ no Python-side env munging here.
 
 from __future__ import annotations
 
+from dataclasses import dataclass, replace
 import math
 import queue
 import threading
@@ -90,6 +91,25 @@ _CHASSIS_CAMERAS: dict[str, str] = {
 }
 
 
+@dataclass
+class _StreamStat:
+    """Cheap per-stream counters for the sensor pipeline.
+
+    received/dropped are recorded in the DDS callback (wire delivery + size-1
+    queue backpressure); decoded/errors/decode_ms in the decode worker. A
+    growing ``dropped`` means decode/publish can't keep up; a stale ``last_mono``
+    means the wire/robot stopped delivering. See ``sensor_stats`` rpc.
+    """
+
+    received: int = 0
+    dropped: int = 0
+    decoded: int = 0
+    errors: int = 0
+    bytes_in: int = 0
+    decode_ms_sum: float = 0.0
+    last_mono: float = 0.0
+
+
 def _make_qos() -> Any:
     """BEST_EFFORT + VOLATILE QoS — the profile the R1 Pro topics expect."""
     from rclpy.qos import DurabilityPolicy, QoSProfile, ReliabilityPolicy
@@ -111,6 +131,10 @@ class R1ProConnectionConfig(ModuleConfig):
     acc_limit_y: float = Field(default=1.0)
     acc_limit_yaw: float = Field(default=1.0)
     frame_id: str = Field(default="r1pro_base_link")
+    # Seconds between per-stream sensor-stats log lines (received/dropped/
+    # decoded/decode-ms per camera/lidar/imu). 0 disables the periodic log;
+    # the ``sensor_stats`` rpc is always available regardless.
+    sensor_stats_interval_s: float = Field(default=10.0)
 
 
 class R1ProConnection(Module):
@@ -194,6 +218,10 @@ class R1ProConnection(Module):
         self._sensor_spin_thread: Thread | None = None
         self._sensor_stop = threading.Event()
         self._sensor_workers: list[Thread] = []
+        # Per-stream diagnostics (received/dropped/decoded/decode-ms), guarded by
+        # its own lock so the stats path never contends with the control _lock.
+        self._stats: dict[str, _StreamStat] = {}
+        self._stats_lock = threading.Lock()
         # Per-stream queues for off-spin-thread decode.
         self._cam_queues: dict[str, queue.Queue[Any]] = {}
         self._head_depth_q: queue.Queue[Any] = queue.Queue(maxsize=1)
@@ -433,7 +461,7 @@ class R1ProConnection(Module):
             self._sensor_node.create_subscription(
                 CompressedImage,
                 ros_topic,
-                lambda msg, q=cam_q: _enqueue_drop_oldest(q, msg),
+                self._make_rx_cb(stream_name, cam_q),
                 qos,
             )
             self._sensor_workers.append(
@@ -449,7 +477,7 @@ class R1ProConnection(Module):
         self._sensor_node.create_subscription(
             RosImage,
             "/hdas/camera_head/depth/depth_registered",
-            lambda msg: _enqueue_drop_oldest(self._head_depth_q, msg),
+            self._make_rx_cb("head_depth", self._head_depth_q),
             qos,
         )
         self._sensor_workers.append(
@@ -460,7 +488,7 @@ class R1ProConnection(Module):
         self._sensor_node.create_subscription(
             RosPointCloud2,
             "/hdas/lidar_chassis_left",
-            lambda msg: _enqueue_drop_oldest(self._lidar_q, msg),
+            self._make_rx_cb("lidar", self._lidar_q),
             qos,
         )
         self._sensor_workers.append(
@@ -471,7 +499,7 @@ class R1ProConnection(Module):
         self._sensor_node.create_subscription(
             RosImu,
             "/hdas/imu_chassis",
-            lambda msg: _enqueue_drop_oldest(self._imu_chassis_q, msg),
+            self._make_rx_cb("imu_chassis", self._imu_chassis_q),
             qos,
         )
         self._sensor_workers.append(
@@ -485,7 +513,7 @@ class R1ProConnection(Module):
         self._sensor_node.create_subscription(
             RosImu,
             "/hdas/imu_torso",
-            lambda msg: _enqueue_drop_oldest(self._imu_torso_q, msg),
+            self._make_rx_cb("imu_torso", self._imu_torso_q),
             qos,
         )
         self._sensor_workers.append(
@@ -505,13 +533,13 @@ class R1ProConnection(Module):
             self._sensor_node.create_subscription(
                 CompressedImage,
                 f"/hdas/camera_wrist_{side}/color/image_raw/compressed",
-                lambda msg, q=color_q: _enqueue_drop_oldest(q, msg),
+                self._make_rx_cb(f"wrist_{side}_color", color_q),
                 qos,
             )
             self._sensor_node.create_subscription(
                 RosImage,
                 f"/hdas/camera_wrist_{side}/aligned_depth_to_color/image_raw",
-                lambda msg, q=depth_q: _enqueue_drop_oldest(q, msg),
+                self._make_rx_cb(f"wrist_{side}_depth", depth_q),
                 qos,
             )
             self._sensor_workers.append(
@@ -529,6 +557,12 @@ class R1ProConnection(Module):
                     daemon=True,
                     name=f"r1pro-wrist_{side}_depth",
                 )
+            )
+
+        # Periodic per-stream stats reporter (joined on stop via _sensor_stop).
+        if self.config.sensor_stats_interval_s > 0:
+            self._sensor_workers.append(
+                Thread(target=self._stats_report_loop, daemon=True, name="r1pro-sensor-stats")
             )
 
         for t in self._sensor_workers:
@@ -558,6 +592,96 @@ class R1ProConnection(Module):
                     logger.warning(f"Sensor context invalid, exiting spin: {exc}")
                     break
                 logger.warning(f"sensor spin_once raised (continuing): {exc}", exc_info=True)
+
+    # Per-stream diagnostics
+
+    def _make_rx_cb(self, stream: str, q: queue.Queue[Any]) -> Any:
+        """Subscription callback: record receive stats + latest-wins enqueue.
+
+        Records on the DDS spin thread (kept trivial); the actual decode happens
+        on the worker. ``dropped`` counts size-1 queue evictions = the consumer
+        falling behind the wire.
+        """
+        def cb(msg: Any) -> None:
+            data = getattr(msg, "data", None)
+            nbytes = len(data) if data is not None else 0
+            dropped = _enqueue_drop_oldest(q, msg)
+            with self._stats_lock:
+                st = self._stats.setdefault(stream, _StreamStat())
+                st.received += 1
+                st.bytes_in += nbytes
+                st.last_mono = time.monotonic()
+                if dropped:
+                    st.dropped += 1
+
+        return cb
+
+    def _record_decode(self, stream: str, ms: float, ok: bool) -> None:
+        with self._stats_lock:
+            st = self._stats.setdefault(stream, _StreamStat())
+            if ok:
+                st.decoded += 1
+                st.decode_ms_sum += ms
+            else:
+                st.errors += 1
+
+    def _stats_snapshot(self) -> dict[str, _StreamStat]:
+        with self._stats_lock:
+            return {k: replace(v) for k, v in self._stats.items()}
+
+    def _stats_report_loop(self) -> None:
+        """Log per-stream rates every ``sensor_stats_interval_s`` until stop."""
+        interval = self.config.sensor_stats_interval_s
+        if interval <= 0:
+            return
+        prev = self._stats_snapshot()
+        prev_t = time.monotonic()
+        while not self._sensor_stop.wait(interval):
+            cur = self._stats_snapshot()
+            now = time.monotonic()
+            dt = now - prev_t
+            if dt <= 0:
+                continue
+            lines = []
+            for name in sorted(cur):
+                s = cur[name]
+                p = prev.get(name, _StreamStat())
+                d_dec = s.decoded - p.decoded
+                if not (s.received or s.decoded):
+                    continue
+                rx = (s.received - p.received) / dt
+                drop = (s.dropped - p.dropped) / dt
+                dec = d_dec / dt
+                dms = (s.decode_ms_sum - p.decode_ms_sum) / d_dec if d_dec > 0 else 0.0
+                mibps = (s.bytes_in - p.bytes_in) / dt / 1048576
+                age = now - s.last_mono if s.last_mono else -1.0
+                lines.append(
+                    f"{name}: rx={rx:.1f}/s drop={drop:.1f}/s dec={dec:.1f}/s "
+                    f"decode={dms:.1f}ms in={mibps:.1f}MiB/s age={age:.1f}s err={s.errors}"
+                )
+            if lines:
+                logger.info("R1Pro sensor stats (%.0fs):\n  %s", dt, "\n  ".join(lines))
+            prev = cur
+            prev_t = now
+
+    @rpc
+    def sensor_stats(self) -> dict[str, Any]:
+        """Per-stream cumulative counters: received/dropped/decoded/errors/bytes,
+        avg decode ms, and last-message age. Cheap snapshot for monitoring and
+        regression detection (no re-profiling needed)."""
+        now = time.monotonic()
+        return {
+            name: {
+                "received": s.received,
+                "dropped": s.dropped,
+                "decoded": s.decoded,
+                "errors": s.errors,
+                "bytes_in": s.bytes_in,
+                "avg_decode_ms": (s.decode_ms_sum / s.decoded if s.decoded else 0.0),
+                "age_s": (now - s.last_mono if s.last_mono else -1.0),
+            }
+            for name, s in self._stats_snapshot().items()
+        }
 
     # Control input handlers
 
@@ -778,13 +902,17 @@ class R1ProConnection(Module):
                 continue
             if msg is None:
                 break
+            t0 = time.perf_counter()
             try:
                 arr = np.frombuffer(bytes(msg.data), np.uint8)
                 bgr = cv2.imdecode(arr, cv2.IMREAD_COLOR)
                 if bgr is None:
+                    self._record_decode(stream_name, (time.perf_counter() - t0) * 1e3, ok=False)
                     continue
                 out.publish(Image(bgr, format=ImageFormat.BGR, frame_id=stream_name))
+                self._record_decode(stream_name, (time.perf_counter() - t0) * 1e3, ok=True)
             except Exception:
+                self._record_decode(stream_name, (time.perf_counter() - t0) * 1e3, ok=False)
                 logger.exception(f"R1Pro camera {stream_name} decode error")
 
     def _head_depth_decode_loop(self) -> None:
@@ -850,13 +978,17 @@ class R1ProConnection(Module):
                 continue
             if msg is None:
                 break
+            t0 = time.perf_counter()
             try:
                 arr = np.frombuffer(bytes(msg.data), np.uint8)
                 bgr = cv2.imdecode(arr, cv2.IMREAD_COLOR)
                 if bgr is None:
+                    self._record_decode(frame_id, (time.perf_counter() - t0) * 1e3, ok=False)
                     continue
                 out.publish(Image(bgr, format=ImageFormat.BGR, frame_id=frame_id))
+                self._record_decode(frame_id, (time.perf_counter() - t0) * 1e3, ok=True)
             except Exception:
+                self._record_decode(frame_id, (time.perf_counter() - t0) * 1e3, ok=False)
                 logger.exception(f"R1Pro wrist_{side} color decode error")
 
     def _wrist_depth_decode_loop(self, side: str, q: queue.Queue[Any]) -> None:
@@ -876,16 +1008,24 @@ class R1ProConnection(Module):
                 logger.exception(f"R1Pro wrist_{side} depth decode error")
 
 
-def _enqueue_drop_oldest(q: queue.Queue[Any], item: Any) -> None:
-    """Latest-frame-wins enqueue for size-1 sensor queues."""
+def _enqueue_drop_oldest(q: queue.Queue[Any], item: Any) -> bool:
+    """Latest-frame-wins enqueue for size-1 sensor queues.
+
+    Returns True if a queued item had to be evicted (consumer not keeping up).
+    """
     try:
         q.put_nowait(item)
+        return False
     except queue.Full:
         try:
             q.get_nowait()
         except queue.Empty:
             pass
-        q.put_nowait(item)
+        try:
+            q.put_nowait(item)
+        except queue.Full:
+            pass
+        return True
 
 
 __all__ = [

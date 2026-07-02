@@ -34,7 +34,7 @@ from dimos.control.components import HardwareComponent, HardwareType, make_twist
 from dimos.control.coordinator import ControlCoordinator, TaskConfig
 from dimos.core.coordination.blueprints import autoconnect
 from dimos.core.global_config import global_config
-from dimos.core.transport import LCMTransport
+from dimos.core.transport import JpegLcmTransport, LCMTransport
 from dimos.msgs.geometry_msgs.PoseStamped import PoseStamped
 from dimos.msgs.geometry_msgs.Twist import Twist
 from dimos.msgs.sensor_msgs.Image import Image
@@ -93,9 +93,32 @@ def _r1pro_rerun_blueprint() -> Any:
     )
 
 
+# Per-entity rate caps for the rerun bridge. Camera/depth streams are
+# visualization-only; capping them keeps the bridge off the hot path without
+# affecting what the ControlCoordinator sees. Keys are rerun entity paths
+# (entity_prefix "world" + the LCM topic).
+_RERUN_MAX_HZ = {
+    "world/r1pro/head_color": 10.0,
+    "world/r1pro/wrist_left_color": 10.0,
+    "world/r1pro/wrist_right_color": 10.0,
+    "world/r1pro/chassis_front_left": 5.0,
+    "world/r1pro/chassis_front_right": 5.0,
+    "world/r1pro/chassis_left": 5.0,
+    "world/r1pro/chassis_right": 5.0,
+    "world/r1pro/chassis_rear": 5.0,
+    "world/r1pro/head_depth": 3.0,
+    "world/r1pro/wrist_left_depth": 3.0,
+    "world/r1pro/wrist_right_depth": 3.0,
+}
+
+
 _rerun_config = {
     "blueprint": _r1pro_rerun_blueprint,
     "pubsubs": [LCM()],
+    # Default is "25%" — ~4 GB of a 16 GB box reserved for rerun's recording
+    # store. A live viewer needs only a small rolling buffer; cap it low.
+    "memory_limit": "1GB",
+    "max_hz": _RERUN_MAX_HZ,
 }
 
 
@@ -164,17 +187,23 @@ _r1pro_base = (
             ("twist_command", Twist): LCMTransport("/cmd_vel", Twist),
             # Sensor pass-throughs — downstream consumers (rerun bridge,
             # perception modules, etc.) attach to these topics directly.
-            ("head_color", Image): LCMTransport("/r1pro/head_color", Image),
+            ("head_color", Image): JpegLcmTransport("/r1pro/head_color", Image),
             ("head_depth", Image): LCMTransport("/r1pro/head_depth", Image),
-            ("chassis_front_left", Image): LCMTransport("/r1pro/chassis_front_left", Image),
-            ("chassis_front_right", Image): LCMTransport("/r1pro/chassis_front_right", Image),
-            ("chassis_left", Image): LCMTransport("/r1pro/chassis_left", Image),
-            ("chassis_right", Image): LCMTransport("/r1pro/chassis_right", Image),
-            ("chassis_rear", Image): LCMTransport("/r1pro/chassis_rear", Image),
+            ("chassis_front_left", Image): JpegLcmTransport(
+                "/r1pro/chassis_front_left", Image
+            ),
+            ("chassis_front_right", Image): JpegLcmTransport(
+                "/r1pro/chassis_front_right", Image
+            ),
+            ("chassis_left", Image): JpegLcmTransport("/r1pro/chassis_left", Image),
+            ("chassis_right", Image): JpegLcmTransport("/r1pro/chassis_right", Image),
+            ("chassis_rear", Image): JpegLcmTransport("/r1pro/chassis_rear", Image),
             ("lidar", PointCloud2): LCMTransport("/r1pro/lidar", PointCloud2),
-            ("wrist_left_color", Image): LCMTransport("/r1pro/wrist_left_color", Image),
+            ("wrist_left_color", Image): JpegLcmTransport("/r1pro/wrist_left_color", Image),
             ("wrist_left_depth", Image): LCMTransport("/r1pro/wrist_left_depth", Image),
-            ("wrist_right_color", Image): LCMTransport("/r1pro/wrist_right_color", Image),
+            ("wrist_right_color", Image): JpegLcmTransport(
+                "/r1pro/wrist_right_color", Image
+            ),
             ("wrist_right_depth", Image): LCMTransport("/r1pro/wrist_right_depth", Image),
             # ControlCoordinator outs.
             ("joint_state", JointState): LCMTransport(
