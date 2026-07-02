@@ -74,13 +74,13 @@ from dimos.simulation.scene.mesh_scene import (
     _world_rotation,
     load_scene_mesh,
 )
-from dimos.utils.logging_config import setup_logger
-from dimos.visualization.viser.camera import CameraSpec, g1_d435_default, world_pose
-from dimos.visualization.viser.robot_meshes import (
+from dimos.simulation.sensors.rig import CameraSpec, g1_d435_default, world_pose
+from dimos.simulation.sensors.robot_fk import (
     apply_state,
     dimos_joint_to_mjcf,
     load_robot_meshes,
 )
+from dimos.utils.logging_config import setup_logger
 
 logger = setup_logger()
 

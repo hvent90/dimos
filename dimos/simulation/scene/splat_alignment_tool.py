@@ -21,7 +21,7 @@ alignment to YAML on demand.
 Typical usage:
 
     /Users/pimvandenbosch/Desktop/dimos/.venv/bin/python \
-      -m dimos.visualization.viser.demo_splat_alignment_tool \
+      -m dimos.simulation.scene.splat_alignment_tool \
       --mesh /path/to/mesh.glb \
       --splat /path/to/scene.ply \
       --out /tmp/alignment.yaml
@@ -44,7 +44,7 @@ from dimos.simulation.scene.mesh_scene import (
     SceneMeshAlignment,
     load_scene_mesh,
 )
-from dimos.visualization.viser.splat import SplatAlignment, load_splat
+from dimos.simulation.scene.splat import SplatAlignment, load_splat
 
 
 @dataclass

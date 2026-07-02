@@ -57,16 +57,16 @@ from dimos.msgs.sensor_msgs.CameraInfo import CameraInfo
 from dimos.msgs.sensor_msgs.Image import Image, ImageFormat
 from dimos.msgs.sensor_msgs.JointState import JointState
 from dimos.simulation.scene.entity import EntityStateBatch
-from dimos.utils.logging_config import setup_logger
-from dimos.visualization.viser.camera import CameraSpec, g1_d435_default, world_pose
-from dimos.visualization.viser.robot_meshes import (
+from dimos.simulation.scene.splat import SplatAlignment, SplatData, load_splat
+from dimos.simulation.sensors.rig import CameraSpec, g1_d435_default, world_pose
+from dimos.simulation.sensors.robot_fk import (
     GeomInstance,
     RobotMeshes,
     apply_state,
     dimos_joint_to_mjcf,
     load_robot_meshes,
 )
-from dimos.visualization.viser.splat import SplatAlignment, SplatData, load_splat
+from dimos.utils.logging_config import setup_logger
 
 logger = setup_logger()
 

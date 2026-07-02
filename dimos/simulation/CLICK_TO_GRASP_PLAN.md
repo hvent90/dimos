@@ -99,7 +99,7 @@ perception under Babylon-physics authority (Phase 3).
 **Sim cameras:**
 - `dimos/mapping/mesh_camera.py` (:102-399): RGB only; raycasts (`t_hit` = depth, :354-356)
   but does NOT publish depth; RGB is barycentric (low quality — wrong for YOLO-E).
-- `dimos/visualization/viser/splat_camera.py` (:771-1221): RGB only; gsplat/mlx backends
+- `dimos/simulation/splat_camera.py` (:771-1221): RGB only; gsplat/mlx backends
   compute depth but don't expose it.
 - `MujocoSimModule` ALREADY publishes `/color_image` + `/depth_image` + `/camera_info`
   + `/depth_camera_info` (confirmed in the groot-wbc sim run) → perception works in true sim TODAY.
