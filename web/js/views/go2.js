@@ -65,6 +65,9 @@ const ui = {
     robotVideoStalled: false, // robot-confirmed no-frames watchdog (telemetry)
     nonce: 0,                 // monotonic command id for ack matching
     pending: new Map(),       // nonce -> {el, timer}
+    mainView: 'camera',       // 'camera' | 'map' — which is the big stage; other → PiP
+    lastMap: null,            // latest decoded {type:map,...} for redraw between frames
+    lastOdom: null,           // latest {x,y,yaw,ts} for the robot marker
 };
 
 let tickTimer = null;
@@ -93,15 +96,30 @@ export function renderGo2(c) {
         </header>
 
         <div class="flex-1 min-h-0 grid grid-cols-1 lg:grid-cols-[1fr_400px] gap-4">
-            <!-- LEFT: video -->
+            <!-- LEFT: main stage — camera OR map, swappable. The non-main one
+                 shows in the floating PiP (bottom-right). state.mainView toggles.
+                 SKELETON: markup + swap wired; map draw + PiP layout TBD. -->
             <section class="bg-bg-950 border border-[#2a2a2a] rounded-xl overflow-hidden flex flex-col min-h-0">
-                <!-- Camera tabs: toggle which cameras the robot composites into the
-                     single video. cam1 (Go2) default; cam2 (RealSense) optional;
-                     both → side-by-side. At least one stays selected. -->
-                <div class="flex items-center gap-2 p-2 border-b border-[#2a2a2a] shrink-0" id="cam-tabs"></div>
-                <div class="relative flex-1 bg-black flex items-center justify-center min-h-0">
+                <div class="flex items-center gap-2 p-2 border-b border-[#2a2a2a] shrink-0">
+                    <!-- Swap button — LEFT of the camera tabs (per spec). Flips
+                         which of {camera, map} is the main stage vs the PiP. -->
+                    <button id="view-swap" class="cmd-btn term-caps text-xs px-2 py-1" title="Swap camera / map">
+                        ⇄ <span id="view-swap-label">MAP</span>
+                    </button>
+                    <!-- Camera tabs: toggle which cameras the robot composites into
+                         the single video. cam1 (Go2) default; cam2 (RealSense)
+                         optional; both → side-by-side. At least one stays selected. -->
+                    <div class="flex items-center gap-2" id="cam-tabs"></div>
+                </div>
+                <div class="relative flex-1 bg-black flex items-center justify-center min-h-0" id="stage">
+                    <!-- Camera + map are BOTH always in the DOM; setMainView()
+                         toggles a .is-main / .is-pip class on each so one fills
+                         the stage and the other floats in the corner. The live
+                         <video> is never reparented (that can drop the track). -->
                     <video id="robot-cam" autoplay muted playsinline
-                        class="w-full h-full object-contain" style="display:none;"></video>
+                        class="object-contain is-main" style="display:none;"></video>
+                    <!-- Map canvas — occupancy grid + robot marker drawn on top. -->
+                    <canvas id="map-canvas" class="is-pip"></canvas>
                     <!-- Centered status (Negotiating WebRTC…) + placeholder, both
                          hidden once the video track is actually playing. -->
                     <div id="video-placeholder" class="absolute inset-0 flex flex-col items-center justify-center text-center text-gray-500">
@@ -305,8 +323,118 @@ function wireGo2() {
     state.onCmdAck = onCmdAck;
     // Reconcile controls from robot-authoritative telemetry state (3Hz).
     state.onRobotState = onRobotState;
+    // Minimap: occupancy grid (slow) + robot pose (fast), both on
+    // state_reliable_back. SKELETON — handlers below.
+    state.onMap = onMap;
+    state.onOdom = onOdom;
+    document.getElementById('view-swap').addEventListener('click', () => setMainView());
+    document.getElementById('pip').addEventListener('click', () => setMainView());
+    setMainView('camera');  // default: camera main, map floating (per spec)
 
     selectSpeed(ui.speedMode, /*sendToRobot=*/ false);  // reflect default selection
+}
+
+// ── minimap: map + robot marker (SKELETON) ───────────────────────────
+// Camera stays the WebRTC <video>; the map is a <canvas> we draw ourselves.
+// The two swap between the big stage and the floating PiP.
+
+// Swap which of {camera, map} is the big stage vs the floating PiP. With no
+// arg, flips the current view. Never reparents the <video> (would drop the
+// track) — just toggles .is-main / .is-pip so CSS repositions each element.
+function setMainView(view) {
+    ui.mainView = view || (ui.mainView === 'camera' ? 'map' : 'camera');
+    const cam = document.getElementById('robot-cam');
+    const map = document.getElementById('map-canvas');
+    const camMain = ui.mainView === 'camera';
+    cam.classList.toggle('is-main', camMain);
+    cam.classList.toggle('is-pip', !camMain);
+    map.classList.toggle('is-main', !camMain);
+    map.classList.toggle('is-pip', camMain);
+    // Button/label name what a click switches TO (the other view).
+    const label = document.getElementById('view-swap-label');
+    if (label) label.textContent = camMain ? 'MAP' : 'CAM';
+    // Canvas backing-store size changed (stage <-> PiP) → redraw at new size.
+    drawMap();
+}
+
+// Occupancy grid (~2Hz). Decode the PNG once here (off the fast odom path),
+// cache it, then redraw. png_b64 bands: 0=occupied, 127=unknown, 255=free.
+function onMap(msg) {
+    if (!msg || !msg.png_b64) return;
+    const img = new Image();
+    img.onload = () => {
+        ui.lastMap = { ...msg, img };
+        drawMap();
+    };
+    img.onerror = () => {};  // ignore a corrupt frame; the next one redraws
+    img.src = 'data:image/png;base64,' + msg.png_b64;
+}
+
+// Robot pose (~15Hz). Cache + redraw so the marker moves smoothly between the
+// slower map frames. No PNG work here.
+function onOdom(msg) {
+    if (!msg) return;
+    ui.lastOdom = msg;
+    drawMap();
+}
+
+// Draw the cached map (scaled to fill the canvas, nearest-neighbour so cells
+// stay crisp) then the robot glyph, placed via the grid origin + resolution:
+//   col = (odom.x - origin[0]) / res ;  row = (odom.y - origin[1]) / res
+// The grid is row-major from origin; y grows up in world but down in canvas,
+// so the row is flipped. Yaw rotates the glyph (0 = +x world = canvas right).
+function drawMap() {
+    const canvas = document.getElementById('map-canvas');
+    if (!canvas) return;
+    const m = ui.lastMap;
+    // Size the backing store to the element's box (avoids blur on resize/swap).
+    const rect = canvas.getBoundingClientRect();
+    const cw = Math.max(1, Math.round(rect.width));
+    const ch = Math.max(1, Math.round(rect.height));
+    if (canvas.width !== cw) canvas.width = cw;
+    if (canvas.height !== ch) canvas.height = ch;
+    const ctx = canvas.getContext('2d');
+    ctx.clearRect(0, 0, cw, ch);
+    if (!m || !m.img) {
+        ctx.fillStyle = '#0b0d0d';
+        ctx.fillRect(0, 0, cw, ch);
+        ctx.fillStyle = '#3a4a4a';
+        ctx.font = '12px monospace';
+        ctx.fillText('awaiting map…', 10, 20);
+        return;
+    }
+    // Fit the grid image into the canvas preserving aspect; letterbox the rest.
+    const scale = Math.min(cw / m.w, ch / m.h);
+    const dw = m.w * scale, dh = m.h * scale;
+    const dx = (cw - dw) / 2, dy = (ch - dh) / 2;
+    ctx.imageSmoothingEnabled = false;
+    ctx.drawImage(m.img, dx, dy, dw, dh);
+
+    // Robot marker.
+    const o = ui.lastOdom;
+    if (o && m.res > 0) {
+        const col = (o.x - m.origin[0]) / m.res;      // cells from origin, +x
+        const rowFromBottom = (o.y - m.origin[1]) / m.res;
+        const row = m.h - rowFromBottom;              // flip: world y-up → canvas y-down
+        const px = dx + col * scale;
+        const py = dy + row * scale;
+        if (px >= dx && px <= dx + dw && py >= dy && py <= dy + dh) {
+            ctx.save();
+            ctx.translate(px, py);
+            ctx.rotate(-(o.yaw || 0));                // canvas y-down → negate yaw
+            ctx.beginPath();                          // triangle glyph, nose = +x
+            ctx.moveTo(9, 0);
+            ctx.lineTo(-6, 5);
+            ctx.lineTo(-6, -5);
+            ctx.closePath();
+            ctx.fillStyle = '#b0e1f0';
+            ctx.strokeStyle = '#0d0e0e';
+            ctx.lineWidth = 1;
+            ctx.fill();
+            ctx.stroke();
+            ctx.restore();
+        }
+    }
 }
 
 // ── camera tabs ──────────────────────────────────────────────────────

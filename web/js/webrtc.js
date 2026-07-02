@@ -452,6 +452,13 @@ export function handleStateMessage(data) {
     // Command ack for a nonce'd command (body_height, sport_cmd, ...). The
     // active view registers state.onCmdAck to resolve its pending button/slider.
     else if (msg.type === 'cmd_ack') state.onCmdAck?.(msg);
+    // Occupancy grid for the minimap (Phase 1: rides state_reliable_back as an
+    // extra type; a dedicated channel comes later). Slow (~2Hz), few KB PNG.
+    // The active view registers state.onMap to decode + draw. See go2.js.
+    else if (msg.type === 'map') state.onMap?.(msg);
+    // Robot pose for the minimap marker. Fast (~15Hz), tiny (x/y/yaw). Kept a
+    // separate type from map so the marker moves smoothly between map frames.
+    else if (msg.type === 'odom') state.onOdom?.(msg);
 }
 
 // NTP-style min-RTT. Decay the floor ~1ms/s so a stale outlier doesn't pin
