@@ -181,15 +181,21 @@ _TF_AVAILABLE = USE_TF and store.tf.has_transforms()
 def world_points(observation):
     """Nx3 world-registered points for a lidar observation.
 
-    Primary: the recording's tf (``world <- LIDAR_FRAME``) at the scan time.
-    Fallback: the observation's stored pose as the transform. Otherwise the
-    scan is assumed already world-registered (legacy recordings).
+    The scan's own ``header.frame_id`` decides what to do: a scan already in
+    WORLD_FRAME is returned untouched (transforming it again double-registers
+    it), otherwise it's brought into world via tf (``world <- frame_id``) at the
+    scan time. Falls back to LIDAR_FRAME when the header carries no frame, then
+    to the observation's stored pose, then to assuming it's already world.
     """
     points = np.asarray(observation.data.points_f32())
     if not len(points):
         return points
+    header = getattr(observation.data, "header", None)
+    scan_frame = getattr(header, "frame_id", "") or LIDAR_FRAME
+    if scan_frame == WORLD_FRAME:
+        return points  # already world-registered per its own header
     if _TF_AVAILABLE:
-        transform = store.tf.get(WORLD_FRAME, LIDAR_FRAME, float(observation.ts), TF_TOL)
+        transform = store.tf.get(WORLD_FRAME, scan_frame, float(observation.ts), TF_TOL)
         if transform is not None:
             rotation, translation = transform_matrix(transform)
             return points @ rotation.T + translation
@@ -197,12 +203,16 @@ def world_points(observation):
     if isinstance(pose, (tuple, list)) and len(pose) >= 7:
         rotation = Rot3.Quaternion(pose[6], pose[3], pose[4], pose[5]).matrix()
         return points @ rotation.T + np.array(pose[:3], float)
-    return points  # already world-registered
+    return points  # unknown frame, assume already world-registered
 
 
 print(f"recording: {REC}", flush=True)
 if _TF_AVAILABLE:
-    print(f"world-registering {LIDAR_STREAM} via tf ({WORLD_FRAME} <- {LIDAR_FRAME})", flush=True)
+    print(
+        f"world-registering {LIDAR_STREAM} via tf into {WORLD_FRAME} "
+        f"(per-scan header.frame_id; already-{WORLD_FRAME} scans left as-is)",
+        flush=True,
+    )
 print(
     f"streams: tags={RAW_STREAM} odom={ODOM_STREAM} lidar={LIDAR_STREAM} -> out={OUT_PREFIX}{SUFFIX}",
     flush=True,
