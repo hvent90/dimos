@@ -35,8 +35,6 @@ from dimos.robot.unitree.go2 import connection as go2_conn, go2_webrtc as go2_we
 from dimos.robot.unitree.go2.connection import ConnectionConfig
 from dimos.robot.unitree.go2.go2_webrtc import Go2WebRTCConnection, TwistMode
 
-# --- make_connection routing -----------------------------------------------------
-
 
 @pytest.fixture
 def stub_go2_conn(monkeypatch: pytest.MonkeyPatch) -> MagicMock:
@@ -67,9 +65,6 @@ def test_connection_config_twist_mode_defaults_to_velocity() -> None:
 def test_connection_config_aes_key_defaults_from_global_config() -> None:
     g = GlobalConfig(robot_ip="127.0.0.1", unitree_aes_128_key="dd" * 16)
     assert ConnectionConfig(g=g).aes_128_key == "dd" * 16
-
-
-# --- Go2WebRTCConnection: velocity / joystick / rage dispatch (real loop) --------
 
 
 def _stub_driver() -> MagicMock:

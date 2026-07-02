@@ -120,8 +120,6 @@ class Go2WebRTCConnection(UnitreeWebRTCConnection):
         self.cmd_vel_timeout = 0.2
         super().__init__(ip, mode=mode, aes_128_key=aes_128_key)
 
-    # --- movement ---------------------------------------------------------------
-
     def _publish_velocity(self, vx: float, vy: float, vyaw: float) -> None:
         """SPORT Move (api 1008) velocity command — true m/s & rad/s, body frame."""
         self._move_seq += 1
@@ -194,8 +192,6 @@ class Go2WebRTCConnection(UnitreeWebRTCConnection):
         except Exception as e:
             logger.warning("Failed to send stop on disconnect: %s", e)
         super().stop()
-
-    # --- postures / modes -------------------------------------------------------
 
     def standup(self) -> bool:
         return bool(self.publish_request(RTC_TOPIC["SPORT_MOD"], {"api_id": SPORT_CMD["StandUp"]}))
@@ -281,8 +277,6 @@ class Go2WebRTCConnection(UnitreeWebRTCConnection):
             RTC_TOPIC["VUI"],
             {"api_id": 1001, "parameter": {"color": color, "time": colortime}},
         )
-
-    # --- sensor streams (Go2 decoding) ------------------------------------------
 
     @simple_mcache
     def raw_lidar_stream(self) -> Observable[RawLidarMsg]:
