@@ -83,10 +83,10 @@ impl Config {
         (self.robot_height / self.voxel_size).ceil() as i32
     }
 
-    /// Max traversable vertical step in cells, with a cell of headroom for the
-    /// discretization that inflates a riser at its nosing.
+    /// Max traversable vertical step in cells. Floors so the step never exceeds
+    /// step_threshold_m, the robot's hardware limit.
     pub fn step_cells(&self) -> i32 {
-        (self.step_threshold_m / self.voxel_size).round() as i32 + 1
+        (self.step_threshold_m / self.voxel_size).floor() as i32
     }
 }
 
@@ -611,14 +611,14 @@ mod region_tests {
     }
 
     #[test]
-    fn step_cells_rounds_and_adds_headroom() {
+    fn step_cells_floors_to_a_hard_bound() {
         let mut cfg = test_config();
         cfg.voxel_size = 0.08;
-        // 0.15 / 0.08 = 1.875 rounds up to 2, plus a cell of headroom.
+        // 0.15 / 0.08 = 1.875 floors to 1: a 2-voxel (0.16m) step exceeds 0.15m.
         cfg.step_threshold_m = 0.15;
-        assert_eq!(cfg.step_cells(), 3);
-        // 0.10 / 0.08 = 1.25 rounds down to 1, plus headroom.
-        cfg.step_threshold_m = 0.10;
+        assert_eq!(cfg.step_cells(), 1);
+        // 0.20 / 0.08 = 2.5 floors to 2, so 2-voxel steps are allowed.
+        cfg.step_threshold_m = 0.20;
         assert_eq!(cfg.step_cells(), 2);
     }
 

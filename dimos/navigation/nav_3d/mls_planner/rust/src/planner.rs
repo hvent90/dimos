@@ -177,8 +177,8 @@ pub fn plan(
         return None;
     };
 
-    // Max traversable step in cells, floored to match the graph adjacency.
-    let step_cells = (config.step_threshold_m / voxel_size).floor() as i32;
+    // Max traversable step in cells, the hard bound shared with the graph.
+    let step_cells = config.step_cells();
 
     let wall_cost = WallCost {
         clearance_m: config.wall_clearance_m,
@@ -212,7 +212,7 @@ pub fn truncate_to_safe(
         return Vec::new();
     }
     let voxel_size = config.voxel_size;
-    let step_cells = (config.step_threshold_m / voxel_size).floor() as i32;
+    let step_cells = config.step_cells();
     let wall_cost = WallCost {
         clearance_m: config.wall_clearance_m,
         buffer_m: config.wall_buffer_m,

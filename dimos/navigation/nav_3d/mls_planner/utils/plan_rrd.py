@@ -324,7 +324,7 @@ def main(
         100.0, "--wall-buffer-weight", help="Peak soft wall penalty at the clearance edge"
     ),
     step_height: float = typer.Option(
-        0.15,
+        0.16,
         "--step-height",
         help="Max traversable vertical step (m); taller steps are impassable",
     ),

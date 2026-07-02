@@ -25,6 +25,7 @@ from dimos.core.coordination.blueprints import autoconnect
 from dimos.core.global_config import global_config
 from dimos.hardware.sensors.lidar.pointlio.module import PointLio
 from dimos.hardware.sensors.lidar.pointlio.recorder import PointlioRecorder
+from dimos.hardware.sensors.lidar.virtual_mid360.recorder import Mid360PcapRecorder
 from dimos.mapping.ray_tracing.module import RayTracingVoxelMap
 from dimos.navigation.basic_path_follower.module import BasicPathFollower
 from dimos.navigation.movement_manager.movement_manager import MovementManager
@@ -50,6 +51,10 @@ _axis_len = 0.5
 # Opt-in recording: set DIMOS_NAV_RECORD=1 to capture pointlio_lidar +
 # pointlio_odometry into a timestamped db that plan_rrd replays from.
 _RECORD = os.getenv("DIMOS_NAV_RECORD", "").lower() in ("1", "true", "yes", "on")
+
+# Opt-in raw-Livox capture: set RECORD_PCAP=1 to also tcpdump the Mid-360 UDP
+# stream into recordings/ (needs DIMOS_MID360_LIDAR_IP).
+_RECORD_PCAP = os.getenv("RECORD_PCAP", "").lower() in ("1", "true", "yes", "on")
 
 
 def _recording_db_path() -> str:
@@ -171,7 +176,8 @@ unitree_go2_nav_3d = autoconnect(
         wall_clearance_m=0.1,
         wall_buffer_m=0.75,
         wall_buffer_weight=100.0,
-        step_threshold_m=0.15,
+        # 0.2 / voxel_size(0.08) floors to 2 cells, so at most a 2-voxel step.
+        step_threshold_m=0.16,
         step_penalty_weight=4.0,
         viz_publish_hz=0.0,
     ).remappings([(MLSPlannerNative, "global_map", "global_map_unused")]),
@@ -194,4 +200,10 @@ if _RECORD:
                 (PointlioRecorder, "pointlio_odometry", "odometry"),
             ]
         ),
+    )
+
+if _RECORD_PCAP:
+    unitree_go2_nav_3d = autoconnect(
+        unitree_go2_nav_3d,
+        Mid360PcapRecorder.blueprint(),
     )
