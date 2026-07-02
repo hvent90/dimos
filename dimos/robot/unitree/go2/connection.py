@@ -34,8 +34,6 @@ from dimos.core.resource import CompositeResource
 from dimos.core.stream import In, Out
 from dimos.core.tf_module import TfModule, TfModuleConfig
 from dimos.core.transport import LCMTransport, pSHMTransport
-from dimos.spec.perception import Camera, Pointcloud
-from dimos.utils.logging_config import setup_logger
 
 if TYPE_CHECKING:
     from dimos.core.rpc_client import ModuleProxy
@@ -50,7 +48,9 @@ from dimos.msgs.sensor_msgs.PointCloud2 import PointCloud2
 from dimos.robot.unitree.connection import UnitreeWebRTCConnection
 from dimos.robot.unitree.go2.config import Go2Config, camera_info_static
 from dimos.robot.unitree.type.lowstate import LowStateMsg
+from dimos.spec.perception import Camera, Pointcloud
 from dimos.utils.decorators.decorators import cached_property, simple_mcache
+from dimos.utils.logging_config import setup_logger
 
 logger = setup_logger()
 
