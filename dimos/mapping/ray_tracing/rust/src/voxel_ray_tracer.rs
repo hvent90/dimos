@@ -480,6 +480,23 @@ pub fn update_map(
         f32::INFINITY
     };
 
+    // Drop invalid returns and out-of-range points before they enter the map.
+    let points: Vec<(f32, f32, f32)> = points
+        .iter()
+        .copied()
+        .filter(|&(x, y, z)| {
+            if !(x.is_finite() && y.is_finite() && z.is_finite()) {
+                return false;
+            }
+            let dx = x - origin.0;
+            let dy = y - origin.1;
+            let dz = z - origin.2;
+            let d2 = dx * dx + dy * dy + dz * dz;
+            d2 > 0.0 && d2 <= max_range_sq
+        })
+        .collect();
+    let points = &points[..];
+
     let hits = live_voxels(points, cfg.voxel_size);
 
     let origin_voxel = world_to_voxel(origin.0, origin.1, origin.2, inv);
@@ -490,12 +507,6 @@ pub fn update_map(
         .enumerate()
         .fold(AHashSet::new, |mut misses, (i, &p)| {
             if i % step != 0 {
-                return misses;
-            }
-            let dx = p.0 - origin.0;
-            let dy = p.1 - origin.1;
-            let dz = p.2 - origin.2;
-            if dx * dx + dy * dy + dz * dz > max_range_sq {
                 return misses;
             }
             let endpoint = world_to_voxel(p.0, p.1, p.2, inv);
@@ -710,6 +721,26 @@ mod tests {
             global_emit_every: 1,
             region_percentile: 95.0,
         }
+    }
+
+    #[test]
+    fn update_map_drops_invalid_and_out_of_range_points() {
+        let cfg = Config {
+            max_range: 5.0,
+            ..basic_config()
+        };
+        let mut map = VoxelMap::default();
+        let origin = (0.5, 0.5, 0.5);
+        let points = [
+            (f32::NAN, 0.5, 0.5),
+            (0.5, f32::INFINITY, 0.5),
+            (100.0, 0.5, 0.5),
+            (0.5, 0.5, 0.5),
+            (2.5, 0.5, 0.5),
+        ];
+        update_map(&mut map, origin, &points, &cfg);
+        let keys: Vec<VoxelKey> = map.voxels.keys().copied().collect();
+        assert_eq!(keys, vec![(2, 0, 0)], "only the valid in-range point lands");
     }
 
     #[test]

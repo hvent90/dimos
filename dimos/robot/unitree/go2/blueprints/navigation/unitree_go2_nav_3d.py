@@ -22,7 +22,6 @@ from dimos.core.coordination.blueprints import autoconnect
 from dimos.core.global_config import global_config
 from dimos.hardware.sensors.lidar.pointlio.module import PointLio
 from dimos.mapping.ray_tracing.module import RayTracingVoxelMap
-from dimos.msgs.sensor_msgs.PointCloud2 import PointCloud2
 from dimos.navigation.basic_path_follower.module import BasicPathFollower
 from dimos.navigation.movement_manager.movement_manager import MovementManager
 from dimos.navigation.nav_3d.mls_planner.goal_relay import GoalRelay
@@ -46,16 +45,7 @@ _sensor_mount_rotation = list(base_link_from_mid360().rotation.to_tuple())
 _axis_len = 0.5
 
 
-# Cap map clouds sent to the viewer. Big snapshots stall the wifi link and
-# everything logged behind them lags. Planner input is unaffected.
-_viz_max_points = 150_000
-
-
-def _render_map_cloud(msg: Any) -> Any:
-    pts = msg.points_f32()
-    if len(pts) > _viz_max_points:
-        step = -(-len(pts) // _viz_max_points)
-        msg = PointCloud2.from_numpy(pts[::step], frame_id=msg.frame_id, timestamp=msg.ts)
+def _render_global_map(msg: Any) -> Any:
     return msg.to_rerun()
 
 
@@ -112,8 +102,7 @@ _nav_rerun_config = {
     },
     "visual_override": {
         **rerun_config["visual_override"],
-        "world/global_map": _render_map_cloud,
-        "world/local_map": _render_map_cloud,
+        "world/global_map": _render_global_map,
         "world/path": _render_path,
         "world/camera_info": None,
         "world/color_image": None,

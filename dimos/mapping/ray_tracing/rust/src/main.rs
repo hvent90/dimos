@@ -1,6 +1,7 @@
 // Copyright 2026 Dimensional Inc.
 // SPDX-License-Identifier: Apache-2.0
 
+use std::collections::VecDeque;
 use std::time::Duration;
 
 use ahash::AHashSet;
@@ -37,7 +38,7 @@ struct RayTracingVoxelMap {
     config: Config,
 
     map: VoxelMap,
-    last_pose: Option<(Vector3<f32>, UnitQuaternion<f32>)>,
+    poses: VecDeque<(f64, Vector3<f32>, UnitQuaternion<f32>)>,
     frame_count: u32,
     batch_points: Vec<(f32, f32, f32)>,
     batch_origins: Vec<(f32, f32, f32)>,
@@ -47,17 +48,26 @@ impl RayTracingVoxelMap {
     async fn on_odometry(&mut self, msg: Odometry) {
         let p = &msg.pose.pose.position;
         let q = &msg.pose.pose.orientation;
-        self.last_pose = Some((
+        self.poses.push_back((
+            time_secs(&msg.header.stamp),
             Vector3::new(p.x as f32, p.y as f32, p.z as f32),
             UnitQuaternion::from_quaternion(nalgebra::Quaternion::new(
                 q.w as f32, q.x as f32, q.y as f32, q.z as f32,
             )),
         ));
+        if self.poses.len() > POSE_BUFFER_LEN {
+            self.poses.pop_front();
+        }
     }
 
     async fn on_lidar(&mut self, msg: PointCloud2) {
-        let Some((translation, rotation)) = self.last_pose else {
-            // Need an odometry sample before we can raycast.
+        // Register with the pose nearest the cloud stamp, never a stale one.
+        let Some((translation, rotation)) = nearest_pose(&self.poses, time_secs(&msg.header.stamp))
+        else {
+            warn_throttled!(
+                Duration::from_secs(1),
+                "No odometry within tolerance of the cloud stamp, dropped a cloud.",
+            );
             return;
         };
         let origin = (translation.x, translation.y, translation.z);
@@ -176,6 +186,37 @@ impl RayTracingVoxelMap {
 /// Whether the Nth-frame output fires this frame. Zero disables it.
 fn emit_due(frame_count: u32, every: u32) -> bool {
     every != 0 && frame_count.is_multiple_of(every)
+}
+
+/// Odometry samples kept for cloud-stamp matching.
+const POSE_BUFFER_LEN: usize = 256;
+
+/// Max stamp gap between a cloud and the pose used to register it (s).
+const POSE_MATCH_TOLERANCE_S: f64 = 0.1;
+
+fn time_secs(t: &Time) -> f64 {
+    t.sec as f64 + t.nsec as f64 * 1e-9
+}
+
+/// The buffered pose with the stamp nearest the cloud stamp, within tolerance.
+fn nearest_pose(
+    poses: &VecDeque<(f64, Vector3<f32>, UnitQuaternion<f32>)>,
+    stamp: f64,
+) -> Option<(Vector3<f32>, UnitQuaternion<f32>)> {
+    let mut best_gap = f64::INFINITY;
+    let mut best = None;
+    for &(t, v, q) in poses {
+        let gap = (t - stamp).abs();
+        if gap < best_gap {
+            best_gap = gap;
+            best = Some((v, q));
+        }
+    }
+    if best_gap <= POSE_MATCH_TOLERANCE_S {
+        best
+    } else {
+        None
+    }
 }
 
 struct ExtractError(&'static str);
@@ -397,6 +438,21 @@ async fn main() {
 mod tests {
     use super::*;
     use dimos_voxel_ray_tracing::voxel_ray_tracer::Voxel;
+
+    #[test]
+    fn nearest_pose_picks_by_stamp_and_gates_on_tolerance() {
+        let mut poses: VecDeque<(f64, Vector3<f32>, UnitQuaternion<f32>)> = VecDeque::new();
+        for (t, x) in [(1.0, 1.0f32), (2.0, 2.0), (3.0, 3.0)] {
+            poses.push_back((t, Vector3::new(x, 0.0, 0.0), UnitQuaternion::identity()));
+        }
+        let (v, _) = nearest_pose(&poses, 2.04).expect("within tolerance");
+        assert_eq!(v.x, 2.0, "nearest stamp wins, not the latest");
+        assert!(
+            nearest_pose(&poses, 3.5).is_none(),
+            "stale poses must not register a cloud"
+        );
+        assert!(nearest_pose(&VecDeque::new(), 1.0).is_none());
+    }
 
     fn cloud_points(c: &PointCloud2) -> AHashSet<(u32, u32, u32)> {
         let mut out = AHashSet::new();
