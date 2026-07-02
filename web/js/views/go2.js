@@ -60,6 +60,7 @@ const ui = {
     speedMode: 'normal',      // speed bar selection
     selectedCams: ['cam1'],   // active camera tabs (default Go2)
     obstacleAvoid: true,      // onboard obstacle avoidance on/off (robot boots ON)
+    lightOn: false,           // head LED (robot boots off; telemetry reconciles)
     nonce: 0,                 // monotonic command id for ack matching
     pending: new Map(),       // nonce -> {el, timer}
 };
@@ -140,6 +141,12 @@ export function renderGo2(c) {
                 <section class="bg-bg-950 border border-[#2a2a2a] rounded-xl p-4 shrink-0 flex items-center justify-between">
                     <span class="text-sm text-gray-400">Obstacle avoidance</span>
                     <button id="obstacle-toggle" class="px-3 py-1 text-xs term-caps rounded border border-dim-700 text-dim-400">ON</button>
+                </section>
+
+                <!-- Head light toggle -->
+                <section class="bg-bg-950 border border-[#2a2a2a] rounded-xl p-4 shrink-0 flex items-center justify-between">
+                    <span class="text-sm text-gray-400">💡 Light</span>
+                    <button id="light-toggle" class="px-3 py-1 text-xs term-caps rounded border border-[#2a2a2a] text-gray-500">OFF</button>
                 </section>
 
                 <!-- Telemetry: summary always; click to expand full detail. -->
@@ -245,6 +252,8 @@ function wireGo2() {
 
     document.getElementById('obstacle-toggle').addEventListener('click', toggleObstacleAvoid);
     renderObstacleToggle();
+    document.getElementById('light-toggle').addEventListener('click', toggleLight);
+    renderLightToggle();
 
     // Video: webrtc.js sets srcObject + display:block on ontrack, but doesn't
     // know about our placeholder. Hide the dog+status overlay once frames flow
@@ -361,6 +370,25 @@ function renderObstacleToggle() {
     b.classList.toggle('text-gray-500', !on);
 }
 
+// ── head light ───────────────────────────────────────────────────────
+function toggleLight() {
+    if (!state.stateChannel || state.stateChannel.readyState !== 'open') return;
+    ui.lightOn = !ui.lightOn;
+    renderLightToggle();
+    state.stateChannel.send(JSON.stringify(
+        { type: 'light', enabled: ui.lightOn, nonce: ++ui.nonce }));
+}
+
+function renderLightToggle() {
+    const b = document.getElementById('light-toggle');
+    if (!b) return;
+    const on = ui.lightOn;
+    b.textContent = on ? 'ON' : 'OFF';
+    b.classList.toggle('text-dim-400', on);
+    b.classList.toggle('border-dim-700', on);
+    b.classList.toggle('text-gray-500', !on);
+}
+
 // ── command ack (state_reliable_back) — shared by all nonce'd commands ──
 function onCmdAck(msg) {
     resolveAck(msg.nonce, !!msg.ok);
@@ -386,6 +414,10 @@ function onRobotState(s) {
     if (typeof s.obstacle_avoidance === 'boolean' && s.obstacle_avoidance !== ui.obstacleAvoid) {
         ui.obstacleAvoid = s.obstacle_avoidance;
         renderObstacleToggle();
+    }
+    if (typeof s.light === 'boolean' && s.light !== ui.lightOn) {
+        ui.lightOn = s.light;
+        renderLightToggle();
     }
     if (Array.isArray(s.cams) && s.cams.join() !== ui.selectedCams.join()) {
         ui.selectedCams = s.cams.filter((c) => CAMS.some((k) => k.id === c));
