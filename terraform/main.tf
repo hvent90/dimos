@@ -150,7 +150,8 @@ output "ssh_command" {
 }
 
 output "api_url" {
-  value = "http://${aws_eip.teleop.public_ip}:${var.app_port}"
+  # Port 8450 is loopback-only behind Caddy — the public entry is HTTPS.
+  value = "https://teleop.dimensionalos.com"
 }
 
 output "dns_instructions" {
