@@ -318,3 +318,80 @@ then the UI seeding.
 - Nonce "replay attack" — downgraded to idempotency nit (B2); channel is
   authenticated and ordered.
 - `latency_stamp` per-frame copy cost — benchmark-only flag, default off.
+
+---
+
+## Demo issues (2026-07-01 field run)
+
+Triage of the first real hosted-teleop demo. Evidence:
+`dimos/logs/20260701-193746-teleop-hosted-go2-transport/main.jsonl` (main
+36-min session) and the five runs after it (`201838`…`202831`), plus operator
+browser console. Timeline (log times UTC = local+7): robot up 02:37:59,
+operator joined 02:38:49, **stable drive for 36 min**, then 4 operator drops
+in 2.5 min (03:15–03:17), blueprint restarts + one boot failure (03:23), dog
+power cycle, final clean session 03:28→03:58.
+
+### DM-1. Video black — dog firmware WebRTC peer wedged — `[hardware/ops]` **P0, root-caused; prevention open**
+- **Symptom:** datachannels/telemetry/clock-sync all healthy, video never
+  arrives ("renegotiation complete — awaiting frames", HUD 0fps). Blueprint
+  and browser restarts don't help; **only a dog power cycle fixed it**.
+- **Root cause:** the Go2 firmware holds ONE WebRTC peer. Dirty disconnects
+  (crash/Ctrl-C during the earlier boot failures) left a zombie session; the
+  firmware's video pipeline stayed bound to it while new sessions got
+  lowstate/datachannels. MAX_BUNDLE proves it robot-side: video RTP shares
+  the working datachannel transport, so "channels OK, video dead" ⇒ no
+  frames fed, not network. The 03:23:15 boot `DataChannelTimeoutError`
+  (`peer=connecting, ice=checking`) is the same zombie-slot family.
+- **Ops rule:** channels work but video black → power-cycle the dog first;
+  also make sure no phone runs the Unitree app (it takes the slot).
+- **Prevention (open):** (a) robot-side no-frames watchdog — no `color_image`
+  for ~10s after local connect → log loudly + re-dial the dog link;
+  (b) retry-with-backoff around `make_connection` (one 15s attempt currently
+  kills the whole blueprint); (c) operator HUD banner "robot is sending no
+  video" (distinct from the stall lockout) when fps=0 after renegotiation.
+
+### DM-2. Operator session churn — 4 drops in 2.5 min — `[teleop broker/operator]` **P1, needs broker logs**
+- **Evidence:** `operator link lost — stopping motion` at 03:15:10, 03:16:05,
+  03:16:41, 03:17:27, each followed by a rejoin 10–25s later (fresh SCTP ids
+  5/7 → 9/11 → 13/15 → 17/19; state_back re-pushed as id 2 every time).
+  Matches the browser console: `[state-channel] closed` → new
+  credentials+gather.
+- **Working as designed:** the A2 stop-on-operator-lost fired on every drop
+  (motion zeroed), and every rejoin re-bridged cleanly — the reconnect path
+  held up in production.
+- **Unknown:** WHY the drops. Hypotheses, most likely first: (1) operator
+  reloading the page trying to fix the black video (drops cluster at the end,
+  when the video fight started); (2) operator network blips >20s → reaper
+  eviction; (3) CF session instability. **Next step:** broker journal for
+  03:15–03:18Z — reaper evictions log `idle_for`, manual leaves log
+  `user_initiated`/`pagehide`; that distinguishes all three.
+
+### DM-3. RTT ~320 ms steady — `[network]` **P2, characterize**
+- clock-sync RTT 315–336 ms for the entire session (offset 5–22 ms, stable —
+  sync itself is healthy). If the operator was genuinely remote, this is the
+  path; if near the robot, check the HUD Path row (TURN?) — a relay through a
+  distant CF PoP would explain it. Drive feel at 320 ms: ~⅓ s-old video and
+  similar command lag. E1 knobs (fps/width caps, codec) can trim encode/
+  decode but not propagation.
+
+### DM-4. Unclean shutdown when the dog link is dead — `[dimos]` **P2, small fix**
+- **Evidence (run 202321):** `Exception in RPC handler for
+  Go2HostedConnection/stop: Data channel is not open` (stop() → liedown over
+  the dead local link) → `Error during worker shutdown`; plus recurring
+  `Worker still alive after 5s, terminating` on other runs.
+- **Fix:** best-effort-guard `liedown()`/`stop_movement()` in the stop path
+  (log, don't raise) and bound local-link teardown so workers exit inside
+  the 5s grace.
+
+### DM-5. ICE 701 console spam — `[teleop web]` **P3, cosmetic**
+- `STUN/TURN … timed out` for the `:53` endpoints (DNS-port trick most
+  networks eat) and IPv6 permutations (no v6 UDP path). Benign — the same
+  gather logs `srflx×2 relay×10`. Option: log `:53`/IPv6 candidate-error
+  permutations at debug, keep unexpected ones at warn.
+
+### Non-issues confirmed during the demo
+- **Negative clock offset** — offset is robot−operator; sign is arbitrary and
+  every consumer applies it algebraically. Only instability or |error|→0.5s
+  (stale-gate threshold) would matter; logs show 5–22 ms, steady.
+- **A2/A3 in production:** operator-lost stop, telemetry state seeding, and
+  rejoin bridging all behaved as designed across 5 drop/rejoin cycles.
