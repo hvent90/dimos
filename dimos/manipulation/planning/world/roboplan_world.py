@@ -42,11 +42,11 @@ except ImportError as exc:
     ) from exc
 
 from dimos.manipulation.planning.groups.identifiers import (
-    is_global_joint_name,
     make_global_joint_names,
     make_planning_group_id,
 )
 from dimos.manipulation.planning.groups.models import PlanningGroup
+from dimos.manipulation.planning.groups.utils import joint_state_to_ordered_positions
 from dimos.manipulation.planning.spec.config import RobotModelConfig
 from dimos.manipulation.planning.spec.enums import ObstacleType, PlanningStatus
 from dimos.manipulation.planning.spec.models import (
@@ -623,33 +623,12 @@ class RoboPlanWorld:
         self, robot_id: WorldRobotID, joint_state: JointState
     ) -> NDArray[np.float64]:
         robot = self._get_robot(robot_id)
-        if len(joint_state.position) != len(robot.config.joint_names):
-            raise ValueError("JointState position length must match configured joint count")
-        if not joint_state.name:
-            return np.asarray(joint_state.position, dtype=np.float64)
-        name_to_pos: dict[str, float] = {}
-        for name, position in zip(joint_state.name, joint_state.position, strict=True):
-            if name in robot.config.joint_names:
-                resolved_name = name
-            elif name in robot.config.joint_name_mapping:
-                resolved_name = robot.config.joint_name_mapping[name]
-            elif is_global_joint_name(name):
-                prefix = f"{robot.config.name}/"
-                if not name.startswith(prefix):
-                    continue
-                resolved_name = name[len(prefix) :]
-                if resolved_name not in robot.config.joint_names:
-                    raise ValueError(f"Unknown global joint name for RoboPlanWorld: {name}")
-            else:
-                resolved_name = robot.config.get_urdf_joint_name(name)
-            if resolved_name in name_to_pos:
-                raise ValueError(f"JointState resolves duplicate joint '{resolved_name}'")
-            name_to_pos[resolved_name] = float(position)
-        missing = [name for name in robot.config.joint_names if name not in name_to_pos]
-        if missing:
-            raise ValueError(f"JointState missing joints for RoboPlanWorld: {missing}")
-        return np.asarray(
-            [name_to_pos[name] for name in robot.config.joint_names], dtype=np.float64
+        return joint_state_to_ordered_positions(
+            joint_state,
+            robot_name=robot.config.name,
+            joint_names=robot.config.joint_names,
+            joint_name_mapping=robot.config.joint_name_mapping,
+            context="RoboPlanWorld",
         )
 
     def _require_finalized(self) -> None:

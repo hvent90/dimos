@@ -16,6 +16,9 @@
 
 from collections.abc import Mapping, Sequence
 
+import numpy as np
+from numpy.typing import NDArray
+
 from dimos.manipulation.planning.groups.identifiers import (
     assert_global_joint_names,
     assert_local_joint_names,
@@ -134,3 +137,47 @@ def joint_target_to_global_names(
     if extra:
         raise ValueError(f"Target for '{group.id}' has extra joints: {sorted(extra)}")
     return JointState(name=list(group.joint_names), position=global_positions)
+
+
+def joint_state_to_ordered_positions(
+    joint_state: JointState,
+    *,
+    robot_name: str,
+    joint_names: Sequence[str],
+    joint_name_mapping: Mapping[str, str],
+    context: str,
+) -> NDArray[np.float64]:
+    """Convert a JointState to an array ordered by local robot joint names."""
+    if not joint_state.name:
+        if len(joint_state.position) != len(joint_names):
+            raise ValueError("JointState position length must match configured joint count")
+        return np.asarray(joint_state.position, dtype=np.float64)
+
+    if len(joint_state.name) != len(joint_state.position):
+        raise ValueError("JointState name and position lengths must match")
+
+    joint_name_set = set(joint_names)
+    name_to_pos: dict[str, float] = {}
+    prefix = f"{robot_name}/"
+    for name, position in zip(joint_state.name, joint_state.position, strict=True):
+        if name in joint_name_set:
+            resolved_name = name
+        elif name in joint_name_mapping:
+            resolved_name = joint_name_mapping[name]
+        elif is_global_joint_name(name):
+            if not name.startswith(prefix):
+                continue
+            resolved_name = name[len(prefix) :]
+            if resolved_name not in joint_name_set:
+                raise ValueError(f"Unknown global joint name for {context}: {name}")
+        else:
+            resolved_name = joint_name_mapping.get(name, name)
+
+        if resolved_name in name_to_pos:
+            raise ValueError(f"JointState resolves duplicate joint '{resolved_name}'")
+        name_to_pos[resolved_name] = float(position)
+
+    missing = [name for name in joint_names if name not in name_to_pos]
+    if missing:
+        raise ValueError(f"JointState missing joints for {context}: {missing}")
+    return np.asarray([name_to_pos[name] for name in joint_names], dtype=np.float64)
