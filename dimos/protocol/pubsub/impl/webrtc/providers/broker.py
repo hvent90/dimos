@@ -340,7 +340,11 @@ class BrokerProvider(AsyncProviderBase):
             if sctp_id != self._dc_ids.get(name):
                 # Operator left (or was reaped): the command plane is gone.
                 # Tell subscribers so the robot can stop motion / reset state.
-                if name == "state_reliable" and self._dc_ids.get(name) is not None and sctp_id is None:
+                if (
+                    name == "state_reliable"
+                    and self._dc_ids.get(name) is not None
+                    and sctp_id is None
+                ):
                     self._notify_operator_lost()
                 self._close_channel(name)
                 self._dc_ids[name] = sctp_id

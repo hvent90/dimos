@@ -76,9 +76,7 @@ teleop_hosted_go2_transport = (
             ("state_json", bytes): CloudflareTransport.spec("state_reliable"),
             ("telemetry_out", bytes): CloudflareTransport.spec("state_reliable_back"),
             ("cmd_raw", bytes): CloudflareTransport.spec("cmd_unreliable"),  # stats tap
-            ("cmd_vel_stamped", TwistStamped): LCMTransport.spec(
-                "cmd_vel_stamped", TwistStamped
-            ),
+            ("cmd_vel_stamped", TwistStamped): LCMTransport.spec("cmd_vel_stamped", TwistStamped),
         }
     )
     .global_config(viewer="none")

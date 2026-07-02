@@ -23,9 +23,9 @@ stale / out-of-order cmd_vel drop on the unreliable wire.
 
 from __future__ import annotations
 
+from concurrent.futures import ThreadPoolExecutor
 import threading
 import time
-from concurrent.futures import ThreadPoolExecutor
 from types import SimpleNamespace
 from typing import Any
 from unittest.mock import MagicMock
@@ -36,7 +36,6 @@ from dimos.robot.unitree.go2.hosted_connection import (
     ALLOWED_SPORT_CMDS,
     Go2HostedConnection,
 )
-
 
 # Executors created by _bare_connection, reaped after each test so the
 # repo-wide non-closed-thread check stays green.

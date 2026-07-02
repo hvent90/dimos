@@ -23,11 +23,12 @@ the operator can't see. Opt-in subclass; plain ``GO2Connection`` is unchanged.
 
 from __future__ import annotations
 
+from collections.abc import Callable
+from concurrent.futures import ThreadPoolExecutor
 import json
 import threading
 import time
-from concurrent.futures import ThreadPoolExecutor
-from typing import Any, Callable
+from typing import Any
 
 import numpy as np
 from reactivex.disposable import Disposable
@@ -360,7 +361,9 @@ class Go2HostedConnection(GO2Connection):
                 urgent=True,
             )
 
-    def _submit_cmd(self, label: str, nonce: Any, task: Callable[[], bool], *, urgent: bool = False) -> None:
+    def _submit_cmd(
+        self, label: str, nonce: Any, task: Callable[[], bool], *, urgent: bool = False
+    ) -> None:
         """Run a blocking command off the WebRTC/video loop and ack the result.
 
         Non-urgent commands go through a single worker — strict ordering, so
@@ -385,13 +388,18 @@ class Go2HostedConnection(GO2Connection):
             now = time.monotonic()
             with self._cmd_lock:
                 self._nonce_results = {
-                    n: (r, t) for n, (r, t) in self._nonce_results.items()
+                    n: (r, t)
+                    for n, (r, t) in self._nonce_results.items()
                     if now - t < self._NONCE_TTL_SEC
                 }
                 if nonce in self._nonce_results:
                     prior, _ = self._nonce_results[nonce]
-                    logger.info("%s: duplicate nonce %r — %s", label, nonce,
-                                "re-acking" if prior is not None else "in flight")
+                    logger.info(
+                        "%s: duplicate nonce %r — %s",
+                        label,
+                        nonce,
+                        "re-acking" if prior is not None else "in flight",
+                    )
                     if prior is not None:
                         self._send_ack(nonce, prior)
                     return
