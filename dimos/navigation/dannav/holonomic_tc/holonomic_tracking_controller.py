@@ -27,6 +27,7 @@ from __future__ import annotations
 
 import math
 
+from dimos.msgs.geometry_msgs.Pose import Pose
 from dimos.msgs.geometry_msgs.Twist import Twist
 from dimos.msgs.geometry_msgs.Vector3 import Vector3
 from dimos.navigation.dannav.holonomic_tc.command_limits import HolonomicCommandLimits
@@ -37,7 +38,7 @@ from dimos.navigation.dannav.holonomic_tc.types import (
 from dimos.utils.trigonometry import angle_diff
 
 
-def _planar_yaw_rad(pose_plan: object) -> float:
+def _planar_yaw_rad(pose_plan: Pose) -> float:
     return float(pose_plan.orientation.euler.z)
 
 

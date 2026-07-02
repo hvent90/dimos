@@ -95,7 +95,7 @@ unitree_go2_mls_htc = autoconnect(
         ]
     ),
     GoalRelay.blueprint(),
-    # Seeting resample_spacing_m to > 0.0 will smooth out jagged paths retunned my MLSP
+    # Setting resample_spacing_m to > 0.0 will smooth out jagged paths retunned my MLSP
     DanLocalPlanner.blueprint(resample_spacing_m=0.1),
     DanHolonomicTC.blueprint(run_profile="walk"),
     MovementManager.blueprint(),

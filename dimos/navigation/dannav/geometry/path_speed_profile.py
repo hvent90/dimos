@@ -128,7 +128,7 @@ def _polyline_geometry_speed_caps_m_s(
 
 def _profile_sample_distances_m(
     total_length_m: float,
-    vertex_s_m: Sequence[float],
+    vertex_s_m: NDArray[np.float64],
     num_samples: int,
 ) -> list[float]:
     """Uniform arc-length samples plus every polyline vertex."""
