@@ -231,7 +231,6 @@ async function _setupWebRTCInner(sessionId) {
             id: bridge.state_back_channel_id,
             ordered: true,
         });
-        state.stateBackChannel.onopen = () => console.info('[state-back] open');
         state.stateBackChannel.onmessage = (e) => handleStateMessage(e.data);
         state.stateBackChannel.onerror = (e) => console.warn('[state-back] error', e);
         state.stateBackChannel.onclose = () => console.info('[state-back] closed');
@@ -467,7 +466,6 @@ export function handleStateMessage(data) {
     // Robot-measured command-plane health (latency/jitter/loss) — what
     // actually arrived, which the operator can't see from its send side.
     else if (msg.type === 'robot_telemetry') {
-        console.log('[robot_telemetry]', JSON.stringify({ cmd: msg.cmd, soc: msg.soc }));
         state.liveStats.cmd = msg.cmd;
         // Battery SOC rides robot_telemetry (state_reliable_back). null until
         // the robot's first lowstate; views read state.liveStats.soc.
