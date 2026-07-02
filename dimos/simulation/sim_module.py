@@ -185,7 +185,7 @@ class MujocoSimModuleConfig(ModuleConfig):
     robot_sim_spec: RobotSimSpec | None = None
     # Scene-package entity metadata (scene.meta.json ``entities`` entries).
     # When the loaded model contains matching ``entity:<id>`` bodies (see
-    # dimos.simulation.backend.mujoco.entity_scene), their world poses are published
+    # dimos.simulation.backend.mujoco.scene_package_entity_composer), their world poses are published
     # as an EntityStateBatch — MuJoCo is the entity authority in this mode.
     scene_entities: list[dict[str, Any]] = Field(default_factory=list)
     imu_gyro_sensor_names: list[str] = Field(
@@ -418,7 +418,9 @@ class MujocoSimModule(
         body-name prefixing keyed on ``robot_id`` (empty prefix by
         default — single-robot scenes don't need renaming).
         """
-        from dimos.simulation.backend.mujoco.entity_scene import add_entities_to_spec
+        from dimos.simulation.backend.mujoco.scene_package_entity_composer import (
+            add_scene_package_entities_to_spec,
+        )
 
         if self.config.scene_xml:
             spec_scene = mujoco.MjSpec.from_file(str(self.config.scene_xml))
@@ -450,7 +452,7 @@ class MujocoSimModule(
         prefix = f"{self.config.robot_id}-" if self.config.robot_id else None
         spec_scene.attach(spec_robot, prefix=prefix, frame=frame)
         if self.config.scene_entities:
-            add_entities_to_spec(spec_scene, self.config.scene_entities)
+            add_scene_package_entities_to_spec(spec_scene, self.config.scene_entities)
         return spec_scene.compile()
 
     def _resolve_entity_bodies(self) -> None:
@@ -458,7 +460,9 @@ class MujocoSimModule(
         self._entity_bodies = []
         if not self.config.scene_entities or self._engine is None:
             return
-        from dimos.simulation.backend.mujoco.entity_scene import entity_body_name
+        from dimos.simulation.backend.mujoco.scene_package_entity_composer import (
+            scene_package_entity_body_name,
+        )
 
         for raw in self.config.scene_entities:
             try:
@@ -466,7 +470,7 @@ class MujocoSimModule(
             except (KeyError, TypeError, ValueError) as exc:
                 logger.warning("MujocoSimModule: bad scene entity metadata: %s", exc)
                 continue
-            body_id = self._engine.body_id(entity_body_name(descriptor.entity_id))
+            body_id = self._engine.body_id(scene_package_entity_body_name(descriptor.entity_id))
             if body_id is None:
                 logger.warning(
                     "MujocoSimModule: entity %s not in model (compose_entity_model not used?)",
@@ -676,9 +680,9 @@ class MujocoSimModule(
 
     def _compose_model(self) -> mujoco.MjModel:
         """Compose optional scene package MJCF + robot MJCF + entities."""
-        from dimos.simulation.backend.mujoco.entity_scene import (
-            add_entities_to_spec,
-            spawn_penetrators,
+        from dimos.simulation.backend.mujoco.scene_package_entity_composer import (
+            add_scene_package_entities_to_spec,
+            find_scene_package_entity_spawn_penetrators,
         )
 
         if self.config.robot_mjcf is None:
@@ -713,7 +717,7 @@ class MujocoSimModule(
             spec_scene.attach(spec_robot, prefix=prefix, frame=frame)
 
             if self.config.scene_entities:
-                add_entities_to_spec(
+                add_scene_package_entities_to_spec(
                     spec_scene, self.config.scene_entities, force_static=force_static
                 )
             return spec_scene
@@ -721,7 +725,7 @@ class MujocoSimModule(
         spec_scene = build_spec()
         model = spec_scene.compile()
         if self.config.scene_entities:
-            penetrators = spawn_penetrators(model)
+            penetrators = find_scene_package_entity_spawn_penetrators(model)
             if penetrators:
                 logger.warning(
                     "MujocoSimModule: scene entities spawn in deep contact; welding static",

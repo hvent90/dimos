@@ -29,7 +29,7 @@ entities/<safe_id>/
 
 The hull paths are recorded per entity as ``collision_paths`` in
 ``scene.meta.json`` and loaded verbatim by the runtime composer
-(``dimos/simulation/mujoco/entity_scene.py``) — there is no runtime
+(``dimos/simulation/mujoco/scene_package_entity_composer.py``) — there is no runtime
 decomposition and no per-machine cache; the package is self-contained.
 """
 
@@ -122,7 +122,7 @@ def _run_coacd(mesh: object, mesh_path: Path) -> list[tuple[object, object]]:
             np.asarray(mesh.vertices, dtype=np.float64),  # type: ignore[attr-defined]
             np.asarray(mesh.triangles, dtype=np.int32),  # type: ignore[attr-defined]
         )
-        return coacd.run_coacd(
+        parts = coacd.run_coacd(
             cm,
             threshold=_COACD_THRESHOLD,
             max_convex_hull=_COACD_MAX_HULLS,
@@ -130,11 +130,9 @@ def _run_coacd(mesh: object, mesh_path: Path) -> list[tuple[object, object]]:
             mcts_iterations=_COACD_MCTS_ITERATIONS,
             mcts_nodes=_COACD_MCTS_NODES,
         )
+        return list(parts)
     except Exception as exc:
         logger.warning(
             "entity hulls: CoACD failed for %s (%s); using single convex hull", mesh_path, exc
         )
         return []
-
-
-__all__ = ["COLLISION_DIR_NAME", "cook_entity_collision_hulls"]

@@ -20,12 +20,19 @@ from dataclasses import dataclass
 import json
 from pathlib import Path
 import shutil
-import subprocess
 import tempfile
 from typing import Any
 
-from dimos.simulation.scene.inspect import inspect_scene_asset
-from dimos.simulation.scene.package import BrowserVisualSpec
+from dimos.simulation.scene.cooking.command import (
+    blender_output_line_is_interesting,
+    run_logged_command,
+)
+from dimos.simulation.scene.cooking.package_config import BrowserVisualSpec
+from dimos.simulation.scene.cooking.source_assets.glb import (
+    demote_required_extensions,
+    normalize_embedded_textures,
+)
+from dimos.simulation.scene.cooking.source_assets.inspect import inspect_scene_asset
 from dimos.utils.logging_config import setup_logger
 
 logger = setup_logger()
@@ -42,7 +49,6 @@ _BLENDER_INPUT_SUFFIXES = {
     ".ply",
 }
 _GLTFPACK_INPUT_SUFFIXES = {".gltf", ".glb", ".obj"}
-_COMMAND_TAIL_LINES = 30
 
 _BLENDER_SCRIPT = r"""
 import pathlib
@@ -56,9 +62,19 @@ simplify_ratio = float(sys.argv[-2])
 max_texture_size = int(sys.argv[-1])
 suffix = source.suffix.lower()
 
+
+def log(message):
+    print(f"DIMOS_VISUAL_COOK {message}", flush=True)
+
+
+log(
+    f"start source={source} target={target} "
+    f"simplify_ratio={simplify_ratio} max_texture_size={max_texture_size}"
+)
 bpy.ops.object.select_all(action="SELECT")
 bpy.ops.object.delete()
 
+log(f"import start suffix={suffix}")
 if suffix in {".usd", ".usda", ".usdc", ".usdz"}:
     bpy.ops.wm.usd_import(filepath=str(source))
 elif suffix in {".gltf", ".glb"}:
@@ -71,12 +87,22 @@ elif suffix == ".ply":
     bpy.ops.wm.ply_import(filepath=str(source))
 else:
     raise RuntimeError(f"unsupported visual source suffix: {suffix}")
+log(
+    "import done "
+    f"objects={len(bpy.context.scene.objects)} "
+    f"meshes={len(bpy.data.meshes)} images={len(bpy.data.images)}"
+)
 
+removed_non_mesh = 0
 for obj in list(bpy.context.scene.objects):
     if obj.type != "MESH":
         bpy.data.objects.remove(obj, do_unlink=True)
+        removed_non_mesh += 1
+log(f"removed non_mesh_objects={removed_non_mesh}")
 
 if max_texture_size > 0:
+    resized = 0
+    skipped = 0
     for image in bpy.data.images:
         width, height = image.size
         largest = max(width, height)
@@ -85,13 +111,19 @@ if max_texture_size > 0:
         scale = max_texture_size / largest
         try:
             image.scale(max(1, int(width * scale)), max(1, int(height * scale)))
+            resized += 1
         except RuntimeError:
             # Blender cannot scale some generated or missing images; keep those
             # untouched instead of aborting the entire scene cook.
-            pass
+            skipped += 1
+    log(f"texture resize done resized={resized} skipped={skipped}")
 
 if 0.0 < simplify_ratio < 0.999:
-    for obj in list(bpy.context.scene.objects):
+    mesh_objects = [obj for obj in bpy.context.scene.objects if obj.type == "MESH"]
+    log(f"decimate start mesh_objects={len(mesh_objects)}")
+    decimated = 0
+    skipped = 0
+    for index, obj in enumerate(mesh_objects, start=1):
         if obj.type != "MESH":
             continue
         bpy.ops.object.select_all(action="DESELECT")
@@ -101,23 +133,32 @@ if 0.0 < simplify_ratio < 0.999:
         modifier.ratio = simplify_ratio
         try:
             bpy.ops.object.modifier_apply(modifier=modifier.name)
+            decimated += 1
         except RuntimeError:
             obj.modifiers.remove(modifier)
+            skipped += 1
+        if index % 25 == 0:
+            log(f"decimate progress processed={index}/{len(mesh_objects)}")
+    log(f"decimate done decimated={decimated} skipped={skipped}")
 
 mesh_objects = [obj for obj in bpy.context.scene.objects if obj.type == "MESH"]
 if len(mesh_objects) > 1:
+    log(f"join start mesh_objects={len(mesh_objects)}")
     bpy.ops.object.select_all(action="DESELECT")
     for obj in mesh_objects:
         obj.select_set(True)
     bpy.context.view_layer.objects.active = mesh_objects[0]
     bpy.ops.object.join()
+    log(f"join done objects={len(bpy.context.scene.objects)}")
 
+log("export start")
 bpy.ops.export_scene.gltf(
     filepath=str(target),
     export_format="GLB",
     export_yup=True,
     export_apply=True,
 )
+log("export done")
 """
 
 
@@ -149,7 +190,7 @@ def cook_browser_visual(
     source = Path(source_path).expanduser().resolve()
     out_dir = Path(output_dir).expanduser().resolve()
     out_dir.mkdir(parents=True, exist_ok=True)
-    out_path = out_dir / visual_spec.output_name
+    out_path = out_dir / visual_spec.artifact_name
     if out_path.exists() and not rebake:
         return BrowserVisualCookResult(
             path=out_path,
@@ -162,6 +203,7 @@ def cook_browser_visual(
         temp_dir = Path(temp_dir_raw)
         temp_out = temp_dir / out_path.name
         tool, report = _cook_visual(source, temp_out, visual_spec)
+        _sanitize_browser_visual_output(temp_out, visual_spec)
         stats = inspect_scene_asset(temp_out).to_json_dict()
         _validate_output(source_stats, stats, visual_spec)
         if report is not None:
@@ -218,7 +260,7 @@ def _export_with_blender(
         script.write(_BLENDER_SCRIPT)
         script_path = Path(script.name)
     try:
-        _run_command(
+        run_logged_command(
             [
                 blender,
                 "--background",
@@ -232,6 +274,7 @@ def _export_with_blender(
                 str(max_texture_size or 0),
             ],
             "blender",
+            line_log_filter=blender_output_line_is_interesting,
         )
     finally:
         script_path.unlink(missing_ok=True)
@@ -254,6 +297,7 @@ def _export_with_gltfpack(
         report_path = target.with_suffix(".gltfpack.json")
         args = [
             *command,
+            "-v",
             "-i",
             str(source_for_gltfpack),
             "-o",
@@ -266,9 +310,15 @@ def _export_with_gltfpack(
             "-r",
             str(report_path),
         ]
+        if not spec.quantize:
+            args.append("-noq")
+        if spec.use_gpu_instancing:
+            args.append("-mi")
         if spec.texture_format == "webp":
+            _require_native_gltfpack_for_texture_compression(command, spec.texture_format)
             args.append("-tw")
         elif spec.texture_format == "ktx2":
+            _require_native_gltfpack_for_texture_compression(command, spec.texture_format)
             args.append("-tc")
         elif spec.texture_format is not None:
             raise ValueError(f"unknown browser texture format: {spec.texture_format}")
@@ -277,11 +327,46 @@ def _export_with_gltfpack(
                 raise ValueError("max_texture_size requires texture_format='webp' or 'ktx2'")
             args.extend(["-tl", str(spec.max_texture_size)])
 
-        output = _run_command(args, "gltfpack")
+        try:
+            output = run_logged_command(args, "gltfpack")
+        except RuntimeError as exc:
+            if "unreachable" in str(exc):
+                raise RuntimeError(
+                    "gltfpack crashed internally while optimizing the browser visual "
+                    f"for {source_for_gltfpack}. This is a tool failure, not a scene "
+                    "sidecar validation error. Try a native gltfpack build first; if "
+                    "that still fails, partition the visual source or use "
+                    "--visual-optimizer blender/copy for diagnosis."
+                ) from exc
+            raise
         if output and "Warning:" in output:
-            logger.warning("gltfpack output:\n%s", _tail(output))
+            logger.warning("gltfpack output:\n%s", _tail(output, 30))
         report = _read_json(report_path)
     return ("gltfpack", report)
+
+
+def _sanitize_browser_visual_output(path: Path, spec: BrowserVisualSpec) -> None:
+    if path.suffix.lower() != ".glb":
+        return
+
+    demoted_extensions = demote_required_extensions(path, set(spec.demote_required_extensions))
+    if demoted_extensions:
+        logger.info(
+            "demoted browser visual GLB extensions target=%s path=%s extensions=%s",
+            spec.target_key,
+            path,
+            sorted(demoted_extensions),
+        )
+
+    if spec.normalize_textures and spec.texture_format is None:
+        normalized_textures = normalize_embedded_textures(path)
+        if normalized_textures:
+            logger.info(
+                "normalized embedded browser visual textures target=%s path=%s count=%d",
+                spec.target_key,
+                path,
+                normalized_textures,
+            )
 
 
 def _gltfpack_command() -> list[str]:
@@ -293,32 +378,35 @@ def _gltfpack_command() -> list[str]:
         return [npx, "-y", "gltfpack"]
     raise RuntimeError(
         "browser visual optimization requires gltfpack. Install it with "
-        "`npm install -g gltfpack` or use --visual-optimizer blender/copy."
+        "a native meshoptimizer gltfpack binary on PATH, or use "
+        "--visual-optimizer blender/copy."
     )
 
 
-def _run_command(args: list[str], label: str) -> str:
-    result = subprocess.run(
-        args,
-        check=False,
-        text=True,
-        stdout=subprocess.PIPE,
-        stderr=subprocess.STDOUT,
+def _require_native_gltfpack_for_texture_compression(
+    command: list[str],
+    texture_format: str,
+) -> None:
+    executable = Path(command[0]).name
+    if executable != "npx":
+        return
+    raise RuntimeError(
+        f"gltfpack texture compression requested ({texture_format}), but the "
+        "available gltfpack is the Node/npx build. That build does not support "
+        "WebP/KTX texture compression. Install a native gltfpack binary from "
+        "meshoptimizer releases on PATH, or set --visual-texture-format none."
     )
-    output = result.stdout or ""
-    if result.returncode != 0:
-        raise RuntimeError(f"{label} failed with exit code {result.returncode}:\n{_tail(output)}")
-    return output
 
 
 def _read_json(path: Path) -> dict[str, Any] | None:
     if not path.exists():
         return None
     try:
-        return json.loads(path.read_text())
+        data = json.loads(path.read_text())
     except json.JSONDecodeError:
         logger.warning("failed to parse optimizer report: %s", path)
         return None
+    return data if isinstance(data, dict) else None
 
 
 def _validate_output(
@@ -338,8 +426,8 @@ def _validate_output(
         )
 
 
-def _tail(output: str) -> str:
-    return "\n".join(output.splitlines()[-_COMMAND_TAIL_LINES:])
+def _tail(output: str, tail_lines: int) -> str:
+    return "\n".join(output.splitlines()[-tail_lines:])
 
 
 def _budget_warnings(stats: dict[str, Any], spec: BrowserVisualSpec) -> list[str]:
@@ -357,6 +445,3 @@ def _budget_warnings(stats: dict[str, Any], spec: BrowserVisualSpec) -> list[str
     if vertex_count > spec.max_vertices:
         warnings.append(f"{vertex_count} vertices exceeds target {spec.max_vertices}")
     return warnings
-
-
-__all__ = ["BrowserVisualCookResult", "cook_browser_visual"]

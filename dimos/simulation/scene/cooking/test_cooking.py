@@ -20,10 +20,15 @@ from pathlib import Path
 import numpy as np
 import pytest
 
-from dimos.simulation.scene import plan as plan_module
-from dimos.simulation.scene.mesh_scene import SceneMeshAlignment, ScenePrimMesh
-from dimos.simulation.scene.package import ARTIFACT_FRAMES, ScenePackage, load_scene_package
-from dimos.simulation.scene.sidecar import SceneCookSidecar
+from dimos.simulation.scene.cooking import planning as plan_module
+from dimos.simulation.scene.cooking.package_config import browser_visual_spec_for_target
+from dimos.simulation.scene.cooking.sidecar import SceneCookSidecar
+from dimos.simulation.scene.cooking.source_assets.mesh import SceneMeshAlignment, ScenePrimMesh
+from dimos.simulation.scene.package import (
+    ARTIFACT_FRAMES,
+    ScenePackage,
+    load_scene_package,
+)
 
 
 def _metadata(tmp_path: Path) -> dict[str, object]:
@@ -39,9 +44,14 @@ def _metadata(tmp_path: Path) -> dict[str, object]:
         "artifact_frames": ARTIFACT_FRAMES,
         "artifacts": {
             "browser_visual": str(tmp_path / "visual.glb"),
+            "browser_visuals": {
+                "rerun": str(tmp_path / "visual.rerun.glb"),
+                "babylon": str(tmp_path / "visual.babylon.glb"),
+            },
             "browser_collision": str(tmp_path / "collision.glb"),
             "objects": str(tmp_path / "objects.json"),
             "mujoco_scene": str(tmp_path / "wrapper.xml"),
+            "mujoco_binary": str(tmp_path / "wrapper.mjb"),
         },
         "stats": {},
     }
@@ -106,9 +116,12 @@ def test_load_scene_package_accepts_expected_artifact_frames(tmp_path: Path) -> 
     package = load_scene_package(metadata_path)
 
     assert package.visual_path == tmp_path / "visual.glb"
+    assert package.browser_visual_path("rerun") == tmp_path / "visual.rerun.glb"
+    assert package.browser_visual_path("babylon") == tmp_path / "visual.babylon.glb"
     assert package.browser_collision_path == tmp_path / "collision.glb"
     assert package.objects_path == tmp_path / "objects.json"
     assert package.mujoco_scene_path == tmp_path / "wrapper.xml"
+    assert package.mujoco_binary_path == tmp_path / "wrapper.mjb"
 
 
 def test_scene_package_metadata_uses_package_relative_paths(tmp_path: Path) -> None:
@@ -117,9 +130,14 @@ def test_scene_package_metadata_uses_package_relative_paths(tmp_path: Path) -> N
         source_path=tmp_path / "source.glb",
         alignment=SceneMeshAlignment(),
         visual_path=tmp_path / "browser" / "visual.glb",
+        browser_visuals={
+            "rerun": tmp_path / "browser" / "visual.rerun.glb",
+            "babylon": tmp_path / "browser" / "visual.babylon.glb",
+        },
         browser_collision_path=tmp_path / "browser" / "collision.glb",
         objects_path=tmp_path / "browser" / "objects.json",
         mujoco_scene_path=tmp_path / "mujoco" / "abc123" / "wrapper.xml",
+        mujoco_binary_path=tmp_path / "mujoco" / "abc123" / "wrapper.mjb",
         entities=[
             {
                 "id": "chair_001",
@@ -133,15 +151,23 @@ def test_scene_package_metadata_uses_package_relative_paths(tmp_path: Path) -> N
 
     assert raw["package_dir"] == "."
     assert raw["artifacts"]["browser_visual"] == "browser/visual.glb"
+    assert raw["artifacts"]["browser_visuals"] == {
+        "babylon": "browser/visual.babylon.glb",
+        "rerun": "browser/visual.rerun.glb",
+    }
     assert raw["artifacts"]["browser_collision"] == "browser/collision.glb"
     assert raw["artifacts"]["objects"] == "browser/objects.json"
     assert raw["artifacts"]["mujoco_scene"] == "mujoco/abc123/wrapper.xml"
+    assert raw["artifacts"]["mujoco_binary"] == "mujoco/abc123/wrapper.mjb"
     assert raw["entities"][0]["visual_path"] == "entities/chair_001/visual.glb"
 
     loaded = load_scene_package(metadata_path)
     assert loaded.package_dir == tmp_path
     assert loaded.visual_path == tmp_path / "browser" / "visual.glb"
+    assert loaded.browser_visual_path("rerun") == tmp_path / "browser" / "visual.rerun.glb"
+    assert loaded.browser_visual_path("babylon") == tmp_path / "browser" / "visual.babylon.glb"
     assert loaded.mujoco_scene_path == tmp_path / "mujoco" / "abc123" / "wrapper.xml"
+    assert loaded.mujoco_binary_path == tmp_path / "mujoco" / "abc123" / "wrapper.mjb"
     assert loaded.entities[0]["visual_path"] == str(
         tmp_path / "entities" / "chair_001" / "visual.glb"
     )
@@ -159,8 +185,23 @@ def test_load_scene_package_tolerates_missing_objects_sidecar(tmp_path: Path) ->
     assert package.objects_path is None
 
 
+def test_browser_visual_profiles_are_backend_specific() -> None:
+    rerun = browser_visual_spec_for_target("rerun")
+    babylon = browser_visual_spec_for_target("babylon")
+
+    assert rerun.artifact_name == "visual.rerun.glb"
+    assert rerun.quantize is False
+    assert rerun.normalize_textures is True
+    assert rerun.demote_required_extensions == ("KHR_texture_transform",)
+
+    assert babylon.artifact_name == "visual.babylon.glb"
+    assert babylon.quantize is True
+    assert babylon.normalize_textures is False
+    assert babylon.demote_required_extensions == ()
+
+
 def test_extract_scene_objects_emits_per_prim_aabb() -> None:
-    from dimos.simulation.scene.browser_collision import extract_scene_objects
+    from dimos.simulation.scene.cooking.browser.collision import extract_scene_objects
 
     triangles = np.array([[0, 1, 2]], dtype=np.int32)
     prims = [
@@ -319,6 +360,126 @@ def test_synthetic_entity_uses_pose_and_extents(tmp_path: Path) -> None:
     assert entity.descriptor["mesh_ref"] == ""
 
 
+def test_entity_group_expands_per_prim_with_shared_prototypes(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    def fake_load_scene_prims(
+        path: str | Path,
+        alignment: SceneMeshAlignment | None = None,
+    ) -> list[ScenePrimMesh]:
+        del path, alignment
+        triangles = np.array([[0, 1, 2], [1, 2, 3]], dtype=np.int32)
+        return [
+            ScenePrimMesh(
+                name="cereal_1",
+                prim_path="Grocery_Scatter_Left_Aligned__2_CerealBlue.0001_2_CerealBlue_Mesh",
+                vertices=np.array(
+                    [
+                        [0.0, 0.0, 0.0],
+                        [0.2, 0.0, 0.0],
+                        [0.0, 0.1, 0.3],
+                        [0.2, 0.1, 0.3],
+                    ],
+                    dtype=np.float32,
+                ),
+                triangles=triangles,
+            ),
+            ScenePrimMesh(
+                name="cereal_2",
+                prim_path="Grocery_Scatter_Right_Aligned__2_CerealBlue.0002_2_CerealBlue_Mesh",
+                vertices=np.array(
+                    [
+                        [1.0, 0.0, 0.0],
+                        [1.0, 0.2, 0.0],
+                        [0.9, 0.0, 0.3],
+                        [0.9, 0.2, 0.3],
+                    ],
+                    dtype=np.float32,
+                ),
+                triangles=triangles,
+            ),
+            ScenePrimMesh(
+                name="apple",
+                prim_path="Produce_Scatter__4_RedApple.0001_4_RedApple_Mesh",
+                vertices=np.array(
+                    [
+                        [2.0, 0.0, 0.0],
+                        [2.1, 0.0, 0.0],
+                        [2.0, 0.1, 0.1],
+                        [2.1, 0.1, 0.1],
+                    ],
+                    dtype=np.float32,
+                ),
+                triangles=triangles,
+            ),
+            ScenePrimMesh(
+                name="cereal_no_instance_suffix",
+                prim_path="Grocery_Scatter_Left_Aligned__2_CerealBlue_2_CerealBlue_Mesh",
+                vertices=np.array(
+                    [
+                        [3.0, 0.0, 0.0],
+                        [3.2, 0.0, 0.0],
+                        [3.0, 0.1, 0.3],
+                        [3.2, 0.1, 0.3],
+                    ],
+                    dtype=np.float32,
+                ),
+                triangles=triangles,
+            ),
+        ]
+
+    monkeypatch.setattr(plan_module, "load_scene_prims", fake_load_scene_prims)
+    sidecar = SceneCookSidecar.from_dict(
+        {
+            "entity_groups": [
+                {
+                    "id_prefix": "product",
+                    "source_prim_paths": ["Grocery_Scatter_*", "Produce_Scatter__*"],
+                    "kind": "dynamic",
+                    "mass": 0.05,
+                    "physics": {"shape": "mesh", "friction": [0.6, 0.02, 0.001]},
+                    "tags": ["shelf_product"],
+                }
+            ]
+        }
+    )
+
+    plan = plan_module.build_scene_cook_plan(
+        tmp_path / "supermarket.glb",
+        sidecar=sidecar,
+        alignment=SceneMeshAlignment(),
+        output_dir=tmp_path,
+    )
+
+    assert len(plan.entities) == 4
+    assert len(plan.prototypes) == 3
+    assert {prototype.id for prototype in plan.prototypes} == {
+        "product_2_CerealBlue",
+        "product_4_RedApple",
+        "product_2_CerealBlue_2_CerealBlue",
+    }
+    entity_prototype_ids = [entity.prototype_id for entity in plan.entities]
+    assert entity_prototype_ids.count("product_2_CerealBlue") == 2
+    assert entity_prototype_ids.count("product_4_RedApple") == 1
+    assert entity_prototype_ids.count("product_2_CerealBlue_2_CerealBlue") == 1
+    assert plan.entities[0].descriptor["shape_hint"] == "mesh"
+    assert plan.entities[0].descriptor["mesh_ref"] == ""
+    assert plan.entities[0].descriptor["prototype_id"] == "product_2_CerealBlue"
+    assert plan.entities[0].initial_quat[0] != 0.0
+    assert (
+        plan.collision_spec.resolve(
+            "Grocery_Scatter_Left_Aligned__2_CerealBlue.0001_2_CerealBlue_Mesh"
+        )["type"]
+        == "skip"
+    )
+    assert plan.collision_spec.resolve("Wall")["type"] == "auto"
+
+
 def test_interactable_requires_prims_or_pose() -> None:
     with pytest.raises(ValueError, match="source_prim_paths.*or pose"):
         SceneCookSidecar.from_dict({"interactables": [{"id": "ghost"}]})
+
+
+def test_entity_group_requires_source_prim_paths() -> None:
+    with pytest.raises(ValueError, match="source_prim_paths required"):
+        SceneCookSidecar.from_dict({"entity_groups": [{"id_prefix": "product"}]})

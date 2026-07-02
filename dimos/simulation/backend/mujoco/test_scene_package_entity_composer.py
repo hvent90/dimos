@@ -19,7 +19,10 @@ from typing import Any
 
 import pytest
 
-from dimos.simulation.backend.mujoco.entity_scene import add_entities_to_spec, entity_body_name
+from dimos.simulation.backend.mujoco.scene_package_entity_composer import (
+    add_scene_package_entities_to_spec,
+    scene_package_entity_body_name,
+)
 
 
 def _write_hull_obj(path: Path) -> None:
@@ -55,7 +58,7 @@ def test_mesh_entity_loads_cooked_hulls(tmp_path: Path) -> None:
         _write_hull_obj(hull)
 
     spec = mujoco.MjSpec()
-    add_entities_to_spec(spec, [_mesh_entity("prop", [str(h) for h in hulls])])
+    add_scene_package_entities_to_spec(spec, [_mesh_entity("prop", [str(h) for h in hulls])])
     model = spec.compile()
 
     assert model.nmesh == 2
@@ -63,7 +66,7 @@ def test_mesh_entity_loads_cooked_hulls(tmp_path: Path) -> None:
         model.geom_type[i]
         for i in range(model.ngeom)
         if (mujoco.mj_id2name(model, mujoco.mjtObj.mjOBJ_GEOM, i) or "").startswith(
-            entity_body_name("prop")
+            scene_package_entity_body_name("prop")
         )
     }
     assert geom_types == {mujoco.mjtGeom.mjGEOM_MESH}
@@ -73,7 +76,7 @@ def test_mesh_entity_without_hulls_falls_back_to_box(tmp_path: Path) -> None:
     mujoco = pytest.importorskip("mujoco")
 
     spec = mujoco.MjSpec()
-    add_entities_to_spec(spec, [_mesh_entity("prop", None)])
+    add_scene_package_entities_to_spec(spec, [_mesh_entity("prop", None)])
     model = spec.compile()
 
     assert model.nmesh == 0
@@ -88,7 +91,7 @@ def test_mesh_entity_with_missing_hull_files_falls_back_to_box(tmp_path: Path) -
     missing = tmp_path / "mujoco_collision" / "hull_001.obj"
 
     spec = mujoco.MjSpec()
-    add_entities_to_spec(spec, [_mesh_entity("prop", [str(present), str(missing)])])
+    add_scene_package_entities_to_spec(spec, [_mesh_entity("prop", [str(present), str(missing)])])
     model = spec.compile()
 
     assert model.nmesh == 0

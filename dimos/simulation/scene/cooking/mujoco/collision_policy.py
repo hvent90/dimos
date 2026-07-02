@@ -87,10 +87,23 @@ class CollisionSpec:
 
     Optional override keys:
 
+    - ``"visual"``: ``false`` suppresses non-colliding visual passthrough
+      when MuJoCo visual meshes are enabled. This is intended for prims
+      extracted into runtime entities so they are not drawn twice.
     - ``"friction"``: list ``[slide, spin, roll]``.
+    - ``"min_thickness"``: for ``"box"`` overrides, minimum full
+      thickness in metres along world Z.  Useful for authored walkable
+      floor slabs exported as zero-thickness sheets.
+    - ``"preserve"``: with ``"min_thickness"``, which world-Z face to
+      keep fixed while expanding: ``"top"``, ``"bottom"``, or
+      ``"center"``.  Defaults to ``"center"``.
     - ``"max_hulls"``: per-pattern CoACD cap.
     - ``"target_faces"``: per-pattern triangle target for ``mesh`` /
       ``decimate`` outputs, or a post-process cap for hull outputs.
+    - ``"split_components"``: ``true`` forces this source prim to be split
+      into disconnected components before collision fitting.  Use this for
+      scene-graph nodes that group unrelated architectural pieces under one
+      mesh and otherwise produce oversized convex hulls.
     """
 
     #: Fallback policy when no pattern matches.  ``"auto"`` runs the full
@@ -840,8 +853,9 @@ def _resolve_explicit_primitive(
             "volume": 0.0,
         }
 
+    box_fitter = _fit_aabb_box if "min_thickness" in override else _fit_obb_box
     fitters = {
-        "box": _fit_obb_box,
+        "box": box_fitter,
         "sphere": _fit_sphere,
         "cylinder": _fit_cylinder,
         "capsule": _fit_capsule,
@@ -854,7 +868,51 @@ def _resolve_explicit_primitive(
         fit["pos"] = tuple(float(x) for x in override["pos"])
     if "quat" in override:
         fit["quat"] = tuple(float(x) for x in override["quat"])
+    if kind == "box":
+        _apply_box_min_thickness(fit, vertices, override)
     return fit
+
+
+def _apply_box_min_thickness(
+    fit: PrimitiveFit,
+    vertices: np.ndarray,
+    override: OverrideConfig,
+) -> None:
+    raw_min_thickness = override.get("min_thickness")
+    if raw_min_thickness is None:
+        return
+
+    min_half_z = max(float(raw_min_thickness) * 0.5, _MIN_SIZE_M)
+    size = np.asarray(fit["size"], dtype=np.float64)
+    pos = np.asarray(fit["pos"], dtype=np.float64)
+    if size.shape[0] < 3 or pos.shape[0] < 3 or size[2] >= min_half_z:
+        return
+
+    old_half_z = float(size[2])
+    size[2] = min_half_z
+
+    preserve = str(override.get("preserve", "center")).lower()
+    if preserve == "top":
+        top_z = (
+            pos[2] + old_half_z
+            if "pos" in override or "size" in override
+            else float(np.max(vertices[:, 2]))
+        )
+        pos[2] = top_z - min_half_z
+    elif preserve == "bottom":
+        bottom_z = (
+            pos[2] - old_half_z
+            if "pos" in override or "size" in override
+            else float(np.min(vertices[:, 2]))
+        )
+        pos[2] = bottom_z + min_half_z
+    elif preserve in {"center", "centre"}:
+        pass
+    else:
+        raise ValueError("box min_thickness preserve must be one of: top, bottom, center")
+
+    fit["size"] = tuple(map(float, size))
+    fit["pos"] = tuple(map(float, pos))
 
 
 def _target_faces(override: OverrideConfig) -> int | None:
@@ -907,11 +965,3 @@ def _coacd_decompose(
         if len(v) >= 4 and len(t) >= 1:
             out.append((v, t))
     return out
-
-
-__all__ = [
-    "CollisionSpec",
-    "GeomEmission",
-    "PrimDecision",
-    "decide_for_prim",
-]

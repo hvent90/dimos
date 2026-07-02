@@ -59,7 +59,9 @@ def _inspect_gltf(path: Path) -> SceneAssetStats:
 
     loaded: Any = trimesh.load(str(path))
     if isinstance(loaded, trimesh.Trimesh):
-        material_count = 1 if loaded.visual.material is not None else 0
+        # visual may be ColorVisuals (no material) or TextureVisuals.
+        material = getattr(loaded.visual, "material", None)
+        material_count = 1 if material is not None else 0
         return SceneAssetStats(
             path=str(path),
             bytes=path.stat().st_size,
@@ -67,7 +69,7 @@ def _inspect_gltf(path: Path) -> SceneAssetStats:
             mesh_count=1,
             node_count=1,
             material_count=material_count,
-            texture_count=_count_material_textures([loaded.visual.material]),
+            texture_count=_count_material_textures([material]),
             vertex_count=len(loaded.vertices),
             triangle_count=len(loaded.faces),
         )
@@ -178,6 +180,3 @@ def _inspect_open3d(path: Path) -> SceneAssetStats:
         vertex_count=len(mesh.vertices),
         triangle_count=len(mesh.triangles),
     )
-
-
-__all__ = ["SceneAssetStats", "inspect_scene_asset"]
