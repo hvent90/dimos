@@ -60,7 +60,7 @@ static PointLio* g_point_lio = nullptr;
 // already advances in real time, so the offset is effectively constant and this
 // is indistinguishable from wall-clock — Point-LIO and downstream consumers
 // behave identically online and offline.
-static uint64_t g_latest_pkt_ns = 0;   // newest point-packet sensor ts (under g_pc_mutex)
+static std::atomic<uint64_t> g_latest_pkt_ns{0};   // newest point-packet sensor ts (also the main loop's data clock)
 static uint64_t g_publish_pkt_ns = 0;  // sensor ts of the latest drained frame (main thread)
 static double g_ts_offset = 0.0;
 static bool g_ts_offset_set = false;
@@ -221,7 +221,9 @@ static void on_point_cloud(const uint32_t /*handle*/, const uint8_t /*dev_type*/
         g_frame_start_ns = ts_ns;
         g_frame_has_timestamp = true;
     }
-    if (ts_ns > g_latest_pkt_ns) { g_latest_pkt_ns = ts_ns; }
+    if (ts_ns > g_latest_pkt_ns.load(std::memory_order_relaxed)) {
+        g_latest_pkt_ns.store(ts_ns, std::memory_order_relaxed);
+    }
 
     if (data->data_type == DATA_TYPE_CARTESIAN_HIGH) {
         auto* pts = reinterpret_cast<const LivoxLidarCartesianHighRawPoint*>(data->data);
@@ -448,10 +450,15 @@ int main(int argc, char** argv) {
     g_point_lio = &point_lio;
     if (debug) { printf("[pointlio] Point-LIO initialized.\n"); }
 
-    // Main-loop state. Body lives in `run_main_iter`, driven by the wall-paced
-    // main thread.
+    // Main-loop state. Body lives in `run_main_iter`. The emission bookmarks
+    // (last_emit/last_pc_publish/last_odom_publish) live on a DATA-time grid — they
+    // advance by how far the packet stream's sensor time has progressed, not by the
+    // wall clock — so a frame always spans one frame_interval of data regardless of
+    // replay speed. last_wall_emit is the one wall-time bookmark, used only by the
+    // overload check (which is inherently about real elapsed time).
     auto frame_interval = std::chrono::microseconds( static_cast<int64_t>(1e6 / g_frequency));
     std::optional<std::chrono::steady_clock::time_point> last_emit;
+    std::optional<std::chrono::steady_clock::time_point> last_wall_emit;
     const double process_period_ms = 1000.0 / main_freq;
 
     auto pc_interval = std::chrono::microseconds( static_cast<int64_t>(1e6 / pointcloud_freq));
@@ -460,17 +467,20 @@ int main(int argc, char** argv) {
     std::optional<std::chrono::steady_clock::time_point> last_odom_publish;
 
 
-    auto run_main_iter = [&](std::chrono::steady_clock::time_point now) {
-        // Lazy-seed rate-limit bookmarks on the first iteration so they align
-        // with the wall clock.
-        if (!last_emit.has_value()) {
-            last_emit = now;
-        }
-        if (!last_pc_publish.has_value()) {
-            last_pc_publish = now;
-        }
-        if (!last_odom_publish.has_value()) {
-            last_odom_publish = now;
+    // data_now is a clock built from the newest packet's sensor time (see the call
+    // site). All emission gating advances on it; wall_now is read here and used only
+    // for the overload measurement below.
+    auto run_main_iter = [&](std::chrono::steady_clock::time_point data_now) {
+        const auto wall_now = std::chrono::steady_clock::now();
+        const bool have_data_clock = data_now.time_since_epoch().count() != 0;
+
+        // Seed the data-time bookmarks from the first packet — never from 0, or the
+        // grid would try to "replay" the entire sensor epoch to catch up.
+        if (have_data_clock && !last_emit.has_value()) {
+            last_emit = data_now;
+            last_wall_emit = wall_now;
+            last_pc_publish = data_now;
+            last_odom_publish = data_now;
         }
 
         // At frame rate: drain accumulated points into a CustomMsg and feed
@@ -481,24 +491,29 @@ int main(int argc, char** argv) {
         uint64_t backlog_ns = 0;
         double wall_elapsed_s = 0.0;
         bool measured_backlog = false;
-        {
+        if (have_data_clock) {
             std::lock_guard<std::mutex> lock(g_pc_mutex);
-            if (now - *last_emit >= frame_interval) {
+            if (data_now - *last_emit >= frame_interval) {
                 if (!g_accumulated_points.empty()) {
                     points.swap(g_accumulated_points);
                     frame_start = g_frame_start_ns;
                     // Sensor-time advanced since the previous drain (= span of data
                     // this single frame swallows). Skip the first drain, where
                     // g_publish_pkt_ns is still 0.
+                    const uint64_t latest = g_latest_pkt_ns.load(std::memory_order_relaxed);
                     if (g_publish_pkt_ns != 0) {
-                        backlog_ns = g_latest_pkt_ns - g_publish_pkt_ns;
-                        wall_elapsed_s = std::chrono::duration<double>(now - *last_emit).count();
+                        backlog_ns = latest - g_publish_pkt_ns;
+                        wall_elapsed_s = std::chrono::duration<double>(wall_now - *last_wall_emit).count();
                         measured_backlog = true;
                     }
-                    g_publish_pkt_ns = g_latest_pkt_ns;
+                    g_publish_pkt_ns = latest;
                     g_frame_has_timestamp = false;
                 }
-                last_emit = now;
+                // Advance on a fixed data-time grid; snap forward only if the data
+                // clock leapt several frames (a stall) so we don't spin catching up.
+                *last_emit += frame_interval;
+                if (data_now - *last_emit >= frame_interval) { last_emit = data_now; }
+                last_wall_emit = wall_now;
             }
         }
 
@@ -518,19 +533,19 @@ int main(int argc, char** argv) {
             // per-frame is pure noise. Instead track the worst frame in each throttle
             // window and emit one line for it — collapsing hundreds of lines to a few
             // while still surfacing the spikes (stall-induced pile-ups) that matter
-            // most. Epoch-init last_warn (not ::min(), which overflows now - last_warn)
+            // most. Epoch-init last_warn (not ::min(), which overflows wall_now - last_warn)
             // so the first overload reports immediately.
             static std::chrono::steady_clock::time_point last_warn{};
             static double window_peak_ratio = 0.0;
             if (realtime_ratio > window_peak_ratio) { window_peak_ratio = realtime_ratio; }
             if (window_peak_ratio > overload_warn_ratio &&
-                now - last_warn >= std::chrono::seconds(warn_throttle_sec)) {
+                wall_now - last_warn >= std::chrono::seconds(warn_throttle_sec)) {
                 fprintf(stderr,
                         "[pointlio] WARNING: high risk of odom drift - pointlio can't "
                         "process fast enough. Try reducing CPU load. (input up to %.1fx "
                         "real-time over last %ds)\n",
                         window_peak_ratio, warn_throttle_sec);
-                last_warn = now;
+                last_warn = wall_now;
                 window_peak_ratio = 0.0;
             }
         }
@@ -559,10 +574,10 @@ int main(int argc, char** argv) {
         point_lio.process();
 
         auto pose = point_lio.get_pose();
-        if (!pose.empty() && (pose[0] != 0.0 || pose[1] != 0.0 || pose[2] != 0.0)) {
+        if (have_data_clock && !pose.empty() && (pose[0] != 0.0 || pose[1] != 0.0 || pose[2] != 0.0)) {
             double ts = get_publish_ts();
 
-            const bool lidar_due = !g_lidar_topic.empty() && now - *last_pc_publish >= pc_interval;
+            const bool lidar_due = !g_lidar_topic.empty() && data_now - *last_pc_publish >= pc_interval;
 
             // get_body_cloud is the loop's costliest step, so build it only when
             // a publish is due.
@@ -570,7 +585,8 @@ int main(int argc, char** argv) {
                 auto body_cloud = point_lio.get_body_cloud();
                 if (body_cloud && !body_cloud->empty()) {
                     publish_lidar(body_cloud, ts);
-                    last_pc_publish = now;
+                    *last_pc_publish += pc_interval;
+                    if (data_now - *last_pc_publish >= pc_interval) { last_pc_publish = data_now; }
                     if (pointlio_debug) {
                         fprintf(stderr, "[pointlio] publish lidar: %zu points  pose=(%.3f, %.3f, %.3f)\n", body_cloud->size(), pose[0], pose[1], pose[2]);
                     }
@@ -578,9 +594,10 @@ int main(int argc, char** argv) {
             }
 
             // Pose + covariance at odom_freq.
-            if (!g_odometry_topic.empty() && now - *last_odom_publish >= odom_interval) {
+            if (!g_odometry_topic.empty() && data_now - *last_odom_publish >= odom_interval) {
                 publish_odometry(point_lio.get_odometry(), ts);
-                last_odom_publish = now;
+                *last_odom_publish += odom_interval;
+                if (data_now - *last_odom_publish >= odom_interval) { last_odom_publish = data_now; }
                 if (pointlio_debug) {
                     fprintf(stderr, "[pointlio] publish odom: pose=(%.3f, %.3f, %.3f)\n", pose[0], pose[1], pose[2]);
                 }
@@ -605,7 +622,12 @@ int main(int argc, char** argv) {
 
     while (g_running.load()) {
         auto loop_start = std::chrono::high_resolution_clock::now();
-        run_main_iter(std::chrono::steady_clock::now());
+        // Data clock: the newest packet's sensor time. Advances in real time on live
+        // hardware, at --rate on replay, and freezes when the stream drains.
+        const uint64_t data_ns = g_latest_pkt_ns.load(std::memory_order_relaxed);
+        run_main_iter(std::chrono::steady_clock::time_point(
+            std::chrono::duration_cast<std::chrono::steady_clock::duration>(
+                std::chrono::nanoseconds(data_ns))));
 
         lcm.handleTimeout(0);
 
