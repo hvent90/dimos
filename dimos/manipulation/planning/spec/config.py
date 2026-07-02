@@ -54,6 +54,10 @@ class RobotModelConfig(ModuleConfig):
 
     name: str
     model_path: Path
+    # URDF used only for visualization. Set when model_path is not a URDF
+    # (e.g. an MJCF planning model): viewers that render URDFs fall back to
+    # this instead of failing to parse the planning model.
+    display_model_path: Path | None = None
     base_pose: PoseStamped
     joint_names: list[str]
     end_effector_link: str

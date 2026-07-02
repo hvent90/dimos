@@ -72,12 +72,18 @@ from dimos.msgs.sensor_msgs.JointState import JointState
 from dimos.msgs.sensor_msgs.MotorCommandArray import MotorCommandArray
 from dimos.navigation.movement_manager.movement_manager import MovementManager
 from dimos.navigation.replanning_a_star.module import ReplanningAStarPlanner
+from dimos.robot.manipulators.common.blueprints import planner
 from dimos.robot.unitree.g1.config import G1
 from dimos.robot.unitree.g1.g1_rerun import (
     G1_RERUN_ROOT,
     g1_costmap,
     g1_urdf_joint_state,
     g1_urdf_static_robot,
+)
+from dimos.robot.unitree.g1.manipulation import (
+    G1_ARM_SIDES,
+    g1_arm_model_config,
+    g1_arm_trajectory_task,
 )
 from dimos.simulation.scene_assets.spec import ScenePackage
 from dimos.utils.data import LfsPath
@@ -293,6 +299,21 @@ if global_config.simulation == "mujoco":
         (VoxelGridMapper, "lidar", "pointcloud"),
         (ControlCoordinator, "twist_command", "cmd_vel"),
     ]
+    # Arm manipulation planner (sim-first; real hw follows once validated).
+    # Plans against the pelvis-rooted arm models from the reachability
+    # registry and executes through the per-arm trajectory tasks below.
+    # Viser is on by default in sim -- this is the interactive test surface.
+    # Reachability map overlays are opt-in:
+    #   -o manipulationmodule.visualization.reachability_maps.g1-left=<map.npz>
+    _manipulation_stack: tuple[Any, ...] = (
+        planner(
+            robots=[g1_arm_model_config(side) for side in G1_ARM_SIDES],
+            world_backend="mujoco",
+            kinematics={"backend": "mink"},
+            floor_z=0.0,
+            visualization={"backend": "viser", "port": 8095},
+        ),
+    )
 else:
     from dimos.robot.unitree.g1.wholebody_connection import G1WholeBodyConnection
 
@@ -319,6 +340,7 @@ else:
     )
     _nav_stack = MovementManager.blueprint()
     _remappings = [(ControlCoordinator, "twist_command", "cmd_vel")]
+    _manipulation_stack = ()
 
 
 def _g1_groot_rerun_blueprint() -> Any:
@@ -409,6 +431,10 @@ _coordinator = ControlCoordinator.blueprint(
             },
         ),
         *([_arm_holder] if _arm_holder is not None else []),
+        # Per-arm trajectory execution for the ManipulationModule. Idle tasks
+        # emit nothing (servo_arms keeps the hold); an executing task outranks
+        # the hold for its 7 joints only.
+        *(g1_arm_trajectory_task(side) for side in G1_ARM_SIDES),
     ],
 ).transports(
     {
@@ -425,7 +451,7 @@ _coordinator = ControlCoordinator.blueprint(
 )
 
 unitree_g1_groot_wbc = (
-    autoconnect(_backend, _coordinator, _nav_stack, _viewer())
+    autoconnect(_backend, _coordinator, _nav_stack, *_manipulation_stack, _viewer())
     .remappings(cast("Any", _remappings))
     .global_config(robot_model="unitree_g1")
 )

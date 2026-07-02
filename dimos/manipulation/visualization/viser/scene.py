@@ -371,7 +371,7 @@ class ViserManipulationScene:
         package_paths = {package: Path(path) for package, path in config.package_paths.items()}
         return Path(
             prepare_urdf_for_drake(
-                Path(str(config.model_path)),
+                Path(str(config.display_model_path or config.model_path)),
                 package_paths=package_paths,
                 xacro_args={str(key): str(value) for key, value in config.xacro_args.items()},
                 convert_meshes=bool(config.auto_convert_meshes),

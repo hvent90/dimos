@@ -188,6 +188,9 @@ def robot_model_config(key: str, params: MapParams | None = None) -> RobotModelC
     return RobotModelConfig(
         name=key,
         model_path=arm.model_path,
+        # Viewers render URDFs; for MJCF planning models (e.g. the G1) the
+        # registry's viewer_urdf doubles as the display model.
+        display_model_path=Path(str(arm.viewer_urdf)) if arm.viewer_urdf else None,
         base_pose=map_params.base_link_pose,
         joint_names=list(arm.joint_names),
         end_effector_link=arm.ee_body,
