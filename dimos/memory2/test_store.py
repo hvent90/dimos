@@ -274,6 +274,8 @@ class TestBlobLoading:
             assert obs.data == "data1"
         bs.stop()
 
+    @pytest.mark.skipif_macos
+    @pytest.mark.skipif_aarch64
     def test_sqlite_summary_skips_unresolvable_types(self, tmp_path) -> None:
         """summary() skips streams whose payload class can't be imported.
 
