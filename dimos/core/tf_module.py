@@ -24,9 +24,12 @@ from dimos.msgs.geometry_msgs.Transform import Transform
 
 
 def on_static_publish(func: Callable[..., Any]) -> Callable[..., Any]:
-    """Mark a method to be called each time TfModule republishes its static transforms.
-
-    Use this for extra data that should ride the static-publish loop (ex: camera info).
+    """
+    Example:
+        class MyModule(TfModule):
+            @on_static_publish  # will be called on a regular interval
+            def publish_camera_info(self):
+                ...
     """
     func.on_static_publish = True  # type: ignore[attr-defined]
     return func
