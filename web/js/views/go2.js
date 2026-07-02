@@ -62,6 +62,7 @@ const ui = {
     obstacleAvoid: true,      // onboard obstacle avoidance on/off (robot boots ON)
     light: 0,                 // head-LED brightness 0..1 (robot boots off; telemetry reconciles)
     lightDragging: false,     // don't let reconcile fight an in-progress drag
+    robotVideoStalled: false, // robot-confirmed no-frames watchdog (telemetry)
     nonce: 0,                 // monotonic command id for ack matching
     pending: new Map(),       // nonce -> {el, timer}
 };
@@ -433,6 +434,9 @@ function onRobotState(s) {
         ui.estopped = s.estopped;
         dirty = true;
     }
+    if (typeof s.video_stalled === 'boolean') {
+        ui.robotVideoStalled = s.video_stalled;  // robot-confirmed camera stall
+    }
     if (typeof s.obstacle_avoidance === 'boolean' && s.obstacle_avoidance !== ui.obstacleAvoid) {
         ui.obstacleAvoid = s.obstacle_avoidance;
         renderObstacleToggle();
@@ -583,9 +587,11 @@ function renderTelemetryGrid() {
 }
 
 let _lastHudSample = 0;
+let _noVideoSinceMs = 0;  // connected-but-never-saw-a-frame escalation timer
 function startTick() {
     stopTick();
     _lastHudSample = performance.now();
+    _noVideoSinceMs = 0;
     tickTimer = setInterval(() => {
         // Sample command send rate (cmdSendCount incremented in the drive loop).
         const now = performance.now();
@@ -602,6 +608,26 @@ function startTick() {
         // Hide the benchmark timestamp strip from the video (display-only).
         applyStampCrop();
 
+        // Never-got-video escalation: connected but no first frame → after 8s
+        // stop saying "Negotiating…" and name the likely culprit. The robot's
+        // no-frames watchdog flag (telemetry) upgrades it to a confirmed
+        // diagnosis. Both clear naturally once frames arrive (placeholder
+        // hides on 'playing').
+        const chOpen = state.cmdChannel && state.cmdChannel.readyState === 'open';
+        const statusEl = document.getElementById('teleop-status');
+        if (statusEl && chOpen && !state.videoStall.armed) {
+            if (!_noVideoSinceMs) _noVideoSinceMs = now;
+            if (ui.robotVideoStalled) {
+                statusEl.textContent =
+                    'Robot reports its camera is stalled — power-cycle the robot';
+            } else if (now - _noVideoSinceMs > 8000) {
+                statusEl.textContent =
+                    'Connected — no video from robot (power-cycle it if this persists)';
+            }
+        } else {
+            _noVideoSinceMs = 0;
+        }
+
         // Video-freshness lockout (keyboard loop drives state.videoStall):
         // stalled → overlay + drive pill off; the loop already blocks sends.
         const lost = document.getElementById('video-lost');
@@ -609,6 +635,14 @@ function startTick() {
         if (lost && lost.classList.contains('hidden') !== !stalled) {
             lost.classList.toggle('hidden', !stalled);
             refreshControls();  // re-render the DRIVE pill on stall transitions
+        }
+        // Mid-stream stall: enrich the overlay when the robot CONFIRMS its
+        // camera died (vs a plain network freeze).
+        if (lost && stalled) {
+            const label = lost.querySelector('.term-caps');
+            if (label) label.textContent = ui.robotVideoStalled
+                ? 'robot camera stalled — power-cycle the robot · drive disabled'
+                : 'video stalled — drive disabled';
         }
 
         // Summary always; detail grid rendered (hidden until expanded).
