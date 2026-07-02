@@ -11,6 +11,7 @@
 # WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
 # See the License for the specific language governing permissions and
 # limitations under the License.
+from collections.abc import Callable
 import threading
 import time
 from typing import Any
@@ -20,6 +21,15 @@ from pydantic import Field
 from dimos.core.core import rpc
 from dimos.core.module import Module, ModuleConfig
 from dimos.msgs.geometry_msgs.Transform import Transform
+
+
+def on_static_publish(func: Callable[..., Any]) -> Callable[..., Any]:
+    """Mark a method to be called each time TfModule republishes its static transforms.
+
+    Use this for extra data that should ride the static-publish loop (ex: camera info).
+    """
+    func.on_static_publish = True  # type: ignore[attr-defined]
+    return func
 
 
 class TfModuleConfig(ModuleConfig):
@@ -39,6 +49,19 @@ class TfModule(Module):
         # created lazily in start() so the module stays picklable for worker deployment
         self._static_publish_stop: threading.Event | None = None
         self.static_transforms = self._resolve_static_transforms()
+        self._on_static_publish_callbacks = self._find_static_publish_callbacks()
+
+    def _find_static_publish_callbacks(self) -> list[Callable[[], None]]:
+        callbacks: list[Callable[[], None]] = []
+        seen: set[str] = set()
+        for klass in type(self).__mro__:
+            for name, member in vars(klass).items():
+                if name in seen:
+                    continue
+                seen.add(name)
+                if callable(member) and getattr(member, "on_static_publish", False):
+                    callbacks.append(getattr(self, name))
+        return callbacks
 
     @rpc
     def start(self) -> None:
@@ -116,10 +139,8 @@ class TfModule(Module):
                 for transform in self.static_transforms.values()
             )
         )
-        self._on_static_publish()
-
-    def _on_static_publish(self) -> None:
-        """Callback for modules to publish extra data (ex: camera info) in the static loop."""
+        for callback in self._on_static_publish_callbacks:
+            callback()
 
     def _stop_static_publish(self) -> None:
         if self._static_publish_stop is not None:

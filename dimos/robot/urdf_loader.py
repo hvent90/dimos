@@ -28,11 +28,7 @@ from dimos.robot.model_parser import JointDescription, ModelDescription, parse_m
 
 
 class UrdfLoader(BaseModel):
-    """Lazily parses a URDF/MJCF model and exposes its derived frame info.
-
-    Parsing is deferred until first access so referencing a model in a config
-    never triggers an LFS download or disk read.
-    """
+    """Lazily parses a URDF/MJCF model and exposes its derived frame info."""
 
     name: str
     model_path: Path | None = None

@@ -12,6 +12,8 @@
 # See the License for the specific language governing permissions and
 # limitations under the License.
 
+from dataclasses import dataclass
+from functools import cached_property
 from importlib import resources
 from pathlib import Path
 
@@ -34,9 +36,27 @@ def camera_info_static() -> CameraInfo:
         return CameraInfo.from_yaml(str(yaml_path))
 
 
-Go2Config = UrdfLoader(
+@dataclass(frozen=True)
+class _Go2Config:
+    name: str
+    urdf_path: Path
+
+    @cached_property
+    def urdf(self) -> UrdfLoader:
+        return UrdfLoader(name=self.name, model_path=self.urdf_path)
+
+    @property
+    def body_frame(self) -> str:
+        return self.urdf.body_frame
+
+    @property
+    def static_transforms(self) -> dict[str, Transform]:
+        return self.urdf.static_transforms
+
+
+Go2Config = _Go2Config(
     name="unitree_go2",
-    model_path=Path(__file__).parent / "go2.urdf",
+    urdf_path=Path(__file__).parent / "go2.urdf",
 )
 
 
@@ -51,13 +71,13 @@ def odom_to_tf(odom: Odometry) -> list[Transform]:
     )
     statics = [
         Transform(
-            translation=t.translation,
-            rotation=t.rotation,
-            frame_id=t.frame_id,
-            child_frame_id=t.child_frame_id,
+            translation=transform.translation,
+            rotation=transform.rotation,
+            frame_id=transform.frame_id,
+            child_frame_id=transform.child_frame_id,
             ts=odom.ts,
         )
-        for t in (
+        for transform in (
             Go2Config.static_transforms["camera_link"],
             Go2Config.static_transforms["camera_optical"],
             Go2Config.static_transforms["lidar_link"],

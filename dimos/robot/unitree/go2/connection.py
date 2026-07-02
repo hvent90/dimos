@@ -28,7 +28,7 @@ from dimos.core.core import rpc
 from dimos.core.global_config import GlobalConfig
 from dimos.core.resource import CompositeResource
 from dimos.core.stream import In, Out
-from dimos.core.tf_module import TfModule, TfModuleConfig
+from dimos.core.tf_module import TfModule, TfModuleConfig, on_static_publish
 from dimos.memory2.replay import Replay, resolve_db_path
 from dimos.memory2.store.sqlite import SqliteStore
 from dimos.msgs.geometry_msgs.PoseStamped import PoseStamped
@@ -265,7 +265,8 @@ class GO2Connection(TfModule, Camera, Pointcloud):
 
         super().stop()
 
-    def _on_static_publish(self) -> None:
+    @on_static_publish
+    def _publish_camera_info(self) -> None:
         self._camera_info_static.frame_id = self.frame_mapping["camera_optical"]
         self.camera_info.publish(self._camera_info_static)
 
