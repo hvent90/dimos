@@ -142,10 +142,8 @@ def joint_target_to_global_names(
 def joint_state_to_ordered_positions(
     joint_state: JointState,
     *,
-    robot_name: str,
     joint_names: Sequence[str],
     joint_name_mapping: Mapping[str, str],
-    context: str,
 ) -> NDArray[np.float64]:
     """Convert a JointState to an array ordered by local robot joint names."""
     if not joint_state.name:
@@ -158,18 +156,15 @@ def joint_state_to_ordered_positions(
 
     joint_name_set = set(joint_names)
     name_to_pos: dict[str, float] = {}
-    prefix = f"{robot_name}/"
     for name, position in zip(joint_state.name, joint_state.position, strict=True):
         if name in joint_name_set:
             resolved_name = name
         elif name in joint_name_mapping:
             resolved_name = joint_name_mapping[name]
         elif is_global_joint_name(name):
-            if not name.startswith(prefix):
-                continue
-            resolved_name = name[len(prefix) :]
+            resolved_name = name.split("/", maxsplit=1)[1]
             if resolved_name not in joint_name_set:
-                raise ValueError(f"Unknown global joint name for {context}: {name}")
+                raise ValueError(f"Unknown global joint name: {name}")
         else:
             resolved_name = joint_name_mapping.get(name, name)
 
@@ -179,5 +174,5 @@ def joint_state_to_ordered_positions(
 
     missing = [name for name in joint_names if name not in name_to_pos]
     if missing:
-        raise ValueError(f"JointState missing joints for {context}: {missing}")
+        raise ValueError(f"JointState missing joints: {missing}")
     return np.asarray([name_to_pos[name] for name in joint_names], dtype=np.float64)

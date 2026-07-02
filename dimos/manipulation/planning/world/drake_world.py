@@ -876,10 +876,8 @@ class DrakeWorld(WorldSpec, VisualizationSpec):
         robot_data = self._robots[robot_id]
         return joint_state_to_ordered_positions(
             joint_state,
-            robot_name=robot_data.config.name,
             joint_names=robot_data.config.joint_names,
             joint_name_mapping=robot_data.config.joint_name_mapping,
-            context="DrakeWorld",
         )
 
     def _robot_id_for_group(self, group_id: PlanningGroupID) -> WorldRobotID:

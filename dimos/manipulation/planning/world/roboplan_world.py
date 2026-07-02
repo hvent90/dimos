@@ -625,10 +625,8 @@ class RoboPlanWorld:
         robot = self._get_robot(robot_id)
         return joint_state_to_ordered_positions(
             joint_state,
-            robot_name=robot.config.name,
             joint_names=robot.config.joint_names,
             joint_name_mapping=robot.config.joint_name_mapping,
-            context="RoboPlanWorld",
         )
 
     def _require_finalized(self) -> None:
