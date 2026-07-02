@@ -78,6 +78,7 @@ from dimos.robot.unitree.g1.g1_rerun import (
     G1_RERUN_ROOT,
     g1_costmap,
     g1_urdf_joint_state,
+    g1_urdf_static_joints,
     g1_urdf_static_robot,
 )
 from dimos.robot.unitree.g1.manipulation import (
@@ -270,6 +271,7 @@ if global_config.simulation == "mujoco":
     _auto_dry_run = False
     _default_ramp_seconds = 0.0
     _decimation: int | None = 1
+    _n_workers = 2  # sim: keep the default worker count
     _arm_holder = TaskConfig(
         name="servo_arms",
         type="servo",
@@ -306,13 +308,24 @@ else:
     _backend = G1WholeBodyConnection.blueprint(release_sport_mode=True)
     _adapter_type = "transport_lcm"
     _adapter_address = ""
-    _tick_rate = 500.0
+    # 100 Hz outer loop: policy runs at 50 Hz (decimation 2) and lowcmd
+    # streams at 100 Hz. The onboard Jetson can't sustain a 500 Hz Python
+    # tick loop -- it collapses to ~90 Hz and starves the policy of fresh
+    # state, so balance decays. 100 Hz holds cleanly and matches the
+    # reference deployment's rate.
+    _tick_rate = 100.0
     # Real hardware: come up unarmed + dry-run; operator must click
     # Activate (10 s ramp) after verifying commands.
     _auto_arm = False
     _auto_dry_run = True
     _default_ramp_seconds = 10.0
-    _decimation = None  # task default (10) pairs with 500 Hz tick.
+    _decimation = 2  # 100 Hz tick / 2 = 50 Hz policy (training + sim rate).
+    # Give each heavy module (Rerun bridge, connection, coordinator, websocket
+    # servers) its own process. The bridge is already dedicated_worker, but
+    # with too few workers the other modules crowd one process and the
+    # system-wide contention starves the bridge's gRPC senders -- the viewer
+    # falls behind. Isolating everything keeps it streaming live.
+    _n_workers = 10
     # Real hardware needs the arms held -- kd damping alone would let
     # them sag toward singular configurations between trajectories.
     _arm_holder = TaskConfig(
@@ -370,10 +383,18 @@ _static_rerun_entities: dict[str, Any] = {
     # MujocoSimModule logs odom as a Transform3D at world/odom; the robot
     # mesh lives underneath and link transforms are driven by joint state.
     G1_RERUN_ROOT: g1_urdf_static_robot(root_path=G1_RERUN_ROOT),
+    # Fixed-joint (and rest-pose) link transforms, logged once. The per-frame
+    # animator (g1_urdf_joint_state) then only updates the movable joints.
+    f"{G1_RERUN_ROOT}/_joint_rest": g1_urdf_static_joints(root_path=G1_RERUN_ROOT),
 }
 _static_rerun_entities.update(scene_package_static_entities(global_config.scene_package))
 
 _rerun_config = {
+    # Cap the in-RAM recording so a late-connecting viewer replays a small
+    # recent slice instead of a multi-GB backlog. The "25%" default is ~3.9 GB
+    # on the onboard Jetson, which a viewer can never catch up to over the
+    # link. Matches the g1 nav blueprints.
+    "memory_limit": "512MB",
     "blueprint": _g1_groot_rerun_blueprint,
     "visual_override": {
         # This blueprint uses raycast lidar, so suppress raw camera streams
@@ -388,7 +409,15 @@ _rerun_config = {
         "world/path": _g1_nav_path,
     },
     "max_hz": {
-        "world/coordinator_joint_state": 20.0,
+        # 15 Hz keeps the URDF mesh produce rate under rerun 0.32.0a1's serve
+        # throughput so the viewer holds live instead of drifting behind.
+        "world/coordinator_joint_state": 15.0,
+        # Raw whole-body state streams arrive at ~440 Hz. The mesh animates
+        # from coordinator_joint_state (above); these are only useful as debug
+        # plots, so throttle them hard instead of flooding Rerun's store.
+        "world/g1/imu": 10.0,
+        "world/g1/motor_states": 10.0,
+        "world/g1/motor_command": 10.0,
         "world/global_map": 1.0,
         "world/global_costmap": 2.0,
         "world/navigation_costmap": 2.0,
@@ -455,5 +484,5 @@ _coordinator = ControlCoordinator.blueprint(
 unitree_g1_groot_wbc = (
     autoconnect(_backend, _coordinator, _nav_stack, *_manipulation_stack, _viewer())
     .remappings(cast("Any", _remappings))
-    .global_config(robot_model="unitree_g1")
+    .global_config(robot_model="unitree_g1", n_workers=_n_workers)
 )

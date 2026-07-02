@@ -22,6 +22,7 @@ import numpy as np
 
 from dimos.visualization.rerun.urdf_robot import (
     UrdfRobotJointStateRerunFactory,
+    UrdfRobotStaticJointsRerunFactory,
     UrdfRobotStaticRerunFactory,
 )
 
@@ -48,6 +49,15 @@ def g1_costmap(grid: Any) -> Any:
 def g1_urdf_static_robot(root_path: str = G1_RERUN_ROOT) -> UrdfRobotStaticRerunFactory:
     """Create a static Rerun logger for the G1 URDF visual meshes."""
     return UrdfRobotStaticRerunFactory(urdf_path=G1_RERUN_URDF, root_path=root_path)
+
+
+def g1_urdf_static_joints(root_path: str = G1_RERUN_ROOT) -> UrdfRobotStaticJointsRerunFactory:
+    """Static logger for the G1's fixed-joint (and rest-pose) link transforms.
+
+    Pairs with :func:`g1_urdf_joint_state`, which animates only the movable
+    joints -- the fixed ones are set once here.
+    """
+    return UrdfRobotStaticJointsRerunFactory(urdf_path=G1_RERUN_URDF, root_path=root_path)
 
 
 def g1_urdf_joint_state(root_path: str = G1_RERUN_ROOT) -> UrdfRobotJointStateRerunFactory:
