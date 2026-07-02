@@ -304,7 +304,7 @@ if global_config.simulation == "mujoco":
 else:
     import os
 
-    from dimos.hardware.sensors.lidar.fastlio2.module import FastLio2
+    from dimos.hardware.sensors.lidar.pointlio.module import PointLio
     from dimos.mapping.ray_tracing.module import RayTracingVoxelMap
     from dimos.robot.unitree.g1.wholebody_connection import G1WholeBodyConnection
 
@@ -340,14 +340,15 @@ else:
         auto_start=True,
         params={"default_positions": ARM_DEFAULT_POSE},
     )
-    # Real-hw nav: the proven unitree-g1-nav-simple front-end (Livox MID-360
-    # through FAST-LIO2 for world-registered clouds + odometry, raytracing
-    # voxel map -> height costmap -> replanning A*), but executed through the
+    # Real-hw nav: the unitree-g1-nav-simple middle (raytracing voxel map ->
+    # height costmap -> replanning A*) fed by the Livox MID-360 through
+    # Point-LIO (the go2 nav-3d front-end; our FAST-LIO2 build segfaulted and
+    # Point-LIO is the actively maintained LIO), executed through the
     # coordinator's twist_command by the WBC policy instead of sport mode.
-    # FAST-LIO's odom frame has ground at z~0 (init_pose applied), matching
-    # the costmap's height assumptions.
+    # The LIO world frame originates at the lidar boot pose (ground ~1.2 m
+    # below z=0); visuals account for it below.
     _nav_stack = autoconnect(
-        FastLio2.blueprint(
+        PointLio.blueprint(
             host_ip=os.getenv("LIDAR_HOST_IP", "192.168.123.164"),
             lidar_ip=os.getenv("LIDAR_IP", "192.168.123.120"),
         ),
@@ -358,7 +359,7 @@ else:
             emit_every=0,
             # Global map at ~1 Hz (lidar runs ~4-5 Hz effective). CostMapper
             # recomputes per emit, so this also paces the costmap. Full-rate
-            # emits saturated the Orin (load ~26/8) and starved FAST-LIO.
+            # emits saturated the Orin (load ~26/8) and starved the LIO.
             global_emit_every=4,
         ),
         CostMapper.blueprint(
@@ -429,13 +430,13 @@ def _g1_nav_path(path: NavPath) -> Any:
 
 # Robot mesh root. Sim: MujocoSimModule publishes /odom (PoseStamped), which
 # the bridge logs as a Transform3D at world/odom -- the mesh lives underneath.
-# Real hw: FAST-LIO publishes /odometry (Odometry) instead, logged at
+# Real hw: the LIO publishes /odometry (Odometry) instead, logged at
 # world/odometry, so the mesh roots there and _g1_real_odometry_root shapes
 # the transform.
 _G1_ROOT = G1_RERUN_ROOT if global_config.simulation == "mujoco" else "world/odometry/g1"
 
 
-# The FAST-LIO world frame originates at the lidar's boot pose (the physical
+# The LIO world frame originates at the lidar's boot pose (the physical
 # ground sits ~1.2 m below z=0). Like the nav blueprints' sensor-attached
 # robot marker, everything drawn for the robot derives from the sensor pose;
 # here the offsets come from the URDF itself instead of magic numbers.
@@ -458,7 +459,7 @@ def _g1_pelvis_to_mid360() -> Any:
 
 
 def _g1_real_odometry_root(odom: Any) -> Any:
-    """Robot-mesh root: pelvis pose composed from FAST-LIO odometry.
+    """Robot-mesh root: pelvis pose composed from LIO odometry.
 
     The odometry tracks the mid360 body frame, so the pelvis pose is
     T_world_mid360 @ inverse(pelvis->mid360 at rest). Waist articulation
@@ -485,7 +486,7 @@ def _g1_real_odometry_root(odom: Any) -> Any:
 
 
 def _g1_real_ground_z() -> float:
-    """Ground height in the FAST-LIO boot frame: -(mount z + nominal pelvis z)."""
+    """Ground height in the LIO boot frame: -(mount z + nominal pelvis z)."""
     return -(float(_g1_pelvis_to_mid360()[2, 3]) + _G1_NOMINAL_PELVIS_Z)
 
 
