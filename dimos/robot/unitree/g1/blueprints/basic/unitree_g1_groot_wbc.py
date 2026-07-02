@@ -353,7 +353,17 @@ _manipulation_stack: tuple[Any, ...] = (
         world_backend="mujoco",
         kinematics={"backend": "mink"},
         floor_z=0.0,
-        visualization={"backend": "viser", "port": 8095},
+        # Deploy-branch defaults: viser reachable over the LAN and execute
+        # enabled (still gated by the coordinator's arm/dry-run state).
+        # Mainline keeps host=127.0.0.1 and allow_plan_execute=False;
+        # baked in here because -o overrides replace this whole dict, so
+        # per-flag opt-ins would silently drop backend/port.
+        visualization={
+            "backend": "viser",
+            "port": 8095,
+            "host": "0.0.0.0",
+            "allow_plan_execute": True,
+        },
     ),
 )
 
