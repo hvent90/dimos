@@ -140,36 +140,33 @@ jobs:
           enable-cache: true
       - name: Install dependencies
         run: uv sync --group tests-self-hosted --frozen
-      - name: Install Nix
-        # Needed to build the nav_stack native modules below. The script is
-        # a no-op if nix is already on PATH.
-        run: bash docker/ros/install-nix.sh
-      - name: Build nav_stack native modules
-        # Each module's *_rosbag.py test pre-flights the binary's existence
-        # and pytest.skip()s if absent. Run each NativeModuleConfig's
-        # build_command now so the binaries are at result/bin/<name> by the
-        # time the test step runs.
+      - name: Install Nix (with Cachix substituter)
+        # Sets up Nix pointed at the dimensionalos Cachix cache so the native
+        # module fetch below is a substitution, not a from-scratch build. The
+        # cache is populated by ci.yml's cmu-nav-natives job on main. Unlike
+        # ci.yml, release.yml has no cmu-nav-natives job of its own, so this
+        # relies on the cache already being warm from CI (falls back to a
+        # local build otherwise). install-nix.sh early-exits if nix is present
+        # WITHOUT writing the substituter config, so we (re-)write nix.conf.
         run: |
-          uv run python - <<'EOF'
-          import importlib, subprocess
-          from pathlib import Path
-
-          MODULES = [
-              ("dimos.navigation.nav_stack.modules.local_planner.local_planner",     "LocalPlannerConfig"),
-              ("dimos.navigation.nav_stack.modules.path_follower.path_follower",     "PathFollowerConfig"),
-              ("dimos.navigation.nav_stack.modules.pgo.pgo",                         "PGOConfig"),
-              ("dimos.navigation.nav_stack.modules.terrain_analysis.terrain_analysis", "TerrainAnalysisConfig"),
-              ("dimos.navigation.nav_stack.modules.far_planner.far_planner",         "FarPlannerConfig"),
-          ]
-          for mod_name, cfg_name in MODULES:
-              cfg = getattr(importlib.import_module(mod_name), cfg_name)()
-              exe = Path(cfg.cwd) / cfg.executable
-              if exe.exists():
-                  print(f"OK:    {cfg_name} already built at {exe}", flush=True)
-                  continue
-              print(f"BUILD: {cfg_name} in {cfg.cwd}: {cfg.build_command}", flush=True)
-              subprocess.run(cfg.build_command, shell=True, cwd=cfg.cwd, check=True)
+          export PATH="/nix/var/nix/profiles/default/bin:$PATH"
+          bash docker/ros/install-nix.sh
+          sudo mkdir -p /etc/nix
+          sudo tee /etc/nix/nix.conf > /dev/null <<'EOF'
+          experimental-features = nix-command flakes
+          extra-substituters = https://dimensionalos.cachix.org
+          extra-trusted-public-keys = dimensionalos.cachix.org-1:20ynj6TjpoD3qTxkdNoeHtgs2G2pNvgAq1EQYLTHJXI=
+          always-allow-substitutes = true
+          build-users-group =
+          max-jobs = auto
           EOF
+          echo "/nix/var/nix/profiles/default/bin" >> "$GITHUB_PATH"
+      - name: Fetch cmu_nav native modules from Cachix
+        # Each cmu_nav module's *_rosbag.py test pre-flights the binary's
+        # existence and pytest.skip()s if absent. This discovers every module
+        # with a build_command and runs it (a fast Cachix substitution on a
+        # warm cache).
+        run: uv run bin/build-cmu-nav-natives
       - name: Install ZED SDK
         # Stereolabs proprietary SDK, distributed as a self-extracting .run
         # installer (not on apt/pip). `runtime_only` skips samples/headers/docs;
