@@ -89,6 +89,13 @@ class Go2HostedConnection(GO2Connection):
     # Queued (non-urgent) commands beyond this are busy-rejected — bounds the
     # backlog a spamming/laggy operator can build behind a slow command.
     _MAX_PENDING_CMDS = 4
+    # Nonce dedup: transport/UI duplicates within this window re-ack the prior
+    # result instead of re-executing. Short on purpose — browser nonces restart
+    # at 1 per session, so entries must age out before a quick reconnect reuses
+    # them. Applies to nonce'd JSON commands only; cmd_vel twists carry no
+    # nonce and are guarded by the monotonic-ts drop in move().
+    _NONCE_TTL_SEC = 10.0
+    _NONCE_CACHE_MAX = 64
 
     def __init__(self, **kwargs: Any) -> None:
         super().__init__(**kwargs)
@@ -106,6 +113,8 @@ class Go2HostedConnection(GO2Connection):
         self._cmd_executor: ThreadPoolExecutor | None = None
         self._cmd_pending = 0
         self._cmd_lock = threading.Lock()
+        # nonce → (result | None while in flight, monotonic stamp)
+        self._nonce_results: dict[Any, tuple[bool | None, float]] = {}
 
     @rpc
     def start(self) -> None:
@@ -256,6 +265,34 @@ class Go2HostedConnection(GO2Connection):
         dedicated thread: a stop must never wait behind a 3s StandReady.
         """
 
+        # Nonce dedup (B2): a duplicate of a finished command re-acks its
+        # result; a duplicate of an in-flight command is dropped (the original
+        # will ack). Transient rejections below UNWIND the reservation so a
+        # genuine retry can still execute.
+        if nonce is not None:
+            now = time.monotonic()
+            with self._cmd_lock:
+                self._nonce_results = {
+                    n: (r, t) for n, (r, t) in self._nonce_results.items()
+                    if now - t < self._NONCE_TTL_SEC
+                }
+                if nonce in self._nonce_results:
+                    prior, _ = self._nonce_results[nonce]
+                    logger.info("%s: duplicate nonce %r — %s", label, nonce,
+                                "re-acking" if prior is not None else "in flight")
+                    if prior is not None:
+                        self._send_ack(nonce, prior)
+                    return
+                if len(self._nonce_results) >= self._NONCE_CACHE_MAX:
+                    oldest = min(self._nonce_results, key=lambda n: self._nonce_results[n][1])
+                    del self._nonce_results[oldest]
+                self._nonce_results[nonce] = (None, now)
+
+        def _unwind_nonce() -> None:
+            if nonce is not None:
+                with self._cmd_lock:
+                    self._nonce_results.pop(nonce, None)
+
         def runner() -> None:
             ok = False
             try:
@@ -266,6 +303,9 @@ class Go2HostedConnection(GO2Connection):
                 if not urgent:
                     with self._cmd_lock:
                         self._cmd_pending -= 1
+            if nonce is not None:
+                with self._cmd_lock:
+                    self._nonce_results[nonce] = (ok, time.monotonic())
             self._send_ack(nonce, ok)
 
         if urgent:
@@ -274,19 +314,25 @@ class Go2HostedConnection(GO2Connection):
 
         executor = self._cmd_executor
         if executor is None:  # not started / already stopped
+            _unwind_nonce()
             self._send_ack(nonce, False)
             return
         with self._cmd_lock:
-            if self._cmd_pending >= self._MAX_PENDING_CMDS:
-                logger.warning("%s rejected: %d commands already pending", label, self._cmd_pending)
-                self._send_ack(nonce, False)
-                return
-            self._cmd_pending += 1
+            busy = self._cmd_pending >= self._MAX_PENDING_CMDS
+            if busy:
+                self._nonce_results.pop(nonce, None)
+            else:
+                self._cmd_pending += 1
+        if busy:
+            logger.warning("%s rejected: command backlog full", label)
+            self._send_ack(nonce, False)
+            return
         try:
             executor.submit(runner)
         except RuntimeError:  # shutdown raced us
             with self._cmd_lock:
                 self._cmd_pending -= 1
+            _unwind_nonce()
             self._send_ack(nonce, False)
 
     def _handle_sport_cmd(self, msg: dict[str, Any]) -> None:

@@ -66,6 +66,7 @@ def _bare_connection() -> Go2HostedConnection:
     conn._cmd_executor = ThreadPoolExecutor(max_workers=1, thread_name_prefix="Go2CmdTest")
     conn._cmd_pending = 0
     conn._cmd_lock = threading.Lock()
+    conn._nonce_results = {}
     conn._rage_active = False
     _live_executors.append(conn._cmd_executor)
     return conn
@@ -275,6 +276,67 @@ def test_backlog_past_max_pending_is_busy_rejected(monkeypatch: pytest.MonkeyPat
     _wait_for(lambda: len(acks) == total)
     accepted = [a for a in acks if a[1] is True]
     assert len(accepted) == conn._MAX_PENDING_CMDS
+
+
+# ─── nonce dedup (transport/UI duplicates) ───────────────────────────
+
+
+def test_duplicate_nonce_reacks_without_reexecution(monkeypatch: pytest.MonkeyPatch) -> None:
+    """Same nonce twice → one execution, second gets the cached ack."""
+    conn = _bare_connection()
+    conn.connection.sport_command.return_value = True
+    acks: list[tuple[Any, bool]] = []
+    monkeypatch.setattr(conn, "_send_ack", lambda nonce, ok: acks.append((nonce, ok)))
+
+    conn._handle_sport_cmd({"name": "Hello", "nonce": 42})
+    _wait_ack(acks)
+    conn._handle_sport_cmd({"name": "Hello", "nonce": 42})  # replayed frame
+    _wait_for(lambda: len(acks) == 2)
+
+    conn.connection.sport_command.assert_called_once()
+    assert acks == [(42, True), (42, True)]
+
+
+def test_inflight_duplicate_is_dropped(monkeypatch: pytest.MonkeyPatch) -> None:
+    """Duplicate while the original is still running: no second execution,
+    no second ack (the original's ack covers it)."""
+    conn = _bare_connection()
+    release = threading.Event()
+    conn.connection.sport_command.side_effect = lambda _id: release.wait(2.0) or True
+    acks: list[tuple[Any, bool]] = []
+    monkeypatch.setattr(conn, "_send_ack", lambda nonce, ok: acks.append((nonce, ok)))
+
+    conn._handle_sport_cmd({"name": "Hello", "nonce": 9})
+    conn._handle_sport_cmd({"name": "Hello", "nonce": 9})  # dupe while running
+    release.set()
+    _wait_ack(acks)
+    time.sleep(0.05)  # would-be second ack window
+
+    assert conn.connection.sport_command.call_count == 1
+    assert acks == [(9, True)]
+
+
+def test_busy_rejection_does_not_poison_nonce(monkeypatch: pytest.MonkeyPatch) -> None:
+    """A busy-rejected nonce can retry once the backlog drains."""
+    conn = _bare_connection()
+    release = threading.Event()
+    conn.connection.sport_command.side_effect = lambda _id: release.wait(2.0) or True
+    acks: list[tuple[Any, bool]] = []
+    monkeypatch.setattr(conn, "_send_ack", lambda nonce, ok: acks.append((nonce, ok)))
+
+    # Fill worker + queue, then one more (nonce=99) gets busy-rejected.
+    for i in range(conn._MAX_PENDING_CMDS):
+        conn._handle_sport_cmd({"name": "Hello", "nonce": i})
+    conn._handle_sport_cmd({"name": "Hello", "nonce": 99})
+    assert (99, False) in acks
+
+    release.set()
+    _wait_for(lambda: len([a for a in acks if a[1]]) == conn._MAX_PENDING_CMDS)
+
+    # Retry of the rejected nonce now executes for real.
+    conn._handle_sport_cmd({"name": "Hello", "nonce": 99})
+    _wait_for(lambda: (99, True) in acks)
+    assert conn.connection.sport_command.call_count == conn._MAX_PENDING_CMDS + 1
 
 
 def test_damp_bypasses_busy_queue(monkeypatch: pytest.MonkeyPatch) -> None:
