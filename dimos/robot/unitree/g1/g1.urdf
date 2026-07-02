@@ -567,10 +567,13 @@
     <child link="d435_link"/>
   </joint>
 
-  <!-- mid360 -->
+  <!-- mid360. The unit is physically mounted upside down (roll pi) plus a
+       2.3 deg pitch: FAST-LIO odometry reports the sensor body rolled
+       ~180 deg relative to its gravity-aligned world frame while the robot
+       stands upright, matching the pimsim lidar calibration. -->
   <link name="mid360_link"></link>
   <joint name="mid360_joint" type="fixed">
-    <origin xyz="0.0002835 0.00003 0.41618" rpy="0 0.04014257279586953 0"/>
+    <origin xyz="0.0002835 0.00003 0.41618" rpy="3.141592653589793 0.04014257279586953 0"/>
     <parent link="torso_link"/>
     <child link="mid360_link"/>
   </joint>
