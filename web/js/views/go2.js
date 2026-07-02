@@ -60,7 +60,8 @@ const ui = {
     speedMode: 'normal',      // speed bar selection
     selectedCams: ['cam1'],   // active camera tabs (default Go2)
     obstacleAvoid: true,      // onboard obstacle avoidance on/off (robot boots ON)
-    lightOn: false,           // head LED (robot boots off; telemetry reconciles)
+    light: 0,                 // head-LED brightness 0..1 (robot boots off; telemetry reconciles)
+    lightDragging: false,     // don't let reconcile fight an in-progress drag
     nonce: 0,                 // monotonic command id for ack matching
     pending: new Map(),       // nonce -> {el, timer}
 };
@@ -143,10 +144,12 @@ export function renderGo2(c) {
                     <button id="obstacle-toggle" class="px-3 py-1 text-xs term-caps rounded border border-dim-700 text-dim-400">ON</button>
                 </section>
 
-                <!-- Head light toggle -->
-                <section class="bg-bg-950 border border-[#2a2a2a] rounded-xl p-4 shrink-0 flex items-center justify-between">
-                    <span class="text-sm text-gray-400">💡 Light</span>
-                    <button id="light-toggle" class="px-3 py-1 text-xs term-caps rounded border border-[#2a2a2a] text-gray-500">OFF</button>
+                <!-- Head light brightness (0..1 → firmware levels 0-10) -->
+                <section class="bg-bg-950 border border-[#2a2a2a] rounded-xl p-4 shrink-0 flex items-center gap-3">
+                    <span class="text-sm text-gray-400 shrink-0">💡 Light</span>
+                    <input id="light-slider" type="range" min="0" max="1" step="0.1" value="0"
+                        class="flex-1 accent-[#b0e1f0]">
+                    <span id="light-val" class="text-xs font-mono text-dim-400 w-10 text-right">0%</span>
                 </section>
 
                 <!-- Telemetry: summary always; click to expand full detail. -->
@@ -252,8 +255,7 @@ function wireGo2() {
 
     document.getElementById('obstacle-toggle').addEventListener('click', toggleObstacleAvoid);
     renderObstacleToggle();
-    document.getElementById('light-toggle').addEventListener('click', toggleLight);
-    renderLightToggle();
+    wireLightSlider();
 
     // Video: webrtc.js sets srcObject + display:block on ontrack, but doesn't
     // know about our placeholder. Hide the dog+status overlay once frames flow
@@ -370,23 +372,42 @@ function renderObstacleToggle() {
     b.classList.toggle('text-gray-500', !on);
 }
 
-// ── head light ───────────────────────────────────────────────────────
-function toggleLight() {
-    if (!state.stateChannel || state.stateChannel.readyState !== 'open') return;
-    ui.lightOn = !ui.lightOn;
-    renderLightToggle();
-    state.stateChannel.send(JSON.stringify(
-        { type: 'light', enabled: ui.lightOn, nonce: ++ui.nonce }));
+// ── head light (brightness slider, 0..1) ─────────────────────────────
+// Live label while dragging; send on release only ({type:'light',
+// brightness}). Ack feedback uses the cmd-sending/ok/err range classes.
+function wireLightSlider() {
+    const s = document.getElementById('light-slider');
+    if (!s) return;
+    const drag = (on) => { ui.lightDragging = on; };
+    s.addEventListener('pointerdown', () => drag(true));
+    s.addEventListener('pointerup', () => drag(false));
+    s.addEventListener('touchstart', () => drag(true), { passive: true });
+    s.addEventListener('touchend', () => drag(false));
+    s.addEventListener('input', () => renderLightValue(parseFloat(s.value)));
+    s.addEventListener('change', () => sendLight(parseFloat(s.value)));
+    renderLightSlider();
 }
 
-function renderLightToggle() {
-    const b = document.getElementById('light-toggle');
-    if (!b) return;
-    const on = ui.lightOn;
-    b.textContent = on ? 'ON' : 'OFF';
-    b.classList.toggle('text-dim-400', on);
-    b.classList.toggle('border-dim-700', on);
-    b.classList.toggle('text-gray-500', !on);
+function sendLight(brightness) {
+    if (!state.stateChannel || state.stateChannel.readyState !== 'open') return;
+    ui.light = brightness;
+    const s = document.getElementById('light-slider');
+    if (s) { s.classList.remove('cmd-ok', 'cmd-err'); s.classList.add('cmd-sending'); }
+    const nonce = ++ui.nonce;
+    state.stateChannel.send(JSON.stringify({ type: 'light', brightness, nonce }));
+    const timer = setTimeout(() => resolveAck(nonce, false), 3000);
+    ui.pending.set(nonce, { el: s, name: 'light', timer });
+}
+
+function renderLightValue(v) {
+    const val = document.getElementById('light-val');
+    if (val) val.textContent = `${Math.round(v * 100)}%`;
+}
+
+function renderLightSlider() {
+    const s = document.getElementById('light-slider');
+    if (s && !ui.lightDragging) s.value = String(ui.light);
+    renderLightValue(ui.light);
 }
 
 // ── command ack (state_reliable_back) — shared by all nonce'd commands ──
@@ -415,9 +436,9 @@ function onRobotState(s) {
         ui.obstacleAvoid = s.obstacle_avoidance;
         renderObstacleToggle();
     }
-    if (typeof s.light === 'boolean' && s.light !== ui.lightOn) {
-        ui.lightOn = s.light;
-        renderLightToggle();
+    if (typeof s.light === 'number' && !ui.lightDragging && Math.abs(s.light - ui.light) > 0.01) {
+        ui.light = s.light;
+        renderLightSlider();
     }
     if (Array.isArray(s.cams) && s.cams.join() !== ui.selectedCams.join()) {
         ui.selectedCams = s.cams.filter((c) => CAMS.some((k) => k.id === c));
@@ -444,11 +465,19 @@ function resolveAck(nonce, ok) {
     // is an action (stand+balance), not a latched state — map it to standing.
     const POSTURE_STATE = { StandReady: 'StandReady', StandDown: 'StandDown', RecoveryStand: 'RecoveryStand', Sit: 'Sit' };
     if (ok && POSTURE_STATE[p.name]) ui.posture = POSTURE_STATE[p.name];
-    btn.dataset.status = ok ? 'done' : 'error';
-    // 700ms done/error flash → idle. Bail if the cockpit unmounted in between.
+    // Range inputs (light slider) flash via the cmd-* classes; buttons via
+    // data-status. 700ms flash → idle; bail if the cockpit unmounted.
+    const isRange = btn && btn.tagName === 'INPUT';
+    if (isRange) {
+        btn.classList.remove('cmd-sending');
+        btn.classList.add(ok ? 'cmd-ok' : 'cmd-err');
+    } else if (btn) {
+        btn.dataset.status = ok ? 'done' : 'error';
+    }
     setTimeout(() => {
         if (!document.getElementById('hud-summary')) return;
-        btn.dataset.status = 'idle';
+        if (isRange) btn.classList.remove('cmd-ok', 'cmd-err');
+        else if (btn) btn.dataset.status = 'idle';
         refreshControls();
     }, 700);
     refreshControls();
