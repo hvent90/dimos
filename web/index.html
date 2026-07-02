@@ -105,8 +105,13 @@
 
     <!-- LiveKit client SDK (UMD global `LivekitClient`) for livekit-transport
          robots; the cloudflare path uses the browser's native WebRTC and
-         doesn't need it. -->
-    <script src="https://cdn.jsdelivr.net/npm/livekit-client@2/dist/livekit-client.umd.min.js"></script>
+         doesn't need it. Pinned + SRI so a CDN compromise or a surprise
+         2.x release can't ship arbitrary script into a robot-control page.
+         To bump: change the version, recompute
+         `curl -s <url> | openssl dgst -sha384 -binary | openssl base64 -A`. -->
+    <script src="https://cdn.jsdelivr.net/npm/livekit-client@2.20.0/dist/livekit-client.umd.min.js"
+        integrity="sha384-s/eoT8qpr81c6c9MG5V7GA5xi5IzfEUQLyk3liFfzu9seBzZ3beFVjsD3pXTRmUc"
+        crossorigin="anonymous"></script>
     <script type="module" src="js/main.js"></script>
 </body>
 </html>

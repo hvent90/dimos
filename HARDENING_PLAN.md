@@ -144,7 +144,7 @@ Matches `dimos` roadmap Phases 2–3 (`myprojects/hosted/README.md`).
   `@dimensionalos.com` (+ invited domains); or flip to admin-create-only
   (`allow_admin_create_user_only`) while the pool is small.
 
-### C4. CSP + token storage — `M` **P2** (BUG_AUDIT N1/N2, acknowledged)
+### C4. CSP + token storage — `M` **P2** (BUG_AUDIT N1/N2, acknowledged) — ✅ CSP report-only + SRI shipped; enforce after validation; cookie auth still tracked
 - **Plan (incremental, don't boil the ocean):** add
   `Content-Security-Policy-Report-Only` in the Caddyfile covering the known
   origins (self, `cdn.tailwindcss.com`, `cdn.jsdelivr.net`, `esm.sh`,
@@ -154,7 +154,7 @@ Matches `dimos` roadmap Phases 2–3 (`myprojects/hosted/README.md`).
   built CSS file — that also removes the biggest inline-script obstacle to a
   strict CSP. httpOnly-cookie auth stays a separate tracked item (architectural).
 
-### C5. DEPLOY.md Caddy drift — `S` **P1**
+### C5. DEPLOY.md Caddy drift — `S` **P1** — ✅ fixed (deploy.sh now ships web/ + Caddyfile too)
 - **Issue:** DEPLOY.md Step 4 tells you to overwrite the Caddyfile with a bare
   `reverse_proxy 127.0.0.1:8450` — that proxies *everything* to uvicorn and
   breaks static SPA serving, contradicting the committed `Caddyfile`.
