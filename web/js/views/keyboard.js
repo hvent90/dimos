@@ -26,7 +26,7 @@ export function renderKeyboard(c) {
                         <div><kbd class="px-2 py-0.5 bg-[#1f1f1f] rounded font-mono">W</kbd> / <kbd class="px-2 py-0.5 bg-[#1f1f1f] rounded font-mono">S</kbd> — forward / back</div>
                         <div><kbd class="px-2 py-0.5 bg-[#1f1f1f] rounded font-mono">A</kbd> / <kbd class="px-2 py-0.5 bg-[#1f1f1f] rounded font-mono">D</kbd> — turn left / right</div>
                         <div><kbd class="px-2 py-0.5 bg-[#1f1f1f] rounded font-mono">Q</kbd> / <kbd class="px-2 py-0.5 bg-[#1f1f1f] rounded font-mono">E</kbd> — strafe left / right</div>
-                        <div><kbd class="px-2 py-0.5 bg-[#1f1f1f] rounded font-mono">Shift</kbd> — 2× faster · <kbd class="px-2 py-0.5 bg-[#1f1f1f] rounded font-mono">Ctrl</kbd> — ½× slow</div>
+                        <div><kbd class="px-2 py-0.5 bg-[#1f1f1f] rounded font-mono">Shift</kbd> — 2× faster · <kbd class="px-2 py-0.5 bg-[#1f1f1f] rounded font-mono">Space</kbd> — ½× slow</div>
                     </div>
                 </div>
                 <div class="bg-bg-950 border border-[#2a2a2a] rounded-lg p-4">
@@ -52,7 +52,7 @@ angular.z = 0</pre>
                     </div>
                     <div class="flex gap-2 mt-3">
                         <div id="key-shift" class="kb-key wide">Shift</div>
-                        <div id="key-ctrl" class="kb-key wide">Ctrl</div>
+                        <div id="key-slow" class="kb-key wide">Space</div>
                     </div>
                 </div>
             </div>
@@ -69,19 +69,24 @@ function trackedKey(e) {
     if (e.target.tagName === 'INPUT' || e.target.tagName === 'TEXTAREA') return null;
     const k = e.key.toLowerCase();
     if ('wasdqe'.includes(k)) return k;  // drive: WASD + Q/E strafe
-    if (e.key === 'Shift' || e.key === 'Control') return e.key;  // 2× / 0.5×
+    if (e.key === 'Shift') return e.key;  // 2× fast
+    // Space = hold-to-slow. Deliberately NOT Ctrl (Ctrl+W closes the tab and
+    // JS cannot block it) and NOT Alt (Alt+D steals the address bar, bare Alt
+    // focuses the browser menu). Space has no reserved browser chords.
+    if (e.key === ' ') return 'Space';
     return null;
 }
 function onKeyDown(e) {
     const k = trackedKey(e);
     if (k === null) return;
     state.kbKeys.add(k);
-    e.preventDefault();
+    e.preventDefault();  // Space would scroll / activate a focused button
 }
 function onKeyUp(e) {
     const k = trackedKey(e);
     if (k === null) return;
     state.kbKeys.delete(k);
+    e.preventDefault();  // buttons fire their click on Space KEYUP — block it
 }
 
 // On-screen keys drive the same kbKeys set as the physical keyboard, so
@@ -89,7 +94,7 @@ function onKeyUp(e) {
 const TOUCH_KEYS = {
     'key-w': 'w', 'key-a': 'a', 'key-s': 's', 'key-d': 'd',
     'key-q': 'q', 'key-e': 'e',
-    'key-shift': 'Shift', 'key-ctrl': 'Control',
+    'key-shift': 'Shift', 'key-slow': 'Space',
 };
 function bindTouchKeys() {
     for (const [id, key] of Object.entries(TOUCH_KEYS)) {
@@ -107,15 +112,15 @@ function bindTouchKeys() {
 }
 
 function buildTwist() {
-    // W/S forward-back, A/D turn, Q/E strafe. Shift = 2×, Ctrl = 0.5× (slow).
+    // W/S forward-back, A/D turn, Q/E strafe. Shift = 2×, Space = 0.5× (slow).
     const kb = state.kbKeys;
-    const shift = kb.has('Shift') && !kb.has('Control');
-    const ctrl  = kb.has('Control') && !kb.has('Shift');
+    const shift = kb.has('Shift') && !kb.has('Space');
+    const slow  = kb.has('Space') && !kb.has('Shift');
     const fwd    = (kb.has('w') ? 1 : 0) - (kb.has('s') ? 1 : 0);
     const turn   = (kb.has('a') ? 1 : 0) - (kb.has('d') ? 1 : 0);
     const strafe = (kb.has('q') ? 1 : 0) - (kb.has('e') ? 1 : 0);
 
-    const scale = shift ? 2.0 : (ctrl ? 0.5 : 1.0);
+    const scale = shift ? 2.0 : (slow ? 0.5 : 1.0);
     // Speed-bar multiplier: state.js initializes {lin:0.5, ang:0.5} (Normal),
     // so the standalone keyboard view also drives at the safe Normal scale;
     // the go2 speed bar overrides it. (The || fallback only covers undefined.)
@@ -130,7 +135,7 @@ function buildTwist() {
 
 function updateKeyVisuals() {
     const map = { 'w': 'key-w', 's': 'key-s', 'a': 'key-a', 'd': 'key-d',
-                  'q': 'key-q', 'e': 'key-e', 'Shift': 'key-shift', 'Control': 'key-ctrl' };
+                  'q': 'key-q', 'e': 'key-e', 'Shift': 'key-shift', 'Space': 'key-slow' };
     for (const [k, id] of Object.entries(map)) {
         const el = document.getElementById(id);
         if (el) el.classList.toggle('pressed', state.kbKeys.has(k));

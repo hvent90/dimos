@@ -10,7 +10,7 @@
 import { disconnect } from '../disconnect.js';
 import { applyStampCrop, hudDetailRows, hudSummaryLine, statsHealth, transportLabel } from '../hud.js';
 import { escHtml, state } from '../state.js';
-import { startKeyboardLoop, stopKeyboardLoop } from './keyboard.js';
+import { startKeyboardLoop } from './keyboard.js';
 
 // Command catalog — labels only; SPORT_CMD ids live robot-side.
 // StandReady = standup + balance_stand (drive-ready); they always go together,
@@ -199,6 +199,7 @@ export function renderGo2(c) {
                     <div class="mt-3 text-[11px] text-gray-500 leading-relaxed">
                         <div><span class="text-gray-300">W/S</span> forward · back &nbsp; <span class="text-gray-300">A/D</span> turn left · right</div>
                         <div><span class="text-gray-300">Q/E</span> strafe left · right</div>
+                        <div><span class="text-gray-300">Shift</span> 2× fast &nbsp; <span class="text-gray-300">Space</span> ½× slow</div>
                     </div>
                 </section>
 
