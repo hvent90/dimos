@@ -415,21 +415,31 @@ function drawMap() {
     const dw = m.w * scale, dh = m.h * scale;
     const dx = (cw - dw) / 2, dy = (ch - dh) / 2;
     ctx.imageSmoothingEnabled = false;
-    ctx.drawImage(m.img, dx, dy, dw, dh);
 
-    // Robot marker.
+    // The grid is row-major from the bottom-left origin: row 0 = min world y
+    // (south), col 0 = min world x (west). Canvas y grows DOWN, so we flip the
+    // image vertically to put world-north at the top — matching DimOS's own
+    // renderer (OccupancyGrid.to_rerun does grid[::-1] for the same reason).
+    // Everything below is drawn in this flipped frame so the marker agrees.
+    ctx.save();
+    ctx.translate(dx, dy + dh);
+    ctx.scale(1, -1);                 // y-up within [0..dh] → world-north = top
+    ctx.drawImage(m.img, 0, 0, dw, dh);
+
+    // Robot marker, in the same flipped frame.
     const o = ui.lastOdom;
     if (o && m.res > 0) {
-        const col = (o.x - m.origin[0]) / m.res;      // cells from origin, +x
-        const rowFromBottom = (o.y - m.origin[1]) / m.res;
-        const row = m.h - rowFromBottom;              // flip: world y-up → canvas y-down
-        const px = dx + col * scale;
-        const py = dy + row * scale;
-        if (px >= dx && px <= dx + dw && py >= dy && py <= dy + dh) {
+        const col = (o.x - m.origin[0]) / m.res;   // cells east of origin
+        const row = (o.y - m.origin[1]) / m.res;    // cells north of origin
+        const px = col * scale;
+        const py = row * scale;                     // y-up here (frame flipped)
+        if (px >= 0 && px <= dw && py >= 0 && py <= dh) {
             ctx.save();
             ctx.translate(px, py);
-            ctx.rotate(-(o.yaw || 0));                // canvas y-down → negate yaw
-            ctx.beginPath();                          // triangle glyph, nose = +x
+            // In this y-up frame a CCW world yaw is a CCW canvas rotation, so no
+            // sign flip. The glyph's nose points +x (world east) at yaw 0.
+            ctx.rotate(o.yaw || 0);
+            ctx.beginPath();                        // triangle, nose = +x
             ctx.moveTo(9, 0);
             ctx.lineTo(-6, 5);
             ctx.lineTo(-6, -5);
@@ -442,6 +452,7 @@ function drawMap() {
             ctx.restore();
         }
     }
+    ctx.restore();
 }
 
 // ── camera tabs ──────────────────────────────────────────────────────

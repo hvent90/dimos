@@ -89,6 +89,17 @@ function onKeyUp(e) {
     e.preventDefault();  // buttons fire their click on Space KEYUP — block it
 }
 
+// Focus loss (alt-tab, click outside the window, tab hidden) swallows the
+// keyup, so a held W would stay "down" and the robot keeps driving with no way
+// to stop it (and S then cancels W to zero instead of reversing). Clearing all
+// held keys on blur/hide drops the next tick to a zero twist → robot stops.
+function clearHeldKeys() {
+    if (state.kbKeys.size) state.kbKeys.clear();
+}
+function onVisibilityChange() {
+    if (document.hidden) clearHeldKeys();
+}
+
 // On-screen keys drive the same kbKeys set as the physical keyboard, so
 // buildTwist() is unchanged. Press-and-hold to move; release/leave to stop.
 const TOUCH_KEYS = {
@@ -149,6 +160,9 @@ export function startKeyboardLoop() {
     stopKeyboardLoop();
     window.addEventListener('keydown', onKeyDown);
     window.addEventListener('keyup', onKeyUp);
+    // Release everything when focus/visibility is lost — the keyup won't arrive.
+    window.addEventListener('blur', clearHeldKeys);
+    document.addEventListener('visibilitychange', onVisibilityChange);
     bindTouchKeys();  // on-screen keys → same kbKeys set (phone/mouse)
     let twistSeq = 0;
     // Fresh gate per session — stall state must not leak across connects.
@@ -213,6 +227,8 @@ export function startKeyboardLoop() {
 export function stopKeyboardLoop() {
     window.removeEventListener('keydown', onKeyDown);
     window.removeEventListener('keyup', onKeyUp);
+    window.removeEventListener('blur', clearHeldKeys);
+    document.removeEventListener('visibilitychange', onVisibilityChange);
     if (state.kbInterval) { clearInterval(state.kbInterval); state.kbInterval = null; }
     state.kbKeys.clear();
 }
