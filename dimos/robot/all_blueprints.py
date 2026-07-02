@@ -74,9 +74,10 @@ all_blueprints = {
     "path-planner-eval": "dimos.navigation.nav_3d.evaluator.blueprints:path_planner_eval",
     "teleop-hosted-go2": "dimos.teleop.quest_hosted.blueprints:teleop_hosted_go2",
     "teleop-hosted-go2-livekit": "dimos.teleop.quest_hosted.blueprints:teleop_hosted_go2_livekit",
-    "teleop-hosted-go2-transport": "dimos.teleop.quest_hosted.blueprints:teleop_hosted_go2_transport",
     "teleop-hosted-go2-multicam": "dimos.teleop.quest_hosted.blueprints:teleop_hosted_go2_multicam",
+    "teleop-hosted-go2-transport": "dimos.teleop.quest_hosted.blueprints:teleop_hosted_go2_transport",
     "teleop-hosted-xarm7": "dimos.teleop.quest_hosted.blueprints:teleop_hosted_xarm7",
+    "teleop-hosted-xarm7-multicam": "dimos.teleop.quest_hosted.blueprints:teleop_hosted_xarm7_multicam",
     "teleop-phone": "dimos.teleop.phone.blueprints:teleop_phone",
     "teleop-phone-go2": "dimos.teleop.phone.blueprints:teleop_phone_go2",
     "teleop-phone-go2-fleet": "dimos.teleop.phone.blueprints:teleop_phone_go2_fleet",
@@ -134,6 +135,7 @@ all_blueprints = {
 
 all_modules = {
     "alfred-high-level": "dimos.robot.diy.alfred.effector_high_level.AlfredHighLevel",
+    "arm-hosted-connection": "dimos.teleop.quest_hosted.arm_hosted_connection.ArmHostedConnection",
     "arm-teleop-module": "dimos.teleop.quest.quest_extensions.ArmTeleopModule",
     "b-box-navigation-module": "dimos.navigation.bbox_navigation.BBoxNavigationModule",
     "b1-connection-module": "dimos.robot.unitree.b1.connection.B1ConnectionModule",
@@ -157,6 +159,7 @@ all_modules = {
     "evaluator": "dimos.navigation.nav_3d.evaluator.evaluator.Evaluator",
     "far-planner": "dimos.navigation.nav_stack.modules.far_planner.far_planner.FarPlanner",
     "fast-lio2": "dimos.hardware.sensors.lidar.fastlio2.module.FastLio2",
+    "front-camera": "dimos.teleop.quest_hosted.blueprints.FrontCamera",
     "g1-connection": "dimos.robot.unitree.g1.connection.G1Connection",
     "g1-connection-base": "dimos.robot.unitree.g1.connection.G1ConnectionBase",
     "g1-high-level-dds-sdk": "dimos.robot.unitree.g1.effectors.high_level.dds_sdk.G1HighLevelDdsSdk",
@@ -165,6 +168,7 @@ all_modules = {
     "g1-whole-body-connection": "dimos.robot.unitree.g1.wholebody_connection.G1WholeBodyConnection",
     "go2-connection": "dimos.robot.unitree.go2.connection.GO2Connection",
     "go2-fleet-connection": "dimos.robot.unitree.go2.fleet_connection.Go2FleetConnection",
+    "go2-hosted-connection": "dimos.teleop.quest_hosted.go2_hosted_connection.Go2HostedConnection",
     "go2-memory": "dimos.robot.unitree.go2.blueprints.smart.unitree_go2.Go2Memory",
     "go2-teleop-module": "dimos.teleop.quest.quest_extensions.Go2TeleopModule",
     "google-maps-skill-container": "dimos.agents.skills.google_maps_skill_container.GoogleMapsSkillContainer",
@@ -240,5 +244,6 @@ all_modules = {
     "wavefront-frontier-explorer": "dimos.navigation.frontier_exploration.wavefront_frontier_goal_selector.WavefrontFrontierExplorer",
     "web-input": "dimos.agents.web_human_input.WebInput",
     "websocket-vis-module": "dimos.web.websocket_vis.websocket_vis_module.WebsocketVisModule",
+    "wrist-camera": "dimos.teleop.quest_hosted.blueprints.WristCamera",
     "zed-camera": "dimos.hardware.sensors.camera.zed.camera.ZEDCamera",
 }
