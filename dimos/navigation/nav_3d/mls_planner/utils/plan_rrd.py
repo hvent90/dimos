@@ -303,10 +303,10 @@ def main(
         1.0, "--clearance-clamp", help="Max clearance (m) for the surface color scale"
     ),
     from_time: float | None = typer.Option(
-        None, "--from-time", help="Start timestamp (s); default is the stream start"
+        None, "--from-time", help="Start offset into the recording (s); default is the start"
     ),
     to_time: float | None = typer.Option(
-        None, "--to-time", help="End timestamp (s); default is the stream end"
+        None, "--to-time", help="Duration to replay after --from-time (s); default is the end"
     ),
 ) -> None:
     db_path = resolve_named_path(dataset, ".db")
