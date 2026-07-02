@@ -105,9 +105,7 @@ def _closed_loop_max_planar_speed(
             plant_yaw_rad += wz * dt_s
             plant_yaw_rad = math.atan2(math.sin(plant_yaw_rad), math.cos(plant_yaw_rad))
             sim_time_s += dt_s
-            core.handle_odom(
-                _pose_stamped(plant_x_m, plant_y_m, plant_yaw_rad, ts=sim_time_s)
-            )
+            core.handle_odom(_pose_stamped(plant_x_m, plant_y_m, plant_yaw_rad, ts=sim_time_s))
     finally:
         core.close()
         cmd_sub.dispose()

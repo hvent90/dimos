@@ -146,9 +146,7 @@ class _HolonomicPathFollower:
 
         override = config.speed_m_s
         if override is not None and (not math.isfinite(override) or override <= 0.0):
-            raise ValueError(
-                f"speed_m_s must be a positive finite float, got {override!r}"
-            )
+            raise ValueError(f"speed_m_s must be a positive finite float, got {override!r}")
         self._cruise_speed_override = override
 
         envelope = self._resolve_run_envelope()
@@ -320,11 +318,7 @@ class _HolonomicPathFollower:
         first only when ``align_heading_before_move`` is set and the start is
         misaligned with the first path tangent.
         """
-        if (
-            not self._align_heading_before_move
-            or current_odom is None
-            or len(path.poses) == 0
-        ):
+        if not self._align_heading_before_move or current_odom is None or len(path.poses) == 0:
             return "path_following"
 
         first_yaw = path.poses[0].orientation.euler[2]
@@ -510,10 +504,7 @@ class _HolonomicPathFollower:
 
     def _ensure_path_speed_profile(self, path_distancer: PathDistancer) -> None:
         path_id = id(path_distancer._path)
-        if (
-            self._path_speed_profile_s is None
-            or self._path_speed_profile_path_id != path_id
-        ):
+        if self._path_speed_profile_s is None or self._path_speed_profile_path_id != path_id:
             self._rebuild_path_speed_profile(path_distancer)
             self._path_speed_profile_path_id = path_id
 
@@ -628,12 +619,8 @@ class DanHolonomicTC(Module):
     @rpc
     def start(self) -> None:
         super().start()
-        self.register_disposable(
-            self._core.cmd_vel.subscribe(self.nav_cmd_vel.publish)
-        )
-        self.register_disposable(
-            self._core.stopped_navigating.subscribe(self._on_core_stopped)
-        )
+        self.register_disposable(self._core.cmd_vel.subscribe(self.nav_cmd_vel.publish))
+        self.register_disposable(self._core.stopped_navigating.subscribe(self._on_core_stopped))
         self.register_disposable(Disposable(self.odom.subscribe(self._on_odom)))
         self.register_disposable(Disposable(self.path.subscribe(self._on_path)))
         if self.stop_movement.transport is not None:

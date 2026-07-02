@@ -30,7 +30,9 @@ from dimos.navigation.dannav.local_planner.module import (
 
 def _path_from_points(points: list[tuple[float, float]]) -> Path:
     poses = [
-        PoseStamped(ts=1.0, frame_id="world", position=[x, y, 0.0], orientation=[0.0, 0.0, 0.0, 1.0])
+        PoseStamped(
+            ts=1.0, frame_id="world", position=[x, y, 0.0], orientation=[0.0, 0.0, 0.0, 1.0]
+        )
         for x, y in points
     ]
     return Path(frame_id="world", poses=poses)

@@ -23,9 +23,8 @@ import math
 import time
 from typing import Any, Literal
 
-import pytest
-
 from dimos_lcm.std_msgs import Bool  # type: ignore[import-untyped]
+import pytest
 
 from dimos.core.stream import Stream, Transport
 from dimos.msgs.geometry_msgs.PoseStamped import PoseStamped

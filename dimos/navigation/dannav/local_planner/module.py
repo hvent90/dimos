@@ -15,7 +15,7 @@
 """Path-stream middleware between ``MLSPlannerNative`` and ``DanHolonomicTC``.
 
 ``MLSPlannerNative`` re-roots and re-emits a path on every lidar frame: the
-stream is sparse, unsmoothed, and unthrottled. 
+stream is sparse, unsmoothed, and unthrottled.
 
 - ``lock_replan``: commit-window throttle (forward a path only at commit
   moments, suppress in between so the follower keeps a stable lookahead).
@@ -231,9 +231,7 @@ class DanLocalPlanner(Module):
         # pose and armed goal when a planner path arrives.
         self.register_disposable(Disposable(self.odom.subscribe(self._on_odom)))
         self.register_disposable(Disposable(self.goal.subscribe(self._on_goal)))
-        self.register_disposable(
-            Disposable(self.planner_path.subscribe(self._on_planner_path))
-        )
+        self.register_disposable(Disposable(self.planner_path.subscribe(self._on_planner_path)))
 
     def _on_odom(self, msg: PoseStamped) -> None:
         self._gate.on_odom(msg)

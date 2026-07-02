@@ -23,8 +23,8 @@ from typing import Any
 from dimos.core.coordination.blueprints import autoconnect
 from dimos.core.global_config import global_config
 from dimos.mapping.voxels import VoxelGridMapper
-from dimos.navigation.dannav.local_planner.module import DanLocalPlanner
 from dimos.navigation.dannav.holonomic_tc.module import DanHolonomicTC
+from dimos.navigation.dannav.local_planner.module import DanLocalPlanner
 from dimos.navigation.movement_manager.movement_manager import MovementManager
 from dimos.navigation.nav_3d.mls_planner.goal_relay import GoalRelay
 from dimos.navigation.nav_3d.mls_planner.mls_planner_native import MLSPlannerNative
@@ -34,7 +34,7 @@ from dimos.visualization.vis_module import vis_module
 
 voxel_size = 0.05
 # Height of the head-mounted lidar above the ground while standing.
-# While in case of Go2 it's ~ .3m, but in this blueprint 
+# While in case of Go2 it's ~ .3m, but in this blueprint
 # MLSPlanner works better on Go2 lidar when the value is 0.5
 go2_lidar_height = 0.5
 
@@ -97,6 +97,6 @@ unitree_go2_mls_htc = autoconnect(
     GoalRelay.blueprint(),
     # Seeting resample_spacing_m to > 0.0 will smooth out jagged paths retunned my MLSP
     DanLocalPlanner.blueprint(resample_spacing_m=0.1),
-    DanHolonomicTC.blueprint(run_profile='walk'),
+    DanHolonomicTC.blueprint(run_profile="walk"),
     MovementManager.blueprint(),
 ).global_config(n_workers=10, robot_model="unitree_go2", obstacle_avoidance=False)

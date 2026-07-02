@@ -105,9 +105,7 @@ def _polyline_geometry_speed_caps_m_s(
 
     vertex_s = np.asarray(vertex_s_m, dtype=np.float64)
     interior_s = vertex_s[1:-1]
-    local_scale = np.maximum(
-        np.maximum(interior_s - vertex_s[:-2], vertex_s[2:] - interior_s), 1.0
-    )
+    local_scale = np.maximum(np.maximum(interior_s - vertex_s[:-2], vertex_s[2:] - interior_s), 1.0)
     tol = np.maximum(1e-9, local_scale * 1e-9)
 
     # Each interior vertex arc length is present as a sample, so match every
@@ -177,9 +175,7 @@ def _speed_profile_from_geometry_caps(
         v_prev_sq = v_backward[i] * v_backward[i] + 2.0 * goal_decel_m_s2 * ds
         v_backward[i - 1] = min(float(geometry_cap_m_s[i - 1]), math.sqrt(max(0.0, v_prev_sq)))
 
-    return [
-        min(float(geometry_cap_m_s[i]), v_forward[i], v_backward[i]) for i in range(len(s_m))
-    ]
+    return [min(float(geometry_cap_m_s[i]), v_forward[i], v_backward[i]) for i in range(len(s_m))]
 
 
 def profile_speed_along_polyline(
@@ -212,9 +208,7 @@ def profile_speed_along_polyline(
     return s_profile, v_profile
 
 
-def speed_at_progress_m(
-    progress_m: float, s_m: Sequence[float], v_m_s: Sequence[float]
-) -> float:
+def speed_at_progress_m(progress_m: float, s_m: Sequence[float], v_m_s: Sequence[float]) -> float:
     """Linearly interpolate profile speed at arc length ``progress_m``."""
     if not s_m:
         return 0.0

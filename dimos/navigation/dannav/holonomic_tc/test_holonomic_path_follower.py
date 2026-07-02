@@ -20,21 +20,21 @@ Here: path in -> cmd_vel out -> simulated plant -> arrival / caps / branches.
 
 from __future__ import annotations
 
+from dataclasses import dataclass
 import math
 import time
-from dataclasses import dataclass
 
 from dimos.msgs.geometry_msgs.PoseStamped import PoseStamped
 from dimos.msgs.geometry_msgs.Quaternion import Quaternion
 from dimos.msgs.geometry_msgs.Twist import Twist
 from dimos.msgs.nav_msgs.Path import Path
+from dimos.navigation.dannav.geometry.path_speed_profile import (
+    PathSpeedProfileLimits,
+)
 from dimos.navigation.dannav.holonomic_tc.module import (
     ActiveRunEnvelope,
     DanHolonomicTCConfig,
     _HolonomicPathFollower,
-)
-from dimos.navigation.dannav.geometry.path_speed_profile import (
-    PathSpeedProfileLimits,
 )
 from dimos.navigation.dannav.holonomic_tc.run_profiles import RunProfile
 
@@ -153,9 +153,7 @@ def _run_follower(
             plant_yaw_rad += wz * dt_s
             plant_yaw_rad = math.atan2(math.sin(plant_yaw_rad), math.cos(plant_yaw_rad))
             sim_time_s += dt_s
-            core.handle_odom(
-                _pose_stamped(plant_x_m, plant_y_m, plant_yaw_rad, ts=sim_time_s)
-            )
+            core.handle_odom(_pose_stamped(plant_x_m, plant_y_m, plant_yaw_rad, ts=sim_time_s))
     finally:
         core.close()
         cmd_sub.dispose()
@@ -169,10 +167,14 @@ def test_closed_loop_straight_line_arrives_with_goal_decel() -> None:
     goal_tolerance_m = 0.08
     goal_x_m = 1.0
     result = _run_follower(
-        _make_follower(speed_m_s=cruise_speed_m_s, control_frequency=60.0, goal_tolerance=goal_tolerance_m),
+        _make_follower(
+            speed_m_s=cruise_speed_m_s, control_frequency=60.0, goal_tolerance=goal_tolerance_m
+        ),
         points=[(0.1, 0.0), (goal_x_m, 0.0)],
     )
-    speeds = [_planar_speed_m_s(cmd) for cmd in result.command_history if _planar_speed_m_s(cmd) > 0.05]
+    speeds = [
+        _planar_speed_m_s(cmd) for cmd in result.command_history if _planar_speed_m_s(cmd) > 0.05
+    ]
 
     assert "arrived" in result.stop_messages
     assert speeds
