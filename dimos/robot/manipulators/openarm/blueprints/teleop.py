@@ -26,11 +26,15 @@ from dimos.robot.manipulators.openarm.config import (
     OPENARM_V10_FK_MODEL,
     RIGHT_CAN,
     openarm_hardware,
+    openarm_model_config,
     openarm_single_hardware,
     openarm_single_model_config,
 )
 from dimos.teleop.keyboard.keyboard_teleop_module import KeyboardTeleopModule
 from dimos.teleop.openarm_mini.adapter import OpenArmMiniTeleopAdapter
+from dimos.teleop.openarm_mini.config import OpenArmMiniTeleopConfig
+from dimos.teleop.openarm_mini.teleop_module import OpenArmMiniTeleopModule
+from dimos.teleop.openarm_mini.viser_visualizer import OpenArmJointStateViserModule
 from dimos.teleop.runtime.teleop_module import TeleopModule
 
 _teleop_hw = openarm_single_hardware()
@@ -106,5 +110,15 @@ openarm_mini_teleop_openarm = autoconnect(
             _servo_task(_openarm_mini_left_hw.hardware_id, _openarm_mini_left_hw.joints),
             _servo_task(_openarm_mini_right_hw.hardware_id, _openarm_mini_right_hw.joints),
         ],
+    ),
+)
+
+openarm_mini_left_teleop_viser = autoconnect(
+    OpenArmMiniTeleopModule.blueprint(
+        openarm_mini=OpenArmMiniTeleopConfig(enabled_sides=("left",))
+    ),
+    OpenArmJointStateViserModule.blueprint(
+        robot=openarm_model_config("left"),
+        robot_id="openarm_left",
     ),
 )

@@ -15,6 +15,31 @@ uv sync --extra openarm-mini-teleop
 The Feetech package installs as `ftservo-python-sdk` and imports as
 `scservo_sdk`.
 
+## One-shot motor ID setup
+
+To write a physical Feetech motor ID, connect exactly one motor to the USB
+controller and run the one-shot setup helper. Do not leave multiple motors on
+the bus when changing IDs, especially if they may share the same current ID.
+
+```bash
+python -m dimos.teleop.openarm_mini.setup_motor_id \
+  --port /dev/ttyUSB1 \
+  --new-id 3
+```
+
+If the current ID is known, skip scanning:
+
+```bash
+python -m dimos.teleop.openarm_mini.setup_motor_id \
+  --port /dev/ttyUSB1 \
+  --old-id 1 \
+  --new-id 3
+```
+
+The helper opens the Feetech port, verifies or scans for one responding motor,
+disables torque, unlocks EEPROM, writes the ID, locks EEPROM, verifies the new
+ID responds, and exits. Run calibration after motor IDs are assigned.
+
 ## Calibration storage
 
 Runtime startup is non-interactive. Create calibration artifacts before running
@@ -100,3 +125,27 @@ OpenArm hardware.
 
 Use `--left-calibration-path` and `--right-calibration-path` to write or read
 non-default calibration directories.
+
+## Visualization-only Viser bring-up
+
+Use the left-side Viser blueprint to validate real OpenArm Mini leader motion
+before connecting any OpenArm follower hardware:
+
+```bash
+dimos run openarm-mini-left-teleop-viser \
+  -o openarmminiteleopmodule.openarm_mini.port_left=/dev/ttyUSB1
+```
+
+The blueprint requires:
+
+- a real OpenArm Mini left leader connected to the configured left Feetech serial
+  port (default `/dev/ttyUSB1`)
+- a valid left calibration artifact
+- Viser dependencies from `uv sync --extra manipulation` or `uv sync --extra all`
+
+This workflow is visualization-only on the follower side. It renders the left
+OpenArm follower model in Viser from the leader-derived `joint_command`, but it
+does not start `ControlCoordinator`, does not connect OpenArm follower hardware,
+does not use mock follower hardware, and does not validate physical follower
+execution or coordinator routing. Use the production OpenArm Mini teleop
+blueprint and hardware validation separately for physical execution bring-up.

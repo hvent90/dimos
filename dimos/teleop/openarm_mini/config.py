@@ -54,6 +54,16 @@ class OpenArmMiniTeleopConfig:
     baudrate: int = 1_000_000
     max_joint_jump_radians: float = 0.75
     authority_active: bool = True
+    enabled_sides: tuple[str, ...] = OPENARM_MINI_SIDES
+
+    def __post_init__(self) -> None:
+        """Validate selected OpenArm Mini leader sides."""
+        if not self.enabled_sides:
+            raise ValueError("enabled_sides must include at least one side")
+        for side in self.enabled_sides:
+            validate_side(side)
+        if len(set(self.enabled_sides)) != len(self.enabled_sides):
+            raise ValueError("enabled_sides must not contain duplicate sides")
 
     def calibration_path(self, side: str) -> Path:
         """Return the configured or default calibration directory for a side."""
@@ -68,6 +78,10 @@ class OpenArmMiniTeleopConfig:
         """Return the configured serial port for a side."""
         validate_side(side)
         return self.port_left if side == "left" else self.port_right
+
+    def sides(self) -> tuple[str, ...]:
+        """Return the selected leader sides in runtime order."""
+        return self.enabled_sides
 
 
 class OpenArmMiniDependencyError(ImportError):

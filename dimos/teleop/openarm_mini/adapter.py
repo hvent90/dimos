@@ -73,7 +73,7 @@ class _ScservoSdk(Protocol):
 
 
 class OpenArmMiniTeleopAdapter:
-    """TeleopAdapter implementation for a bimanual OpenArm Mini leader."""
+    """TeleopAdapter implementation for selected OpenArm Mini leader sides."""
 
     primary_output: TeleopPrimaryOutput = "joint"
 
@@ -90,12 +90,12 @@ class OpenArmMiniTeleopAdapter:
         self._connected = False
 
     def connect(self) -> None:
-        """Load calibration and connect both OpenArm Mini leader sides."""
+        """Load calibration and connect configured OpenArm Mini leader sides."""
         if self._connected:
             return
         buses: dict[str, OpenArmMiniSideBus] = {}
         try:
-            for side in ("left", "right"):
+            for side in self.config.sides():
                 calibration = load_calibration(self.config.calibration_path(side), side)
                 bus = self._bus_factory(
                     side, self.config.port(side), calibration, self.config.baudrate
@@ -125,7 +125,7 @@ class OpenArmMiniTeleopAdapter:
         side_commands = []
         next_previous_positions_by_side: dict[str, dict[str, float]] = {}
         try:
-            for side in ("left", "right"):
+            for side in self.config.sides():
                 bus = self._buses[side]
                 side_command = map_side_readings(
                     side,

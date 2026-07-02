@@ -148,6 +148,10 @@ _Avoid_: hardcoded wrist remap, runtime joint swap, follower joint alias
 The operator responsibility to place a teleoperation follower near the leader-implied command before enabling live authority. It prevents first-command jumps when no automatic follower-state gate is present.
 _Avoid_: calibration, homing, sender-side clamp
 
+**Visualization-only teleop test**:
+A teleoperation validation mode where a real leader device drives commands rendered against a follower model without connecting to follower hardware or executing physical motion. "Visualization-only" describes the follower side, not the leader input.
+_Avoid_: hardware validation, fake leader demo, dry run when physical execution is possible
+
 **Configuration-resolved module IO**:
 A module IO contract whose streams are determined from the module's final configuration before blueprint wiring.
 _Avoid_: runtime dynamic IO, late-bound ports, generated subclass IO

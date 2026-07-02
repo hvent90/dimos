@@ -142,6 +142,55 @@ def test_adapter_loads_calibration_connects_both_buses_and_returns_joint_command
     assert buses["right"].disconnected
 
 
+def test_adapter_left_only_connects_left_bus_and_emits_left_joints(tmp_path: Path) -> None:
+    left_path, right_path = _write_calibrations(tmp_path)
+    left_bus = _FakeBus(_readings())
+    created_sides: list[str] = []
+
+    def bus_factory(
+        side: str,
+        port: str,
+        calibration: OpenArmMiniCalibration,
+        baudrate: int,
+    ) -> OpenArmMiniSideBus:
+        created_sides.append(side)
+        assert side == "left"
+        assert port == "left-port"
+        assert calibration.side == "left"
+        return left_bus
+
+    adapter = OpenArmMiniTeleopAdapter(
+        OpenArmMiniTeleopConfig(
+            port_left="left-port",
+            port_right="right-port",
+            left_calibration_path=left_path,
+            right_calibration_path=right_path,
+            enabled_sides=("left",),
+        ),
+        bus_factory=bus_factory,
+    )
+
+    adapter.connect()
+    command = adapter.get_current_command()
+    adapter.disconnect()
+
+    assert created_sides == ["left"]
+    assert command is not None
+    assert command.joint is not None
+    assert command.joint.name == [f"openarm_left_joint{i}" for i in range(1, 8)]
+    assert left_bus.connected
+    assert left_bus.disconnected
+
+
+def test_config_rejects_invalid_or_duplicate_enabled_sides() -> None:
+    with pytest.raises(ValueError, match="at least one side"):
+        OpenArmMiniTeleopConfig(enabled_sides=())
+    with pytest.raises(ValueError, match="side must be"):
+        OpenArmMiniTeleopConfig(enabled_sides=("center",))  # type: ignore[arg-type]
+    with pytest.raises(ValueError, match="duplicate"):
+        OpenArmMiniTeleopConfig(enabled_sides=("left", "left"))
+
+
 def test_adapter_returns_none_without_authority(tmp_path: Path) -> None:
     left_path, right_path = _write_calibrations(tmp_path)
     buses = {"left": _FakeBus(_readings()), "right": _FakeBus(_readings())}

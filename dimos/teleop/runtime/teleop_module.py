@@ -14,6 +14,7 @@
 
 from __future__ import annotations
 
+from collections.abc import Mapping
 import threading
 import time
 from typing import Any, cast
@@ -55,6 +56,11 @@ class TeleopModule(Module):
         self._stop_event = threading.Event()
         self._thread: threading.Thread | None = None
         self._last_publish_time = 0.0
+
+    @classmethod
+    def resolve_config(cls, config_args: Mapping[str, Any]) -> ModuleConfig:
+        filtered_args = {k: v for k, v in config_args.items() if k != "adapter"}
+        return super().resolve_config(filtered_args)
 
     @rpc
     def start(self) -> None:
