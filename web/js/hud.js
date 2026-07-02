@@ -41,10 +41,14 @@ export function iceTypeLabel() {
 
 export function hudSummaryLine() {
     const v = state.liveStats.video;
+    const c = state.liveStats.cmd;
     const fps = v ? `${(v.fps ?? 0).toFixed(0)}fps` : '—fps';
     const mbps = v ? `${(((v.kbps ?? 0) / 1000)).toFixed(1)}mbps` : '—mbps';
     const rtt = state.liveStats.rttMs != null ? `RTT ${state.liveStats.rttMs.toFixed(0)}ms` : 'RTT —';
-    return `${fps}  ${mbps}  ${rtt}`;
+    // Robot-measured command latency (what actually arrived) — the
+    // safety-relevant number, so it earns a spot in the always-on line.
+    const cmd = c && c.latency_ms != null ? `cmd ${c.latency_ms.toFixed(0)}ms` : 'cmd —';
+    return `${fps}  ${mbps}  ${rtt}  ${cmd}`;
 }
 
 // Fuller detail lines (expand panel + VR quad body).
@@ -110,6 +114,28 @@ export function hudDetailRows() {
     ];
 }
 
+// ─── Stamp-strip display crop ────────────────────────────────────────────
+// The robot appends a 16px timestamp strip below the frame when benchmarking
+// (latency_stamp). Hide it from the operator with a clip-path sized to the
+// object-contain content rect — display-only, so the stamp decoder (which
+// samples source pixels) keeps working. No-op (and clears itself) when the
+// robot isn't stamping.
+export function applyStampCrop() {
+    const v = document.getElementById('robot-cam');
+    if (!v) return;
+    const strip = state.liveStats.stampStripPx || 0;
+    if (!strip || !v.videoWidth || !v.clientHeight) {
+        if (v.style.clipPath) v.style.clipPath = '';
+        return;
+    }
+    // object-contain: content is centered and scaled by min ratio; the strip
+    // occupies the bottom strip*scale px of the content rect.
+    const scale = Math.min(v.clientWidth / v.videoWidth, v.clientHeight / v.videoHeight);
+    const padY = (v.clientHeight - v.videoHeight * scale) / 2;
+    const bottom = padY + strip * scale;
+    v.style.clipPath = `inset(0 0 ${bottom.toFixed(1)}px 0)`;
+}
+
 // ─── Browser HUD (DOM) ───────────────────────────────────────────────────
 // Corner pill (click to expand). Mounted on connect, 1Hz refresh.
 export function mountHud() {
@@ -149,6 +175,7 @@ export function mountHud() {
 }
 
 function refreshHud() {
+    applyStampCrop();  // keyboard view shares the 1Hz tick
     const dot = document.getElementById('live-hud-dot');
     if (!dot) return;
     dot.style.background = healthColor();

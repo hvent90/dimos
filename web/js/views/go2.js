@@ -8,7 +8,7 @@
 // Preview with no broker:  window._teleopDev.previewGo2()
 
 import { disconnect } from '../disconnect.js';
-import { hudDetailRows, hudSummaryLine, statsHealth, transportLabel } from '../hud.js';
+import { applyStampCrop, hudDetailRows, hudSummaryLine, statsHealth, transportLabel } from '../hud.js';
 import { escHtml, state } from '../state.js';
 import { startKeyboardLoop, stopKeyboardLoop } from './keyboard.js';
 
@@ -597,6 +597,9 @@ function startTick() {
         // the interval can outlive the elements for a tick.
         const summary = document.getElementById('hud-summary');
         if (!summary) return;
+
+        // Hide the benchmark timestamp strip from the video (display-only).
+        applyStampCrop();
 
         // Video-freshness lockout (keyboard loop drives state.videoStall):
         // stalled → overlay + drive pill off; the loop already blocks sends.

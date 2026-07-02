@@ -56,6 +56,7 @@ export const state = {
         cmd: null,          // robot-measured: {latency_ms, jitter_ms, rate_hz, throughput_bps}
         soc: null,          // robot battery state-of-charge (%), from robot_telemetry
         iceType: null,      // selected ICE path: 'direct' | 'stun' | 'turn' | null
+        stampStripPx: 0,    // benchmark strip rows appended below the frame (0 = not stamping)
     },
     onCmdAck: null,         // optional view hook: (msg) => void for {type:cmd_ack,nonce,ok}
     onRobotState: null,     // optional view hook: (state) => void for robot_telemetry.state

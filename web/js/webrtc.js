@@ -300,6 +300,9 @@ const STAMP_CELLS = STAMP_SYNC.length + STAMP_TIME_BITS;
 const _stampCanvas = document.createElement('canvas');
 
 // Latency in ms, or 0 when the stamp is missing/unreadable (robot not stamping).
+// Side effect: records strip presence in state.liveStats.stampStripPx so the
+// HUD can crop the strip out of the display (clip-path reads nothing — this
+// decoder samples source pixels via drawImage, so cropping doesn't break it).
 function readLatencyStamp() {
     const v = document.getElementById('robot-cam');
     if (!v || !v.videoWidth) return 0;
@@ -326,8 +329,13 @@ function readLatencyStamp() {
         return luma >= 128 ? 1 : 0;
     };
     for (let i = 0; i < STAMP_SYNC.length; i++) {
-        if (bitAt(i) !== STAMP_SYNC[i]) return 0;  // no stamp → not benchmarking
+        if (bitAt(i) !== STAMP_SYNC[i]) {
+            state.liveStats.stampStripPx = 0;  // no stamp → nothing to crop
+            return 0;
+        }
     }
+    // Sync matched: the strip exists even if the decoded time fails sanity.
+    state.liveStats.stampStripPx = STAMP_STRIP_PX;
     let ms = 0;
     for (let i = 0; i < STAMP_TIME_BITS; i++) {
         ms = ms * 2 + bitAt(STAMP_SYNC.length + i);
