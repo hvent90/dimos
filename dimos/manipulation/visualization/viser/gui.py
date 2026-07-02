@@ -699,10 +699,7 @@ class ViserPanelGui:
         self._set_disabled("preview", not self.state.can_preview())
         self._set_disabled(
             "execute",
-            not (
-                self.config.allow_plan_execute
-                and self.state.can_execute(self.config.current_match_tolerance)
-            ),
+            not self.state.can_execute(self.config.current_match_tolerance),
         )
         self._set_disabled("cancel", not self.state.can_cancel())
         self._update_target_visual_state()
@@ -794,11 +791,6 @@ class ViserPanelGui:
             return
         robot_name = self.state.selected_robot
         if robot_name is None:
-            return
-        if not self.config.allow_plan_execute:
-            self._set_recoverable_error(
-                "Panel execution disabled; set allow_plan_execute=True to enable"
-            )
             return
         if not self.state.can_execute(self.config.current_match_tolerance):
             self._set_recoverable_error(
