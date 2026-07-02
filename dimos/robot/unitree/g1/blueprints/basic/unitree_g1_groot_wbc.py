@@ -362,6 +362,79 @@ if global_config.simulation == "mujoco":
 
         _nav_stack = autoconnect(_nav_stack, _mesh_camera_bp)
         _remappings.append((_MeshCam, "joint_state", "coordinator_joint_state"))
+
+    def _babylon_viewer() -> Any | None:
+        """Browser viewer (Babylon, MIRROR mode) alongside the MuJoCo sim.
+
+        MuJoCo owns physics and publishes /entity_state_batch; the browser
+        spawns scene entities as kinematic mirrors and renders the robot from
+        coordinator joint state. WASD in the browser publishes cmd_vel — the
+        same source-blind channel the planner uses. On by default in sim;
+        DIMOS_ENABLE_BABYLON=0 to suppress.
+        """
+        if os.environ.get("DIMOS_ENABLE_BABYLON", "1").lower() in ("0", "false", "no"):
+            return None
+
+        from dimos.simulation.backend.mujoco.assets import get_assets
+        from dimos.simulation.bridges.babylon.module import BabylonSceneViewerModule
+
+        kwargs: dict[str, Any] = dict(
+            mjcf_path=_MJCF_PATH,
+            assets=get_assets(),
+            port=int(os.environ.get("DIMOS_BABYLON_PORT", "8091")),
+            # MuJoCo is the entity authority; the browser mirrors its stream.
+            entity_authority="external",
+        )
+        if global_config.scene_package is not None:
+            from dimos.simulation.scene.catalog import resolve_scene_package
+
+            try:
+                package = resolve_scene_package(global_config.scene_package)
+            except (FileNotFoundError, ValueError):
+                package = None
+            if package is not None and package.visual_path is not None:
+                # Prefer a Babylon-optimized GLB when the package ships one
+                # (gltfpack -mi collapses huge node trees; parse drops from
+                # minutes to a glance). Falls back to the canonical visual.
+                babylon_visual = package.visual_path.with_name("visual.babylon.glb")
+                kwargs.update(
+                    scene_path=str(
+                        babylon_visual if babylon_visual.exists() else package.visual_path
+                    ),
+                    scene_scale=package.alignment.scale,
+                    scene_translation=package.alignment.translation,
+                    scene_rotation_zyx_deg=package.alignment.rotation_zyx_deg,
+                    scene_y_up=package.alignment.y_up,
+                    browser_collision_path=(
+                        str(package.browser_collision_path)
+                        if package.browser_collision_path is not None
+                        else None
+                    ),
+                    initial_entities=package.entities,
+                )
+                splat_ply = Path(package.package_dir) / "splat" / "scene.ply"
+                if splat_ply.exists():
+                    import yaml
+
+                    alignment_yaml = splat_ply.parent / "alignment.yaml"
+                    kwargs.update(
+                        splat_path=str(splat_ply),
+                        splat_alignment=(
+                            yaml.safe_load(alignment_yaml.read_text()) or {}
+                            if alignment_yaml.exists()
+                            else {}
+                        ),
+                    )
+        return BabylonSceneViewerModule.blueprint(**kwargs)
+
+    _babylon_bp = _babylon_viewer()
+    if _babylon_bp is not None:
+        from dimos.simulation.bridges.babylon.module import (
+            BabylonSceneViewerModule as _BabylonMod,
+        )
+
+        _nav_stack = autoconnect(_nav_stack, _babylon_bp)
+        _remappings.append((_BabylonMod, "joint_state", "coordinator_joint_state"))
 else:
     from dimos.robot.unitree.g1.wholebody_connection import G1WholeBodyConnection
 
