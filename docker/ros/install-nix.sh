@@ -1,9 +1,8 @@
 #!/usr/bin/env bash
 set -euo pipefail
 
-# Defaults for inputs normally exported by the calling composite action.
-# Letting them default here means the script also works when called directly
-# from a workflow `run:` step without the action wrapper.
+# Defaults so this script can be invoked from a plain workflow `run:` step,
+# not only via the composite action that exports these INPUT_* env vars.
 : "${INPUT_ENABLE_KVM:=false}"
 : "${INPUT_SET_AS_TRUSTED_USER:=false}"
 : "${INPUT_EXTRA_NIX_CONFIG:=}"
