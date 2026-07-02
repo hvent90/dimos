@@ -835,11 +835,13 @@ def test_scene_places_robot_roots_at_base_pose() -> None:
 
     scene.register_robot("robot1", config)
 
+    # Root frames are keyed by display group (shared across robots with the
+    # same display model + base pose), not by robot ID.
     roots = {frame.name: frame for frame in server.frames}
     for name in (
-        "/robots/robot1/current",
-        "/targets/robot1/target",
-        "/previews/robot1/ghost",
+        "/robots/display_1/current",
+        "/targets/display_1/target",
+        "/previews/display_1/ghost",
     ):
         assert roots[name].position == (0.1, -0.2, 0.74)
         assert roots[name].wxyz == (0.5, 0.2, 0.3, 0.4)
@@ -880,8 +882,8 @@ def test_preview_visibility_only_affects_preview_ghost_and_close_removes_handles
         joint_names=["joint1"],
     )
     scene.register_robot("robot1", config)
-    target = scene._urdfs["robot1:target"]
-    preview = scene._urdfs["robot1:preview"]
+    target = scene._urdf_for("robot1", "target")
+    preview = scene._urdf_for("robot1", "preview")
     assert all(mesh.visible is True for mesh in target._meshes)
     assert all(mesh.visible is False for mesh in preview._meshes)
     scene.show_preview("robot1")
@@ -909,9 +911,9 @@ def test_target_ghost_is_visible_and_tracks_current_until_target_moves_it() -> N
         joint_names=["joint1"],
     )
     scene.register_robot("robot1", config)
-    current = scene._urdfs["robot1:current"]
-    target = scene._urdfs["robot1:target"]
-    preview = scene._urdfs["robot1:preview"]
+    current = scene._urdf_for("robot1", "current")
+    target = scene._urdf_for("robot1", "target")
+    preview = scene._urdf_for("robot1", "preview")
 
     assert all(mesh.visible is True for mesh in target._meshes)
     assert all(mesh.visible is False for mesh in preview._meshes)
@@ -941,8 +943,8 @@ def test_preview_animation_uses_separate_colored_ghost_and_hides_after_playback(
         joint_names=["joint1"],
     )
     scene.register_robot("robot1", config)
-    target = scene._urdfs["robot1:target"]
-    preview = scene._urdfs["robot1:preview"]
+    target = scene._urdf_for("robot1", "target")
+    preview = scene._urdf_for("robot1", "preview")
 
     assert all(mesh.color == (255, 122, 0) for mesh in target._meshes)
     assert all(mesh.color == (80, 180, 255) for mesh in preview._meshes)
@@ -1161,8 +1163,8 @@ def test_scene_registers_goal_robot_coloring_and_updates_visibility() -> None:
     )
 
     scene.register_robot("robot1", config)
-    target = scene._urdfs["robot1:target"]
-    preview = scene._urdfs["robot1:preview"]
+    target = scene._urdf_for("robot1", "target")
+    preview = scene._urdf_for("robot1", "preview")
 
     assert all(mesh.color == (255, 122, 0) for mesh in target._meshes)
     assert all(mesh.opacity == 0.7 for mesh in target._meshes)
@@ -1209,8 +1211,8 @@ def test_scene_transform_controls_update_pose_callback_and_visual_state() -> Non
     assert control.wxyz == (1.0, 0.0, 0.0, 0.0)
 
     scene.set_target_visual_state("robot1", feasible=False)
-    target = scene._urdfs["robot1:target"]
-    preview = scene._urdfs["robot1:preview"]
+    target = scene._urdf_for("robot1", "target")
+    preview = scene._urdf_for("robot1", "preview")
     assert control.color == (255, 40, 40)
     assert all(mesh.color == (255, 30, 30) for mesh in target._meshes)
     assert all(mesh.opacity == 0.75 for mesh in target._meshes)
@@ -1241,7 +1243,7 @@ def test_scene_target_controls_update_target_ghost_pose_and_feasibility() -> Non
     assert scene.set_target_pose("robot1", pose) is None
     assert scene.set_target_visual_state("robot1", feasible=False) is None
 
-    target = scene._urdfs["robot1:target"]
+    target = scene._urdf_for("robot1", "target")
     handle = scene._handles["robot1:ee_control"]
     assert target.cfg == [0.7, 0.9]
     assert handle.position == (0.1, 0.2, 0.3)
@@ -1776,3 +1778,58 @@ def test_operation_worker_reports_timeout() -> None:
 
     assert errors == ["Operation timed out after 0.0s"]
     assert finished.wait(timeout=1.0)
+
+
+def test_scene_shares_ghosts_across_display_group_and_merges_joints() -> None:
+    server = FakeServer()
+    created: list[FakeUrdf] = []
+
+    def factory(*args: object, **kwargs: object) -> FakeUrdf:
+        urdf = FakeUrdf(("j_left", "j_right"))
+        created.append(urdf)
+        return urdf
+
+    scene = ViserManipulationScene(server, factory, preview_fps=10.0)
+    scene.prepared_urdf_path = lambda config: "dummy.urdf"
+    left = SimpleNamespace(
+        name="g1-left",
+        model_path="/tmp/g1.urdf",
+        package_paths={},
+        xacro_args={},
+        auto_convert_meshes=False,
+        joint_names=["j_left"],
+    )
+    right = SimpleNamespace(
+        name="g1-right",
+        model_path="/tmp/g1.urdf",
+        package_paths={},
+        xacro_args={},
+        auto_convert_meshes=False,
+        joint_names=["j_right"],
+    )
+
+    scene.register_robot("robot1", left)
+    scene.register_robot("robot2", right)
+
+    # One shared current/target/preview set, not one per robot.
+    assert len(created) == 3
+    assert scene._urdf_for("robot1", "target") is scene._urdf_for("robot2", "target")
+
+    # Each arm's target merges into the shared ghost.
+    assert scene.set_target_joints("robot1", ["j_left"], [1.0]) is True
+    assert scene.set_target_joints("robot2", ["j_right"], [2.0]) is True
+    target = scene._urdf_for("robot1", "target")
+    assert target is not None and target.cfg == [1.0, 2.0]
+
+    # An arm still tracking current only overwrites its own joints.
+    scene.update_current_robot("robot1", FakeJointState(["j_left"], [0.5]))
+    current = scene._urdf_for("robot1", "current")
+    assert current is not None and current.cfg == [0.5, 0.0]
+    assert target.cfg == [1.0, 2.0]  # robot1 stopped tracking when targeted
+
+    # Unregistering one arm keeps the shared ghosts for the other.
+    scene.unregister_robot("robot1")
+    assert scene._urdf_for("robot2", "target") is target
+    assert target.removed is False
+    scene.unregister_robot("robot2")
+    assert target.removed is True
