@@ -351,7 +351,16 @@ else:
             host_ip=os.getenv("LIDAR_HOST_IP", "192.168.123.164"),
             lidar_ip=os.getenv("LIDAR_IP", "192.168.123.120"),
         ),
-        RayTracingVoxelMap.blueprint(voxel_size=_G1_NAV_VOXEL_RESOLUTION),
+        RayTracingVoxelMap.blueprint(
+            voxel_size=_G1_NAV_VOXEL_RESOLUTION,
+            # No /local_map: it is the MLS planner's incremental feed and has
+            # no consumer here -- it was 4.5 MB/s of pure bus + encode waste.
+            emit_every=0,
+            # Global map at ~1 Hz (lidar runs ~4-5 Hz effective). CostMapper
+            # recomputes per emit, so this also paces the costmap. Full-rate
+            # emits saturated the Orin (load ~26/8) and starved FAST-LIO.
+            global_emit_every=4,
+        ),
         CostMapper.blueprint(
             config=HeightCostConfig(
                 resolution=_G1_NAV_VOXEL_RESOLUTION,
