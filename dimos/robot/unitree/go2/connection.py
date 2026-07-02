@@ -139,7 +139,26 @@ def make_connection(
         return DimSimConnection(cfg)
     elif connection_type == "webrtc":
         assert ip is not None, "IP address must be provided"
-        return UnitreeWebRTCConnection(ip, aes_128_key=aes_128_key)
+        # Retry with backoff: the dog reaps a stale/half-open peer in ~10-20s
+        # (the driver's own error message says exactly that), so one failed
+        # 15s handshake shouldn't kill the whole blueprint — restart cycles
+        # create more dirty disconnects, which is what wedges the firmware.
+        attempts = 3
+        for attempt in range(1, attempts + 1):
+            try:
+                return UnitreeWebRTCConnection(ip, aes_128_key=aes_128_key)
+            except Exception:
+                if attempt == attempts:
+                    raise
+                logger.warning(
+                    "Go2 WebRTC connect attempt %d/%d failed — retrying in 10s "
+                    "(the dog may still hold a stale peer)",
+                    attempt,
+                    attempts,
+                    exc_info=True,
+                )
+                time.sleep(10)
+        raise AssertionError("unreachable")
     else:
         raise ValueError(f"Unknown simulator {cfg.simulation!r}. Choose from: mujoco, dimsim")
 
@@ -295,10 +314,21 @@ class GO2Connection(Module, Camera, Pointcloud):
 
     @rpc
     def stop(self) -> None:
-        self.liedown()
+        # Every step is best-effort: teardown MUST reach connection.stop()
+        # (the WebRTC disconnect). When liedown() raised on a dead link, the
+        # disconnect was skipped, the worker got SIGKILLed after the 5s grace,
+        # and the dog was left holding a half-open peer — which is what wedges
+        # its firmware video pipeline (2026-07-01 demo, DM-1/DM-4).
+        try:
+            self.liedown()
+        except Exception:
+            logger.warning("liedown on stop failed (link already down?) — continuing teardown")
 
         if self.connection:
-            self.connection.stop()
+            try:
+                self.connection.stop()
+            except Exception:
+                logger.warning("connection stop failed", exc_info=True)
 
         if self._camera_info_thread and self._camera_info_thread.is_alive():
             self._camera_info_thread.join(timeout=DEFAULT_THREAD_JOIN_TIMEOUT)
