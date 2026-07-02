@@ -64,7 +64,7 @@ def _bare_connection() -> Go2HostedConnection:
     conn._estopped = False
     conn._posture = "StandReady"
     conn._obstacle_avoidance = True
-    conn._light_on = False
+    conn._light = 0.0
     conn._cam_selected = ["cam1"]
     conn._cam_frames = {}
     conn._cam_lock = threading.Lock()
@@ -373,37 +373,71 @@ def test_telemetry_payload_carries_robot_state() -> None:
         "posture": "Sit",
         "rage": True,
         "obstacle_avoidance": False,
-        "light": False,
+        "light": 0.0,
         "cams": ["cam1", "cam2"],
         "estopped": True,
     }
     assert "robot_ts" in p
 
 
-def test_light_toggle_updates_state_and_acks(monkeypatch: pytest.MonkeyPatch) -> None:
+def test_light_brightness_maps_to_firmware_level(monkeypatch: pytest.MonkeyPatch) -> None:
+    """brightness 0..1 → VUI level 0-10; state tracks the 0..1 value."""
     conn = _bare_connection()
     conn.connection.set_light.return_value = True
     acks: list[tuple[Any, bool]] = []
     monkeypatch.setattr(conn, "_send_ack", lambda nonce, ok: acks.append((nonce, ok)))
 
-    conn._on_state_json(b'{"type": "light", "enabled": true, "nonce": 11}')
+    conn._on_state_json(b'{"type": "light", "brightness": 0.4, "nonce": 11}')
     _wait_for(lambda: (11, True) in acks)
 
-    conn.connection.set_light.assert_called_once_with(True)
-    assert conn._light_on is True
-    assert conn._telemetry_payload()["state"]["light"] is True
+    conn.connection.set_light.assert_called_once_with(4)
+    assert conn._light == 0.4
+    assert conn._telemetry_payload()["state"]["light"] == 0.4
 
 
-def test_light_toggle_failure_keeps_state(monkeypatch: pytest.MonkeyPatch) -> None:
+def test_light_legacy_enabled_bool_still_works(monkeypatch: pytest.MonkeyPatch) -> None:
+    """The shipped on/off toggle sends enabled — maps to full/zero brightness."""
+    conn = _bare_connection()
+    conn.connection.set_light.return_value = True
+    acks: list[tuple[Any, bool]] = []
+    monkeypatch.setattr(conn, "_send_ack", lambda nonce, ok: acks.append((nonce, ok)))
+
+    conn._on_state_json(b'{"type": "light", "enabled": true, "nonce": 12}')
+    _wait_for(lambda: (12, True) in acks)
+    conn.connection.set_light.assert_called_with(10)
+    assert conn._light == 1.0
+
+    conn._on_state_json(b'{"type": "light", "enabled": false, "nonce": 13}')
+    _wait_for(lambda: (13, True) in acks)
+    conn.connection.set_light.assert_called_with(0)
+    assert conn._light == 0.0
+
+
+def test_light_brightness_clamped_and_validated(monkeypatch: pytest.MonkeyPatch) -> None:
+    conn = _bare_connection()
+    conn.connection.set_light.return_value = True
+    acks: list[tuple[Any, bool]] = []
+    monkeypatch.setattr(conn, "_send_ack", lambda nonce, ok: acks.append((nonce, ok)))
+
+    conn._on_state_json(b'{"type": "light", "brightness": 7, "nonce": 14}')  # >1 → clamp
+    _wait_for(lambda: (14, True) in acks)
+    conn.connection.set_light.assert_called_with(10)
+
+    conn._on_state_json(b'{"type": "light", "brightness": "bogus", "nonce": 15}')
+    assert (15, False) in acks  # rejected synchronously, no firmware call
+    assert conn.connection.set_light.call_count == 1
+
+
+def test_light_failure_keeps_state(monkeypatch: pytest.MonkeyPatch) -> None:
     conn = _bare_connection()
     conn.connection.set_light.return_value = False
     acks: list[tuple[Any, bool]] = []
     monkeypatch.setattr(conn, "_send_ack", lambda nonce, ok: acks.append((nonce, ok)))
 
-    conn._on_state_json(b'{"type": "light", "enabled": true, "nonce": 12}')
-    _wait_for(lambda: (12, False) in acks)
+    conn._on_state_json(b'{"type": "light", "brightness": 1.0, "nonce": 16}')
+    _wait_for(lambda: (16, False) in acks)
 
-    assert conn._light_on is False
+    assert conn._light == 0.0
 
 
 def test_posture_tracks_successful_posture_commands(monkeypatch: pytest.MonkeyPatch) -> None:

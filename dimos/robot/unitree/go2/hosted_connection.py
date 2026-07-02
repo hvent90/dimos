@@ -136,7 +136,7 @@ class Go2HostedConnection(GO2Connection):
         # GO2Connection.start() stands the robot up, hence the initial posture.
         self._posture = "StandReady"
         self._obstacle_avoidance = True  # corrected from config.g in start()
-        self._light_on = False  # head LED assumed off until toggled
+        self._light = 0.0  # head-LED brightness 0..1, assumed off until set
         self._last_mux_pub = 0.0  # monotonic stamp for the video_max_fps cap
 
     @rpc
@@ -525,18 +525,33 @@ class Go2HostedConnection(GO2Connection):
         self._submit_cmd(f"obstacle_avoidance {enabled}", nonce, task)
 
     def _handle_light(self, msg: dict[str, Any]) -> None:
-        """Toggle the head LED (VUI brightness on/off)."""
-        enabled = bool(msg.get("enabled"))
+        """Head-LED brightness. The slider sends brightness 0..1; the original
+        toggle sent an ``enabled`` bool — map it so deployed frontends keep
+        working. 0..1 → firmware level 0-10 (0 = off)."""
         nonce = msg.get("nonce")
+        raw = msg.get("brightness")
+        if raw is None:
+            raw = 1.0 if msg.get("enabled") else 0.0
+        try:
+            brightness = float(raw)
+        except (TypeError, ValueError):
+            logger.warning("light: malformed brightness %r", raw)
+            self._send_ack(nonce, False)
+            return
+        if brightness != brightness:  # NaN
+            self._send_ack(nonce, False)
+            return
+        brightness = max(0.0, min(1.0, brightness))
+        level = round(brightness * 10)
 
         def task() -> bool:
-            ok = bool(self.connection.set_light(enabled))
+            ok = bool(self.connection.set_light(level))
             if ok:
-                self._light_on = enabled
-            logger.info("light: enabled=%s ok=%s", enabled, ok)
+                self._light = brightness
+            logger.info("light: brightness=%.1f (level %d) ok=%s", brightness, level, ok)
             return ok
 
-        self._submit_cmd(f"light {enabled}", nonce, task)
+        self._submit_cmd(f"light {brightness:.1f}", nonce, task)
 
     def _send_ack(self, nonce: Any, ok: bool) -> None:
         # Best-effort: the ack rides state_reliable_back, which doesn't exist
@@ -599,7 +614,7 @@ class Go2HostedConnection(GO2Connection):
                 "posture": self._posture,
                 "rage": self._rage_active,
                 "obstacle_avoidance": self._obstacle_avoidance,
-                "light": self._light_on,
+                "light": self._light,  # brightness 0..1
                 "cams": list(self._cam_selected),
                 "estopped": self._estopped,
             },
