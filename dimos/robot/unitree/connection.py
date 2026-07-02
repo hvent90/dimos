@@ -131,16 +131,6 @@ class UnitreeWebRTCConnection(Resource):
         try:
             asyncio.run_coroutine_threadsafe(async_connect(), self.loop).result()
         except Exception:
-            # Best-effort disconnect BEFORE tearing the loop down: a failed
-            # handshake otherwise leaves a half-open peer on the dog, and
-            # accumulated half-open peers are what wedge its firmware video
-            # pipeline (only a power cycle clears that — DM-1).
-            try:
-                asyncio.run_coroutine_threadsafe(self.conn.disconnect(), self.loop).result(
-                    timeout=3.0
-                )
-            except Exception:
-                pass
             self.loop.call_soon_threadsafe(self.loop.stop)
             self.thread.join(timeout=DEFAULT_THREAD_JOIN_TIMEOUT)
             raise
