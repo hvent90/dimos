@@ -8,8 +8,7 @@ use pyo3::prelude::*;
 use validator::Validate;
 
 use crate::voxel_ray_tracer::{
-    batch_local_bounds, iter_global_normals, iter_global_points, local_surface_points, update_map,
-    Config, LocalBounds, VoxelMap,
+    batch_local_bounds, emit_points, iter_global_normals, update_map, Config, LocalBounds, VoxelMap,
 };
 
 fn extract_tuples(arr: &Bound<'_, PyAny>, name: &str) -> PyResult<Vec<(f32, f32, f32)>> {
@@ -125,7 +124,7 @@ impl VoxelRayMapper {
         let map = &self.map;
         let positions: Vec<f32> = py.allow_threads(|| {
             let mut out: Vec<f32> = Vec::with_capacity(map.voxels.len() * 3);
-            for (x, y, z) in iter_global_points(map, voxel_size) {
+            for (x, y, z) in emit_points(map, voxel_size, None, 0, None) {
                 out.push(x);
                 out.push(y);
                 out.push(z);
@@ -187,7 +186,7 @@ impl VoxelRayMapper {
         let map = &self.map;
         let positions: Vec<f32> = py.allow_threads(|| {
             let mut out: Vec<f32> = Vec::new();
-            for (x, y, z) in local_surface_points(map, voxel_size, &bounds, support_min) {
+            for (x, y, z) in emit_points(map, voxel_size, Some(&bounds), support_min, None) {
                 out.push(x);
                 out.push(y);
                 out.push(z);

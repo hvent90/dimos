@@ -372,23 +372,6 @@ fn percentile(values: &mut [f32], p: f32) -> f32 {
     v_lo + frac * (v_hi - v_lo)
 }
 
-pub fn iter_global_points(
-    map: &VoxelMap,
-    voxel_size: f32,
-) -> impl Iterator<Item = (f32, f32, f32)> + '_ {
-    let half = voxel_size * 0.5;
-    map.voxels
-        .iter()
-        .filter(|(_, c)| c.health > 0)
-        .map(move |(&(kx, ky, kz), _)| {
-            (
-                kx as f32 * voxel_size + half,
-                ky as f32 * voxel_size + half,
-                kz as f32 * voxel_size + half,
-            )
-        })
-}
-
 /// Healthy voxel centers paired with their surface normal, the zero vector where
 /// there is no plane.
 pub fn iter_global_normals(
@@ -429,33 +412,57 @@ fn surface_support(voxels: &AHashMap<VoxelKey, Voxel>, key: VoxelKey) -> i32 {
     n
 }
 
-/// Surface points inside `bounds` with at least `support_min` occupied
-/// neighbors; zero keeps every voxel. Neighbors are counted over the whole map,
-/// so a voxel at the region edge still sees its true surroundings.
-pub fn local_surface_points(
+/// Points for an emitted cloud, the single source of truth for both the live
+/// module and the offline wrapper. Healthy surface voxels are clipped to
+/// `bounds` (the whole map when `None`) and kept only with at least
+/// `support_min` occupied neighbors. This frame's `live` voxels are added inside
+/// `bounds`, never support-filtered, and skipped where already healthy. Support
+/// is counted over the whole map, so a voxel at the region edge still sees its
+/// true surroundings.
+pub fn emit_points(
     map: &VoxelMap,
     voxel_size: f32,
-    bounds: &LocalBounds,
+    bounds: Option<&LocalBounds>,
     support_min: i32,
+    live: Option<&AHashSet<VoxelKey>>,
 ) -> Vec<(f32, f32, f32)> {
     let half = voxel_size * 0.5;
-    map.voxels
-        .iter()
-        .filter(|(_, c)| c.health > 0)
-        .filter_map(|(&key, _)| {
-            let (kx, ky, kz) = key;
-            let x = kx as f32 * voxel_size + half;
-            let y = ky as f32 * voxel_size + half;
-            let z = kz as f32 * voxel_size + half;
-            if !bounds.contains(x, y, z) {
-                return None;
+    let center = |(kx, ky, kz): VoxelKey| {
+        (
+            kx as f32 * voxel_size + half,
+            ky as f32 * voxel_size + half,
+            kz as f32 * voxel_size + half,
+        )
+    };
+    let in_bounds = |x, y, z| bounds.is_none_or(|b| b.contains(x, y, z));
+
+    let mut out = Vec::new();
+    for (&key, c) in map.voxels.iter() {
+        if c.health <= 0 {
+            continue;
+        }
+        let (x, y, z) = center(key);
+        if !in_bounds(x, y, z) {
+            continue;
+        }
+        if support_min > 0 && surface_support(&map.voxels, key) < support_min {
+            continue;
+        }
+        out.push((x, y, z));
+    }
+    if let Some(live) = live {
+        for &key in live.iter() {
+            if matches!(map.voxels.get(&key), Some(c) if c.health > 0) {
+                continue;
             }
-            if support_min > 0 && surface_support(&map.voxels, key) < support_min {
-                return None;
+            let (x, y, z) = center(key);
+            if !in_bounds(x, y, z) {
+                continue;
             }
-            Some((x, y, z))
-        })
-        .collect()
+            out.push((x, y, z));
+        }
+    }
+    out
 }
 
 fn live_voxels(points: &[(f32, f32, f32)], voxel_size: f32) -> AHashSet<VoxelKey> {
@@ -1382,11 +1389,14 @@ mod tests {
         };
 
         // support_min 0 emits every surface voxel.
-        assert_eq!(local_surface_points(&map, voxel_size, &bounds, 0).len(), 10);
+        assert_eq!(
+            emit_points(&map, voxel_size, Some(&bounds), 0, None).len(),
+            10
+        );
 
         // Every patch cell has at least 3 surface neighbors (the corners exactly
         // 3), so support_min 3 keeps the patch and drops only the isolated voxel.
-        let gated = local_surface_points(&map, voxel_size, &bounds, 3);
+        let gated = emit_points(&map, voxel_size, Some(&bounds), 3, None);
         assert_eq!(gated.len(), 9);
         let half = voxel_size * 0.5;
         let isolated = (20.0 + half, 20.0 + half, half);
