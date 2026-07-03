@@ -302,7 +302,7 @@ class BrokerProvider(AsyncProviderBase):
         def _on_track(track: Any) -> None:
             if track.kind != "audio":
                 return
-            logger.info("Operator audio track received")
+            logger.debug("operator audio track received")
             self._audio_task = asyncio.get_event_loop().create_task(
                 self._read_audio_track(track)
             )
@@ -321,12 +321,16 @@ class BrokerProvider(AsyncProviderBase):
                 if cb is None:
                     continue
                 try:
-                    pcm = frame.to_ndarray()  # shape (channels, samples), int16
-                    cb(pcm.tobytes(), int(frame.sample_rate), pcm.shape[0])
+                    # aiortc's Opus decode yields packed s16: to_ndarray() is
+                    # (1, samples×channels) INTERLEAVED — channel count must
+                    # come from the layout, not the array shape.
+                    pcm = frame.to_ndarray()
+                    channels = len(frame.layout.channels) or 1
+                    cb(pcm.tobytes(), int(frame.sample_rate), channels)
                 except Exception:
                     logger.debug("audio sink callback error", exc_info=True)
         except Exception:
-            logger.info("Operator audio track ended")
+            logger.debug("operator audio track ended")
 
     async def _disconnect(self) -> None:
         if self._hb_task is not None:

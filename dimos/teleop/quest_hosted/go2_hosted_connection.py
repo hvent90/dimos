@@ -45,6 +45,7 @@ from dimos.protocol.pubsub.impl.webrtc.providers.spec import (
     shutdown_all_providers,
 )
 from dimos.robot.unitree.go2.connection import ConnectionConfig, GO2Connection
+from dimos.robot.unitree.go2.speaker import PCMAudioTrack
 from dimos.teleop.quest_hosted.hosted_base import HostedConnectionMixin
 from dimos.teleop.utils.video_stats import VideoStats
 from dimos.utils.logging_config import setup_logger
@@ -86,6 +87,9 @@ class Go2HostedConnectionConfig(ConnectionConfig):
     map_hz: float = 2.0  # occupancy-grid push rate (0 = off)
     map_min_resolution: float = 0.1  # coarsen finer grids to this m/cell before encode
     odom_hz: float = 15.0  # robot-pose push rate (0 = off)
+    # Play operator audio on the dog's speaker (feeds the dog PC's sendrecv
+    # audio m-line). Only matters when the uplink runs (broker audio_in=true).
+    speaker: bool = True
 
 
 class Go2HostedConnection(GO2Connection, HostedConnectionMixin):
@@ -143,6 +147,7 @@ class Go2HostedConnection(GO2Connection, HostedConnectionMixin):
         self._cmd_lock = threading.Lock()
         # nonce → (result | None while in flight, monotonic stamp)
         self._nonce_results: dict[Any, tuple[bool | None, float]] = {}
+        self._speaker_track: PCMAudioTrack | None = None
         # Robot-authoritative UI state, pushed in telemetry so a reconnecting
         # operator's cockpit reflects reality instead of optimistic defaults.
         # GO2Connection.start() stands the robot up, hence the initial posture.
@@ -196,8 +201,9 @@ class Go2HostedConnection(GO2Connection, HostedConnectionMixin):
         # Operator mic → audio_out. The subscribes above already forced the
         # broker provider into existence, so the registry sweep finds it; frames
         # only arrive when it runs with audio_in=true.
-        if set_audio_sink(self._on_audio_frame):
-            logger.info("operator audio sink wired")
+        set_audio_sink(self._on_audio_frame)
+        if self.config.speaker:
+            self._attach_speaker()
         self._start_telemetry()
 
     @rpc
@@ -589,13 +595,48 @@ class Go2HostedConnection(GO2Connection, HostedConnectionMixin):
 
     def _on_audio_frame(self, pcm: bytes, sample_rate: int, channels: int) -> None:
         """Operator mic frame (from the broker provider's audio track) →
-        audio_out. Self-describing: 8-byte header (sample_rate u32, channels
-        u16, format u16 = 0 for s16 interleaved) then the raw PCM."""
+        audio_out + the dog's speaker track. audio_out is self-describing:
+        8-byte header (sample_rate u32, channels u16, format u16 = 0 for s16
+        interleaved) then the raw PCM."""
+        track = self._speaker_track
+        if track is not None:
+            track.push(pcm, sample_rate, channels)
         try:
             self.audio_out.publish(struct.pack("<IHH", sample_rate, channels, 0) + pcm)
         except Exception:
             # No consumer/transport bound is the norm until something subscribes.
             logger.debug("audio publish failed", exc_info=True)
+
+    def _attach_speaker(self) -> None:
+        """Feed the dog PC's already-negotiated sendrecv audio m-line.
+
+        The driver adds the transceiver on every connection but never gives the
+        sender a track — replaceTrack fills that half, switchAudioChannel("on")
+        enables the dog's audio plane (what the app's intercom flips). Runs on
+        the dog connection's loop. Best-effort: replay/mock connections have no
+        PC, and a failed attach just means no speaker, never a failed start.
+        """
+        try:
+            drv = self.connection.conn  # unitree_webrtc_connect driver
+            loop = self.connection.loop
+            pc = drv.pc
+        except AttributeError:
+            logger.debug("speaker: connection has no WebRTC PC (sim/replay) — skipped")
+            return
+        try:
+            sender = next(
+                (t.sender for t in pc.getTransceivers() if t.kind == "audio"), None
+            )
+            if sender is None:
+                logger.warning("speaker: dog PC has no audio transceiver")
+                return
+            self._speaker_track = PCMAudioTrack()
+            loop.call_soon_threadsafe(sender.replaceTrack, self._speaker_track)
+            loop.call_soon_threadsafe(drv.datachannel.switchAudioChannel, True)
+            logger.debug("speaker: operator audio track attached")
+        except Exception:
+            self._speaker_track = None
+            logger.exception("speaker attach failed — operator audio won't play on the dog")
 
     @staticmethod
     def _block_max(cells: Any, factor: int) -> Any:

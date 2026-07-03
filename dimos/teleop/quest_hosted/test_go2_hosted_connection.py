@@ -81,6 +81,7 @@ def _bare_connection() -> Go2HostedConnection:
     conn.telemetry_out = MagicMock()
     conn.map_out = MagicMock()
     conn.audio_out = MagicMock()
+    conn._speaker_track = None
     # Command execution plane (normally built in start()).
     conn._cmd_executor = ThreadPoolExecutor(max_workers=1, thread_name_prefix="Go2CmdTest")
     conn._cmd_pending = 0
@@ -783,3 +784,14 @@ def test_audio_frame_published_with_header() -> None:
     sr, ch, fmt = struct.unpack("<IHH", data[:8])
     assert (sr, ch, fmt) == (48000, 2, 0)
     assert data[8:] == b"\x01\x02\x03\x04"
+
+
+def test_audio_frame_fans_out_to_speaker_track() -> None:
+    conn = _bare_connection()
+    conn._speaker_track = MagicMock()
+
+    conn._on_audio_frame(b"\x01\x02", 48000, 1)
+
+    conn._speaker_track.push.assert_called_once_with(b"\x01\x02", 48000, 1)
+    conn.audio_out.publish.assert_called_once()
+
