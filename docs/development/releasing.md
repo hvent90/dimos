@@ -17,7 +17,8 @@ Throughout this document, replace `X.Y.Z` with the version you are releasing (e.
    ```
 
 4. Create a backport label for this release. Repo → Issues → Labels (in left sidebar) → New label, named `backport release/X.Y.Z`. (Or `gh label create "backport release/X.Y.Z" --repo dimensionalOS/dimos`.) The backport bot only runs when this label exists.
-5. To backport a fix from `main`: add the `backport release/X.Y.Z` label to a PR targeting `main` (before or after merging). The backport bot will open a cherry-pick PR onto the release branch; review it and squash-merge.
+5. Turn on the backport gate by creating the `release-in-flight` label, if it isn't already present from another release still in progress (`gh label create "release-in-flight" --repo dimensionalOS/dimos`). While it exists, every PR to `main` must carry a `backport release/X.Y.Z` label or `backport:skip` before it can merge.
+6. To backport a fix from `main`: add the `backport release/X.Y.Z` label to a PR targeting `main` (before or after merging). The backport bot will open a cherry-pick PR onto the release branch; review it and squash-merge.
 
 ## 2. Creating the release
 
@@ -48,13 +49,13 @@ When ready to cleanup the branch, follow these steps:
    git push origin --delete archived/X.Y.Z
    ```
 
-2. Delete the `backport release/X.Y.Z` label from the Labels page (or `gh label delete "backport release/X.Y.Z"`).
+2. If no other release is still in flight, delete the `release-in-flight` label to turn the backport gate back off (`gh label delete "release-in-flight" --repo dimensionalOS/dimos`). Leave the `backport release/X.Y.Z` label in place — it stays on the PRs it tagged as a record of what shipped in this release.
 
 ## Patch fix on a released version
 
 When you need to ship a patch fix:
 
-1. If the release branch has already been deleted, re-cut from the tag and recreate the label (step 1.4):
+1. If the release branch has already been deleted, re-cut from the tag and recreate the labels (steps 1.4 and 1.5):
 
    ```bash
    git fetch origin --tags

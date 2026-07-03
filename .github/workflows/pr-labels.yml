@@ -6,9 +6,11 @@ name: pr-labels
 # synchronize` clears the stale label on a new push before CI finishes on
 # the new commit.
 #
-# `backport-check`: when a `backport release/X.Y.Z` label exists (release in
-# flight), every PR to main must declare backport intent via that label or
-# `backport:skip`.
+# `backport-check`: while the `release-in-flight` label exists on the repo,
+# every PR to main must declare backport intent via a `backport release/X.Y.Z`
+# label or `backport:skip`. Toggling that one label turns enforcement on and
+# off; the per-version `backport release/X.Y.Z` labels are left in place as a
+# record of what was backported into each release.
 #
 # Runs on the default branch via these events, so the GITHUB_TOKEN is
 # write-scoped even for PRs from forks — and the workflow file itself can't
@@ -133,11 +135,11 @@ jobs:
           PR_NUMBER: ${{ github.event.pull_request.number }}
           REPO: ${{ github.repository }}
         run: |
-          # Skip when no release is in flight (`backport:skip` is excluded by the prefix filter).
-          release_labels=$(gh api "repos/$REPO/labels" --paginate \
-            --jq '.[].name | select(startswith("backport release/"))')
-          if [[ -z "$release_labels" ]]; then
-            echo "::notice::No active 'backport release/*' labels; nothing to enforce."
+          # A release is in flight while the `release-in-flight` label exists.
+          # Skip the check when it's absent.
+          if [[ -z "$(gh api "repos/$REPO/labels" --paginate \
+              --jq '.[].name | select(. == "release-in-flight")')" ]]; then
+            echo "::notice::No 'release-in-flight' label; nothing to enforce."
             exit 0
           fi
           pr_labels=$(gh pr view "$PR_NUMBER" --repo "$REPO" \
@@ -145,6 +147,8 @@ jobs:
           if echo "$pr_labels" | grep -qE '^(backport release/|backport:skip$)'; then
             exit 0
           fi
-          echo "::error::PR needs a 'backport release/X.Y.Z' label, or 'backport:skip' to opt out. Active release labels:"
+          release_labels=$(gh api "repos/$REPO/labels" --paginate \
+            --jq '.[].name | select(startswith("backport release/"))')
+          echo "::error::A release is in flight. This PR needs a 'backport release/X.Y.Z' label, or 'backport:skip' to opt out. Available release labels:"
           echo "$release_labels" | sed 's/^/  - /'
           exit 1
