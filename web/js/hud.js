@@ -124,7 +124,10 @@ export function applyStampCrop() {
     const v = document.getElementById('robot-cam');
     if (!v) return;
     const strip = state.liveStats.stampStripPx || 0;
-    if (!strip || !v.videoWidth || !v.clientHeight) {
+    // Skip while the camera is the floating PiP: the clip-path cuts through the
+    // PiP's rounded box/border and the main-view map shows through the gap. The
+    // strip is negligible at PiP size anyway; crop only when the camera is main.
+    if (!strip || !v.videoWidth || !v.clientHeight || v.classList.contains('is-pip')) {
         if (v.style.clipPath) v.style.clipPath = '';
         return;
     }
