@@ -206,6 +206,40 @@ def test_provider_singleton_per_config() -> None:
     assert MockConfig(name="a").provider() is not MockConfig(name="b").provider()
 
 
+def test_shutdown_all_providers_stops_and_clears() -> None:
+    """Graceful teardown: stop every live provider and empty the registry so the
+    worker can exit (see providers/spec.shutdown_all_providers)."""
+    from dimos.protocol.pubsub.impl.webrtc.providers import spec
+
+    p1 = MockConfig(name="sd1").provider()
+    p2 = MockConfig(name="sd2").provider()
+    p1.start()
+    p2.start()
+
+    spec.shutdown_all_providers()
+
+    assert not p1.is_connected and not p2.is_connected
+    # Registry emptied, so a later provider() call builds a fresh instance.
+    assert MockConfig(name="sd1").provider() is not p1
+    # Idempotent — a second call with nothing registered is a no-op.
+    spec.shutdown_all_providers()
+
+
+def test_shutdown_all_providers_continues_past_a_raising_stop() -> None:
+    """One provider raising in stop() must not strand the others still running."""
+    from dimos.protocol.pubsub.impl.webrtc.providers import spec
+
+    good = MockConfig(name="ok").provider()
+    good.start()
+    bad = MockConfig(name="bad").provider()
+    bad.start()
+    bad.stop = lambda: (_ for _ in ()).throw(RuntimeError("boom"))  # type: ignore[method-assign]
+
+    spec.shutdown_all_providers()  # must not raise
+
+    assert not good.is_connected
+
+
 # ─── ProviderConfig (pydantic frozen) ────────────────────────────────
 
 

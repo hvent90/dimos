@@ -42,6 +42,7 @@ from dimos.core.core import rpc
 from dimos.core.stream import In, Out
 from dimos.msgs.geometry_msgs.PoseStamped import PoseStamped
 from dimos.msgs.sensor_msgs.Image import Image
+from dimos.protocol.pubsub.impl.webrtc.providers.spec import shutdown_all_providers
 from dimos.teleop.quest.quest_extensions import ArmTeleopConfig, ArmTeleopModule
 from dimos.teleop.quest.quest_types import Hand
 from dimos.teleop.quest_hosted.hosted_base import HostedConnectionMixin
@@ -113,6 +114,9 @@ class ArmHostedConnection(ArmTeleopModule, HostedConnectionMixin):
     def stop(self) -> None:
         super().stop()  # stops the control loop (sets _stop_event) + Module teardown
         self._stop_telemetry()
+        # Graceful broker disconnect so the worker exits promptly instead of
+        # being force-killed and reaped ~30s later. See shutdown_all_providers.
+        shutdown_all_providers()
 
     # ─── Inbound command plane (operator → robot) ─────────────────────
 

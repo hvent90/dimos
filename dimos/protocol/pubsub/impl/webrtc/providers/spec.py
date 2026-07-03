@@ -70,6 +70,24 @@ _providers: dict[ProviderConfig, Provider] = {}
 _providers_lock = threading.Lock()
 
 
+def shutdown_all_providers() -> None:
+    """Stop every live provider in this process and clear the registry.
+
+    Providers are process-scoped singletons that ``Transport.stop()`` leaves
+    running, so nothing else disconnects them on teardown — without this the
+    broker session's DELETE never fires and the worker hangs until force-killed
+    (the broker then reaps it ~30s later). Idempotent; safe with no providers.
+    """
+    with _providers_lock:
+        providers = list(_providers.values())
+        _providers.clear()
+    for provider in providers:
+        try:
+            provider.stop()
+        except Exception:
+            logger.exception("Error stopping provider %s", type(provider).__name__)
+
+
 class ProviderConfig(BaseModel):
     """Picklable provider factory. Equal configs share one provider per process."""
 
@@ -213,6 +231,7 @@ __all__ = [
     "AsyncProviderBase",
     "Provider",
     "ProviderConfig",
+    "shutdown_all_providers",
     "wait_connected",
     "wait_open",
 ]
