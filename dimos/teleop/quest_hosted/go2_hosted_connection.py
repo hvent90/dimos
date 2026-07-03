@@ -32,11 +32,13 @@ import threading
 import time
 from typing import Any
 
+from dimos_lcm.std_msgs import Bool
 from reactivex.disposable import Disposable
 
 from dimos.core.core import rpc
 from dimos.core.stream import In, Out
 from dimos.msgs.geometry_msgs.PoseStamped import PoseStamped
+from dimos.msgs.geometry_msgs.Twist import Twist
 from dimos.msgs.geometry_msgs.TwistStamped import TwistStamped
 from dimos.msgs.nav_msgs.OccupancyGrid import OccupancyGrid
 from dimos.msgs.sensor_msgs.Image import Image
@@ -90,6 +92,9 @@ class Go2HostedConnectionConfig(ConnectionConfig):
     # Play operator audio on the dog's speaker (feeds the dog PC's sendrecv
     # audio m-line). Only matters when the uplink runs (broker audio_in=true).
     speaker: bool = True
+    # Click-to-navigate: operator WASD input suppresses the planner's nav
+    # twists for this long — manual drive always wins over autonomy.
+    nav_yield_sec: float = 1.0
 
 
 class Go2HostedConnection(GO2Connection, HostedConnectionMixin):
@@ -119,6 +124,12 @@ class Go2HostedConnection(GO2Connection, HostedConnectionMixin):
     # yet). 8-byte header (sample_rate u32, channels u16, 0=s16 u16) + PCM.
     # Frames only flow when the provider runs with transports.broker.audio_in=true.
     audio_out: Out[bytes]
+    # Click-to-navigate: operator map click → goal_request → planner; the
+    # planner's nav_cmd_vel drives move() (yielding to live operator input),
+    # and stop_movement cancels the goal (E-STOP / operator loss).
+    goal_request: Out[PoseStamped]
+    nav_cmd_vel: In[Twist]
+    stop_movement: Out[Bool]
 
     # Queued (non-urgent) commands beyond this are busy-rejected — bounds the
     # backlog a spamming/laggy operator can build behind a slow command.
@@ -139,6 +150,11 @@ class Go2HostedConnection(GO2Connection, HostedConnectionMixin):
         self._stop_event = threading.Event()
         self._rage_active = False
         self._last_cmd_ts = 0.0
+        # Nav arbitration: only NON-ZERO operator input counts as steering
+        # (the browser streams zero twists whenever idle), and nav-activity
+        # lets us swallow those idle zeros so they don't stomp nav twists.
+        self._last_drive_ts = 0.0
+        self._last_nav_ts = 0.0
         # Single worker (repo pattern, cf. utils/threadpool + drake_world):
         # commands execute strictly in order, so state like _rage_active can't
         # race between overlapping runners. Bounded by _MAX_PENDING_CMDS.
@@ -193,6 +209,8 @@ class Go2HostedConnection(GO2Connection, HostedConnectionMixin):
             self.register_disposable(
                 Disposable(self.global_costmap.subscribe(self._on_costmap))
             )
+        # Planner nav twists → move(), yielding to live operator input.
+        self.register_disposable(Disposable(self.nav_cmd_vel.subscribe(self._on_nav_cmd)))
         # Odom: tap the raw stream the base consumes for TF (no stream port).
         if self.config.odom_hz > 0:
             self.register_disposable(
@@ -229,6 +247,59 @@ class Go2HostedConnection(GO2Connection, HostedConnectionMixin):
             self._handle_obstacle_avoidance(msg)
         elif kind == "light":
             self._handle_light(msg)
+        elif kind == "nav_goal":
+            self._handle_nav_goal(msg)
+
+    # ─── Click-to-navigate ────────────────────────────────────────────
+
+    def _handle_nav_goal(self, msg: dict[str, Any]) -> None:
+        """Operator map click → PoseStamped goal for the planner (world frame,
+        identity heading — the planner only uses the position)."""
+        nonce = msg.get("nonce")
+        if self._estopped:
+            logger.warning("nav_goal rejected: E-STOP latched")
+            self._send_ack(nonce, False)
+            return
+        try:
+            x, y = float(msg["x"]), float(msg["y"])
+        except (KeyError, TypeError, ValueError):
+            logger.warning("nav_goal: malformed %r", msg)
+            self._send_ack(nonce, False)
+            return
+        if x != x or y != y:  # NaN
+            self._send_ack(nonce, False)
+            return
+        pose = PoseStamped(
+            ts=time.time(), frame_id="world", position=[x, y, 0.0], orientation=[0, 0, 0, 1]
+        )
+        try:
+            self.goal_request.publish(pose)
+        except Exception:
+            logger.warning("nav_goal publish failed", exc_info=True)
+            self._send_ack(nonce, False)
+            return
+        logger.info("nav_goal: (%.2f, %.2f)", x, y)
+        self._send_ack(nonce, True)
+
+    def _on_nav_cmd(self, twist: Twist) -> None:
+        """Planner → base. Live operator input suppresses autonomy: any twist
+        from the operator within nav_yield_sec wins over the planner's."""
+        if self._estopped:
+            return
+        now = time.time()
+        if now - self._last_drive_ts < self.config.nav_yield_sec:
+            return  # operator is actively steering — manual wins
+        self._last_nav_ts = now
+        GO2Connection.move(self, twist)  # base move — the wire guards don't apply
+
+    def _cancel_nav(self) -> None:
+        """Best-effort planner goal cancel (E-STOP / operator loss)."""
+        try:
+            msg = Bool()
+            msg.data = True
+            self.stop_movement.publish(msg)
+        except Exception:
+            logger.debug("nav cancel publish failed", exc_info=True)
 
     # ─── E-STOP latch + operator-loss safety ─────────────────────────
 
@@ -237,6 +308,7 @@ class Go2HostedConnection(GO2Connection, HostedConnectionMixin):
         Damp urgently — never queued behind slower commands."""
         self._estopped = True
         logger.warning("E-STOP latched by operator")
+        self._cancel_nav()
 
         def task() -> bool:
             ok = bool(self.connection.sport_command(ALLOWED_SPORT_CMDS["Damp"]))
@@ -261,6 +333,7 @@ class Go2HostedConnection(GO2Connection, HostedConnectionMixin):
         nonce cache: browser nonces restart at 1 on the next session, so a
         stale entry would re-ack instead of executing. Damp only if configured."""
         logger.warning("operator link lost — stopping motion")
+        self._cancel_nav()
         with self._cmd_lock:
             self._nonce_results.clear()
         try:
@@ -494,6 +567,18 @@ class Go2HostedConnection(GO2Connection, HostedConnectionMixin):
             logger.debug("dropping out-of-order cmd_vel: ts=%.3f last=%.3f", ts, self._last_cmd_ts)
             return False
         self._last_cmd_ts = ts
+        now = time.time()
+        steering = (
+            abs(twist.linear.x) > 1e-3
+            or abs(twist.linear.y) > 1e-3
+            or abs(twist.angular.z) > 1e-3
+        )
+        if steering:
+            self._last_drive_ts = now
+        elif now - self._last_nav_ts < self.config.nav_yield_sec:
+            # Idle zero-twist while the planner is driving: swallow it, or the
+            # operator's idle stream zeroes the base between nav commands.
+            return True
         return super().move(twist, duration)
 
     def _on_cmd_raw(self, data: Any) -> None:

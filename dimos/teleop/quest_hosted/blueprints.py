@@ -32,6 +32,7 @@ from dimos.msgs.geometry_msgs.TwistStamped import TwistStamped
 from dimos.msgs.nav_msgs.OccupancyGrid import OccupancyGrid
 from dimos.msgs.sensor_msgs.Image import Image
 from dimos.msgs.sensor_msgs.PointCloud2 import PointCloud2
+from dimos.navigation.replanning_a_star.module import ReplanningAStarPlanner
 from dimos.robot.unitree.go2.blueprints.basic.unitree_go2_basic import unitree_go2_basic
 from dimos.robot.unitree.go2.connection import GO2Connection
 from dimos.teleop.quest.quest_types import Buttons
@@ -89,6 +90,9 @@ teleop_hosted_go2_transport = (
         Go2HostedConnection.blueprint(),
         VoxelGridMapper.blueprint(emit_every=5),
         CostMapper.blueprint(),
+        # Click-to-navigate: goal_request (operator map click) → planned path →
+        # nav_cmd_vel back into the hosted connection (yields to live WASD).
+        ReplanningAStarPlanner.blueprint(),
     )
     .transports(
         {
@@ -147,6 +151,7 @@ teleop_hosted_go2_multicam = (
         RealSenseCamera.blueprint(enable_depth=False, enable_pointcloud=False),
         VoxelGridMapper.blueprint(emit_every=5),
         CostMapper.blueprint(),
+        ReplanningAStarPlanner.blueprint(),
     )
     .remappings([(RealSenseCamera, "color_image", "cam2_in")])
     .transports(

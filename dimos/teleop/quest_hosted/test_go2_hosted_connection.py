@@ -75,11 +75,16 @@ def _bare_connection() -> Go2HostedConnection:
         map_hz=2.0,
         map_min_resolution=0.1,
         odom_hz=15.0,
+        nav_yield_sec=1.0,
     )
     conn._last_map_pub = 0.0
+    conn._last_drive_ts = 0.0
+    conn._last_nav_ts = 0.0
     conn._last_odom_pub = 0.0
     conn.telemetry_out = MagicMock()
     conn.map_out = MagicMock()
+    conn.goal_request = MagicMock()
+    conn.stop_movement = MagicMock()
     conn.audio_out = MagicMock()
     conn._speaker_track = None
     # Command execution plane (normally built in start()).
@@ -795,3 +800,99 @@ def test_audio_frame_fans_out_to_speaker_track() -> None:
     conn._speaker_track.push.assert_called_once_with(b"\x01\x02", 48000, 1)
     conn.audio_out.publish.assert_called_once()
 
+
+# ─── click-to-navigate ───────────────────────────────────────────────
+
+
+def test_nav_goal_publishes_pose_and_acks(monkeypatch: pytest.MonkeyPatch) -> None:
+    conn = _bare_connection()
+    acks: list[tuple[Any, bool]] = []
+    monkeypatch.setattr(conn, "_send_ack", lambda nonce, ok: acks.append((nonce, ok)))
+
+    conn._handle_nav_goal({"x": 2.5, "y": -1.0, "nonce": 11})
+
+    (pose,) = conn.goal_request.publish.call_args.args
+    assert pose.position.x == pytest.approx(2.5)
+    assert pose.position.y == pytest.approx(-1.0)
+    assert pose.frame_id == "world"
+    assert acks == [(11, True)]
+
+
+@pytest.mark.parametrize("msg", [{}, {"x": "a", "y": 1}, {"x": float("nan"), "y": 0}])
+def test_nav_goal_malformed_rejected(msg: dict, monkeypatch: pytest.MonkeyPatch) -> None:
+    conn = _bare_connection()
+    acks: list[tuple[Any, bool]] = []
+    monkeypatch.setattr(conn, "_send_ack", lambda nonce, ok: acks.append((nonce, ok)))
+
+    conn._handle_nav_goal({**msg, "nonce": 12})
+
+    conn.goal_request.publish.assert_not_called()
+    assert acks == [(12, False)]
+
+
+def test_nav_goal_rejected_when_estopped(monkeypatch: pytest.MonkeyPatch) -> None:
+    conn = _bare_connection()
+    conn._estopped = True
+    acks: list[tuple[Any, bool]] = []
+    monkeypatch.setattr(conn, "_send_ack", lambda nonce, ok: acks.append((nonce, ok)))
+
+    conn._handle_nav_goal({"x": 1, "y": 1, "nonce": 13})
+
+    conn.goal_request.publish.assert_not_called()
+    assert acks == [(13, False)]
+
+
+def test_nav_cmd_yields_to_recent_operator_steering() -> None:
+    conn = _bare_connection()
+    conn._last_drive_ts = time.time()  # operator actively steering (non-zero input)
+
+    conn._on_nav_cmd(_twist(time.time()))
+
+    conn.connection.move.assert_not_called()
+
+
+def test_idle_zero_twists_do_not_suppress_nav() -> None:
+    """The browser streams zero twists when idle — they must not count as
+    steering, and while nav drives they must not zero the base either."""
+    conn = _bare_connection()
+    conn.connection.move.return_value = True
+
+    # Nav is active; an idle zero twist arrives from the wire.
+    conn._last_nav_ts = time.time()
+    assert conn.move(_twist(time.time())) is True  # swallowed, reported ok
+    conn.connection.move.assert_not_called()  # ...but never forwarded
+    assert conn._last_drive_ts == 0.0  # zero input isn't steering
+
+    # Nav twists still flow (operator not steering).
+    conn._on_nav_cmd(_twist(time.time()))
+    conn.connection.move.assert_called_once()
+
+
+def test_nonzero_operator_twist_stamps_steering_and_forwards() -> None:
+    conn = _bare_connection()
+    conn.connection.move.return_value = True
+    t = _twist(time.time())
+    t.linear.x = 0.5
+
+    assert conn.move(t) is True
+    conn.connection.move.assert_called_once()
+    assert conn._last_drive_ts > 0.0
+
+
+def test_nav_cmd_drives_when_operator_idle() -> None:
+    conn = _bare_connection()
+    conn._last_cmd_ts = time.time() - 5.0  # operator idle
+
+    conn._on_nav_cmd(_twist(time.time()))
+
+    conn.connection.move.assert_called_once()
+
+
+def test_estop_cancels_nav(monkeypatch: pytest.MonkeyPatch) -> None:
+    conn = _bare_connection()
+    monkeypatch.setattr(conn, "_send_ack", lambda *_: None)
+
+    conn._handle_estop({"nonce": 1}.get("nonce"))
+
+    (msg,) = conn.stop_movement.publish.call_args.args
+    assert msg.data is True
