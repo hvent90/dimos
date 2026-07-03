@@ -42,8 +42,8 @@ class LocalModuleSource(ModuleSource):
         return self._coordinator.list_module_names()
 
     def get_module(self, name: str) -> Any:
-        for cls, proxy in self._coordinator._deployed_modules.items():
-            if cls.__name__ == name:
+        for instance_key, proxy in self._coordinator._deployed_modules.items():
+            if self._coordinator._instance_classes[instance_key].__name__ == name:
                 return proxy
         raise KeyError(name)
 

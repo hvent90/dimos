@@ -282,9 +282,9 @@ def test_remapping() -> None:
         ]
     )
 
-    # Verify remappings are stored correctly
-    assert (SourceModule, "color_image") in blueprint_set.remapping_map
-    assert blueprint_set.remapping_map[(SourceModule, "color_image")] == "remapped_data"
+    # Verify remappings are stored correctly, keyed by instance name.
+    assert (SourceModule.name, "color_image") in blueprint_set.remapping_map
+    assert blueprint_set.remapping_map[(SourceModule.name, "color_image")] == "remapped_data"
 
     # Verify that remapped names are used in name resolution
     all_names = _all_name_types(blueprint_set)

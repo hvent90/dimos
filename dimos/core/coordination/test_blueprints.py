@@ -240,7 +240,7 @@ def test_blueprint_pickle_roundtrip() -> None:
     for name in ("transport_map", "global_config_overrides", "remapping_map"):
         assert isinstance(getattr(restored, name), MappingProxyType)
     assert dict(restored.global_config_overrides) == {"option1": True, "option2": 42}
-    assert restored.remapping_map[(ModuleA, "module_a")] is ModuleB
+    assert restored.remapping_map[(ModuleA.name, "module_a")] is ModuleB
     with pytest.raises(TypeError):
         restored.global_config_overrides["x"] = 1
 

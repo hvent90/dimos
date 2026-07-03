@@ -154,6 +154,10 @@ def arg_help(
     module: str = "",
     _atom: BlueprintAtom | None = None,
 ) -> str:
+    # Imported inside the function to keep CLI startup fast, like other
+    # dimos.core.coordination imports in this file.
+    from dimos.core.coordination.blueprints import config_key
+
     output = ""
     for k, info in config.model_fields.items():
         if k == "g":
@@ -171,7 +175,7 @@ def arg_help(
         if inspect.isclass(t) and issubclass(t, BaseModel):
             output += f"{indent}{module}{k}:\n"
             # Find blueprint atom
-            bp = next(bp for bp in blueprint.blueprints if bp.module.name == k)
+            bp = next(bp for bp in blueprint.blueprints if config_key(bp.name) == k)
             output += arg_help(
                 t, blueprint, indent=indent + "  ", module=module + k + ".", _atom=bp
             )

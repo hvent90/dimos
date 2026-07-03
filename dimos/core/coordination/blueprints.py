@@ -85,6 +85,14 @@ class BlueprintAtom:
     module: type[ModuleBase]
     streams: tuple[StreamRef, ...]
     module_refs: tuple[ModuleRef, ...]
+    # Set when the same module class appears more than once in a blueprint
+    # (e.g. one per robot); None means the default single-instance name.
+    instance_name: str | None = None
+
+    @property
+    def name(self) -> str:
+        """The key identifying this module instance within a blueprint."""
+        return self.instance_name if self.instance_name is not None else self.module.name
 
     @classmethod
     def create(cls, module: type[ModuleBase], kwargs: dict[str, Any]) -> Self:
@@ -153,8 +161,10 @@ class Blueprint:
         default_factory=lambda: MappingProxyType({})
     )
     global_config_overrides: Mapping[str, Any] = field(default_factory=lambda: MappingProxyType({}))
-    remapping_map: Mapping[tuple[type[ModuleBase], str], str | type[ModuleBase] | type[Spec]] = (
-        field(default_factory=lambda: MappingProxyType({}))
+    # Keyed by (instance name, stream/ref name); `remappings()` accepts module
+    # classes and normalizes them to instance names.
+    remapping_map: Mapping[tuple[str, str], str | type[ModuleBase] | type[Spec]] = field(
+        default_factory=lambda: MappingProxyType({})
     )
     requirement_checks: tuple[Callable[[], str | None], ...] = field(default_factory=tuple)
     configurator_checks: "tuple[SystemConfigurator, ...]" = field(default_factory=tuple)
@@ -180,10 +190,15 @@ class Blueprint:
         return replace(self, disabled_modules_tuple=self.disabled_modules_tuple + modules)
 
     def config(self) -> type:
-        configs = {
-            b.module.name: (get_type_hints(b.module)["config"] | None, None)
-            for b in self.blueprints
-        }
+        configs = {}
+        for b in self.blueprints:
+            key = config_key(b.name)
+            if key in configs:
+                raise ValueError(
+                    f"Config key collision: two module instances map to {key!r}. "
+                    f"Rename one of the instances."
+                )
+            configs[key] = (get_type_hints(b.module)["config"] | None, None)
         configs["g"] = (GlobalConfig | None, None)
         return create_model("BlueprintConfig", __config__={"extra": "forbid"}, **configs)  # type: ignore[call-overload,no-any-return]
 
@@ -198,12 +213,23 @@ class Blueprint:
 
     def remappings(
         self,
-        remappings: list[tuple[type[ModuleBase], str, str | type[ModuleBase] | type[Spec]]],
+        remappings: list[tuple[type[ModuleBase] | str, str, str | type[ModuleBase] | type[Spec]]],
     ) -> "Blueprint":
         remappings_dict = dict(self.remapping_map)
         for module, old, new in remappings:
-            remappings_dict[(module, old)] = new
+            remappings_dict[(self._instance_key(module), old)] = new
         return replace(self, remapping_map=MappingProxyType(remappings_dict))
+
+    def _instance_key(self, module: type[ModuleBase] | str) -> str:
+        if isinstance(module, str):
+            return module
+        names = [b.name for b in self.blueprints if b.module is module]
+        if len(names) > 1:
+            raise ValueError(
+                f"{module.__name__} has multiple instances in this blueprint "
+                f"({', '.join(sorted(names))}); pass the instance name instead of the class."
+            )
+        return names[0] if names else module.name
 
     def requirements(self, *checks: Callable[[], str | None]) -> "Blueprint":
         return replace(self, requirement_checks=self.requirement_checks + tuple(checks))
@@ -251,7 +277,12 @@ def _eliminate_duplicates(blueprints: list[BlueprintAtom]) -> list[BlueprintAtom
     seen = set()
     unique_blueprints = []
     for bp in reversed(blueprints):
-        if bp.module not in seen:
-            seen.add(bp.module)
+        if bp.name not in seen:
+            seen.add(bp.name)
             unique_blueprints.append(bp)
     return list(reversed(unique_blueprints))
+
+
+def config_key(instance_name: str) -> str:
+    """Escape an instance name into a valid config/CLI/env identifier."""
+    return instance_name.replace("/", "_")

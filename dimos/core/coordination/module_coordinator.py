@@ -16,6 +16,7 @@ from __future__ import annotations
 
 from collections import defaultdict
 from collections.abc import Callable, Mapping, MutableMapping
+import dataclasses
 import importlib
 import inspect
 import shutil
@@ -51,9 +52,18 @@ class ModuleDescriptor(NamedTuple):
 
 
 class ModuleCoordinator(Resource):
+    """Deploys modules and wires them together.
+
+    All module state is keyed by the *instance name* (`BlueprintAtom.name`,
+    which defaults to the lowercased class name), so the same module class can
+    be deployed multiple times under different names. Public methods that take
+    a module class resolve it to the single deployed instance of that class
+    and raise if there is more than one.
+    """
+
     _managers: dict[str, WorkerManager]
     _global_config: GlobalConfig
-    _deployed_modules: dict[type[ModuleBase], ModuleProxyProtocol]
+    _deployed_modules: dict[str, ModuleProxyProtocol]
 
     def __init__(
         self,
@@ -63,11 +73,12 @@ class ModuleCoordinator(Resource):
         manager_types: list[type[WorkerManager]] = [WorkerManagerPython]
         self._managers = {cls.deployment_identifier: cls(g=g) for cls in manager_types}
         self._deployed_modules = {}
-        self._deployed_atoms: dict[type[ModuleBase], BlueprintAtom] = {}
-        self._resolved_module_refs: dict[tuple[type[ModuleBase], str], type[ModuleBase]] = {}
+        self._instance_classes: dict[str, type[ModuleBase]] = {}
+        self._deployed_atoms: dict[str, BlueprintAtom] = {}
+        self._resolved_module_refs: dict[tuple[str, str], str] = {}
         self._transport_registry: dict[tuple[str, type], PubSubTransport[Any]] = {}
         self._class_aliases: dict[type[ModuleBase], type[ModuleBase]] = {}
-        self._module_transports: dict[type[ModuleBase], dict[str, PubSubTransport[Any]]] = {}
+        self._module_transports: dict[str, dict[str, PubSubTransport[Any]]] = {}
         self._started = False
         self._modules_lock = threading.RLock()
         self._coordinator_rpc: CoordinatorRPC | None = None
@@ -85,13 +96,13 @@ class ModuleCoordinator(Resource):
             self._coordinator_rpc.stop()
             self._coordinator_rpc = None
 
-        for module_class, module in reversed(self._deployed_modules.items()):
-            logger.info("Stopping module...", module=module_class.__name__)
+        for name, module in reversed(self._deployed_modules.items()):
+            logger.info("Stopping module...", module=name)
             try:
                 module.stop()
             except Exception:
-                logger.error("Error stopping module", module=module_class.__name__, exc_info=True)
-            logger.info("Module stopped.", module=module_class.__name__)
+                logger.error("Error stopping module", module=name, exc_info=True)
+            logger.info("Module stopped.", module=name)
 
         def _stop_manager(m: WorkerManager) -> None:
             try:
@@ -116,6 +127,7 @@ class ModuleCoordinator(Resource):
             "load_blueprint_by_name": self.load_blueprint_by_name,
             "load_blueprint": self.load_blueprint,
             "restart_module_by_class_name": self.restart_module_by_class_name,
+            "restart_module_by_name": self.restart_module_by_name,
         }
 
     def ping(self) -> str:
@@ -125,7 +137,7 @@ class ModuleCoordinator(Resource):
     def list_modules(self) -> list[ModuleDescriptor]:
         with self._modules_lock:
             descriptors: list[ModuleDescriptor] = []
-            for cls in self._deployed_modules:
+            for cls in self._instance_classes.values():
                 qualified = f"{cls.__module__}.{cls.__name__}"
                 descriptors.append(
                     ModuleDescriptor(
@@ -144,7 +156,7 @@ class ModuleCoordinator(Resource):
 
     def list_module_names(self) -> list[str]:
         with self._modules_lock:
-            return [cls.__name__ for cls in self._deployed_modules]
+            return [cls.__name__ for cls in self._instance_classes.values()]
 
     def health_check(self) -> bool:
         return all(m.health_check() for m in self._managers.values())
@@ -169,8 +181,10 @@ class ModuleCoordinator(Resource):
         deployed_module = self._managers[module_class.deployment].deploy(
             module_class, global_config, kwargs
         )
+        name = kwargs.get("instance_name") or module_class.name
         with self._modules_lock:
-            self._deployed_modules[module_class] = deployed_module
+            self._deployed_modules[name] = deployed_module
+            self._instance_classes[name] = module_class
         return deployed_module  # type: ignore[return-value]
 
     def deploy_parallel(
@@ -202,13 +216,12 @@ class ModuleCoordinator(Resource):
             raise
 
         with self._modules_lock:
-            self._deployed_modules.update(
-                {
-                    cls: mod
-                    for (cls, _, _), mod in zip(module_specs, results, strict=True)
-                    if mod is not None
-                }
-            )
+            for (cls, _, kwargs), mod in zip(module_specs, results, strict=True):
+                if mod is None:
+                    continue
+                name = kwargs.get("instance_name") or cls.name
+                self._deployed_modules[name] = mod
+                self._instance_classes[name] = cls
         return results
 
     def build_all_modules(self) -> None:
@@ -240,8 +253,36 @@ class ModuleCoordinator(Resource):
     def _resolve_class(self, cls: type[ModuleBase]) -> type[ModuleBase]:
         return self._class_aliases.get(cls, cls)
 
-    def get_instance(self, module: type[ModuleBase]) -> ModuleProxy:
-        return self._deployed_modules.get(self._resolve_class(module))  # type: ignore[return-value]
+    def _instance_keys_of(self, module: type[ModuleBase]) -> list[str]:
+        cls = self._resolve_class(module)
+        return [n for n, c in self._instance_classes.items() if self._resolve_class(c) is cls]
+
+    def _resolve_instance_key(self, module: type[ModuleBase] | str) -> str:
+        """Resolve a module class or instance name to the deployed instance name."""
+        if isinstance(module, str):
+            if module not in self._deployed_modules:
+                raise ValueError(f"{module!r} is not deployed")
+            return module
+        names = self._instance_keys_of(module)
+        if not names:
+            raise ValueError(f"{module.__name__} is not deployed")
+        if len(names) > 1:
+            raise ValueError(
+                f"Multiple instances of {module.__name__} are deployed "
+                f"({', '.join(sorted(names))}); pass the instance name."
+            )
+        return names[0]
+
+    def get_instance(self, module: type[ModuleBase] | str) -> ModuleProxy:
+        if isinstance(module, str):
+            return self._deployed_modules.get(module)  # type: ignore[return-value]
+        names = self._instance_keys_of(module)
+        if len(names) > 1:
+            raise ValueError(
+                f"Multiple instances of {module.__name__} are deployed "
+                f"({', '.join(sorted(names))}); pass the instance name."
+            )
+        return self._deployed_modules.get(names[0]) if names else None  # type: ignore[return-value]
 
     def _send_on_system_modules(self) -> None:
         modules = list(self._deployed_modules.values())
@@ -250,13 +291,13 @@ class ModuleCoordinator(Resource):
                 module.on_system_modules(modules)
 
     def _connect_streams(self, blueprint: Blueprint) -> None:
-        streams: dict[tuple[str, type], list[tuple[type, str]]] = defaultdict(list)
+        streams: dict[tuple[str, type], list[tuple[str, str]]] = defaultdict(list)
 
         for bp in blueprint.active_blueprints:
             for conn in bp.streams:
-                remapped_name = blueprint.remapping_map.get((bp.module, conn.name), conn.name)
+                remapped_name = blueprint.remapping_map.get((bp.name, conn.name), conn.name)
                 if isinstance(remapped_name, str):
-                    streams[remapped_name, conn.type].append((bp.module, conn.name))
+                    streams[remapped_name, conn.type].append((bp.name, conn.name))
 
         for remapped_name, stream_type in streams.keys():
             key = (remapped_name, stream_type)
@@ -265,17 +306,17 @@ class ModuleCoordinator(Resource):
             else:
                 transport = _get_transport_for(blueprint, remapped_name, stream_type)
             self._transport_registry[key] = transport
-            for module, original_name in streams[key]:
-                instance = self.get_instance(module)  # type: ignore[assignment]
+            for instance_key, original_name in streams[key]:
+                instance = self.get_instance(instance_key)  # type: ignore[assignment]
                 instance.set_transport(original_name, transport)  # type: ignore[union-attr]
-                self._module_transports.setdefault(module, {})[original_name] = transport
+                self._module_transports.setdefault(instance_key, {})[original_name] = transport
                 logger.info(
                     "Transport",
                     name=remapped_name,
                     original_name=original_name,
                     topic=str(getattr(transport, "topic", None)),
                     type=f"{stream_type.__module__}.{stream_type.__qualname__}",
-                    module=module.__name__,
+                    module=instance_key,
                     transport=transport.__class__.__name__,
                 )
 
@@ -353,18 +394,21 @@ class ModuleCoordinator(Resource):
 
         # Reject duplicate modules.
         for bp in blueprint.active_blueprints:
-            if bp.module in self._deployed_modules:
+            if bp.name in self._deployed_modules:
                 raise ValueError(
-                    f"{bp.module.__name__} is already deployed; cannot load the same module twice"
+                    f"{bp.name} is already deployed; cannot load the same module twice"
                 )
 
         before = set(self._deployed_modules)
+        existing_classes = {self._instance_classes[name] for name in before}
 
         _deploy_all_modules(blueprint, self, self._global_config, blueprint_args)
         self._connect_streams(blueprint)
-        _connect_module_refs(blueprint, self, existing_modules=before)
+        _connect_module_refs(blueprint, self, existing_modules=existing_classes)
 
-        new_modules = [proxy for cls, proxy in self._deployed_modules.items() if cls not in before]
+        new_modules = [
+            proxy for name, proxy in self._deployed_modules.items() if name not in before
+        ]
 
         if new_modules:
             safe_thread_map(new_modules, lambda m: m.build())
@@ -379,35 +423,35 @@ class ModuleCoordinator(Resource):
     ) -> None:
         self.load_blueprint(module_class.blueprint(**blueprint_args or {}))
 
-    def unload_module(self, module_class: type[ModuleBase]) -> None:
+    def unload_module(self, module: type[ModuleBase] | str) -> None:
         """Stop and tear down a single deployed module.
 
-        Removes the module from coordinator state, stops its worker-side
-        instance, and shuts down the worker process if it becomes empty.
-        Stream transports and other modules' references are left intact —
-        callers that expect the module to come back (e.g. ``restart_module``)
-        are responsible for rewiring.
+        Accepts a module class (must have exactly one deployed instance) or an
+        instance name. Removes the module from coordinator state, stops its
+        worker-side instance, and shuts down the worker process if it becomes
+        empty. Stream transports and other modules' references are left
+        intact — callers that expect the module to come back (e.g.
+        ``restart_module``) are responsible for rewiring.
         """
         with self._modules_lock:
-            self._unload_module(module_class)
+            self._unload_module(module)
 
-    def _unload_module(self, module_class: type[ModuleBase]) -> None:
-        module_class = self._resolve_class(module_class)
-        if module_class not in self._deployed_modules:
-            raise ValueError(f"{module_class.__name__} is not deployed")
+    def _unload_module(self, module: type[ModuleBase] | str) -> None:
+        name = self._resolve_instance_key(module)
+        module_class = self._instance_classes[name]
         if module_class.deployment != "python":
             raise NotImplementedError(
                 f"unload_module only supports python deployment, got {module_class.deployment!r}"
             )
 
-        proxy = self._deployed_modules[module_class]
+        proxy = self._deployed_modules[name]
 
         try:
             proxy.stop()
         except Exception:
             logger.error(
                 "Error stopping module during unload",
-                module=module_class.__name__,
+                module=name,
                 exc_info=True,
             )
 
@@ -417,20 +461,22 @@ class ModuleCoordinator(Resource):
         except Exception:
             logger.error(
                 "Error undeploying module from worker",
-                module=module_class.__name__,
+                module=name,
                 exc_info=True,
             )
 
-        del self._deployed_modules[module_class]
-        self._deployed_atoms.pop(module_class, None)
-        self._module_transports.pop(module_class, None)
-        self._class_aliases = {
-            k: v for k, v in self._class_aliases.items() if v is not module_class
-        }
+        del self._deployed_modules[name]
+        del self._instance_classes[name]
+        self._deployed_atoms.pop(name, None)
+        self._module_transports.pop(name, None)
+        if not any(c is module_class for c in self._instance_classes.values()):
+            self._class_aliases = {
+                k: v for k, v in self._class_aliases.items() if v is not module_class
+            }
         self._resolved_module_refs = {
             key: target
             for key, target in self._resolved_module_refs.items()
-            if key[0] is not module_class and target is not module_class
+            if key[0] != name and target != name
         }
 
     def restart_module_by_class_name(
@@ -440,58 +486,72 @@ class ModuleCoordinator(Resource):
         reload_source: bool = True,
     ) -> None:
         with self._modules_lock:
-            for cls in self._deployed_modules:
-                if cls.__name__ == class_name:
-                    self._restart_module(cls, reload_source=reload_source)
-                    return
+            names = [n for n, c in self._instance_classes.items() if c.__name__ == class_name]
+            if len(names) > 1:
+                raise ValueError(
+                    f"Multiple instances of {class_name!r} are deployed "
+                    f"({', '.join(sorted(names))}); use restart_module_by_name."
+                )
+            if names:
+                self._restart_module(names[0], reload_source=reload_source)
+                return
         raise ValueError(f"No deployed module with class name {class_name!r}")
+
+    def restart_module_by_name(
+        self,
+        name: str,
+        *,
+        reload_source: bool = True,
+    ) -> None:
+        with self._modules_lock:
+            self._restart_module(name, reload_source=reload_source)
 
     def restart_module(
         self,
-        module_class: type[ModuleBase],
+        module: type[ModuleBase] | str,
         *,
         reload_source: bool = True,
     ) -> ModuleProxyProtocol:
         """Restart a single deployed module in place.
 
-        Unloads *module_class*, optionally reloads its source file via
-        ``importlib.reload`` so edited code is picked up, then redeploys it
+        Accepts a module class (must have exactly one deployed instance) or an
+        instance name. Unloads the module, optionally reloads its source file
+        via ``importlib.reload`` so edited code is picked up, then redeploys it
         onto a fresh worker process, reconnects its streams to the existing
         transports, and re-injects the new proxy into every other module that
         held a reference to it.
         """
         with self._modules_lock:
-            return self._restart_module(module_class, reload_source=reload_source)
+            return self._restart_module(module, reload_source=reload_source)
 
     def _restart_module(
         self,
-        module_class: type[ModuleBase],
+        module: type[ModuleBase] | str,
         *,
         reload_source: bool = True,
     ) -> ModuleProxyProtocol:
-        module_class = self._resolve_class(module_class)
-        if module_class not in self._deployed_modules:
-            raise ValueError(f"{module_class.__name__} is not deployed")
+        name = self._resolve_instance_key(module)
+        module_class = self._instance_classes[name]
         if module_class.deployment != "python":
             raise NotImplementedError(
                 f"restart_module only supports python deployment, got {module_class.deployment!r}"
             )
 
-        old_atom = self._deployed_atoms[module_class]
+        old_atom = self._deployed_atoms[name]
         kwargs = dict(old_atom.kwargs)
-        saved_transports = dict(self._module_transports.get(module_class, {}))
+        saved_transports = dict(self._module_transports.get(name, {}))
         inbound_refs = [
             (consumer, ref_name)
             for (consumer, ref_name), target in self._resolved_module_refs.items()
-            if target is module_class
+            if target == name
         ]
         outbound_refs = [
             (ref_name, target)
             for (consumer, ref_name), target in self._resolved_module_refs.items()
-            if consumer is module_class
+            if consumer == name
         ]
 
-        self.unload_module(module_class)
+        self.unload_module(name)
 
         if reload_source:
             source_mod = sys.modules.get(module_class.__module__)
@@ -510,35 +570,38 @@ class ModuleCoordinator(Resource):
 
         python_wm = cast("WorkerManagerPython", self._managers["python"])
         new_proxy = python_wm.deploy_fresh(new_class, self._global_config, kwargs)
-        self._deployed_modules[new_class] = new_proxy
+        self._deployed_modules[name] = new_proxy
+        self._instance_classes[name] = new_class
 
         new_bp = new_class.blueprint(**kwargs)
         new_atom = new_bp.active_blueprints[0]
-        self._deployed_atoms[new_class] = new_atom
+        if old_atom.instance_name is not None:
+            new_atom = dataclasses.replace(new_atom, instance_name=old_atom.instance_name)
+        self._deployed_atoms[name] = new_atom
 
         for stream_ref in new_atom.streams:
             transport = saved_transports.get(stream_ref.name)
             if transport is not None:
                 new_proxy.set_transport(stream_ref.name, transport)
-        self._module_transports[new_class] = {
+        self._module_transports[name] = {
             s.name: t for s in new_atom.streams if (t := saved_transports.get(s.name)) is not None
         }
 
-        for consumer_class, ref_name in inbound_refs:
-            consumer_proxy = self._deployed_modules.get(consumer_class)
+        for consumer_key, ref_name in inbound_refs:
+            consumer_proxy = self._deployed_modules.get(consumer_key)
             if consumer_proxy is None:
                 continue
             setattr(consumer_proxy, ref_name, new_proxy)
             consumer_proxy.set_module_ref(ref_name, new_proxy)  # type: ignore[attr-defined]
-            self._resolved_module_refs[consumer_class, ref_name] = new_class
+            self._resolved_module_refs[consumer_key, ref_name] = name
 
-        for ref_name, target_class in outbound_refs:
-            target_proxy = self._deployed_modules.get(target_class)
+        for ref_name, target_key in outbound_refs:
+            target_proxy = self._deployed_modules.get(target_key)
             if target_proxy is None:
                 continue
             setattr(new_proxy, ref_name, target_proxy)
             new_proxy.set_module_ref(ref_name, target_proxy)  # type: ignore[attr-defined]
-            self._resolved_module_refs[new_class, ref_name] = target_class
+            self._resolved_module_refs[name, ref_name] = target_key
 
         new_proxy.build()
         new_proxy.start()
@@ -561,7 +624,7 @@ def _all_name_types(blueprint: Blueprint) -> set[tuple[str, type]]:
     result = set()
     for bp in blueprint.active_blueprints:
         for conn in bp.streams:
-            remapped_name = blueprint.remapping_map.get((bp.module, conn.name), conn.name)
+            remapped_name = blueprint.remapping_map.get((bp.name, conn.name), conn.name)
             if isinstance(remapped_name, str):
                 result.add((remapped_name, conn.type))
     return result
@@ -589,7 +652,7 @@ def _verify_no_name_conflicts(blueprint: Blueprint) -> None:
 
     for bp in blueprint.active_blueprints:
         for conn in bp.streams:
-            stream_name = blueprint.remapping_map.get((bp.module, conn.name), conn.name)
+            stream_name = blueprint.remapping_map.get((bp.name, conn.name), conn.name)
             name_to_types[stream_name].add(conn.type)
             name_to_modules[stream_name].append((bp.module, conn.type))
 
@@ -633,7 +696,7 @@ def _verify_no_conflicts_with_existing(
 
     for bp in blueprint.active_blueprints:
         for conn in bp.streams:
-            remapped_name = blueprint.remapping_map.get((bp.module, conn.name), conn.name)
+            remapped_name = blueprint.remapping_map.get((bp.name, conn.name), conn.name)
             if isinstance(remapped_name, str) and remapped_name in existing_names:
                 for existing_type in existing_names[remapped_name]:
                     if existing_type != conn.type:
@@ -685,12 +748,15 @@ def _deploy_all_modules(
 ) -> None:
     module_specs: list[ModuleSpec] = []
     for bp in blueprint.active_blueprints:
-        module_specs.append((bp.module, gc, bp.kwargs.copy()))
+        kwargs = bp.kwargs.copy()
+        if bp.instance_name is not None:
+            kwargs.setdefault("instance_name", bp.instance_name)
+        module_specs.append((bp.module, gc, kwargs))
 
     module_coordinator.deploy_parallel(module_specs, blueprint_args)
 
     for bp in blueprint.active_blueprints:
-        module_coordinator._deployed_atoms[bp.module] = bp
+        module_coordinator._deployed_atoms[bp.name] = bp
 
 
 def _ref_msg(module_name: str, ref: object, spec_name: str, detail: str) -> str:
@@ -806,25 +872,25 @@ def _connect_module_refs(
     from dimos.core.rpc_client import AsyncSpecProxy
 
     mod_and_mod_ref_to_proxy = {
-        (module, name): replacement
-        for (module, name), replacement in blueprint.remapping_map.items()
+        (instance_key, name): replacement
+        for (instance_key, name), replacement in blueprint.remapping_map.items()
         if is_spec(replacement) or is_module_type(replacement)
     }
 
     # Track the consumer's declared spec for each ref so we can wrap the proxy
     # below if the spec contains async-declared methods.
-    declared_spec: dict[tuple[type[ModuleBase], str], Any] = {}
+    declared_spec: dict[tuple[str, str], Any] = {}
 
-    disabled_ref_proxies: dict[tuple[type[ModuleBase], str], DisabledModuleProxy] = {}
+    disabled_ref_proxies: dict[tuple[str, str], DisabledModuleProxy] = {}
     disabled_set = set(blueprint.disabled_modules_tuple)
 
     for bp in blueprint.active_blueprints:
         for module_ref in bp.module_refs:
-            declared_spec[bp.module, module_ref.name] = module_ref.spec
-            spec = mod_and_mod_ref_to_proxy.get((bp.module, module_ref.name), module_ref.spec)
+            declared_spec[bp.name, module_ref.name] = module_ref.spec
+            spec = mod_and_mod_ref_to_proxy.get((bp.name, module_ref.name), module_ref.spec)
 
             if is_module_type(spec):
-                mod_and_mod_ref_to_proxy[bp.module, module_ref.name] = spec
+                mod_and_mod_ref_to_proxy[bp.name, module_ref.name] = spec
                 continue
 
             result = _resolve_single_ref(
@@ -833,24 +899,24 @@ def _connect_module_refs(
             if result is None:
                 continue
             if isinstance(result, DisabledModuleProxy):
-                disabled_ref_proxies[bp.module, module_ref.name] = result
+                disabled_ref_proxies[bp.name, module_ref.name] = result
             else:
-                mod_and_mod_ref_to_proxy[bp.module, module_ref.name] = result
+                mod_and_mod_ref_to_proxy[bp.name, module_ref.name] = result
 
-    for (base_module, ref_name), target_module in mod_and_mod_ref_to_proxy.items():
-        base_instance = module_coordinator.get_instance(base_module)
+    for (base_key, ref_name), target_module in mod_and_mod_ref_to_proxy.items():
+        base_instance = module_coordinator.get_instance(base_key)
         target_instance: Any = module_coordinator.get_instance(target_module)  # type: ignore[arg-type]
-        async_methods = _async_methods_of_spec(declared_spec.get((base_module, ref_name)))
+        async_methods = _async_methods_of_spec(declared_spec.get((base_key, ref_name)))
         if async_methods:
             target_instance = AsyncSpecProxy(target_instance, async_methods)
         setattr(base_instance, ref_name, target_instance)
         base_instance.set_module_ref(ref_name, target_instance)
-        module_coordinator._resolved_module_refs[base_module, ref_name] = cast(
-            "type[ModuleBase]", target_module
-        )
+        target_keys = module_coordinator._instance_keys_of(target_module)  # type: ignore[arg-type]
+        if target_keys:
+            module_coordinator._resolved_module_refs[base_key, ref_name] = target_keys[0]
 
-    for (base_module, ref_name), proxy in disabled_ref_proxies.items():
-        base_instance = module_coordinator.get_instance(base_module)
+    for (base_key, ref_name), proxy in disabled_ref_proxies.items():
+        base_instance = module_coordinator.get_instance(base_key)
         setattr(base_instance, ref_name, proxy)
         base_instance.set_module_ref(ref_name, cast("Any", proxy))
 
