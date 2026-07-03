@@ -12,7 +12,7 @@
 # See the License for the specific language governing permissions and
 # limitations under the License.
 
-from collections.abc import Callable, Mapping
+from collections.abc import Callable, Mapping, Sequence
 from dataclasses import dataclass, field, replace
 from functools import cached_property, reduce
 import operator
@@ -213,7 +213,9 @@ class Blueprint:
 
     def remappings(
         self,
-        remappings: list[tuple[type[ModuleBase] | str, str, str | type[ModuleBase] | type[Spec]]],
+        remappings: Sequence[
+            tuple[type[ModuleBase] | str, str, str | type[ModuleBase] | type[Spec]]
+        ],
     ) -> "Blueprint":
         remappings_dict = dict(self.remapping_map)
         for module, old, new in remappings:
