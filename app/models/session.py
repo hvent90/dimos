@@ -40,6 +40,8 @@ class TeleopSession(Base):
     # Lives here (not the operator-cleared _robot_channel_ids map) so it survives
     # operator leave/rejoin; gone only when the robot session row is.
     state_back_channel_id: Mapped[int | None] = Column(Integer, nullable=True)
+    # Same stale-push story as state_back for the robot→operator map channel.
+    map_channel_id: Mapped[int | None] = Column(Integer, nullable=True)
 
     # Active operator (null = no one controlling)
     operator_id: Mapped[str | None] = Column(String, nullable=True)

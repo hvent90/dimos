@@ -30,6 +30,7 @@ export async function disconnect() {
     if (state.cmdChannel) { try { state.cmdChannel.close(); } catch (_) {} state.cmdChannel = null; }
     if (state.stateChannel) { try { state.stateChannel.close(); } catch (_) {} state.stateChannel = null; }
     if (state.stateBackChannel) { try { state.stateBackChannel.close(); } catch (_) {} state.stateBackChannel = null; }
+    if (state.mapChannel) { try { state.mapChannel.close(); } catch (_) {} state.mapChannel = null; }
     const v = document.getElementById('robot-cam');
     if (v) {
         v.srcObject = null;

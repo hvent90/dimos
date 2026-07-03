@@ -31,6 +31,10 @@ STATE_CHANNEL_NAME = "state_reliable"
 # publisher → subscriber per name, so the reverse direction needs its own name
 # rather than reusing `state_reliable`.
 STATE_BACK_CHANNEL_NAME = "state_reliable_back"
+# Robot → operator, unreliable + unordered. Carries the map (occupancy grid);
+# its own channel so large/bursty payloads don't head-of-line-block the reliable
+# state_back plane (pongs, telemetry). Room to grow into pointclouds.
+MAP_CHANNEL_NAME = "map_unreliable"
 
 # Per-session map of channel-name → robot-side SCTP id. Holds both subscriber
 # ids (cmd_unreliable, state_reliable that the robot reads) and the publisher
@@ -121,6 +125,7 @@ class BridgeDatachannelResponse(BaseModel):
     cmd_channel_id: int
     state_channel_id: int
     state_back_channel_id: int
+    map_channel_id: int
     # CF renegotiation offer from the post-bridge video pull. None when the
     # robot published no video or the pull failed (video degrades, datachannels
     # still work). Operator answers it via /renegotiate-answer.
@@ -360,6 +365,7 @@ async def heartbeat(
         "cmd_channel_subscriber_id": chan_ids.get(CMD_CHANNEL_NAME),
         "state_channel_subscriber_id": chan_ids.get(STATE_CHANNEL_NAME),
         "state_back_channel_publisher_id": chan_ids.get(STATE_BACK_CHANNEL_NAME),
+        "map_channel_publisher_id": chan_ids.get(MAP_CHANNEL_NAME),
     }
 
 
@@ -378,10 +384,13 @@ async def delete_session(
         # CF has no session-delete; close the state_back push (else next
         # reconnect hits repeated_local_track) and log the orphans for ops.
         if session.transport == "cloudflare":
-            if session.state_back_channel_id is not None and session.cf_session_id:
-                await cf_client.close_datachannels(
-                    session.cf_session_id, [session.state_back_channel_id]
-                )
+            back_ids = [
+                i
+                for i in (session.state_back_channel_id, session.map_channel_id)
+                if i is not None
+            ]
+            if back_ids and session.cf_session_id:
+                await cf_client.close_datachannels(session.cf_session_id, back_ids)
             if session.cf_session_id or session.operator_cf_session_id:
                 log.info(
                     "delete_session: orphaning CF sessions robot_cf=%s operator_cf=%s",
@@ -391,6 +400,7 @@ async def delete_session(
         session.operator_id = None
         session.operator_cf_session_id = None
         session.state_back_channel_id = None
+        session.map_channel_id = None
         _robot_channel_ids.pop(session_id, None)
         _pending_video_renegotiations.discard(session_id)
         await db.commit()
@@ -687,14 +697,16 @@ async def _bridge_datachannel_locked(
     # CF requires each /datachannels/new call to be one direction (all local
     # OR all remote) — hence 4 separate calls, don't re-bundle.
     forward_names = [CMD_CHANNEL_NAME, STATE_CHANNEL_NAME]
-    # Close prior state_reliable_back push (CF doesn't auto-reap) or the
-    # re-push hits repeated_local_track_error. cmd/state are
+    # Close prior robot→operator pushes (state_back + map; CF doesn't auto-reap)
+    # or the re-push hits repeated_local_track_error. cmd/state are
     # operator-published and replaced when the operator's CF session changes.
-    if session.state_back_channel_id is not None:
-        await cf_client.close_datachannels(
-            session.cf_session_id, [session.state_back_channel_id]
-        )
+    stale_back_ids = [
+        i for i in (session.state_back_channel_id, session.map_channel_id) if i is not None
+    ]
+    if stale_back_ids:
+        await cf_client.close_datachannels(session.cf_session_id, stale_back_ids)
         session.state_back_channel_id = None
+        session.map_channel_id = None
     # Track local pushes so a later failure can close them (remotes don't
     # need rollback — only locals block re-push with repeated_local_track).
     created_pushes: list[tuple[str, list[int]]] = []
@@ -727,9 +739,11 @@ async def _bridge_datachannel_locked(
 
         # robot → operator: state_back. Fresh push each connect (stale one
         # closed above); operator subscribes to it.
+        # Both robot→operator channels (state_back + map) pushed together.
+        back_names = [STATE_BACK_CHANNEL_NAME, MAP_CHANNEL_NAME]
         robot_pub = await cf_client.add_datachannels(
             session.cf_session_id,
-            [{"location": "local", "dataChannelName": STATE_BACK_CHANNEL_NAME}],
+            [{"location": "local", "dataChannelName": name} for name in back_names],
         )
         robot_pub_ids = {e["dataChannelName"]: int(e["id"]) for e in robot_pub}
         created_pushes.append((session.cf_session_id, list(robot_pub_ids.values())))
@@ -740,8 +754,9 @@ async def _bridge_datachannel_locked(
                 {
                     "location": "remote",
                     "sessionId": session.cf_session_id,
-                    "dataChannelName": STATE_BACK_CHANNEL_NAME,
+                    "dataChannelName": name,
                 }
+                for name in back_names
             ],
         )
         op_sub_ids = {e["dataChannelName"]: int(e["id"]) for e in op_sub}
@@ -755,6 +770,7 @@ async def _bridge_datachannel_locked(
         if e.session_id == session.cf_session_id:
             session.cf_session_id = None
             session.state_back_channel_id = None
+            session.map_channel_id = None
             await db.commit()
             log.warning("bridge: robot CF session gone session=%s", session.id)
             raise HTTPException(
@@ -804,8 +820,9 @@ async def _bridge_datachannel_locked(
         )
 
     missing = [n for n in forward_names if n not in op_pub_ids or n not in robot_sub_ids]
-    if STATE_BACK_CHANNEL_NAME not in robot_pub_ids or STATE_BACK_CHANNEL_NAME not in op_sub_ids:
-        missing.append(STATE_BACK_CHANNEL_NAME)
+    for name in (STATE_BACK_CHANNEL_NAME, MAP_CHANNEL_NAME):
+        if name not in robot_pub_ids or name not in op_sub_ids:
+            missing.append(name)
     if missing:
         await _rollback_pushes()
         raise HTTPException(
@@ -814,15 +831,17 @@ async def _bridge_datachannel_locked(
         )
 
     # Heartbeat surfaces robot-side ids. Robot subscribes to cmd + state,
-    # publishes state_back — keep them all under one channel-name map.
+    # publishes state_back + map — keep them all under one channel-name map.
     _robot_channel_ids[session.id] = {
         **robot_sub_ids,
         STATE_BACK_CHANNEL_NAME: robot_pub_ids[STATE_BACK_CHANNEL_NAME],
+        MAP_CHANNEL_NAME: robot_pub_ids[MAP_CHANNEL_NAME],
     }
-    # Persist the fresh state_back push id on the session row (survives operator
-    # leave, unlike _robot_channel_ids) so the NEXT reconnect can close this
-    # stale push before re-pushing.
+    # Persist the fresh robot→operator push ids on the session row (survive
+    # operator leave, unlike _robot_channel_ids) so the NEXT reconnect can close
+    # these stale pushes before re-pushing.
     session.state_back_channel_id = robot_pub_ids[STATE_BACK_CHANNEL_NAME]
+    session.map_channel_id = robot_pub_ids[MAP_CHANNEL_NAME]
     await db.commit()
 
     # Best-effort video pull — datachannels stay up if it fails.
@@ -836,6 +855,7 @@ async def _bridge_datachannel_locked(
         cmd_channel_id=op_pub_ids[CMD_CHANNEL_NAME],
         state_channel_id=op_pub_ids[STATE_CHANNEL_NAME],
         state_back_channel_id=op_sub_ids[STATE_BACK_CHANNEL_NAME],
+        map_channel_id=op_sub_ids[MAP_CHANNEL_NAME],
         video_offer=video_offer,
         video_status=video_status,
     )
@@ -1001,14 +1021,16 @@ async def _reap_stale_robots() -> None:
                     "reaping stale robot session=%s robot=%s idle_for=%.1fs",
                     s.id, s.robot_id, idle,
                 )
-                if s.transport == "cloudflare" and s.state_back_channel_id is not None and s.cf_session_id:
-                    await cf_client.close_datachannels(
-                        s.cf_session_id, [s.state_back_channel_id]
-                    )
+                reap_ids = [
+                    i for i in (s.state_back_channel_id, s.map_channel_id) if i is not None
+                ]
+                if s.transport == "cloudflare" and reap_ids and s.cf_session_id:
+                    await cf_client.close_datachannels(s.cf_session_id, reap_ids)
                 s.state = "disconnected"
                 s.operator_id = None
                 s.operator_cf_session_id = None
                 s.state_back_channel_id = None
+                s.map_channel_id = None
                 s.last_operator_heartbeat = None
                 _robot_channel_ids.pop(s.id, None)
                 _pending_video_renegotiations.discard(s.id)

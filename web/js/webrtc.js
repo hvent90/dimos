@@ -239,6 +239,24 @@ async function _setupWebRTCInner(sessionId) {
         console.warn('[state-back] no state_back_channel_id from broker — cmd latency/SOC unavailable');
     }
 
+    // Map (occupancy grid + odom), robot → operator, its own unreliable channel
+    // so bursty/large map frames don't block clock-sync on the reliable plane.
+    // Routes through the same handleStateMessage (map/odom types).
+    if (bridge.map_channel_id != null) {
+        state.mapChannel = pc.createDataChannel('map_unreliable', {
+            negotiated: true,
+            id: bridge.map_channel_id,
+            ordered: false,
+            maxRetransmits: 0,
+        });
+        state.mapChannel.binaryType = 'arraybuffer';
+        state.mapChannel.onmessage = (e) => handleStateMessage(e.data);
+        state.mapChannel.onerror = (e) => console.warn('[map] error', e);
+        state.mapChannel.onclose = () => console.info('[map] closed');
+    } else {
+        console.warn('[map] no map_channel_id from broker — minimap unavailable');
+    }
+
     // Apply the broker's video-pull renegotiation offer so ontrack fires.
     // Best-effort: failure leaves commands + clock intact.
     if (bridge.video_offer) {

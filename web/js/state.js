@@ -19,6 +19,7 @@ export const state = {
     cmdChannel: null,
     stateChannel: null,
     stateBackChannel: null,
+    mapChannel: null,       // robot → operator map (occupancy grid + odom), unreliable
     xrSession: null,
     xrRefSpace: null,
     gl: null,
