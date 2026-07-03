@@ -68,6 +68,8 @@ const ui = {
     mainView: 'camera',       // 'camera' | 'map' — which is the big stage; other → PiP
     lastMap: null,            // latest decoded {type:map,...} for redraw between frames
     lastOdom: null,           // latest {x,y,yaw,ts} for the robot marker
+    mapZoom: 1,               // pan/zoom view transform on the minimap
+    mapPanX: 0, mapPanY: 0,   // canvas-px pan offset (applied before letterbox/flip)
 };
 
 let tickTimer = null;
@@ -149,23 +151,23 @@ export function renderGo2(c) {
             </section>
 
             <!-- RIGHT: control column -->
-            <aside class="flex flex-col gap-3 min-h-0 overflow-y-auto pr-1">
-                <div id="blocked" class="hidden blocked-banner rounded-lg px-3 py-2 text-xs term-caps shrink-0"></div>
+            <aside class="flex flex-col gap-2 min-h-0 overflow-y-auto pr-1">
+                <div id="blocked" class="hidden blocked-banner rounded-md px-3 py-2 text-xs term-caps shrink-0"></div>
 
                 <!-- Battery: symbol+label left, % right. No bar. -->
-                <section class="bg-bg-950 border border-[#2a2a2a] rounded-xl p-4 shrink-0 flex items-center justify-between">
+                <section class="bg-bg-950 border border-[#2a2a2a] rounded-md p-3 shrink-0 flex items-center justify-between">
                     <span class="text-sm text-gray-400">🔋 Battery</span>
                     <span id="batt-pct" class="text-sm font-semibold text-dim-400">—%</span>
                 </section>
 
                 <!-- Obstacle avoidance toggle -->
-                <section class="bg-bg-950 border border-[#2a2a2a] rounded-xl p-4 shrink-0 flex items-center justify-between">
+                <section class="bg-bg-950 border border-[#2a2a2a] rounded-md p-3 shrink-0 flex items-center justify-between">
                     <span class="text-sm text-gray-400">Obstacle avoidance</span>
                     <button id="obstacle-toggle" class="px-3 py-1 text-xs term-caps rounded border border-dim-700 text-dim-400">ON</button>
                 </section>
 
                 <!-- Head light brightness (0..1 → firmware levels 0-10) -->
-                <section class="bg-bg-950 border border-[#2a2a2a] rounded-xl p-4 shrink-0 flex items-center gap-3">
+                <section class="bg-bg-950 border border-[#2a2a2a] rounded-md p-3 shrink-0 flex items-center gap-3">
                     <span class="text-sm text-gray-400 shrink-0">💡 Light</span>
                     <input id="light-slider" type="range" min="0" max="1" step="0.1" value="0"
                         class="flex-1 accent-[#b0e1f0]">
@@ -173,7 +175,7 @@ export function renderGo2(c) {
                 </section>
 
                 <!-- Telemetry: summary always; click to expand full detail. -->
-                <section class="bg-bg-950 border border-[#2a2a2a] rounded-xl p-4 shrink-0">
+                <section class="bg-bg-950 border border-[#2a2a2a] rounded-md p-3 shrink-0">
                     <button id="hud-toggle" class="w-full flex items-center justify-between mb-2">
                         <span class="term-caps text-xs text-gray-500">Telemetry <span id="hud-caret" class="text-gray-600">▸</span></span>
                         <span id="hud-health" class="pill pill-good"><span class="dot"></span><span id="hud-transport">Cloudflare</span></span>
@@ -183,27 +185,27 @@ export function renderGo2(c) {
                 </section>
 
                 <!-- Posture -->
-                <section class="bg-bg-950 border border-[#2a2a2a] rounded-xl p-4 shrink-0">
-                    <div class="term-caps text-xs text-gray-500 mb-3">Posture</div>
+                <section class="bg-bg-950 border border-[#2a2a2a] rounded-md p-3 shrink-0">
+                    <div class="term-caps text-xs text-gray-500 mb-2">Posture</div>
                     <div class="grid grid-cols-2 gap-2">${POSTURE.map(btn).join('')}</div>
                 </section>
 
                 <!-- Actions -->
-                <section class="bg-bg-950 border border-[#2a2a2a] rounded-xl p-4 shrink-0">
-                    <div class="term-caps text-xs text-gray-500 mb-3">Actions</div>
+                <section class="bg-bg-950 border border-[#2a2a2a] rounded-md p-3 shrink-0">
+                    <div class="term-caps text-xs text-gray-500 mb-2">Actions</div>
                     <div class="grid grid-cols-2 gap-2">${ACTIONS.map(btn).join('')}</div>
                 </section>
 
                 <!-- Speed bar: Normal / High / Rage -->
-                <section class="bg-bg-950 border border-[#2a2a2a] rounded-xl p-4 shrink-0">
-                    <div class="term-caps text-xs text-gray-500 mb-3">Speed</div>
+                <section class="bg-bg-950 border border-[#2a2a2a] rounded-md p-3 shrink-0">
+                    <div class="term-caps text-xs text-gray-500 mb-2">Speed</div>
                     <div class="grid grid-cols-3 gap-2" id="speed-bar"></div>
                 </section>
 
                 <!-- WASD drive indicator: lights up keys as they're pressed
                      (updateKeyVisuals() in keyboard.js toggles .pressed by id). -->
-                <section class="bg-bg-950 border border-[#2a2a2a] rounded-xl p-4 shrink-0">
-                    <div class="term-caps text-xs text-gray-500 mb-3">Drive</div>
+                <section class="bg-bg-950 border border-[#2a2a2a] rounded-md p-3 shrink-0">
+                    <div class="term-caps text-xs text-gray-500 mb-2">Drive</div>
                     <div class="flex flex-col items-center gap-2">
                         <div class="flex gap-2">
                             <div id="key-q" class="kb-key kb-key-secondary">Q</div>
@@ -226,7 +228,7 @@ export function renderGo2(c) {
                 <!-- E-STOP: sticks to bottom of the aside as it scrolls.
                      Original horizontal shape (full column width) preserved;
                      background content scrolls behind it. -->
-                <section id="estop-dock" class="sticky bottom-0 z-10 mt-auto bg-bg-950 border border-[#2a2a2a] rounded-xl p-4 shrink-0 shadow-lg">
+                <section id="estop-dock" class="sticky bottom-0 z-10 mt-auto bg-bg-950 border border-[#2a2a2a] rounded-md p-3 shrink-0 shadow-lg">
                     <button id="estop" class="estop">■ EMERGENCY STOP</button>
                     <button id="rearm" class="hidden mt-2 w-full py-2 text-xs term-caps text-gray-300 border border-[#2a2a2a] rounded hover:border-dim-700">
                         re-arm →
@@ -337,9 +339,69 @@ function wireGo2() {
             if (e.currentTarget.classList.contains('is-pip')) setMainView();
         });
     }
+    bindMapPanZoom();
     setMainView('camera');  // default: camera main, map floating (per spec)
 
     selectSpeed(ui.speedMode, /*sendToRobot=*/ false);  // reflect default selection
+}
+
+// Scroll-to-zoom (about the cursor) + drag-to-pan on the minimap, active only
+// while the map is the MAIN view (the PiP keeps its click-to-swap). Double-click
+// resets. All in canvas px; drawMap applies ui.mapZoom / mapPan{X,Y}.
+function bindMapPanZoom() {
+    const canvas = document.getElementById('map-canvas');
+    if (!canvas) return;
+    const isMain = () => canvas.classList.contains('is-main');
+    const MIN_Z = 1, MAX_Z = 12;
+
+    canvas.addEventListener('wheel', (e) => {
+        if (!isMain()) return;
+        e.preventDefault();
+        const rect = canvas.getBoundingClientRect();
+        const mx = e.clientX - rect.left, my = e.clientY - rect.top;
+        const prev = ui.mapZoom;
+        const next = Math.min(MAX_Z, Math.max(MIN_Z, prev * (e.deltaY < 0 ? 1.15 : 1 / 1.15)));
+        if (next === prev) return;
+        // Keep the point under the cursor fixed: solve pan so (mx,my) maps to
+        // the same map location before and after the zoom change.
+        const cx = rect.width / 2, cy = rect.height / 2;
+        ui.mapPanX = mx - (mx - ui.mapPanX - cx) * (next / prev) - cx;
+        ui.mapPanY = my - (my - ui.mapPanY - cy) * (next / prev) - cy;
+        ui.mapZoom = next;
+        if (next === MIN_Z) { ui.mapPanX = 0; ui.mapPanY = 0; }  // snap home at 1×
+        drawMap();
+    }, { passive: false });
+
+    let dragging = false, lastX = 0, lastY = 0, moved = 0;
+    canvas.addEventListener('pointerdown', (e) => {
+        if (!isMain()) return;
+        dragging = true; moved = 0; lastX = e.clientX; lastY = e.clientY;
+        canvas.setPointerCapture(e.pointerId);
+        canvas.style.cursor = 'grabbing';
+    });
+    canvas.addEventListener('pointermove', (e) => {
+        if (!dragging) return;
+        const dxp = e.clientX - lastX, dyp = e.clientY - lastY;
+        lastX = e.clientX; lastY = e.clientY; moved += Math.abs(dxp) + Math.abs(dyp);
+        ui.mapPanX += dxp; ui.mapPanY += dyp;
+        drawMap();
+    });
+    const endDrag = (e) => {
+        if (!dragging) return;
+        dragging = false; canvas.style.cursor = '';
+        try { canvas.releasePointerCapture(e.pointerId); } catch (_) {}
+        // A real drag shouldn't also fire the click-to-swap; the click handler is
+        // on 'click', which still fires, so suppress swap when the map is main
+        // (handled there via is-pip guard) — nothing extra needed here.
+    };
+    canvas.addEventListener('pointerup', endDrag);
+    canvas.addEventListener('pointercancel', endDrag);
+    canvas.addEventListener('dblclick', (e) => {
+        if (!isMain()) return;
+        e.preventDefault();
+        ui.mapZoom = 1; ui.mapPanX = 0; ui.mapPanY = 0;
+        drawMap();
+    });
 }
 
 // ── minimap: map + robot marker (SKELETON) ───────────────────────────
@@ -361,6 +423,9 @@ function setMainView(view) {
     // Button/label name what a click switches TO (the other view).
     const label = document.getElementById('view-swap-label');
     if (label) label.textContent = camMain ? 'MAP' : 'CAM';
+    // Reset pan/zoom whenever the map isn't the main view — a zoomed PiP is
+    // never what you want, and it starts fresh next time it's promoted.
+    if (camMain) { ui.mapZoom = 1; ui.mapPanX = 0; ui.mapPanY = 0; }
     // Canvas backing-store size changed (stage <-> PiP) → redraw at new size.
     drawMap();
 }
@@ -419,6 +484,15 @@ function drawMap() {
     const dx = (cw - dw) / 2, dy = (ch - dh) / 2;
     ctx.imageSmoothingEnabled = false;
 
+    // Pan/zoom view transform, applied around EVERYTHING below so the map and
+    // the robot marker move together. Zoom is about the canvas centre; pan is a
+    // plain canvas-px offset. Wraps the letterbox+flip that follow.
+    ctx.save();
+    ctx.translate(ui.mapPanX, ui.mapPanY);
+    ctx.translate(cw / 2, ch / 2);
+    ctx.scale(ui.mapZoom, ui.mapZoom);
+    ctx.translate(-cw / 2, -ch / 2);
+
     // The grid is row-major from the bottom-left origin: row 0 = min world y
     // (south), col 0 = min world x (west). Canvas y grows DOWN, so we flip the
     // image vertically to put world-north at the top — matching DimOS's own
@@ -469,7 +543,8 @@ function drawMap() {
             ctx.restore();
         }
     }
-    ctx.restore();
+    ctx.restore();  // flip frame
+    ctx.restore();  // pan/zoom frame
 }
 
 // Go2 body footprint (URDF base_link box): 0.70 m long × 0.31 m wide.
