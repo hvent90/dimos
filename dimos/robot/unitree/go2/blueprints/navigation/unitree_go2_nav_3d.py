@@ -28,13 +28,22 @@ from dimos.navigation.nav_3d.mls_planner.mls_planner_native import MLSPlannerNat
 from dimos.navigation.nav_3d.repulsive_local_planner.repulsive_field_native import (
     RepulsiveFieldNative,
 )
+from dimos.protocol.tf.static_tf_publisher import frames_to_edge_transforms
 from dimos.robot.unitree.go2.blueprints.basic.unitree_go2_basic import rerun_config
-from dimos.robot.unitree.go2.connection import GO2Connection
+from dimos.robot.unitree.go2.connect_relative_sensor import RelativeSensorConnection
+from dimos.robot.unitree.go2.go2_mid360_static_transforms import FRAMES
 from dimos.visualization.vis_module import vis_module
 
 voxel_size = 0.08
 # Height of the head-mounted lidar above the ground while standing.
 go2_lidar_height = 0.5
+
+# base_link -> mid360_link from the measured mount tree; inverted so the onboard
+# L1 cloud (landed in base_link) is re-expressed in the Mid-360 frame Point-LIO
+# owns, letting both clouds share the pointlio_lidar stream.
+_mount_edges = {edge.child_frame_id: edge for edge in frames_to_edge_transforms(FRAMES)}
+_base_link_to_mid360 = _mount_edges["front_camera"] + _mount_edges["mid360_link"]
+_mid360_from_base_link = _base_link_to_mid360.inverse().to_matrix().flatten().tolist()
 
 
 def _render_global_map(msg: Any) -> Any:
@@ -87,23 +96,30 @@ _nav_rerun_config = {
 
 unitree_go2_nav_3d = autoconnect(
     vis_module(viewer_backend=global_config.viewer, rerun_config=_nav_rerun_config),
-    # "mcf" for stair traversal
-    GO2Connection.blueprint(
-        lidar=False, camera=False, motion_mode="mcf", odom_frame_id="go2_odom"
+    # "mcf" for stair traversal. The onboard L1 cloud is re-expressed into the
+    # Mid-360 frame and shares the pointlio_lidar stream with Point-LIO.
+    RelativeSensorConnection.blueprint(
+        lidar=True,
+        camera=False,
+        motion_mode="mcf",
+        odom_frame_id="go2_odom",
+        base_frame="go2_base_link",
+        lidar_frame="mid360_link",
+        transform=_mid360_from_base_link,
     ).remappings(
         [
-            (GO2Connection, "lidar", "lidar_l1"),
-            (GO2Connection, "odom", "odom_go2"),
+            (RelativeSensorConnection, "lidar", "pointlio_lidar"),
+            (RelativeSensorConnection, "odom", "odom_go2"),
         ]
     ),
-    PointLio.blueprint(),
+    PointLio.blueprint().remappings([(PointLio, "lidar", "pointlio_lidar")]),
     RayTracingVoxelMap.blueprint(
         voxel_size=voxel_size,
         emit_every=1,
         global_emit_every=50,
         max_health=10,
         graze_cos=0.85,
-    ),
+    ).remappings([(RayTracingVoxelMap, "lidar", "pointlio_lidar")]),
     # global_map is remapped off so the planner runs purely on the
     # incremental local_map + region_bounds pair.
     MLSPlannerNative.blueprint(
