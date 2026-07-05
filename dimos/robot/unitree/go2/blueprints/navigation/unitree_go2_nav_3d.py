@@ -25,6 +25,9 @@ from dimos.navigation.basic_path_follower.module import BasicPathFollower
 from dimos.navigation.movement_manager.movement_manager import MovementManager
 from dimos.navigation.nav_3d.mls_planner.goal_relay import GoalRelay
 from dimos.navigation.nav_3d.mls_planner.mls_planner_native import MLSPlannerNative
+from dimos.navigation.nav_3d.repulsive_local_planner.repulsive_field_native import (
+    RepulsiveFieldNative,
+)
 from dimos.robot.unitree.go2.blueprints.basic.unitree_go2_basic import rerun_config
 from dimos.robot.unitree.go2.connection import GO2Connection
 from dimos.visualization.vis_module import vis_module
@@ -115,6 +118,22 @@ unitree_go2_nav_3d = autoconnect(
         viz_publish_hz=0.0,
     ).remappings([(MLSPlannerNative, "global_map", "global_map_unused")]),
     GoalRelay.blueprint(),
-    BasicPathFollower.blueprint(speed=0.5, heading_gain=0.4, max_angular=0.6),
+    # Smooths the MLS global route into an obstacle-avoiding local path, solving
+    # fresh on the ray-tracing terrain cloud (its own internal costmap — no
+    # CostMapper needed). output_base_frame=False: BasicPathFollower consumes a
+    # world-frame path + odometry, not a vehicle-frame route.
+    RepulsiveFieldNative.blueprint(
+        world_frame="odom",
+        output_base_frame=False,
+    ).remappings(
+        [
+            (RepulsiveFieldNative, "terrain_map", "local_map"),
+            (RepulsiveFieldNative, "global_path", "path"),
+        ]
+    ),
+    # Follow the local planner's output instead of the raw global path.
+    BasicPathFollower.blueprint(speed=0.5, heading_gain=0.4, max_angular=0.6).remappings(
+        [(BasicPathFollower, "path", "local_path")]
+    ),
     MovementManager.blueprint(),
 ).global_config(n_workers=10, robot_model="unitree_go2", obstacle_avoidance=False)
