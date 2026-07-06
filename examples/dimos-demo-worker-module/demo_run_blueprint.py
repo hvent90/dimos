@@ -27,12 +27,19 @@ from __future__ import annotations
 from pathlib import Path
 import sys
 
+EXAMPLE_ROOT = Path(__file__).resolve().parent
+REPO_ROOT = EXAMPLE_ROOT.parents[1]
+EXAMPLE_SRC = EXAMPLE_ROOT / "src"
+
+for path in (REPO_ROOT, EXAMPLE_SRC):
+    path_str = str(path)
+    if path_str not in sys.path:
+        sys.path.insert(0, path_str)
+
 from dimos_demo_worker_module.blueprint import demo_worker_runtime_blueprint
 from dimos_demo_worker_module.contract import DemoWorkerModule
 
 from dimos.core.coordination.module_coordinator import ModuleCoordinator
-
-EXAMPLE_ROOT = Path(__file__).resolve().parent
 
 
 def main() -> None:
