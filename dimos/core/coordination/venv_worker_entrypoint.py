@@ -16,7 +16,7 @@ from __future__ import annotations
 import argparse
 from multiprocessing.connection import Client
 
-from dimos.core.coordination.python_worker import _worker_entrypoint
+from dimos.core.coordination.python_worker import worker_entrypoint
 
 
 def main() -> None:
@@ -26,7 +26,7 @@ def main() -> None:
     parser.add_argument("--worker-id", required=True, type=int)
     args = parser.parse_args()
     conn = Client(args.address, family="AF_UNIX", authkey=bytes.fromhex(args.authkey_hex))
-    _worker_entrypoint(conn, args.worker_id)
+    worker_entrypoint(conn, args.worker_id)
 
 
 if __name__ == "__main__":

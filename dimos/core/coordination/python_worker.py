@@ -336,7 +336,7 @@ class _WorkerState:
     should_stop: bool = False
 
 
-def _worker_entrypoint(conn: Connection, worker_id: int) -> None:
+def worker_entrypoint(conn: Connection, worker_id: int) -> None:
     apply_library_config()
     signal.signal(signal.SIGINT, signal.SIG_IGN)  # coordinator handles shutdown
     state = _WorkerState(instances={}, worker_id=worker_id)
@@ -375,6 +375,9 @@ def _worker_entrypoint(conn: Connection, worker_id: int) -> None:
                 )
             except Exception:
                 logger.error("Error during worker shutdown", exc_info=True)
+
+
+_worker_entrypoint = worker_entrypoint
 
 
 def _handle_request(request: Any, state: _WorkerState) -> WorkerResponse:

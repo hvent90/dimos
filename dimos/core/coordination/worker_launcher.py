@@ -14,13 +14,16 @@
 from __future__ import annotations
 
 from abc import ABC, abstractmethod
-from multiprocessing.connection import Connection, Listener, wait
+from multiprocessing.connection import Connection, Listener
+from multiprocessing.process import BaseProcess
 import os
 from pathlib import Path
+import queue
 import secrets
 import signal
 import subprocess
 import tempfile
+import threading
 
 from dimos.core.runtime_environment import PythonProjectLaunchMaterial
 
@@ -53,31 +56,32 @@ class WorkerLauncher(ABC):
 
 
 class ForkserverWorkerProcessHandle(WorkerProcessHandle):
-    def __init__(self, process: object, connection: Connection) -> None:
+    def __init__(self, process: BaseProcess, connection: Connection) -> None:
         self._process = process
         self.connection = connection
 
     @property
     def pid(self) -> int | None:
-        return getattr(self._process, "pid", None)
+        return self._process.pid
 
     def join(self, timeout: float | None = None) -> None:
-        self._process.join(timeout=timeout)  # type: ignore[attr-defined]
+        self._process.join(timeout=timeout)
 
     def is_alive(self) -> bool:
-        return bool(self._process.is_alive())  # type: ignore[attr-defined]
+        return self._process.is_alive()
 
     def terminate(self) -> None:
-        self._process.terminate()  # type: ignore[attr-defined]
+        self._process.terminate()
 
 
 class ForkserverWorkerLauncher(WorkerLauncher):
     def launch(self, worker_id: int) -> WorkerProcessHandle:
-        from dimos.core.coordination.python_worker import _worker_entrypoint, get_forkserver_context
+        # Imported lazily to avoid the python_worker <-> worker_launcher import cycle.
+        from dimos.core.coordination.python_worker import get_forkserver_context, worker_entrypoint
 
         ctx = get_forkserver_context()
         parent_conn, child_conn = ctx.Pipe()
-        process = ctx.Process(target=_worker_entrypoint, args=(child_conn, worker_id), daemon=True)
+        process = ctx.Process(target=worker_entrypoint, args=(child_conn, worker_id), daemon=True)
         process.start()
         return ForkserverWorkerProcessHandle(process, parent_conn)
 
@@ -174,13 +178,12 @@ def _launch_subprocess_worker(
                 env=process_env,
                 start_new_session=terminate_process_group,
             )
-            listener_socket = listener._listener._socket  # type: ignore[attr-defined]
-            if not wait([listener_socket], timeout=startup_timeout):
-                process.terminate()
+            connection = _accept_worker_connection(listener, startup_timeout)
+            if connection is None:
+                _terminate_subprocess(process, terminate_process_group=terminate_process_group)
                 raise WorkerLaunchError(
                     f"Runtime {runtime_name!r} worker did not connect within {startup_timeout}s"
                 )
-            connection = listener.accept()
             return SubprocessWorkerProcessHandle(
                 process,
                 connection,
@@ -188,18 +191,66 @@ def _launch_subprocess_worker(
             )
         except Exception:
             if process is not None and process.poll() is None:
-                process.terminate()
+                _terminate_subprocess(process, terminate_process_group=terminate_process_group)
             raise
         finally:
             listener.close()
 
 
-def _terminate_process_group(pid: int) -> None:
+def _accept_worker_connection(listener: Listener, timeout: float) -> Connection | None:
+    results: queue.Queue[Connection | Exception] = queue.Queue(maxsize=1)
+
+    def _accept() -> None:
+        try:
+            results.put(listener.accept())
+        except Exception as error:
+            results.put(error)
+
+    threading.Thread(target=_accept, daemon=True).start()
     try:
-        os.killpg(pid, signal.SIGTERM)
-    except ProcessLookupError:
+        result = results.get(timeout=timeout)
+    except queue.Empty:
+        return None
+    if isinstance(result, Exception):
+        raise result
+    return result
+
+
+def _terminate_subprocess(
+    process: subprocess.Popen[bytes],
+    *,
+    terminate_process_group: bool,
+    timeout: float = 2.0,
+) -> None:
+    if process.poll() is not None:
         return
+    if terminate_process_group and process.pid is not None:
+        _signal_process_group(process.pid, signal.SIGTERM)
+    else:
+        process.terminate()
     try:
-        os.waitpid(pid, os.WNOHANG)
-    except ChildProcessError:
+        process.wait(timeout=timeout)
+        return
+    except subprocess.TimeoutExpired:
+        pass
+
+    if terminate_process_group and process.pid is not None:
+        _signal_process_group(process.pid, signal.SIGKILL)
+    else:
+        process.kill()
+    try:
+        process.wait(timeout=timeout)
+    except subprocess.TimeoutExpired:
+        logger_pid = process.pid
+        raise WorkerLaunchError(f"Worker subprocess {logger_pid} did not exit after SIGKILL")
+
+
+def _terminate_process_group(pid: int) -> None:
+    _signal_process_group(pid, signal.SIGTERM)
+
+
+def _signal_process_group(pid: int, sig: signal.Signals) -> None:
+    try:
+        os.killpg(pid, sig)
+    except ProcessLookupError:
         return
