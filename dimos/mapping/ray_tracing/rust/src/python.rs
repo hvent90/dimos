@@ -7,8 +7,11 @@ use pyo3::exceptions::PyValueError;
 use pyo3::prelude::*;
 use validator::Validate;
 
+use ahash::AHashSet;
+
 use crate::voxel_ray_tracer::{
-    batch_local_bounds, emit_points, iter_global_normals, update_map, Config, LocalBounds, VoxelMap,
+    batch_local_bounds, emit_points, iter_global_normals, update_map, Config, LocalBounds,
+    VoxelKey, VoxelMap,
 };
 
 fn extract_tuples(arr: &Bound<'_, PyAny>, name: &str) -> PyResult<Vec<(f32, f32, f32)>> {
@@ -51,6 +54,8 @@ fn local_bounds(
 pub struct VoxelRayMapper {
     config: Config,
     map: VoxelMap,
+    // Voxels hit in current lidar frame
+    live: AHashSet<VoxelKey>,
 }
 
 #[pymethods]
@@ -100,6 +105,7 @@ impl VoxelRayMapper {
         Ok(Self {
             config,
             map: VoxelMap::default(),
+            live: AHashSet::new(),
         })
     }
 
@@ -113,18 +119,17 @@ impl VoxelRayMapper {
 
         let cfg = &self.config;
         let map = &mut self.map;
-        py.allow_threads(move || {
-            update_map(map, origin, &pts, cfg);
-        });
+        self.live = py.allow_threads(move || update_map(map, origin, &pts, cfg));
         Ok(())
     }
 
     fn global_map<'py>(&self, py: Python<'py>) -> Bound<'py, PyArray2<f32>> {
         let voxel_size = self.config.voxel_size;
         let map = &self.map;
+        let live = &self.live;
         let positions: Vec<f32> = py.allow_threads(|| {
             let mut out: Vec<f32> = Vec::with_capacity(map.voxels.len() * 3);
-            for (x, y, z) in emit_points(map, voxel_size, None, 0, None) {
+            for (x, y, z) in emit_points(map, voxel_size, None, 0, Some(live)) {
                 out.push(x);
                 out.push(y);
                 out.push(z);
@@ -184,9 +189,10 @@ impl VoxelRayMapper {
         let voxel_size = self.config.voxel_size;
         let support_min = self.config.support_min;
         let map = &self.map;
+        let live = &self.live;
         let positions: Vec<f32> = py.allow_threads(|| {
             let mut out: Vec<f32> = Vec::new();
-            for (x, y, z) in emit_points(map, voxel_size, Some(&bounds), support_min, None) {
+            for (x, y, z) in emit_points(map, voxel_size, Some(&bounds), support_min, Some(live)) {
                 out.push(x);
                 out.push(y);
                 out.push(z);
@@ -205,6 +211,7 @@ impl VoxelRayMapper {
 
     fn clear(&mut self) {
         self.map.voxels.clear();
+        self.live.clear();
     }
 
     fn __len__(&self) -> usize {
