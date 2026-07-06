@@ -71,6 +71,7 @@ all_blueprints = {
     "keyboard-teleop-xarm7": "dimos.robot.manipulators.xarm.blueprints.teleop:keyboard_teleop_xarm7",
     "learning-collect-quest-piper": "dimos.learning.collection.blueprint:learning_collect_quest_piper",
     "learning-collect-quest-xarm7": "dimos.learning.collection.blueprint:learning_collect_quest_xarm7",
+    "manual-agentic-gpd-mujoco-grasp-demo": "dimos.robot.manipulators.xarm.blueprints.simulation:manual_agentic_gpd_mujoco_grasp_demo",
     "mid360": "dimos.hardware.sensors.lidar.livox.livox_blueprints:mid360",
     "mid360-fastlio": "dimos.hardware.sensors.lidar.fastlio2.fastlio_blueprints:mid360_fastlio",
     "mid360-fastlio-ray-trace": "dimos.hardware.sensors.lidar.fastlio2.fastlio_blueprints:mid360_fastlio_ray_trace",
@@ -147,6 +148,7 @@ all_blueprints = {
 
 
 all_modules = {
+    "agentic-grasp-manipulation-module": "dimos.manipulation.agentic_manipulation_module.AgenticGraspManipulationModule",
     "agentic-manipulation-module": "dimos.manipulation.agentic_manipulation_module.AgenticManipulationModule",
     "alfred-high-level": "dimos.robot.diy.alfred.effector_high_level.AlfredHighLevel",
     "arm-teleop-module": "dimos.teleop.quest.quest_extensions.ArmTeleopModule",

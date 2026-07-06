@@ -22,24 +22,32 @@ from dimos_gpd_grasp_demo.gpd_grasp_gen_module import GPDGraspGenModule
 import pytest
 from pytest_mock import MockerFixture
 
+from dimos.agents.skill_result import SkillResult
 from dimos.core.coordination.module_coordinator import ModuleCoordinator
 from dimos.core.runtime_environment import PythonProjectRuntimeEnvironment
+from dimos.manipulation.agentic_manipulation_module import AgenticGraspManipulationModule
 from dimos.manipulation.grasping.grasping import GraspingModule
+from dimos.manipulation.grasping.manual_agentic_gpd_grasp_demo import (
+    run_manual_agentic_gpd_grasp_sequence,
+)
 from dimos.manipulation.grasping.pointcloud_grasp_demo_controller import (
     PointcloudGraspDemoController,
 )
 from dimos.manipulation.grasping.target_grasp_demo_controller import TargetGraspDemoController
 from dimos.manipulation.grasping.vgn_grasp_gen_module import VGNGraspGenModule
 from dimos.manipulation.pick_and_place_module import PickAndPlaceModule
+from dimos.manipulation.skill_errors import ManipulationSkillError
 from dimos.msgs.geometry_msgs.Vector3 import Vector3
 from dimos.msgs.grasping_msgs.GraspCandidateArray import GraspCandidateArray
 from dimos.msgs.perception_msgs.RegisteredObject import RegisteredObject
 from dimos.msgs.sensor_msgs.PointCloud2 import PointCloud2
+from dimos.perception.detection.detectors.yoloe import YoloePromptMode
 from dimos.perception.object_scene_registration import ObjectSceneRegistrationModule
 from dimos.perception.reconstruction import SceneReconstructionModule
 from dimos.robot.all_blueprints import all_blueprints
 from dimos.robot.manipulators.xarm.blueprints.simulation import (
     gpd_mujoco_grasp_demo,
+    manual_agentic_gpd_mujoco_grasp_demo,
     vgn_mujoco_grasp_demo,
     xarm_perception_sim,
 )
@@ -115,6 +123,45 @@ def test_gpd_mujoco_grasp_demo_registry_name_is_stable() -> None:
     )
 
 
+def test_manual_agentic_gpd_mujoco_grasp_demo_wires_execution_facade() -> None:
+    manual_modules = {atom.module for atom in manual_agentic_gpd_mujoco_grasp_demo.blueprints}
+    generation_only_modules = {atom.module for atom in gpd_mujoco_grasp_demo.blueprints}
+
+    assert AgenticGraspManipulationModule in manual_modules
+    assert PickAndPlaceModule in manual_modules
+    assert MujocoSimModule in manual_modules
+    assert ObjectSceneRegistrationModule in manual_modules
+    assert GPDGraspGenModule in manual_modules
+    assert RerunBridgeModule in manual_modules
+    assert PointcloudGraspDemoController not in manual_modules
+    assert GraspingModule not in manual_modules
+    assert AgenticGraspManipulationModule not in generation_only_modules
+    assert PickAndPlaceModule not in generation_only_modules
+
+
+def test_manual_agentic_gpd_mujoco_grasp_demo_uses_gpd_runtime_and_topics() -> None:
+    placements = dict(manual_agentic_gpd_mujoco_grasp_demo.runtime_placement_map)
+    scene_registration_atom = next(
+        atom
+        for atom in manual_agentic_gpd_mujoco_grasp_demo.blueprints
+        if atom.module is ObjectSceneRegistrationModule
+    )
+
+    assert placements == {GPDGraspGenModule: GPD_GRASP_DEMO_ENV_NAME}
+    assert scene_registration_atom.kwargs["prompt_mode"] is YoloePromptMode.PROMPT
+    assert (
+        manual_agentic_gpd_mujoco_grasp_demo.remapping_map[(GPDGraspGenModule, "grasp_candidates")]
+        == "gpd_grasp_candidates"
+    )
+
+
+def test_manual_agentic_gpd_mujoco_grasp_demo_registry_name_is_stable() -> None:
+    assert (
+        all_blueprints["manual-agentic-gpd-mujoco-grasp-demo"]
+        == "dimos.robot.manipulators.xarm.blueprints.simulation:manual_agentic_gpd_mujoco_grasp_demo"
+    )
+
+
 class _SceneRegistrationFake:
     def __init__(self, target: RegisteredObject) -> None:
         self.target = target
@@ -162,6 +209,43 @@ class _PointcloudGraspingFake:
         return "generated"
 
 
+class _ManualAgenticGraspClientFake:
+    def __init__(self, scan_failures_before_success: int = 0) -> None:
+        self.scan_failures_before_success = scan_failures_before_success
+        self.calls: list[tuple[str, tuple[str | int | None, ...]]] = []
+        self.stopped = False
+
+    def scan_objects(self, target_name: str = "object") -> SkillResult[ManipulationSkillError]:
+        self.calls.append(("scan_objects", (target_name,)))
+        if self.scan_failures_before_success > 0:
+            self.scan_failures_before_success -= 1
+            return SkillResult[ManipulationSkillError].fail(
+                "OBJECT_NOT_DETECTED", "target not ready"
+            )
+        return SkillResult[ManipulationSkillError].ok("registered", target_count=1)
+
+    def generate_grasps(
+        self,
+        target_name: str = "object",
+        object_id: str | None = None,
+        filter_collisions: bool = False,
+    ) -> SkillResult[ManipulationSkillError]:
+        del object_id, filter_collisions
+        self.calls.append(("generate_grasps", (target_name,)))
+        return SkillResult[ManipulationSkillError].ok("generated", candidate_count=2)
+
+    def execute_grasp(
+        self,
+        candidate_index: int = 0,
+        robot_name: str | None = None,
+    ) -> SkillResult[ManipulationSkillError]:
+        self.calls.append(("execute_grasp", (candidate_index, robot_name)))
+        return SkillResult[ManipulationSkillError].ok("executed")
+
+    def stop_rpc_client(self) -> None:
+        self.stopped = True
+
+
 def test_pointcloud_demo_controller_calls_pointcloud_generation_only(mocker: MockerFixture) -> None:
     target = RegisteredObject(
         object_id="obj-1",
@@ -194,6 +278,28 @@ def test_pointcloud_demo_controller_calls_pointcloud_generation_only(mocker: Moc
         controller.stop()
 
 
+def test_manual_agentic_gpd_helper_runs_deterministic_tool_sequence() -> None:
+    client = _ManualAgenticGraspClientFake(scan_failures_before_success=1)
+
+    results = run_manual_agentic_gpd_grasp_sequence(
+        target_name="sphere",
+        candidate_index=0,
+        robot_name="arm",
+        scan_attempts=2,
+        retry_interval_s=0.0,
+        client=client,
+    )
+
+    assert [result.message for result in results] == ["registered", "generated", "executed"]
+    assert client.calls == [
+        ("scan_objects", ("sphere",)),
+        ("scan_objects", ("sphere",)),
+        ("generate_grasps", ("sphere",)),
+        ("execute_grasp", (0, "arm")),
+    ]
+    assert client.stopped is False
+
+
 @pytest.mark.skipif(
     not Path("packages/dimos-gpd-grasp-demo/.venv/bin/python").exists(),
     reason=(
@@ -211,3 +317,38 @@ def test_gpd_mujoco_grasp_demo_prepared_runtime_smoke_gate() -> None:
         {"g": {"viewer": "none", "n_workers": 1}},
     )
     coordinator.stop()
+
+
+@pytest.mark.skipif(
+    not Path("packages/dimos-gpd-grasp-demo/.venv/bin/python").exists(),
+    reason=(
+        "GPD prepared runtime is not available; run `uv run dimos runtime prepare "
+        "manual-agentic-gpd-mujoco-grasp-demo --runtime dimos-gpd-grasp-demo` first"
+    ),
+)
+@pytest.mark.skipif(
+    os.environ.get("DIMOS_RUN_MANUAL_AGENTIC_GPD_MUJOCO_SMOKE") != "1",
+    reason=(
+        "Set DIMOS_RUN_MANUAL_AGENTIC_GPD_MUJOCO_SMOKE=1 to run the manual "
+        "agentic GPD MuJoCo grasp execution smoke"
+    ),
+)
+def test_manual_agentic_gpd_mujoco_grasp_demo_prepared_runtime_smoke_gate() -> None:
+    coordinator = ModuleCoordinator.build(
+        manual_agentic_gpd_mujoco_grasp_demo,
+        {"g": {"viewer": "none", "n_workers": 1}},
+    )
+    try:
+        scan, generate, execute = run_manual_agentic_gpd_grasp_sequence(
+            target_name="sphere",
+            candidate_index=0,
+            scan_attempts=90,
+            retry_interval_s=0.5,
+        )
+
+        assert scan.success is True
+        assert generate.success is True
+        assert int(generate.metadata["candidate_count"]) > 0
+        assert execute.success is True
+    finally:
+        coordinator.stop()

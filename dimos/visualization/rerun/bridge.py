@@ -169,7 +169,7 @@ class Config(ModuleConfig):
     visual_override: dict[Glob | str, Callable[[Any], Archetype] | None] = field(
         default_factory=dict
     )
-    static: dict[str, Callable[[Any], Archetype]] = field(default_factory=dict)
+    static: dict[str, Callable[[Any], Any]] = field(default_factory=dict)
     max_hz: dict[str, float] = field(default_factory=dict)
 
     entity_prefix: str = "world"
@@ -433,7 +433,10 @@ class RerunBridgeModule(Module):
     def _log_static(self) -> None:
         for entity_path, factory in self.config.static.items():
             data = factory(rr)
-            if isinstance(data, list):
+            if is_rerun_multi(data):
+                for path, archetype in data:
+                    rr.log(path, archetype, static=True)
+            elif isinstance(data, list):
                 for archetype in data:
                     rr.log(entity_path, archetype, static=True)
             else:

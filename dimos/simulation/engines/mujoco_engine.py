@@ -552,6 +552,15 @@ class MujocoEngine(SimulationEngine):
         with self._camera_lock:
             return self._camera_frames.get(camera_name)
 
+    def get_body_pose(
+        self, body_name: str
+    ) -> tuple[NDArray[np.float64], NDArray[np.float64]] | None:
+        """Return a MuJoCo body pose as world position and rotation matrix."""
+        body_id = mujoco.mj_name2id(self._model, mujoco.mjtObj.mjOBJ_BODY, body_name)
+        if body_id < 0:
+            return None
+        return self._data.xpos[body_id].copy(), self._data.xmat[body_id].copy().reshape(3, 3)
+
     def get_camera_fovy(self, camera_name: str) -> float | None:
         """Get vertical field of view for a named camera, in degrees."""
         cam_id = mujoco.mj_name2id(self._model, mujoco.mjtObj.mjOBJ_CAMERA, camera_name)

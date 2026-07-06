@@ -26,6 +26,7 @@ from __future__ import annotations
 
 from collections.abc import Callable, Mapping, Sequence
 from enum import Enum
+import os
 import threading
 import time
 import traceback
@@ -120,6 +121,20 @@ if TYPE_CHECKING:
 
 logger = setup_logger()
 
+FRAME_DIAGNOSTICS_ENV = "DIMOS_MANIPULATION_FRAME_DIAGNOSTICS"
+
+
+def _format_pose_stamped(pose: PoseStamped | None) -> str:
+    if pose is None:
+        return "None"
+    return (
+        f"frame={pose.frame_id} "
+        f"pos=({pose.position.x:.3f}, {pose.position.y:.3f}, {pose.position.z:.3f}) "
+        f"quat=({pose.orientation.x:.3f}, {pose.orientation.y:.3f}, "
+        f"{pose.orientation.z:.3f}, {pose.orientation.w:.3f})"
+    )
+
+
 # Composite type aliases for readability (using semantic IDs from planning.spec)
 RobotEntry: TypeAlias = tuple[WorldRobotID, RobotModelConfig, JointTrajectoryGenerator]
 """(world_robot_id, config, trajectory_generator)"""
@@ -165,6 +180,9 @@ class ManipulationModuleConfig(ModuleConfig):
     trajectory_parametrization: TrajectoryParametrizationConfig = Field(
         default_factory=TrajectoryParametrizationConfig
     )
+    execution_settle_timeout: float = 7.0
+    execution_joint_tolerance: float = 0.04
+    execution_poll_interval: float = 0.1
 
 
 class ManipulationModule(Module):
@@ -544,6 +562,48 @@ class ManipulationModule(Module):
             return self._world_monitor.get_link_pose(robot_id, config.end_effector_link)
         return None
 
+    def _frame_diagnostics_enabled(self) -> bool:
+        return os.environ.get(FRAME_DIAGNOSTICS_ENV) == "1"
+
+    def _log_robot_frame_diagnostics(self, label: str, robot_name: RobotName | None = None) -> None:
+        """Log planning-group and link poses for frame debugging."""
+        if not self._frame_diagnostics_enabled():
+            return
+        if (robot := self._get_robot(robot_name)) is None or self._world_monitor is None:
+            logger.info("[FRAME-DIAG] %s robot unavailable", label)
+            return
+
+        selected_robot_name, robot_id, config, _ = robot
+        group_id = self._primary_pose_group_id_for_robot(config.name)
+        group = self._world_monitor.planning_groups.get(group_id) if group_id is not None else None
+        group_pose = (
+            self._world_monitor.get_group_ee_pose(group_id, joint_state=None)
+            if group_id is not None
+            else None
+        )
+        ee_link_pose = (
+            self._world_monitor.get_link_pose(robot_id, config.end_effector_link)
+            if config.end_effector_link is not None
+            else None
+        )
+        link7_pose = self._world_monitor.get_link_pose(robot_id, "link7")
+        gripper_base_pose = self._world_monitor.get_link_pose(robot_id, "xarm_gripper_base_link")
+
+        logger.info(
+            "[FRAME-DIAG] %s robot=%s group=%s group_tip=%s config_ee=%s base=%s "
+            "group_pose=%s ee_link_pose=%s link7_pose=%s gripper_base_pose=%s",
+            label,
+            selected_robot_name,
+            group_id,
+            group.tip_link if group is not None else None,
+            config.end_effector_link,
+            config.base_link,
+            _format_pose_stamped(group_pose),
+            _format_pose_stamped(ee_link_pose),
+            _format_pose_stamped(link7_pose),
+            _format_pose_stamped(gripper_base_pose),
+        )
+
     @rpc
     def is_collision_free(self, joints: list[float], robot_name: RobotName | None = None) -> bool:
         """Check if joint configuration is collision-free.
@@ -859,6 +919,52 @@ class ManipulationModule(Module):
             group_ids,
             path_joints,
         )
+        if self._frame_diagnostics_enabled() and result.path:
+            final_joints = result.path[-1]
+            for group_id in group_ids:
+                group = self._world_monitor.planning_groups.get(group_id)
+                final_by_name = dict(zip(final_joints.name, final_joints.position, strict=True))
+                local_positions: list[float] = []
+                missing_names: list[str] = []
+                for local_name, global_name in zip(
+                    group.local_joint_names,
+                    group.joint_names,
+                    strict=True,
+                ):
+                    if local_name in final_by_name:
+                        local_positions.append(float(final_by_name[local_name]))
+                    elif global_name in final_by_name:
+                        local_positions.append(float(final_by_name[global_name]))
+                    else:
+                        missing_names.append(global_name)
+                if missing_names:
+                    logger.info(
+                        "[FRAME-DIAG] planned_final_fk group=%s missing joints=%s",
+                        group_id,
+                        missing_names,
+                    )
+                    continue
+                local_final_joints = JointState(
+                    name=list(group.local_joint_names),
+                    position=local_positions,
+                )
+                try:
+                    final_pose = self._world_monitor.get_group_ee_pose(
+                        group_id, joint_state=local_final_joints
+                    )
+                except Exception as exc:
+                    logger.info(
+                        "[FRAME-DIAG] planned_final_fk group=%s unavailable: %s",
+                        group_id,
+                        exc,
+                    )
+                    continue
+                logger.info(
+                    "[FRAME-DIAG] planned_final_fk group=%s group_tip=%s pose=%s",
+                    group_id,
+                    group.tip_link,
+                    _format_pose_stamped(final_pose),
+                )
         self._store_generated_plan(group_ids, result)
         assert self._last_plan is not None
         trajectory = self._parametrize_plan(self._last_plan)
@@ -1883,6 +1989,117 @@ class ManipulationModule(Module):
         logger.warning(f"Trajectory execution timed out after {timeout}s")
         return False
 
+    def _final_trajectory_target_for_robot(
+        self, robot_name: RobotName | None = None
+    ) -> JointState | None:
+        """Return the final local joint target for the latest generated trajectory."""
+        trajectory = self._last_trajectory
+        if trajectory is None or not trajectory.points or not trajectory.joint_names:
+            return None
+        if (robot := self._get_robot(robot_name)) is None or self._world_monitor is None:
+            return None
+
+        rname, robot_id, config, _ = robot
+        final_point = trajectory.points[-1]
+        if len(final_point.positions) != len(trajectory.joint_names):
+            return None
+
+        target_indices = {
+            joint_name: index for index, joint_name in enumerate(trajectory.joint_names)
+        }
+        current = self._world_monitor.get_current_joint_state(robot_id)
+        current_by_name = (
+            dict(zip(current.name, current.position, strict=True)) if current is not None else {}
+        )
+        global_joint_names = make_global_joint_names(rname, config.joint_names)
+        target_positions: list[float] = []
+        for local_name, global_joint_name in zip(
+            config.joint_names, global_joint_names, strict=True
+        ):
+            target_index = target_indices.get(global_joint_name)
+            if target_index is not None:
+                target_positions.append(float(final_point.positions[target_index]))
+            elif local_name in current_by_name:
+                target_positions.append(float(current_by_name[local_name]))
+            else:
+                return None
+        return JointState(name=list(config.joint_names), position=target_positions)
+
+    def _wait_for_execution_convergence(
+        self,
+        robot_name: RobotName | None = None,
+        timeout: float | None = None,
+        joint_tolerance: float | None = None,
+        poll_interval: float | None = None,
+    ) -> bool:
+        """Wait until live robot joints converge to the latest trajectory endpoint."""
+        if robot_name is None and self._last_plan is not None and self._last_plan.path:
+            try:
+                robot_names = self._affected_robot_names(self._last_plan)
+            except Exception as exc:
+                logger.warning(
+                    "Failed to resolve generated plan while waiting for convergence: %s", exc
+                )
+                return False
+            return all(
+                self._wait_for_execution_convergence(
+                    name,
+                    timeout=timeout,
+                    joint_tolerance=joint_tolerance,
+                    poll_interval=poll_interval,
+                )
+                for name in robot_names
+            )
+
+        if (robot := self._get_robot(robot_name)) is None or self._world_monitor is None:
+            return True
+        rname, robot_id, _, _ = robot
+        target = self._final_trajectory_target_for_robot(rname)
+        if target is None:
+            logger.info("No trajectory endpoint available for convergence wait on '%s'", rname)
+            return True
+
+        wait_timeout = self.config.execution_settle_timeout if timeout is None else timeout
+        tolerance = (
+            self.config.execution_joint_tolerance if joint_tolerance is None else joint_tolerance
+        )
+        interval = self.config.execution_poll_interval if poll_interval is None else poll_interval
+        if wait_timeout <= 0.0:
+            return True
+
+        target_by_name = dict(zip(target.name, target.position, strict=True))
+        start = time.monotonic()
+        last_max_error = float("inf")
+        while (time.monotonic() - start) < wait_timeout:
+            current = self._world_monitor.get_current_joint_state(robot_id)
+            if current is not None and len(current.name) == len(current.position):
+                current_by_name = dict(zip(current.name, current.position, strict=True))
+                errors = [
+                    abs(float(current_by_name[name]) - float(position))
+                    for name, position in target_by_name.items()
+                    if name in current_by_name
+                ]
+                if len(errors) == len(target_by_name):
+                    last_max_error = max(errors, default=0.0)
+                    if last_max_error <= tolerance:
+                        logger.info(
+                            "Trajectory converged for '%s': max_joint_error=%.4f rad",
+                            rname,
+                            last_max_error,
+                        )
+                        return True
+            time.sleep(interval)
+
+        logger.warning(
+            "Trajectory did not converge for '%s' within %.1fs: max_joint_error=%.4f rad "
+            "(tolerance=%.4f rad)",
+            rname,
+            wait_timeout,
+            last_max_error,
+            tolerance,
+        )
+        return False
+
     def _lift_if_low(
         self, robot_name: RobotName | None = None, min_z: float = 0.05
     ) -> SkillResult[ManipulationSkillError]:
@@ -1920,6 +2137,12 @@ class ManipulationModule(Module):
 
         if not self._wait_for_trajectory_completion(robot_name):
             return SkillResult.fail("EXECUTION_TIMEOUT", "Trajectory execution timed out")
+
+        if not self._wait_for_execution_convergence(robot_name):
+            return SkillResult.fail(
+                "EXECUTION_TIMEOUT",
+                "Trajectory execution completed but robot did not converge to the final target",
+            )
 
         return SkillResult.ok()
 
@@ -2006,10 +2229,14 @@ class ManipulationModule(Module):
 
         pose = Pose(Vector3(x, y, z), orientation)
 
+        self._log_robot_frame_diagnostics("move_to_pose_before_lift", robot_name)
+
         # If EE is low, lift up first to clear obstacles
         lift = self._lift_if_low(robot_name)
         if not lift.is_success():
             return lift
+
+        self._log_robot_frame_diagnostics("move_to_pose_after_lift", robot_name)
 
         if not self.plan_to_pose(pose, robot_name):
             return SkillResult.fail(
@@ -2020,6 +2247,8 @@ class ManipulationModule(Module):
         exec_result = self._preview_execute_wait(robot_name)
         if not exec_result.is_success():
             return exec_result
+
+        self._log_robot_frame_diagnostics("move_to_pose_after_execute", robot_name)
 
         return SkillResult.ok(f"Reached target pose ({x:.3f}, {y:.3f}, {z:.3f})")
 

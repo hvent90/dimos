@@ -20,6 +20,9 @@ from typing import Protocol
 
 from dimos.agents.skill_result import SkillResult
 from dimos.manipulation.skill_errors import ManipulationSkillError
+from dimos.msgs.geometry_msgs.Pose import Pose
+from dimos.msgs.geometry_msgs.PoseArray import PoseArray
+from dimos.msgs.sensor_msgs.PointCloud2 import PointCloud2
 from dimos.spec.utils import Spec
 
 
@@ -38,3 +41,28 @@ class ManipulationControlSpec(Spec, Protocol):
     def close_gripper(
         self, robot_name: str | None = None
     ) -> SkillResult[ManipulationSkillError]: ...
+    def reset(self) -> SkillResult[ManipulationSkillError]: ...
+    def set_gripper(
+        self, position: float, robot_name: str | None = None
+    ) -> SkillResult[ManipulationSkillError]: ...
+    def get_ee_pose(self, robot_name: str | None = None) -> Pose | None: ...
+    def plan_to_pose(self, pose: Pose, robot_name: str | None = None) -> bool: ...
+    def move_to_pose(
+        self,
+        x: float,
+        y: float,
+        z: float,
+        roll: float | None = None,
+        pitch: float | None = None,
+        yaw: float | None = None,
+        robot_name: str | None = None,
+    ) -> SkillResult[ManipulationSkillError]: ...
+    def go_home(self, robot_name: str | None = None) -> SkillResult[ManipulationSkillError]: ...
+
+
+class AgenticGraspGenSpec(Spec, Protocol):
+    def generate_grasps(
+        self,
+        pointcloud: PointCloud2,
+        scene_pointcloud: PointCloud2 | None = None,
+    ) -> PoseArray | None: ...

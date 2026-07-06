@@ -698,6 +698,54 @@ class TestExecute:
         mock_client.rpc.call_sync.assert_called_once()
         mock_client.task_invoke.assert_not_called()
 
+    def test_final_trajectory_target_uses_local_names_and_holds_unselected_joints(
+        self, robot_config
+    ):
+        """Final endpoint for convergence wait is local and preserves uncommanded joints."""
+        module = _make_module_with_monitor(robot_config)
+        module._world_monitor.get_current_joint_state.side_effect = None
+        module._world_monitor.get_current_joint_state.return_value = JointState(
+            name=["joint1", "joint2", "joint3"], position=[9.0, 8.0, 7.0]
+        )
+        module._last_trajectory = _successful_generated_trajectory()
+
+        target = module._final_trajectory_target_for_robot("test_arm")
+
+        assert target is not None
+        assert target.name == ["joint1", "joint2", "joint3"]
+        assert target.position == pytest.approx([0.3, 0.4, 7.0])
+
+    def test_wait_for_execution_convergence_polls_until_joints_reach_target(self, robot_config):
+        """Convergence wait uses live joint state, not only coordinator task completion."""
+        module = _make_module_with_monitor(robot_config)
+        module.config.execution_settle_timeout = 0.1
+        module.config.execution_joint_tolerance = 0.03
+        module.config.execution_poll_interval = 0.001
+        module._last_trajectory = _successful_generated_trajectory()
+        module._world_monitor.get_current_joint_state.side_effect = None
+        module._world_monitor.get_current_joint_state.side_effect = [
+            JointState(name=["joint1", "joint2", "joint3"], position=[9.0, 8.0, 7.0]),
+            JointState(name=["joint1", "joint2", "joint3"], position=[0.32, 0.42, 7.01]),
+        ]
+
+        assert module._wait_for_execution_convergence("test_arm") is True
+
+    def test_wait_for_execution_convergence_reports_timeout_when_joints_do_not_settle(
+        self, robot_config
+    ):
+        """Sequential skills fail fast when the robot never reaches the trajectory endpoint."""
+        module = _make_module_with_monitor(robot_config)
+        module.config.execution_settle_timeout = 0.001
+        module.config.execution_joint_tolerance = 0.03
+        module.config.execution_poll_interval = 0.001
+        module._last_trajectory = _successful_generated_trajectory()
+        module._world_monitor.get_current_joint_state.side_effect = None
+        module._world_monitor.get_current_joint_state.return_value = JointState(
+            name=["joint1", "joint2", "joint3"], position=[9.0, 8.0, 7.0]
+        )
+
+        assert module._wait_for_execution_convergence("test_arm") is False
+
 
 def _make_module_with_monitor(*configs: RobotModelConfig) -> ManipulationModule:
     """Create a ManipulationModule with a mocked world monitor and robots configured."""
