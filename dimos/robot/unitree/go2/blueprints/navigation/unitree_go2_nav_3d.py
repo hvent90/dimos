@@ -78,11 +78,11 @@ def _render_path(msg: Any) -> Any:
 
 
 def _static_robot_body(rr: Any) -> list[Any]:
-    """Go2-shaped box on pointlio's body frame, counter-rotated for the lidar pitch."""
+    """Go2-shaped box on pointlio's sensor frame, counter-rotated for the lidar pitch."""
     return [
         rr.Boxes3D(half_sizes=[0.35, 0.155, 0.2], colors=[(0, 255, 127)]),
         rr.Transform3D(
-            parent_frame="tf#/body",
+            parent_frame="tf#/mid360_link",
             rotation=rr.RotationAxisAngle(axis=(0, 1, 0), degrees=-math.degrees(MID360_PITCH_DOWN)),
         ),
     ]
@@ -109,7 +109,7 @@ def _static_body_axes(rr: Any) -> Any:
 
 def _static_sensor_axes(rr: Any) -> list[Any]:
     """XYZ triad on pointlio's raw sensor frame, tilted by the lidar pitch."""
-    return [_axis_triad(rr), rr.Transform3D(parent_frame="tf#/body")]
+    return [_axis_triad(rr), rr.Transform3D(parent_frame="tf#/mid360_link")]
 
 
 _nav_rerun_config = {
@@ -123,9 +123,9 @@ _nav_rerun_config = {
     # Ring buffer replayed to a connecting viewer. Small so connect catches up fast.
     "memory_limit": "64MB",
     # base_link tf comes from the go2 internal odometry, which is not the map
-    # frame. Anchor the robot box to pointlio's body frame instead and hide the
-    # camera frustum that rides base_link. The box lives on its own entity:
-    # a static transform on world/tf/body itself would override the live tf.
+    # frame. Anchor the robot box to pointlio's mid360_link frame instead and hide
+    # the camera frustum that rides base_link. The box lives on its own entity:
+    # a static transform on world/tf/mid360_link itself would override the live tf.
     "static": {
         "world/robot_body": _static_robot_body,
         "world/robot_body/axes": _static_body_axes,
@@ -147,13 +147,15 @@ _nav_rerun_config = {
 unitree_go2_nav_3d = autoconnect(
     vis_module(viewer_backend=global_config.viewer, rerun_config=_nav_rerun_config),
     # "mcf" for stair traversal
-    GO2Connection.blueprint(lidar=False, camera=False, motion_mode="mcf").remappings(
+    GO2Connection.blueprint(
+        lidar=False, camera=False, motion_mode="mcf", odom_frame_id="go2_odom"
+    ).remappings(
         [
             (GO2Connection, "lidar", "lidar_l1"),
             (GO2Connection, "odom", "odom_go2"),
         ]
     ),
-    PointLio.blueprint(child_frame_id="body"),
+    PointLio.blueprint(),
     # Level pointlio's tilted-sensor odometry into the body frame so the follower
     # steers on a true heading. The ray tracer keeps the raw sensor odometry.
     OdomBodyFrame.blueprint(mount_rotation=_sensor_mount_rotation),
