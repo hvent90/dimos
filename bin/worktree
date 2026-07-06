@@ -6,9 +6,12 @@
 #   bin/worktree new --dir ../path <branch>   # override the worktree directory
 #   bin/worktree ls                       # list worktrees (branch = value for rm)
 #   bin/worktree rm <branch|dir> [-b]     # remove a worktree (-b also deletes the branch)
+#   bin/worktree provision [dir]          # (re)provision an existing worktree in place
 #
-# `new` (aka create/add) provisions the worktree so mypy/pytest/pre-commit work
-# out of the box (uv venv + `uv sync --all-groups`, `.envrc` symlink, direnv allow).
+# `new` provisions the worktree so mypy/pytest/pre-commit work out of the box
+# (uv venv + `uv sync --all-groups`, `.envrc` symlink, direnv allow) by calling
+# `provision` — which is idempotent, so you can also run it on a bare tree
+# (e.g. a plain `git worktree add`) to set it up after the fact.
 #
 # Examples:
 #   bin/worktree new feat/ivan/foo        # new branch off current HEAD -> ../dimos-foo
@@ -21,7 +24,7 @@ set -euo pipefail
 REPO_ROOT=$(git rev-parse --path-format=absolute --git-common-dir)
 REPO_ROOT=$(cd "$(dirname "$REPO_ROOT")" && pwd)   # main worktree root
 
-usage() { sed -n '2,18p' "$0" | sed 's/^# \{0,1\}//'; }
+usage() { sed -n '2,21p' "$0" | sed 's/^# \{0,1\}//'; }
 
 # Default worktree dir for a branch: ../dimos-<last path component>, sanitized.
 default_dir() {
@@ -125,6 +128,23 @@ cmd_add() {
         GIT_LFS_SKIP_SMUDGE=1 git worktree add -b "$BRANCH" "$DIR" "${BASE:-HEAD}"
     fi
 
+    cmd_provision "$DIR"
+}
+
+cmd_provision() {
+    # Provision an EXISTING worktree in place so mypy/pytest/pre-commit work out
+    # of the box: .envrc symlink + uv venv + `uv sync --all-groups` + direnv
+    # allow. Idempotent, so it's safe to re-run and `new` calls it after adding
+    # the tree; you can also point it at a bare `git worktree add` dir to set it
+    # up after the fact. Defaults to the current directory.
+    local DIR="${1:-.}" resolved=""
+    # realpath -m (resolve non-existent paths) is GNU-only; fall back for BSD/macOS.
+    if resolved=$(realpath -m "$DIR" 2>/dev/null); then
+        DIR=$resolved
+    else
+        DIR=$(cd "$(dirname "$DIR")" && echo "$PWD/$(basename "$DIR")")
+    fi
+    [[ -d "$DIR" ]] || { echo "not a directory: $DIR" >&2; exit 1; }
     cd "$DIR"
 
     # Per-worktree env (.envrc is gitignored, so each worktree needs its own).
@@ -161,5 +181,6 @@ case "${1:-}" in
     ls|list) shift; cmd_ls "$@" ;;
     rm|remove) shift; cmd_rm "$@" ;;
     new|create|add) shift; cmd_add "$@" ;;
+    provision) shift; cmd_provision "$@" ;;
     *) echo "unknown command: $1 (did you mean 'new'?)" >&2; echo >&2; usage >&2; exit 1 ;;
 esac
