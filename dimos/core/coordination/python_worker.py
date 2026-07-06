@@ -386,6 +386,11 @@ def _handle_request(request: Any, state: _WorkerState) -> WorkerResponse:
             implementation_path=implementation_path,
             runtime_name=runtime_name,
         ):
+            # Always use the same transport backend as the host.
+            host_config = kwargs.get("g")
+            if host_config is not None:
+                global_config.update(transport=host_config.transport)
+
             deployment_class = _resolve_deployment_class(
                 module_class,
                 implementation_path=implementation_path,

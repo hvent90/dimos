@@ -1,11 +1,13 @@
-# Concepts
+---
+title: "Concepts"
+---
 
 This page explains general concepts.
 
 ## Table of Contents
 
 - [Modules](/docs/usage/modules.md): The primary units of deployment in DimOS, modules run in parallel and are python classes.
-- [Streams](/docs/usage/sensor_streams/README.md): How modules communicate, a Pub / Sub system.
+- [Streams](/docs/usage/sensor_streams/index.md): How modules communicate, a Pub / Sub system.
 - [Blueprints](/docs/usage/blueprints.md): a way to group modules together and define their connections to each other.
 - [Runtime Environments](/docs/usage/runtime_environments.md): place Python modules in registered Runtime Projects with locked worker dependencies.
 - [RPC](/docs/usage/blueprints.md#calling-the-methods-of-other-modules): how one module can call a method on another module (arguments get serialized to JSON-like binary data).
