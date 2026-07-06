@@ -38,7 +38,7 @@ from dimos.core.coordination.worker_manager_python import WorkerManagerPython
 from dimos.core.core import rpc
 from dimos.core.global_config import GlobalConfig
 from dimos.core.module import Module
-from dimos.core.runtime_environment import PythonVenvRuntimeEnvironment, RuntimePlacement
+from dimos.core.runtime_environment import PythonProjectRuntimeEnvironment, RuntimePlacement
 from dimos.core.stream import In, Out
 from dimos.msgs.sensor_msgs.Image import Image
 from dimos.spec.utils import Spec
@@ -279,7 +279,7 @@ def test_deploy_parallel_routes_runtime_and_default_managers() -> None:
     runtime_manager = _FakeManager("python:runtime-a", calls)
     coordinator._managers = {"python": default_manager}
     coordinator._started = True
-    runtime = PythonVenvRuntimeEnvironment(name="runtime-a", python_executable="/usr/bin/python3")
+    runtime = PythonProjectRuntimeEnvironment(name="runtime-a", project="/tmp/runtime-a")
     placement = RuntimePlacement(
         runtime="runtime-a",
         implementation="dimos.core.coordination.test_module_coordinator.RuntimeModuleA",
@@ -314,7 +314,7 @@ def test_failed_runtime_deployment_cleans_up_manager_and_placement_state() -> No
     coordinator = ModuleCoordinator(g=GlobalConfig(n_workers=1, viewer="none"))
     coordinator._managers = {"python": _FakeManager("python", calls)}
     coordinator._started = True
-    runtime = PythonVenvRuntimeEnvironment(name="runtime-a", python_executable="/usr/bin/python3")
+    runtime = PythonProjectRuntimeEnvironment(name="runtime-a", project="/tmp/runtime-a")
     placement = RuntimePlacement(runtime="runtime-a", implementation="impl.RuntimeModuleA")
     failing_manager = _FakeManager("python:runtime-a", calls, fail=True)
     previous_registry = coordinator._runtime_environment_registry
@@ -342,7 +342,7 @@ def test_failed_runtime_deployment_rolls_back_existing_manager_successes() -> No
     failing_runtime_manager = _FakeManager("python:runtime-a", calls, fail=True, fail_delay=0.05)
     coordinator._managers = {"python": default_manager, "python:runtime-a": failing_runtime_manager}
     coordinator._started = True
-    runtime = PythonVenvRuntimeEnvironment(name="runtime-a", python_executable="/usr/bin/python3")
+    runtime = PythonProjectRuntimeEnvironment(name="runtime-a", project="/tmp/runtime-a")
     placement = RuntimePlacement(runtime="runtime-a", implementation="impl.RuntimeModuleA")
     previous_registry = coordinator._runtime_environment_registry
 
@@ -370,7 +370,7 @@ def test_runtime_deployment_restores_state_when_rollback_cleanup_fails() -> None
     failing_runtime_manager = _FakeManager("python:runtime-a", calls, fail=True, fail_delay=0.05)
     coordinator._managers = {"python": default_manager, "python:runtime-a": failing_runtime_manager}
     coordinator._started = True
-    runtime = PythonVenvRuntimeEnvironment(name="runtime-a", python_executable="/usr/bin/python3")
+    runtime = PythonProjectRuntimeEnvironment(name="runtime-a", project="/tmp/runtime-a")
     placement = RuntimePlacement(runtime="runtime-a", implementation="impl.RuntimeModuleA")
     previous_registry = coordinator._runtime_environment_registry
     previous_placements = dict(coordinator._runtime_placement_map)
@@ -396,7 +396,7 @@ def test_runtime_deployment_restores_state_when_new_manager_stop_fails() -> None
     coordinator = ModuleCoordinator(g=GlobalConfig(n_workers=1, viewer="none"))
     coordinator._managers = {"python": _FakeManager("python", calls)}
     coordinator._started = True
-    runtime = PythonVenvRuntimeEnvironment(name="runtime-a", python_executable="/usr/bin/python3")
+    runtime = PythonProjectRuntimeEnvironment(name="runtime-a", project="/tmp/runtime-a")
     placement = RuntimePlacement(runtime="runtime-a", implementation="impl.RuntimeModuleA")
     failing_manager = _FakeManager("python:runtime-a", calls, fail=True, fail_stop=True)
     previous_registry = coordinator._runtime_environment_registry
@@ -433,7 +433,7 @@ def test_load_blueprint_reconciles_before_runtime_manager_launch(monkeypatch) ->
         lambda _runtime: _FakeManager("python:runtime-a", calls)
     )
 
-    runtime = PythonVenvRuntimeEnvironment(name="runtime-a", python_executable="/usr/bin/python3")
+    runtime = PythonProjectRuntimeEnvironment(name="runtime-a", project="/tmp/runtime-a")
     placement = RuntimePlacement(runtime="runtime-a", implementation="impl.RuntimeModuleA")
     blueprint = (
         RuntimeModuleA.blueprint()

@@ -24,7 +24,7 @@ import threading
 from typing import TYPE_CHECKING, Any, NamedTuple, cast
 
 from dimos.core.coordination.coordinator_rpc import CoordinatorRPC
-from dimos.core.coordination.worker_launcher import CommandWorkerLauncher, VenvWorkerLauncher
+from dimos.core.coordination.worker_launcher import CommandWorkerLauncher
 from dimos.core.coordination.worker_manager import WorkerManager
 from dimos.core.coordination.worker_manager_python import WorkerManagerPython
 from dimos.core.global_config import GlobalConfig, global_config
@@ -79,7 +79,7 @@ class ModuleCoordinator(Resource):
         self._transport_registry: dict[tuple[str, type], PubSubTransport[Any]] = {}
         self._class_aliases: dict[type[ModuleBase], type[ModuleBase]] = {}
         self._module_transports: dict[type[ModuleBase], dict[str, PubSubTransport[Any]]] = {}
-        self._runtime_environment_registry = RuntimeEnvironmentRegistry.with_current_process()
+        self._runtime_environment_registry = RuntimeEnvironmentRegistry()
         self._runtime_placement_map: dict[type[ModuleBase], RuntimePlacement] = {}
         self._module_manager_keys: dict[type[ModuleBase], str] = {}
         self._started = False
@@ -317,15 +317,11 @@ class ModuleCoordinator(Resource):
         self._managers[manager_key] = self._create_runtime_manager(runtime)
 
     def _create_runtime_manager(self, runtime: RuntimeEnvironment) -> WorkerManagerPython:
-        if isinstance(runtime, PythonProjectRuntimeEnvironment):
-            launcher = CommandWorkerLauncher(runtime.resolve_python_project())
-        else:
-            material = runtime.resolve_python()
-            launcher = VenvWorkerLauncher(
-                material.python_executable,
-                dict(material.env),
-                runtime_name=runtime.name,
+        if not isinstance(runtime, PythonProjectRuntimeEnvironment):
+            raise ValueError(
+                f"Runtime environment {runtime.name!r} must be a Python Runtime Project"
             )
+        launcher = CommandWorkerLauncher(runtime.resolve_python_project())
         manager = WorkerManagerPython(g=self._global_config, worker_launcher=launcher)
         if self._started:
             manager.start()

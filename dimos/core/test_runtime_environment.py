@@ -14,45 +14,33 @@
 from __future__ import annotations
 
 from pathlib import Path
-import sys
 
 import pytest
 
 from dimos.core.runtime_environment import (
-    CurrentProcessRuntimeEnvironment,
     MissingPreparedPythonProjectError,
     MissingPythonProjectFileError,
     MissingPythonProjectLockfileError,
     PythonProjectRuntimeEnvironment,
-    PythonVenvRuntimeEnvironment,
     RuntimeEnvironmentRegistrationError,
     RuntimeEnvironmentRegistry,
     UnknownRuntimeEnvironmentError,
 )
 
 
-def test_registry_with_current_process_resolves_sys_executable() -> None:
-    registry = RuntimeEnvironmentRegistry.with_current_process()
-
-    runtime = registry.resolve("current")
-
-    assert isinstance(runtime, CurrentProcessRuntimeEnvironment)
-    assert runtime.resolve_python().python_executable == Path(sys.executable)
-
-
 def test_register_and_merge_reject_duplicate_names() -> None:
-    registry = RuntimeEnvironmentRegistry.with_current_process()
+    registry = RuntimeEnvironmentRegistry()
+    runtime = PythonProjectRuntimeEnvironment(name="project", project="/tmp/project")
 
-    with pytest.raises(RuntimeEnvironmentRegistrationError, match="already registered"):
-        registry.register(CurrentProcessRuntimeEnvironment())
+    registry = registry.register(runtime)
 
     conflicting_current = RuntimeEnvironmentRegistry(
-        {"current": PythonVenvRuntimeEnvironment(name="current", python_executable=sys.executable)}
+        {"project": PythonProjectRuntimeEnvironment(name="project", project="/tmp/other")}
     )
     with pytest.raises(RuntimeEnvironmentRegistrationError, match="registered more than once"):
         registry.merge(conflicting_current)
 
-    assert registry.merge(RuntimeEnvironmentRegistry.with_current_process()) == registry
+    assert registry.merge(RuntimeEnvironmentRegistry({"project": runtime})) == registry
 
 
 def test_duplicate_python_project_runtime_environment_project_path_rejected(tmp_path: Path) -> None:
@@ -64,9 +52,9 @@ def test_duplicate_python_project_runtime_environment_project_path_rejected(tmp_
 
 
 def test_unknown_runtime_error_lists_known_runtime_names() -> None:
-    registry = RuntimeEnvironmentRegistry.with_current_process()
+    registry = RuntimeEnvironmentRegistry()
 
-    with pytest.raises(UnknownRuntimeEnvironmentError, match="Known runtimes: current"):
+    with pytest.raises(UnknownRuntimeEnvironmentError, match="Known runtimes: <none>"):
         registry.resolve("missing")
 
 

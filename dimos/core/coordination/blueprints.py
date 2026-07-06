@@ -167,7 +167,7 @@ class Blueprint:
         field(default_factory=lambda: MappingProxyType({}))
     )
     runtime_environment_registry: RuntimeEnvironmentRegistry = field(
-        default_factory=RuntimeEnvironmentRegistry.with_current_process
+        default_factory=RuntimeEnvironmentRegistry
     )
     runtime_placement_map: Mapping[type[ModuleBase], RuntimePlacement] = field(
         default_factory=lambda: MappingProxyType({})
@@ -265,7 +265,7 @@ def autoconnect(*blueprints: Blueprint) -> Blueprint:
     all_remappings = dict(  # type: ignore[var-annotated]
         reduce(operator.iadd, [list(x.remapping_map.items()) for x in blueprints], [])
     )
-    runtime_environment_registry = RuntimeEnvironmentRegistry.with_current_process()
+    runtime_environment_registry = RuntimeEnvironmentRegistry()
     for blueprint in blueprints:
         runtime_environment_registry = runtime_environment_registry.merge(
             blueprint.runtime_environment_registry

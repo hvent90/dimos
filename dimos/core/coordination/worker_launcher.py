@@ -116,41 +116,6 @@ class SubprocessWorkerProcessHandle(WorkerProcessHandle):
         self._process.terminate()
 
 
-class VenvWorkerLauncher(WorkerLauncher):
-    def __init__(
-        self,
-        python_executable: Path,
-        env: dict[str, str] | None = None,
-        *,
-        runtime_name: str = "",
-        startup_timeout: float = 10.0,
-    ) -> None:
-        self._python_executable = python_executable
-        self._env = env or {}
-        self._runtime_name = runtime_name
-        self._startup_timeout = startup_timeout
-
-    def launch(self, worker_id: int) -> WorkerProcessHandle:
-        executable = self._python_executable
-        if not executable.exists():
-            raise WorkerLaunchError(
-                f"Runtime {self._runtime_name!r} Python executable does not exist: {executable}"
-            )
-        if not os.access(executable, os.X_OK):
-            raise WorkerLaunchError(
-                f"Runtime {self._runtime_name!r} Python executable is not executable: {executable}"
-            )
-        return _launch_subprocess_worker(
-            argv=(str(executable), "-m", "dimos.core.coordination.venv_worker_entrypoint"),
-            env=self._env,
-            cwd=None,
-            worker_id=worker_id,
-            runtime_name=self._runtime_name,
-            startup_timeout=self._startup_timeout,
-            terminate_process_group=False,
-        )
-
-
 class CommandWorkerLauncher(WorkerLauncher):
     def __init__(
         self,

@@ -35,7 +35,7 @@ from dimos.core.coordination.blueprints import (
 )
 from dimos.core.core import rpc
 from dimos.core.module import Module
-from dimos.core.runtime_environment import PythonVenvRuntimeEnvironment, RuntimePlacement
+from dimos.core.runtime_environment import PythonProjectRuntimeEnvironment, RuntimePlacement
 from dimos.core.stream import In, Out
 from dimos.core.transport import LCMTransport
 from dimos.spec.utils import Spec
@@ -255,7 +255,7 @@ def test_active_blueprints_filters_disabled() -> None:
 
 
 def test_runtime_environment_and_placement_api_composes_with_autoconnect() -> None:
-    runtime = PythonVenvRuntimeEnvironment(name="runtime-a", python_executable="/usr/bin/python3")
+    runtime = PythonProjectRuntimeEnvironment(name="runtime-a", project="/tmp/runtime-a")
     placement = RuntimePlacement(
         runtime="runtime-a",
         implementation="example_runtime_impl.ModuleAImpl",
@@ -271,7 +271,7 @@ def test_runtime_environment_and_placement_api_composes_with_autoconnect() -> No
 
 
 def test_runtime_placement_rejects_unknown_or_non_member_module() -> None:
-    runtime = PythonVenvRuntimeEnvironment(name="runtime-a", python_executable="/usr/bin/python3")
+    runtime = PythonProjectRuntimeEnvironment(name="runtime-a", project="/tmp/runtime-a")
     blueprint = ModuleA.blueprint().runtime_environments(runtime)
 
     with pytest.raises(ValueError, match="does not match a blueprint module"):
@@ -301,9 +301,7 @@ def test_autoconnect_allows_disabled_placement_with_unknown_runtime() -> None:
 
 
 def test_autoconnect_filters_placements_for_replaced_duplicate_modules() -> None:
-    old_runtime = PythonVenvRuntimeEnvironment(
-        name="old-runtime", python_executable="/usr/bin/python3"
-    )
+    old_runtime = PythonProjectRuntimeEnvironment(name="old-runtime", project="/tmp/old-runtime")
     old = (
         ModuleA.blueprint(key1="old")
         .runtime_environments(old_runtime)

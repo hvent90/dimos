@@ -1,7 +1,7 @@
 ## 1. Runtime model and reconciliation
 
-- [x] 1.1 Add runtime environment model types for current Python, direct venv Python, and package-local Python Runtime Projects.
-- [x] 1.2 Add runtime launch material types for direct Python executables and toolchain-backed Runtime Projects.
+- [x] 1.1 Add runtime environment model types for deterministic package-local Python Runtime Projects.
+- [x] 1.2 Add runtime launch material types for toolchain-backed Runtime Projects.
 - [x] 1.3 Implement Runtime Environment Registration validation, including unknown runtime lookup errors and duplicate Runtime Project path rejection during registration/merge.
 - [x] 1.4 Implement Runtime Reconciliation plans for active placed Runtime Projects only.
 - [x] 1.5 Implement locked, non-mutating uv reconciliation that may update `.venv/` and caches but must not rewrite source-controlled project files.

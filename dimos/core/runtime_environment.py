@@ -15,15 +15,7 @@ from __future__ import annotations
 
 from collections.abc import Iterable, Mapping
 from dataclasses import dataclass, field
-import os
 from pathlib import Path
-import sys
-
-
-@dataclass(frozen=True)
-class PythonLaunchMaterial:
-    python_executable: Path
-    env: Mapping[str, str] = field(default_factory=dict)
 
 
 @dataclass(frozen=True)
@@ -85,9 +77,6 @@ class MissingPreparedPythonProjectError(PythonProjectRuntimeEnvironmentError):
 class RuntimeEnvironment:
     name: str
 
-    def resolve_python(self) -> PythonLaunchMaterial:
-        raise RuntimeEnvironmentError(f"Runtime environment {self.name!r} cannot launch Python")
-
     def resolve_python_project(self) -> PythonProjectLaunchMaterial:
         raise RuntimeEnvironmentError(
             f"Runtime environment {self.name!r} is not a Python Runtime Project"
@@ -96,28 +85,6 @@ class RuntimeEnvironment:
     @property
     def project_path(self) -> Path | None:
         return None
-
-
-@dataclass(frozen=True)
-class CurrentProcessRuntimeEnvironment(RuntimeEnvironment):
-    name: str = "current"
-    env: Mapping[str, str] = field(default_factory=lambda: dict(os.environ))
-
-    def resolve_python(self) -> PythonLaunchMaterial:
-        return PythonLaunchMaterial(python_executable=Path(sys.executable), env=dict(self.env))
-
-
-@dataclass(frozen=True)
-class PythonVenvRuntimeEnvironment(RuntimeEnvironment):
-    name: str
-    python_executable: Path | str
-    env: Mapping[str, str] = field(default_factory=dict)
-
-    def resolve_python(self) -> PythonLaunchMaterial:
-        return PythonLaunchMaterial(
-            python_executable=Path(self.python_executable).expanduser().resolve(),
-            env=dict(self.env),
-        )
 
 
 @dataclass(frozen=True)
@@ -198,10 +165,6 @@ class PythonProjectRuntimeEnvironment(RuntimeEnvironment):
 class RuntimeEnvironmentRegistry:
     environments: Mapping[str, RuntimeEnvironment] = field(default_factory=dict)
 
-    @classmethod
-    def with_current_process(cls) -> RuntimeEnvironmentRegistry:
-        return cls({"current": CurrentProcessRuntimeEnvironment()})
-
     def register(self, *environments: RuntimeEnvironment) -> RuntimeEnvironmentRegistry:
         merged = dict(self.environments)
         for environment in environments:
@@ -217,10 +180,6 @@ class RuntimeEnvironmentRegistry:
         merged = dict(self.environments)
         for name, environment in other.environments.items():
             if name in merged:
-                if isinstance(merged[name], CurrentProcessRuntimeEnvironment) and isinstance(
-                    environment, CurrentProcessRuntimeEnvironment
-                ):
-                    continue
                 if merged[name] != environment:
                     raise RuntimeEnvironmentRegistrationError(
                         f"Runtime environment {name!r} is registered more than once"

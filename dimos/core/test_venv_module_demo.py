@@ -22,7 +22,7 @@ import sys
 
 import pytest
 
-from dimos.core.coordination.worker_launcher import CommandWorkerLauncher, VenvWorkerLauncher
+from dimos.core.coordination.worker_launcher import CommandWorkerLauncher
 from dimos.core.coordination.worker_manager_python import WorkerManagerPython
 from dimos.core.global_config import GlobalConfig, global_config
 from dimos.core.runtime_environment import PythonProjectRuntimeEnvironment, RuntimePlacement
@@ -54,42 +54,6 @@ def test_demo_runtime_project_contract_import_does_not_import_runtime(monkeypatc
         blueprint_module.DemoWorkerModule
     ]
     assert placement.implementation == "dimos_demo_worker_module.runtime.DemoWorkerRuntimeModule"
-
-
-@pytest.mark.skipif_macos_bug
-def test_demo_runtime_module_executes_through_runtime_worker_rpc(monkeypatch) -> None:
-    monkeypatch.syspath_prepend(str(EXAMPLE_SRC))
-    contract_module = importlib.import_module("dimos_demo_worker_module.contract")
-    demo_contract = contract_module.DemoWorkerModule
-    placement = RuntimePlacement(
-        runtime="demo-worker-test-runtime",
-        implementation="dimos_demo_worker_module.runtime.DemoWorkerRuntimeModule",
-    )
-    launcher = VenvWorkerLauncher(
-        Path(sys.executable),
-        env={"PYTHONPATH": _example_pythonpath()},
-        runtime_name=placement.runtime,
-    )
-    manager = WorkerManagerPython(
-        g=GlobalConfig(n_workers=1, viewer="none"),
-        worker_launcher=launcher,
-    )
-    module = None
-
-    try:
-        manager.start()
-        module = manager.deploy(
-            demo_contract,
-            global_config,
-            {},
-            runtime_placement=placement,
-        )
-        transform = module.transform
-        assert transform(" hello ") == "demo-runtime:HELLO"
-    finally:
-        if module is not None:
-            module.stop()
-        manager.stop()
 
 
 @pytest.mark.skipif_macos_bug
