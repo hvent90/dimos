@@ -136,8 +136,6 @@ class LocationConstraint(Timestamped):
                 )
             self.covariance = list(covariance)
 
-    # ---- scalar-confidence bridge (MultiMap gating, simple producers) ---------
-
     @classmethod
     def from_confidence(
         cls,
@@ -183,8 +181,6 @@ class LocationConstraint(Timestamped):
         """
         diagonal = [self.covariance[axis * 6 + axis] for axis in range(6)]
         return variance_to_confidence(sum(diagonal) / len(diagonal))
-
-    # ---- wire format -----------------------------------------------------------
 
     def lcm_encode(self) -> bytes:
         parts: list[bytes] = [struct.pack(">d", self.ts)]
