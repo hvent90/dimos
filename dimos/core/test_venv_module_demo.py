@@ -43,24 +43,8 @@ def _example_pythonpath() -> str:
     return os.pathsep.join(paths)
 
 
-def test_demo_runtime_project_contract_import_does_not_import_runtime(monkeypatch) -> None:
-    monkeypatch.syspath_prepend(str(EXAMPLE_SRC))
-    sys.modules.pop("dimos_demo_worker_module.blueprint", None)
-    sys.modules.pop("dimos_demo_worker_module.contract", None)
-    sys.modules.pop("dimos_demo_worker_module.runtime", None)
-
-    blueprint_module = importlib.import_module("dimos_demo_worker_module.blueprint")
-
-    assert "dimos_demo_worker_module.contract" in sys.modules
-    assert "dimos_demo_worker_module.runtime" not in sys.modules
-    placement = blueprint_module.demo_worker_runtime_blueprint.runtime_placement_map[
-        blueprint_module.DemoWorkerModule
-    ]
-    assert placement.implementation == "dimos_demo_worker_module.runtime.DemoWorkerRuntimeModule"
-
-
-@pytest.mark.skipif_macos_bug
-def test_demo_runtime_project_executes_with_project_worker(monkeypatch) -> None:
+@pytest.fixture
+def demo_runtime_worker(monkeypatch):
     monkeypatch.syspath_prepend(str(EXAMPLE_SRC))
     contract_module = importlib.import_module("dimos_demo_worker_module.contract")
     demo_contract = contract_module.DemoWorkerModule
@@ -85,21 +69,39 @@ def test_demo_runtime_project_executes_with_project_worker(monkeypatch) -> None:
         g=GlobalConfig(n_workers=1, viewer="none"),
     )
     manager.register_runtime_environments(RuntimeEnvironmentRegistry().register(runtime))
-    module = None
-
+    manager.start()
+    module = manager.deploy(
+        demo_contract,
+        global_config,
+        {},
+        runtime_placement=placement,
+    )
     try:
-        manager.start()
-        module = manager.deploy(
-            demo_contract,
-            global_config,
-            {},
-            runtime_placement=placement,
-        )
-        runtime_python = module.runtime_python()
-        runtime_dependency_label = module.runtime_dependency_label
-        assert str(EXAMPLE_ROOT / ".venv") in runtime_python
-        assert runtime_dependency_label() == "RuntimeDependency"
+        yield module
     finally:
-        if module is not None:
-            module.stop()
+        module.stop()
         manager.stop()
+
+
+def test_demo_runtime_project_contract_import_does_not_import_runtime(monkeypatch) -> None:
+    monkeypatch.syspath_prepend(str(EXAMPLE_SRC))
+    monkeypatch.delitem(sys.modules, "dimos_demo_worker_module.blueprint", raising=False)
+    monkeypatch.delitem(sys.modules, "dimos_demo_worker_module.contract", raising=False)
+    monkeypatch.delitem(sys.modules, "dimos_demo_worker_module.runtime", raising=False)
+
+    blueprint_module = importlib.import_module("dimos_demo_worker_module.blueprint")
+
+    assert "dimos_demo_worker_module.contract" in sys.modules
+    assert "dimos_demo_worker_module.runtime" not in sys.modules
+    placement = blueprint_module.demo_worker_runtime_blueprint.runtime_placement_map[
+        blueprint_module.DemoWorkerModule
+    ]
+    assert placement.implementation == "dimos_demo_worker_module.runtime.DemoWorkerRuntimeModule"
+
+
+@pytest.mark.skipif_macos_bug
+def test_demo_runtime_project_executes_with_project_worker(demo_runtime_worker) -> None:
+    runtime_python = demo_runtime_worker.runtime_python()
+    runtime_dependency_label = demo_runtime_worker.runtime_dependency_label
+    assert str(EXAMPLE_ROOT / ".venv") in runtime_python
+    assert runtime_dependency_label() == "RuntimeDependency"
