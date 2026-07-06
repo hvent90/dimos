@@ -45,6 +45,7 @@ def test_roundtrip_preserves_all_fields() -> None:
         pose=_pose(1.5, -2.0, 0.3),
         covariance=cov,
         constraint_instance_id="tag5#42",
+        map="hk_village",
         ts=1781565207.5,
     )
     decoded = LocationConstraint.lcm_decode(constraint.lcm_encode())
@@ -52,6 +53,7 @@ def test_roundtrip_preserves_all_fields() -> None:
     assert decoded.to_id == "apriltag://36h11/40cm/5"
     assert decoded.frame_id == "base_link"
     assert decoded.constraint_instance_id == "tag5#42"
+    assert decoded.map == "hk_village"
     assert decoded.ts == constraint.ts
     assert decoded.pose.position.x == 1.5
     assert decoded.pose.position.y == -2.0
@@ -64,6 +66,7 @@ def test_defaults() -> None:
     assert constraint.to_id == ""
     assert constraint.frame_id == ""
     assert constraint.constraint_instance_id == ""
+    assert constraint.map == ""
     assert constraint.ts > 0  # auto-stamped
     # Default covariance is a non-degenerate identity (unit variance per DOF).
     assert constraint.covariance[0] == 1.0 and constraint.covariance[35] == 1.0

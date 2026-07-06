@@ -36,6 +36,9 @@ Field meanings (mapping onto BetweenFactor):
   constraint reusing the same ``constraint_instance_id`` removes the committed
   factors carrying it, letting an external estimator do rolling outlier removal /
   revision (e.g. as a tag/GPS lock improves).
+- ``map`` names the map the ``to`` location belongs to. Empty means the current /
+  default map; a non-empty value scopes the location variable to another map so a
+  constraint can close a loop across maps (cross-map closure).
 """
 
 from __future__ import annotations
@@ -68,6 +71,7 @@ class LocationConstraint(Timestamped):
     to_id: str  # the BetweenFactor "to" (location variable id), URL-like
     frame_id: str  # the BetweenFactor "from" frame (== body frame for now)
     constraint_instance_id: str  # external instance id, for revision/removal
+    map: str  # map the "to" location belongs to ("" = current/default map)
     pose: Pose  # relative transform frame_id -> location
     covariance: list[float]  # 6x6 row-major, tangent order [rot(3), trans(3)]
 
@@ -78,12 +82,14 @@ class LocationConstraint(Timestamped):
         pose: Pose | None = None,
         covariance: list[float] | None = None,
         constraint_instance_id: str = "",
+        map: str = "",
         ts: float = 0.0,
     ) -> None:
         self.ts = ts if ts != 0 else time.time()
         self.to_id = to_id
         self.frame_id = frame_id
         self.constraint_instance_id = constraint_instance_id
+        self.map = map
         self.pose = pose if pose is not None else Pose()
         if covariance is None:
             self.covariance = _identity_covariance()
@@ -97,7 +103,7 @@ class LocationConstraint(Timestamped):
 
     def lcm_encode(self) -> bytes:
         parts: list[bytes] = [struct.pack(">d", self.ts)]
-        for text in (self.to_id, self.frame_id, self.constraint_instance_id):
+        for text in (self.to_id, self.frame_id, self.constraint_instance_id, self.map):
             encoded = text.encode("utf-8")
             parts.append(struct.pack(">I", len(encoded)))
             parts.append(encoded)
@@ -124,12 +130,12 @@ class LocationConstraint(Timestamped):
         (ts,) = struct.unpack_from(">d", buf, offset)
         offset += 8
         texts: list[str] = []
-        for _ in range(3):
+        for _ in range(4):
             (length,) = struct.unpack_from(">I", buf, offset)
             offset += 4
             texts.append(buf[offset : offset + length].decode("utf-8"))
             offset += length
-        to_id, frame_id, constraint_instance_id = texts
+        to_id, frame_id, constraint_instance_id, map_name = texts
         px, py, pz, qx, qy, qz, qw = struct.unpack_from(">7d", buf, offset)
         offset += 56
         pose = Pose()
@@ -143,5 +149,6 @@ class LocationConstraint(Timestamped):
             pose=pose,
             covariance=covariance,
             constraint_instance_id=constraint_instance_id,
+            map=map_name,
             ts=ts,
         )
