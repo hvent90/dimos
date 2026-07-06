@@ -94,7 +94,7 @@ class PathFollowerTaskConfig:
     # Used as the FIXED lookahead when lookahead_speed_scale == 0 and as the
     # initial value before the first adaptive update.
     lookahead_dist: float = 0.5
-    # --- Regulated-pure-pursuit adaptive lookahead (RPP's own knob) ---
+    # Regulated-pure-pursuit adaptive lookahead (RPP's own knob)
     # When lookahead_speed_scale > 0 the lookahead distance adapts to the
     # robot's current pursuit speed each tick:
     #     L = clip(lookahead_speed_scale * v, lookahead_min, lookahead_max)
@@ -192,9 +192,7 @@ class PathFollowerTask(BaseControlTask):
         self._velocity_profile: np.ndarray | None = None
         self._velocity_profile_pts: np.ndarray | None = None
 
-    # ------------------------------------------------------------------
     # ControlTask protocol
-    # ------------------------------------------------------------------
 
     @property
     def name(self) -> str:
@@ -313,9 +311,7 @@ class PathFollowerTask(BaseControlTask):
             logger.warning(f"PathFollowerTask '{self._name}' preempted by {by_task}")
             self._state = "aborted"
 
-    # ------------------------------------------------------------------
     # State-machine bodies (mirrors LocalPlanner._compute_*)
-    # ------------------------------------------------------------------
 
     def _step_initial_rotation(self) -> tuple[float, float, float]:
         assert self._path is not None and self._current_odom is not None
@@ -401,9 +397,7 @@ class PathFollowerTask(BaseControlTask):
         twist = self._controller.rotate(yaw_err)
         return float(twist.linear.x), float(twist.linear.y), float(twist.angular.z)
 
-    # ------------------------------------------------------------------
     # Public API (called by runner — typically over RPC from a tool)
-    # ------------------------------------------------------------------
 
     def configure(
         self,
@@ -459,7 +453,11 @@ class PathFollowerTask(BaseControlTask):
             self._config.forward_only = forward_only
         if ff_config is not _UNSET:
             self._config.ff_config = ff_config  # type: ignore[assignment]
-            self._ff = FeedforwardGainCompensator(ff_config) if ff_config is not None else None
+            self._ff = (
+                FeedforwardGainCompensator(ff_config)  # type: ignore[arg-type]
+                if ff_config is not None
+                else None
+            )
         # external_profile_cap takes precedence over velocity_profile_config.
         if external_profile_cap is not _UNSET:
             self._profile_cap = external_profile_cap  # type: ignore[assignment]
@@ -469,7 +467,7 @@ class PathFollowerTask(BaseControlTask):
         elif velocity_profile_config is not _UNSET:
             self._config.velocity_profile_config = velocity_profile_config  # type: ignore[assignment]
             self._profile_cap = (
-                PathSpeedCap(velocity_profile_config)
+                PathSpeedCap(velocity_profile_config)  # type: ignore[arg-type]
                 if velocity_profile_config is not None
                 else None
             )
@@ -542,7 +540,18 @@ class PathFollowerTask(BaseControlTask):
         ``start_path`` does. Prefers the caller-supplied ``odom``; falls back to
         ``self._current_odom`` for single-arg callers. Each call resets the
         follower onto the new path — exactly what makes pursuit robust to
-        replanning (no clock to re-sync, no re-ramp from rest)."""
+        replanning (no clock to re-sync, no re-ramp from rest).
+
+        A path with fewer than 2 poses is a nav-planner stop signal (the MLS
+        planner emits an empty ``Path`` when nothing ahead is traversable), so
+        it cancels any active follow instead of leaving the stale path armed.
+        """
+        if len(path.poses) < 2:
+            if self.cancel():
+                logger.info(
+                    f"PathFollowerTask '{self._name}': empty path — cancelled active follow"
+                )
+            return
         use_odom = odom if odom is not None else self._current_odom
         if use_odom is None:
             logger.warning(
@@ -606,12 +615,6 @@ class PathFollowerTask(BaseControlTask):
 
     def get_state(self) -> PathFollowerState:
         return self._state
-
-
-__all__ = [
-    "PathFollowerTask",
-    "PathFollowerTaskConfig",
-]
 
 
 class PathFollowerTaskParams(BaseConfig):
