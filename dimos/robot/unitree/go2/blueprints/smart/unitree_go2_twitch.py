@@ -126,5 +126,3 @@ unitree_go2_twitch = autoconnect(
     ),
     _ChoiceToCmdVel.blueprint(),
 ).global_config(n_workers=4, robot_model="unitree_go2")
-
-__all__ = ["unitree_go2_twitch"]
