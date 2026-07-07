@@ -23,7 +23,7 @@ import sys
 import threading
 from typing import TYPE_CHECKING, Any, NamedTuple, cast
 
-from dimos.core.coordination.blueprints import transport_config_name
+from dimos.core.coordination.blueprints import TransportSpec, transport_config_name
 from dimos.core.coordination.coordinator_rpc import CoordinatorRPC
 from dimos.core.coordination.worker_manager import WorkerManager
 from dimos.core.coordination.worker_manager_python import WorkerManagerPython
@@ -633,6 +633,11 @@ def _materialize_transports(
     """
     materialized: dict[tuple[str, type], Transport[Any]] = {}
     for key, spec in blueprint.transport_map.items():
+        if not isinstance(spec, TransportSpec):
+            # Plain transport instance pinned directly in the blueprint — use
+            # as-is (modulo the global lcm/zenoh backend switch).
+            materialized[key] = _coerce_transport_to_backend(spec)
+            continue
         config = None
         config_cls = spec.config_cls
         if config_cls is not None:

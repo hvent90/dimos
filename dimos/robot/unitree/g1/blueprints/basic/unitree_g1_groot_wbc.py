@@ -412,17 +412,15 @@ _coordinator = ControlCoordinator.blueprint(
     ],
 ).transports(
     {
-        ("joint_command", JointState): LCMTransport.spec("/g1/joint_command", JointState),
-        ("cmd_vel", Twist): LCMTransport.spec(_cmd_vel_topic, Twist),
+        ("joint_command", JointState): LCMTransport("/g1/joint_command", JointState),
+        ("cmd_vel", Twist): LCMTransport(_cmd_vel_topic, Twist),
         # Real-hw only: the transport_lcm adapter speaks to
         # G1WholeBodyConnection over these topics. autoconnect already
         # matches by (name, type) so sim doesn't need them -- they're
         # harmless when the sim engine doesn't expose those ports.
-        ("motor_states", JointState): LCMTransport.spec("/g1/motor_states", JointState),
-        ("imu", Imu): LCMTransport.spec("/g1/imu", Imu),
-        ("motor_command", MotorCommandArray): LCMTransport.spec(
-            "/g1/motor_command", MotorCommandArray
-        ),
+        ("motor_states", JointState): LCMTransport("/g1/motor_states", JointState),
+        ("imu", Imu): LCMTransport("/g1/imu", Imu),
+        ("motor_command", MotorCommandArray): LCMTransport("/g1/motor_command", MotorCommandArray),
     }
 )
 

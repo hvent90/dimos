@@ -85,7 +85,7 @@ unitree_go2_markers = (
     )
     .transports(
         {
-            ("detections", MarkerDetectionStreamModule): LCMTransport.spec(
+            ("detections", MarkerDetectionStreamModule): LCMTransport(
                 "/marker_detection/detections",
                 Detection3DArray,
             ),
