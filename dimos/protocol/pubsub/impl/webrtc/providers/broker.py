@@ -232,7 +232,7 @@ class BrokerProvider(AsyncProviderBase):
             self.session_id,
             self._robot_id or "(derived from API key)",
         )
-        self._hb_task = asyncio.get_running_loop().create_task(self._heartbeat_loop())
+        self._hb_task = asyncio.create_task(self._heartbeat_loop())
 
     async def _disconnect(self) -> None:
         if self._hb_task is not None:
@@ -241,7 +241,11 @@ class BrokerProvider(AsyncProviderBase):
                 await self._hb_task
             self._hb_task = None
         if self._http and self.session_id:
-            with contextlib.suppress(Exception):  # best-effort deregistration
+            import httpx
+
+            # Best-effort deregistration: swallow network errors only — a
+            # non-network exception here is a bug we want to hear about.
+            with contextlib.suppress(httpx.HTTPError):
                 await self._http.delete(
                     f"{self._broker_url}/api/v1/sessions/{self.session_id}",
                     headers=self._headers,
