@@ -27,6 +27,7 @@ from dimos.hardware.sensors.lidar.pointlio.module import PointLio
 from dimos.hardware.sensors.lidar.pointlio.recorder import PointlioRecorder
 from dimos.hardware.sensors.lidar.virtual_mid360.recorder import Mid360PcapRecorder
 from dimos.mapping.ray_tracing.module import RayTracingVoxelMap
+from dimos.msgs.geometry_msgs.PoseStamped import PoseStamped
 from dimos.navigation.basic_path_follower.module import BasicPathFollower
 from dimos.navigation.movement_manager.movement_manager import MovementManager
 from dimos.navigation.nav_3d.mls_planner.goal_relay import GoalRelay
@@ -48,6 +49,11 @@ _sensor_mount_rotation = list(base_link_from_mid360().rotation.to_tuple())
 _axis_len = 0.5
 # Arrow radius as a fraction of the triad length.
 _AXIS_RADIUS_RATIO = 25
+
+
+class Go2Mid360Recorder(PointlioRecorder):
+    lidar_l1: In[PointCloud2]
+    odom_go2: In[PoseStamped]
 
 
 # Opt-in recording: set DIMOS_NAV_RECORD=1 to capture pointlio_lidar +
@@ -196,10 +202,10 @@ unitree_go2_nav_3d = autoconnect(
 if _RECORD:
     unitree_go2_nav_3d = autoconnect(
         unitree_go2_nav_3d,
-        PointlioRecorder.blueprint(db_path=_recording_db_path()).remappings(
+        Go2Mid360Recorder.blueprint(db_path=_recording_db_path()).remappings(
             [
-                (PointlioRecorder, "pointlio_lidar", "lidar"),
-                (PointlioRecorder, "pointlio_odometry", "odometry"),
+                (Go2Mid360Recorder, "pointlio_lidar", "lidar"),
+                (Go2Mid360Recorder, "pointlio_odometry", "odometry"),
             ]
         ),
     )
