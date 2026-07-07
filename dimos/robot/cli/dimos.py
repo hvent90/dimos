@@ -14,7 +14,7 @@
 
 from __future__ import annotations
 
-from collections.abc import Iterable
+from collections.abc import Iterable, Mapping
 from contextlib import suppress
 from datetime import datetime, timezone
 import inspect
@@ -161,34 +161,60 @@ def arg_help(
     indent: str = "    ",
     module: str = "",
     _atom: BlueprintAtom | None = None,
+    _defaults: Mapping[str, object] | None = None,
 ) -> str:
     output = ""
     for k, info in config.model_fields.items():
         if k == "g":
             continue
+        if info.exclude:
+            continue
         t = info.annotation
+        d = _defaults[k] if _defaults is not None and k in _defaults else info.default
         if isinstance(t, types.GenericAlias):
             # Can't be specified on CLI
             continue
 
         # TODO(PY314): if isinstance(t, Union):
         if get_origin(t) in {Union, types.UnionType}:
-            with suppress(StopIteration):
-                t = next(u for u in get_args(t) if issubclass(u, BaseModel))
+            base_model_types = [
+                u for u in get_args(t) if inspect.isclass(u) and issubclass(u, BaseModel)
+            ]
+            if isinstance(d, Mapping) and "backend" in d:
+                backend = d["backend"]
+                with suppress(StopIteration):
+                    t = next(
+                        u
+                        for u in base_model_types
+                        if backend in get_args(u.model_fields.get("backend", info).annotation)
+                    )
+            elif isinstance(d, BaseModel):
+                with suppress(StopIteration):
+                    t = next(u for u in base_model_types if isinstance(d, u))
+            elif base_model_types:
+                t = base_model_types[0]
 
         if inspect.isclass(t) and issubclass(t, BaseModel):
             output += f"{indent}{module}{k}:\n"
-            # Find blueprint atom
-            bp = next(bp for bp in blueprint.blueprints if bp.module.name == k)
+            # Module config models have matching blueprint atoms. Nested config
+            # models (for example visualization backends) do not, so inherit the
+            # current atom and recurse into the nested defaults instead.
+            bp = next((bp for bp in blueprint.blueprints if bp.module.name == k), None)
+            defaults = bp.kwargs if bp is not None else d if isinstance(d, Mapping) else None
             output += arg_help(
-                t, blueprint, indent=indent + "  ", module=module + k + ".", _atom=bp
+                t,
+                blueprint,
+                indent=indent + "  ",
+                module=module + k + ".",
+                _atom=bp or _atom,
+                _defaults=defaults,
             )
         else:
             assert _atom is not None
             # Use __name__ to avoid "<class 'int'>" style output on basic types.
             display_type = t.__name__ if isinstance(t, type) else t
-            required = "[Required] " if info.is_required() and k not in _atom.kwargs else ""
-            d = _atom.kwargs.get(k, info.default)
+            provided = (_defaults is not None and k in _defaults) or k in _atom.kwargs
+            required = "[Required] " if info.is_required() and not provided else ""
             default = f" (default: {d})" if d is not PydanticUndefined else ""
             output += f"{indent}* {required}{module}{k}: {display_type}{default}\n"
     return output
