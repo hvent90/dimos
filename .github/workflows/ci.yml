@@ -261,12 +261,20 @@ jobs:
       # nvidia-container-toolkit installed on the runner (configured by ops);
       # without it, container start fails with `could not select device driver`.
       options: --gpus all
+      # Mount the host's X11 socket so the live Unity test (TestLiveUnity) can
+      # render on the GPU-backed Xorg the large runner runs on DISPLAY=:0.
+      # Same display self-hosted-large-tests uses (it runs on the host, so it
+      # needs no mount; this containerized job does).
+      volumes:
+        - /tmp/.X11-unix:/tmp/.X11-unix
       env:
         # `--gpus all` enables only `compute` + `utility` capabilities by
         # default. ZED SDK also pulls in libnvcuvid (video decode) and libGL
         # (graphics) at dlopen time. `all` turns on every capability the host
         # driver advertises (compute, utility, video, graphics, display).
         NVIDIA_DRIVER_CAPABILITIES: all
+        # Unity is a graphical app; point it at the host's GPU-backed X server.
+        DISPLAY: ":0"
     steps:
       - uses: actions/checkout@v5
         with:
