@@ -56,7 +56,7 @@ _STREAM_TYPES = {
     "cmd_vel_stamped": TwistStamped,
     "left_controller_output": PoseStamped,
     "right_controller_output": PoseStamped,
-    "buttons": Buttons,
+    "teleop_buttons": Buttons,
     "video_stats": VideoStats,
 }
 
@@ -211,6 +211,3 @@ def main() -> None:
 
 if __name__ == "__main__":
     main()
-
-
-__all__ = ["generate_report"]

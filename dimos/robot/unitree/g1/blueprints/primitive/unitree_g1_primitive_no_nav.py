@@ -25,7 +25,7 @@ from dimos.core.transport import LCMTransport
 from dimos.hardware.sensors.camera.module import CameraModule
 from dimos.hardware.sensors.camera.webcam import Webcam
 from dimos.hardware.sensors.camera.zed import compat as zed
-from dimos.mapping.costmapper import CostMapper, costmap_to_rerun
+from dimos.mapping.costmapper import CostMapper
 from dimos.mapping.voxels import VoxelGridMapper
 from dimos.msgs.geometry_msgs.PoseStamped import PoseStamped
 from dimos.msgs.geometry_msgs.Quaternion import Quaternion
@@ -40,6 +40,7 @@ from dimos.msgs.std_msgs.Bool import Bool
 from dimos.navigation.frontier_exploration.wavefront_frontier_goal_selector import (
     WavefrontFrontierExplorer,
 )
+from dimos.robot.unitree.g1.g1_rerun import g1_costmap
 from dimos.visualization.vis_module import vis_module
 
 
@@ -86,7 +87,7 @@ rerun_config = {
     "blueprint": _g1_rerun_blueprint,
     "visual_override": {
         "world/camera_info": _convert_camera_info,
-        "world/navigation_costmap": costmap_to_rerun,
+        "world/navigation_costmap": g1_costmap,
     },
     "static": {
         "world/tf/base_link": _static_base_link,
@@ -133,25 +134,23 @@ unitree_g1_primitive_no_nav = (
     .transports(
         {
             # G1 uses Twist for movement commands
-            ("cmd_vel", Twist): LCMTransport.spec("/cmd_vel", Twist),
+            ("cmd_vel", Twist): LCMTransport("/cmd_vel", Twist),
             # State estimation from ROS
-            ("state_estimation", Odometry): LCMTransport.spec("/state_estimation", Odometry),
-            ("odom", PoseStamped): LCMTransport.spec("/odom", PoseStamped),
+            ("state_estimation", Odometry): LCMTransport("/state_estimation", Odometry),
+            ("odom", PoseStamped): LCMTransport("/odom", PoseStamped),
             # Navigation module topics from nav_bot
-            ("goal_req", PoseStamped): LCMTransport.spec("/goal_req", PoseStamped),
-            ("goal_active", PoseStamped): LCMTransport.spec("/goal_active", PoseStamped),
-            ("path_active", Path): LCMTransport.spec("/path_active", Path),
-            ("pointcloud", PointCloud2): LCMTransport.spec("/lidar", PointCloud2),
-            ("global_pointcloud", PointCloud2): LCMTransport.spec("/map", PointCloud2),
+            ("goal_req", PoseStamped): LCMTransport("/goal_req", PoseStamped),
+            ("goal_active", PoseStamped): LCMTransport("/goal_active", PoseStamped),
+            ("path_active", Path): LCMTransport("/path_active", Path),
+            ("pointcloud", PointCloud2): LCMTransport("/lidar", PointCloud2),
+            ("global_pointcloud", PointCloud2): LCMTransport("/map", PointCloud2),
             # Original navigation topics for backwards compatibility
-            ("goal_pose", PoseStamped): LCMTransport.spec("/goal_pose", PoseStamped),
-            ("goal_reached", Bool): LCMTransport.spec("/goal_reached", Bool),
-            ("cancel_goal", Bool): LCMTransport.spec("/cancel_goal", Bool),
+            ("goal_pose", PoseStamped): LCMTransport("/goal_pose", PoseStamped),
+            ("goal_reached", Bool): LCMTransport("/goal_reached", Bool),
+            ("cancel_goal", Bool): LCMTransport("/cancel_goal", Bool),
             # Camera topics
-            ("color_image", Image): LCMTransport.spec("/color_image", Image),
-            ("camera_info", CameraInfo): LCMTransport.spec("/camera_info", CameraInfo),
+            ("color_image", Image): LCMTransport("/color_image", Image),
+            ("camera_info", CameraInfo): LCMTransport("/camera_info", CameraInfo),
         }
     )
 )
-
-__all__ = ["unitree_g1_primitive_no_nav"]

@@ -15,6 +15,7 @@
 import asyncio
 from dataclasses import dataclass
 import functools
+import json
 import threading
 import time
 from typing import Any, TypeAlias, TypeVar
@@ -55,6 +56,8 @@ from dimos.utils.reactive import backpressure, callback_to_observable
 logger = setup_logger()
 
 VideoMessage: TypeAlias = NDArray[np.uint8]  # Shape: (height, width, 3)
+
+logger = setup_logger()
 
 
 _T = TypeVar("_T", bound=Timestamped)
@@ -225,7 +228,7 @@ class UnitreeWebRTCConnection(Resource):
                 future.result()
             return True
         except Exception as e:
-            print(f"Failed to send movement command: {e}")
+            logger.warning("Failed to send movement command: %s", e)
             return False
 
     # Generic conversion of unitree subscription to Subject (used for all subs)
@@ -332,6 +335,26 @@ class UnitreeWebRTCConnection(Resource):
             {"api_id": 1001, "parameter": {"enable": int(enabled)}},
         )
 
+    def set_motion_mode(self, name: str) -> None:
+        """Select the top-level motion controller via the motion switcher.
+
+        mcf is the AI/sport controller that traverses stairs. normal is basic.
+        """
+        # api_id 1001 = CheckMode, 1002 = SelectMode, param {"name": <mode>}.
+        current = None
+        try:
+            resp = self.publish_request(RTC_TOPIC["MOTION_SWITCHER"], {"api_id": 1001})
+            current = json.loads(resp["data"]["data"]).get("name")
+        except (KeyError, TypeError, ValueError) as e:
+            logger.warning("Motion mode check failed: %s", e)
+        if current == name:
+            return
+        self.publish_request(
+            RTC_TOPIC["MOTION_SWITCHER"],
+            {"api_id": 1002, "parameter": {"name": name}},
+        )
+        time.sleep(5)
+
     def free_walk(self) -> bool:
         """Activate FreeWalk locomotion mode — enables walking and velocity commands."""
         return bool(self.publish_request(RTC_TOPIC["SPORT_MOD"], {"api_id": SPORT_CMD["FreeWalk"]}))
@@ -373,7 +396,10 @@ class UnitreeWebRTCConnection(Resource):
         # envelope. Passing `enable` here disabled joystick listening whenever
         # rage was turned OFF (including the hosted boot force-reset), which
         # silently killed WASD drive until something re-enabled it.
-        return self.switch_joystick(True)
+        joystick_ok = self.switch_joystick(True)
+        if not joystick_ok:
+            logger.warning("SwitchJoystick failed after rage toggle", enabled=enable)
+        return joystick_ok
 
     def liedown(self) -> bool:
         return bool(

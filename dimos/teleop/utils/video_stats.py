@@ -210,6 +210,3 @@ class VideoStats(Timestamped):
             and self.freezes == other.freezes
             and math.isclose(self.e2e_latency_ms, other.e2e_latency_ms, rel_tol=1e-4, abs_tol=1e-5)
         )
-
-
-__all__ = ["VideoStats"]

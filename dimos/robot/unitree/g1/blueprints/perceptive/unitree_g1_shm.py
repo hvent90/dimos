@@ -26,12 +26,10 @@ from dimos.visualization.vis_module import vis_module
 unitree_g1_shm = autoconnect(
     unitree_g1.transports(
         {
-            ("color_image", Image): pSHMTransport.spec(
+            ("color_image", Image): pSHMTransport(
                 "/color_image", default_capacity=DEFAULT_CAPACITY_COLOR_IMAGE
             ),
         }
     ),
     vis_module(viewer_backend=global_config.viewer),
 )
-
-__all__ = ["unitree_g1_shm"]

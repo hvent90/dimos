@@ -310,9 +310,31 @@ def test_materialize_uses_resolved_config() -> None:
 
 def test_transport_overrides_coerce_string_values() -> None:
     """CLI/env overrides arrive as raw strings; non-str fields must coerce, not pass through."""
-    bp = Blueprint(blueprints=()).transports({("topic", FakeLCMMsg): MockTransport("topic")})
-    new_bp = _apply_transport_overrides(bp, {"mock": {"count": "5"}})
-    assert new_bp.transport_map[("topic", FakeLCMMsg)]._config.count == 5
+    bp = Blueprint(blueprints=()).transports({("topic", FakeLCMMsg): MockTransport.spec("topic")})
+    transport = _materialize_transports(bp, {"mock": {"count": "5"}})[("topic", FakeLCMMsg)]
+    assert transport._config.count == 5
+
+
+def test_raw_transport_pins_still_work() -> None:
+    """Backwards compat: plain transport instances in .transports() (the pre-spec
+    style used across existing blueprints) must survive config() and materialize
+    unchanged — only spec-declared transports opt into the override flow."""
+    from dimos.core.transport import LCMTransport
+
+    raw = LCMTransport("/raw_topic", FakeLCMMsg)
+    bp = Blueprint(blueprints=()).transports(
+        {
+            ("raw", FakeLCMMsg): raw,
+            ("speced", FakeLCMMsg): MockTransport.spec("topic"),
+        }
+    )
+    # Raw pins contribute no transports.* config fields; the spec still does.
+    cfg = bp.config()
+    assert cfg(transports={"mock": {"name": "x"}}).transports.mock.name == "x"
+
+    materialized = _materialize_transports(bp, {})
+    assert materialized[("raw", FakeLCMMsg)] is raw
+    assert isinstance(materialized[("speced", FakeLCMMsg)], MockTransport)
 
 
 # ─── Broker credential validation ────────────────────────────────────

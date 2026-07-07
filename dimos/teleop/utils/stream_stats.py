@@ -88,6 +88,3 @@ class LiveStreamStats:
             "rate_hz": (len(samples) - 1) / span if span > 0 else None,
             "throughput_bps": (sum(sizes) / span) if (sizes and span > 0) else None,
         }
-
-
-__all__ = ["LiveStreamStats", "pcts"]
