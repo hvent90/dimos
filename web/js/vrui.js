@@ -96,6 +96,16 @@ class Panel {
         this.mesh.position.copy(pos);
         this.mesh.rotation.set(rotX, 0, 0);
     }
+    // Triptych fold: rotate about Y by `yaw`, then position so this panel's
+    // own vertical edge (`edgeSign` +1 = right edge, -1 = left edge) lands
+    // exactly on `hinge`. Center = hinge − (rotated edge offset), so the seam
+    // edges of two folded panels coincide regardless of width/angle.
+    placeHinged(hinge, edgeSign, yaw) {
+        this.mesh.rotation.set(0, yaw, 0);
+        const h = this.mesh.geometry.parameters.width / 2;
+        const edge = new THREE.Vector3(edgeSign * h, 0, 0).applyEuler(new THREE.Euler(0, yaw, 0));
+        this.mesh.position.copy(hinge).sub(edge);
+    }
     markDirty() { this.dirty = true; }
     // UV (three) → canvas px. VideoTexture/CanvasTexture are flipY, so v=0 is
     // the bottom row; canvas y grows down → row = (1-v)*ch.
@@ -479,18 +489,22 @@ export function buildCockpit(scene, headPos) {
     // One tight cluster around the camera panel (1.4m wide, centre z=-1.6):
     //   MAP flush left · CAMERA centre · STATS flush right, all at the same
     //   height/depth; CONSOLE below as a tilted operator shelf.
-    // All three top panels are COPLANAR — same y/z as the camera panel, no
-    // lookAt tilt — with edges flush (hairline +1mm z offset on the sides
-    // kills any z-fight at the seams). One continuous wall of UI.
+    // Folded triptych: MAP + STATS hinge exactly at the camera panel's
+    // left/right edges and angle toward the operator (~30°), so the seams
+    // coincide with the video edges and the sides wrap around. Must agree
+    // with vr.js CAM (same half-width, y, z, flat orientation).
     const CAM_HALF_W = 0.7, PANEL_Y = 1.52, PANEL_Z = -1.6;
+    const FOLD = THREE.MathUtils.degToRad(30);
 
     const stats = new Panel({ wM: 0.44, hM: 0.7875, cw: 380, ch: 680, opacity: 0.96 });
     const map = new Panel({ wM: 0.9, hM: 0.7875, cw: 640, ch: 560, opacity: 0.97 });
     const console_ = new Panel({ wM: 1.5, hM: 0.52, cw: 1180, ch: 410, opacity: 0.97 });
     _mapPanel = map;
 
-    stats.placeFlat(new THREE.Vector3(CAM_HALF_W + 0.22, PANEL_Y, PANEL_Z + 0.001), 0);
-    map.placeFlat(new THREE.Vector3(-(CAM_HALF_W + 0.45), PANEL_Y, PANEL_Z + 0.001), 0);
+    // Map: its RIGHT edge hinges on the camera's LEFT edge, folds in (+yaw
+    // turns its normal toward the user). Stats mirror on the right.
+    map.placeHinged(new THREE.Vector3(-CAM_HALF_W, PANEL_Y, PANEL_Z), +1, +FOLD);
+    stats.placeHinged(new THREE.Vector3(CAM_HALF_W, PANEL_Y, PANEL_Z), -1, -FOLD);
     // Console: a desk shelf below the camera — low enough that its top edge
     // stays under the sight line to the camera's bottom edge, tilted up ~34°.
     console_.placeFlat(new THREE.Vector3(0, 0.86, -1.3), -0.6);
