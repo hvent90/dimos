@@ -337,6 +337,20 @@ def test_backend_coercion_leaves_webrtc_untouched() -> None:
         global_config.update(transport=original)
 
 
+def test_webrtc_deps_required_in_ci() -> None:
+    """A missing aiortc/httpx must not silently skip the webrtc suite in CI
+    (review: tests should fail, not \"pass\", when CI forgets a dependency).
+    Downstream/no-network installs still skip everything — no CI env var."""
+    import os
+
+    if not os.environ.get("CI"):
+        pytest.skip("dependency guard only enforced in CI")
+    assert WEBRTC_AVAILABLE, (
+        "aiortc/httpx not installed in CI, so the whole webrtc suite silently "
+        "skipped — restore dimos[webrtc] in the project-deps dependency group"
+    )
+
+
 def test_dc_name_no_collisions() -> None:
     """Sanitized OR truncated topics must stay distinct (<=64 char CF limit)."""
     if not WEBRTC_AVAILABLE:
