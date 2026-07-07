@@ -194,3 +194,41 @@ the same coordinator routing used before real hardware is connected. Before usin
 `--can-port`, align the physical follower near the leader-implied command and be
 ready to stop the process; automatic startup alignment gating is out of scope for
 v1.
+
+## Dual-arm coordinator + Viser bring-up
+
+Use `openarm-mini-dual-teleop-viser` for bimanual OpenArm Mini leader teleop with
+the same coordinator-observed Viser path. It uses one bimanual
+`OpenArmMiniTeleopModule`, one `ControlCoordinator`, and one `ManipulationModule`
+with both left and right OpenArm models.
+
+Mock followers, safe for coordinator/Viser validation without connected OpenArm
+followers:
+
+```bash
+uv run dimos run openarm-mini-dual-teleop-viser
+```
+
+Real left and right OpenArm followers over explicit CAN ports:
+
+```bash
+uv run dimos --left-can-port can1 --right-can-port can0 run openarm-mini-dual-teleop-viser
+```
+
+Override leader serial ports with module options:
+
+```bash
+uv run dimos run openarm-mini-dual-teleop-viser \
+  -o openarmminiteleopmodule.openarm_mini.port_left=/dev/ttyUSB1 \
+  -o openarmminiteleopmodule.openarm_mini.port_right=/dev/ttyACM0
+```
+
+The dual blueprint publishes ManipulationModule-compatible global coordinator
+joint names for both arms:
+
+- `left_arm/openarm_left_joint1` through `left_arm/openarm_left_joint7`
+- `right_arm/openarm_right_joint1` through `right_arm/openarm_right_joint7`
+
+Each follower side remains mocked unless its side-specific CAN port is provided.
+Before running with real followers, align both physical arms near the
+leader-implied command and be ready to stop the process.

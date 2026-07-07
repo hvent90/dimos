@@ -38,7 +38,7 @@ The OpenArm Mini teleop adapter SHALL support side-specific calibration path con
 - **THEN** the adapter uses the configured path for that side instead of the default DimOS state-directory path
 
 ### Requirement: OpenArm Mini to OpenArm joint command mapping
-The OpenArm Mini teleop adapter SHALL convert calibrated OpenArm Mini leader arm-joint readings into OpenArm follower arm-joint `JointState` commands in radians using OpenArm follower joint names.
+The OpenArm Mini teleop adapter SHALL convert calibrated OpenArm Mini leader arm-joint readings into OpenArm follower arm-joint `JointState` commands in radians using configurable OpenArm follower joint names.
 
 #### Scenario: Leader joint readings are available
 - **WHEN** calibrated OpenArm Mini leader joint readings are available and teleop authority is active
@@ -53,6 +53,10 @@ The OpenArm Mini teleop adapter SHALL convert calibrated OpenArm Mini leader arm
 #### Scenario: Leader joint assignment is calibrated
 - **WHEN** the calibration artifact maps a semantic leader joint name to a physical Feetech motor id
 - **THEN** the adapter reads that motor id for the semantic joint instead of applying a hardcoded runtime joint remap
+
+#### Scenario: Configured follower joint namespace is applied
+- **WHEN** the adapter is configured for a blueprint that targets ManipulationModule-compatible global joint names
+- **THEN** the returned `JointState` command uses those configured target joint names instead of only the default local OpenArm follower joint names
 
 #### Scenario: Gripper is out of scope for v1
 - **WHEN** the adapter returns an OpenArm follower command

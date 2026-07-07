@@ -30,5 +30,5 @@
 - [x] 5.2 Run ruff on touched OpenArm Mini teleop, OpenArm blueprint, and test files.
 - [x] 5.3 Validate blueprint registry generation in CI/non-mutating mode after regeneration.
 - [x] 5.4 Validate OpenSpec change artifacts.
-- [ ] 5.5 Manually run mock-follower bring-up with a real OpenArm Mini right leader and no `--can-port`.
-- [ ] 5.6 Manually run real right-follower bring-up with `--can-port` when hardware is available and startup alignment is verified.
+- [x] 5.5 Manually run mock-follower bring-up with a real OpenArm Mini right leader and no `--can-port`.
+- [x] 5.6 Manually run real right-follower bring-up with `--can-port` when hardware is available and startup alignment is verified.
