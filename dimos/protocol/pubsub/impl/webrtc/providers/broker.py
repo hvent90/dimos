@@ -81,8 +81,11 @@ class BrokerConfig(ProviderConfig):
     ordered: bool = False
     max_retransmits: int | None = 0
     # Preferred video codec ("h264" / "vp8"; "" = aiortc default order).
-    # Opt-in: falls back to defaults if the codec isn't in local capabilities.
-    video_codec: str = ""
+    # Defaults to h264: aiortc offers VP8 first, but operator browsers hardware-
+    # decode H.264 and often fall back to *software* VP8, which adds decode
+    # latency to the teleop feed. Best-effort — falls back to aiortc's order if
+    # h264 isn't in local capabilities (see _prefer_video_codec).
+    video_codec: str = "h264"
     # Operator → robot audio: add a recvonly audio transceiver so the operator's
     # mic can be bridged in. Off by default — ships dark until Go2 has audio-out.
     audio_in: bool = False
