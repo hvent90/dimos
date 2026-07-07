@@ -308,7 +308,15 @@ class CloudflareProvider(AsyncProviderBase):
             self.start()
         with self._lock:
             self._callbacks[topic].append(callback)
-        self._run_sync(self._ensure_sub(topic))
+        try:
+            self._run_sync(self._ensure_sub(topic))
+        except BaseException:
+            # Failed subscribe returns no unsub handle — deregister, or the
+            # callback would start firing once a later subscribe succeeds.
+            with self._lock:
+                if callback in self._callbacks[topic]:
+                    self._callbacks[topic].remove(callback)
+            raise
 
         def _unsub() -> None:
             with self._lock:

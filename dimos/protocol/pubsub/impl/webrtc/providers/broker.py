@@ -248,6 +248,10 @@ class BrokerProvider(AsyncProviderBase):
                 )
         for name in list(self._dcs):
             self._close_channel(name)
+        # Forget the broker's channel ids: after a reconnect the heartbeat
+        # must re-open channels even if the broker hands out the same SCTP
+        # ids (stale entries would make it skip _open_channel with _dcs empty).
+        self._dc_ids.clear()
         if self._pc:
             await self._pc.close()
             self._pc = None
