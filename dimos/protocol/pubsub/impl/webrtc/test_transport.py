@@ -316,6 +316,27 @@ def test_broker_provider_requires_credentials() -> None:
     assert BrokerConfig(api_key="key")._create() is not None
 
 
+def test_backend_coercion_leaves_webrtc_untouched() -> None:
+    """The global lcm<->zenoh transport switch must never rebuild a webrtc
+    transport (deliberate non-default choice, like JpegLcmTransport)."""
+    if not WEBRTC_AVAILABLE:
+        pytest.skip("aiortc not installed")
+    from dimos.core.coordination.module_coordinator import _coerce_transport_to_backend
+    from dimos.core.global_config import global_config
+    from dimos.core.transport import CloudflareTransport, CloudflareVideoTransport
+
+    dc = CloudflareTransport("cmd_unreliable", TwistStamped, api_key="k")
+    video = CloudflareVideoTransport(api_key="k")
+    original = global_config.transport
+    try:
+        for backend in ("lcm", "zenoh"):
+            global_config.update(transport=backend)
+            assert _coerce_transport_to_backend(dc) is dc
+            assert _coerce_transport_to_backend(video) is video
+    finally:
+        global_config.update(transport=original)
+
+
 # ─── Provider lifecycle error paths ──────────────────────────────────
 
 
