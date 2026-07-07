@@ -35,7 +35,8 @@ function buildScene() {
         new THREE.MeshBasicMaterial({ color: 0x0d0e0e }),
     );
     videoMesh.position.set(CAM.x, CAM.y, CAM.z);
-    videoMesh.lookAt(HEAD);
+    // Flat (+Z toward user), NOT lookAt: map/stats sit coplanar flush against
+    // this panel's edges, so any tilt here would split the seams open.
     videoMesh.renderOrder = 1;
     scene.add(videoMesh);
 

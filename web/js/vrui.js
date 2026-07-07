@@ -479,18 +479,21 @@ export function buildCockpit(scene, headPos) {
     // One tight cluster around the camera panel (1.4m wide, centre z=-1.6):
     //   MAP flush left · CAMERA centre · STATS flush right, all at the same
     //   height/depth; CONSOLE below as a tilted operator shelf.
-    const CAM_HALF_W = 0.7, PANEL_Y = 1.52, PANEL_Z = -1.58, GAP = 0.03;
+    // All three top panels are COPLANAR — same y/z as the camera panel, no
+    // lookAt tilt — with edges flush (hairline +1mm z offset on the sides
+    // kills any z-fight at the seams). One continuous wall of UI.
+    const CAM_HALF_W = 0.7, PANEL_Y = 1.52, PANEL_Z = -1.6;
 
     const stats = new Panel({ wM: 0.44, hM: 0.7875, cw: 380, ch: 680, opacity: 0.96 });
     const map = new Panel({ wM: 0.9, hM: 0.7875, cw: 640, ch: 560, opacity: 0.97 });
     const console_ = new Panel({ wM: 1.5, hM: 0.52, cw: 1180, ch: 410, opacity: 0.97 });
     _mapPanel = map;
 
-    stats.place(new THREE.Vector3(CAM_HALF_W + GAP + 0.22, PANEL_Y, PANEL_Z + 0.02), headPos);
-    map.place(new THREE.Vector3(-(CAM_HALF_W + GAP + 0.45), PANEL_Y, PANEL_Z + 0.02), headPos);
-    // Console: below the camera, pulled toward the operator, tilted up ~34°
-    // like a desk panel (top edge away). No lookAt — fixed shelf orientation.
-    console_.placeFlat(new THREE.Vector3(0, 0.98, -1.28), -0.6);
+    stats.placeFlat(new THREE.Vector3(CAM_HALF_W + 0.22, PANEL_Y, PANEL_Z + 0.001), 0);
+    map.placeFlat(new THREE.Vector3(-(CAM_HALF_W + 0.45), PANEL_Y, PANEL_Z + 0.001), 0);
+    // Console: a desk shelf below the camera — low enough that its top edge
+    // stays under the sight line to the camera's bottom edge, tilted up ~34°.
+    console_.placeFlat(new THREE.Vector3(0, 0.86, -1.3), -0.6);
     for (const p of [map, console_, stats]) { scene.add(p.mesh); p.mesh.renderOrder = 3; }
 
     _allPanels = [map, console_, stats];
