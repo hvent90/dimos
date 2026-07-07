@@ -52,7 +52,11 @@ def pubsub() -> Iterator[WebRTCPubSub]:
         CloudflareProvider,
     )
 
-    ps = WebRTCPubSub(provider=CloudflareProvider(CloudflareConfig()))
+    config = CloudflareConfig(
+        app_id=os.environ["CF_TELEOP_APP_ID"],
+        app_secret=os.environ["CF_TELEOP_APP_SECRET"],
+    )
+    ps = WebRTCPubSub(provider=CloudflareProvider(config))
     ps.start()
     try:
         yield ps

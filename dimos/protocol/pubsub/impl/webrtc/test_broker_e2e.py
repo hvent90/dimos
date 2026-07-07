@@ -91,14 +91,19 @@ def test_operator_to_transport_e2e() -> None:
     from dimos.msgs.sensor_msgs.Image import Image, ImageFormat
     from dimos.protocol.pubsub.impl.webrtc.providers.spec import wait_connected, wait_open
 
+    # The TELEOP_* env fallback inside BrokerProvider was removed when
+    # transport config moved to the blueprint flow — pass the key explicitly.
+    # Identical kwargs => equal BrokerConfig => all three transports share one
+    # provider/session, same as the blueprint's materialized transports.
+    api_key = os.environ["TELEOP_API_KEY"]
     received: list[TwistStamped] = []
-    transport = CloudflareTransport("cmd_unreliable", TwistStamped)
+    transport = CloudflareTransport("cmd_unreliable", TwistStamped, api_key=api_key)
     # subscribe() blocks through the provider's _connect(), so the broker
     # session is registered by the time it returns — no settling sleep needed.
     transport.subscribe(received.append)
     # Robot → operator telemetry + video on the same provider/session.
-    back_transport = CloudflareTransport("state_reliable_back", TwistStamped)
-    video_transport = CloudflareVideoTransport()
+    back_transport = CloudflareTransport("state_reliable_back", TwistStamped, api_key=api_key)
+    video_transport = CloudflareVideoTransport(api_key=api_key)
 
     # The robot's own session id, straight from the shared provider — never
     # guess from the session list (stale sessions from aborted runs linger).

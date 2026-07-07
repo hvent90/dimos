@@ -83,7 +83,12 @@ def test_blueprint_stream_over_cloudflare() -> None:
     blueprint = autoconnect(TwistSource.blueprint(), TwistSink.blueprint()).transports(
         {
             ("cmd_webrtc", TwistStamped): WebRTCTransport.spec(
-                "cmd_webrtc", TwistStamped, config=CloudflareConfig()
+                "cmd_webrtc",
+                TwistStamped,
+                config=CloudflareConfig(
+                    app_id=os.environ["CF_TELEOP_APP_ID"],
+                    app_secret=os.environ["CF_TELEOP_APP_SECRET"],
+                ),
             )
         }
     )

@@ -501,7 +501,11 @@ if WEBRTC_AVAILABLE and os.environ.get("CF_TELEOP_APP_ID"):
 
     @contextmanager
     def webrtc_cloudflare_pubsub_channel() -> Generator[WebRTCPubSub, None, None]:
-        pubsub = WebRTCPubSub(provider=CloudflareProvider(CloudflareConfig()))
+        config = CloudflareConfig(
+            app_id=os.environ["CF_TELEOP_APP_ID"],
+            app_secret=os.environ["CF_TELEOP_APP_SECRET"],
+        )
+        pubsub = WebRTCPubSub(provider=CloudflareProvider(config))
         pubsub.start()
         try:
             yield pubsub
