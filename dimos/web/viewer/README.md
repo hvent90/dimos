@@ -49,6 +49,19 @@ the robot layer parses the same MJCF the simulator steps, so sim users
 get a pixel-exact mirror for free. A URDF/pinocchio loader shared with
 the rerun viewer is the natural follow-up for mujoco-free robot display.
 
+## Try it against the G1 sim
+
+```bash
+dimos --transport lcm --simulation mujoco --scene-package dimos_office \
+    run unitree-g1-groot-wbc
+```
+
+The console comes up at `:8091` next to the sim: the G1 mirrored from
+live coordinator state inside the office scene. Enable Drive + WASD
+walks it; the Lidar layer streams `/global_map`. `--transport lcm`
+matters: display topics and teleop flow through the LCM bridge, which
+does not yet tap the Zenoh bus (see the lcm_bridge README).
+
 ## Notes
 
 - `DIMOS_BABYLON_OPEN=0` disables the auto-opened tab.

@@ -76,6 +76,15 @@ Learned running multi-MB pointclouds at 10 Hz into browser tabs:
 - **Per-channel rate caps** — fnmatch pattern → max Hz, applied to the
   WebSocket leg only; in-process bus consumers are unaffected.
 
+## Known limitation: LCM only
+
+The bridge taps the **LCM** bus. Runs using the Zenoh transport default
+(`--transport zenoh` / `DIMOS_TRANSPORT`) publish nothing on LCM, so the
+bridge forwards nothing — run with `--transport lcm` for now. A Zenoh
+subscribe-all twin is the natural follow-up (payloads are the same
+encoded bytes; only the tap changes), and is exactly the
+transport-agnostic central bridge #2502 sketches.
+
 ## Deliberately out of scope (v0)
 
 - **Per-connection QoS** (client-requested rates/filters) — that's the
