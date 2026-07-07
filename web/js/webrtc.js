@@ -415,6 +415,7 @@ export function startVideoStats(channel, getReport = null) {
     // Skip overlapping ticks — if getStats() blocks >1s, two concurrent
     // bodies race on videoStatsPrev and emit nonsense deltas.
     let inFlight = false;
+    let loggedSummary = false;  // one-shot per session (reset on each start)
     state.videoStatsTimer = setInterval(async () => {
         if (inFlight) return;
         if (!channel || channel.readyState !== 'open') return;
@@ -441,6 +442,20 @@ export function startVideoStats(channel, getReport = null) {
         if (payload) {
             try { channel.send(JSON.stringify(payload)); } catch (_) {}
             state.liveStats.video = payload;  // latest sample for the HUD/VR quad
+            // One-shot latency summary the moment video is flowing: the three
+            // numbers that decide e2e latency — negotiated codec (H264 = HW
+            // decode), the receiver jitter buffer (did playoutDelayHint stick?),
+            // and the ICE path (turn = an extra relay hop). Saves squinting at
+            // the HUD to see whether the low-latency setup actually took.
+            if (!loggedSummary && payload.codec) {
+                loggedSummary = true;
+                console.info(
+                    `[video] up · codec=${payload.codec || '?'} ` +
+                    `decoder=${payload.decoder || '?'} ` +
+                    `jbuf=${(payload.jitter_buffer_ms ?? 0).toFixed(0)}ms ` +
+                    `path=${state.liveStats.iceType || '?'}`,
+                );
+            }
         }
         inFlight = false;
     }, VIDEO_STATS_INTERVAL_MS);
