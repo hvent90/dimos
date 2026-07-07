@@ -171,7 +171,7 @@ _PROXY_FIELDS = ("transport_map", "global_config_overrides", "remapping_map")
 class Blueprint:
     blueprints: tuple[BlueprintAtom, ...]
     disabled_modules_tuple: tuple[type[ModuleBase], ...] = field(default_factory=tuple)
-    transport_map: Mapping[tuple[str, type], "TransportSpec | Transport[Any]"] = field(
+    transport_map: Mapping[tuple[str, type], TransportSpec | Transport[Any]] = field(
         default_factory=lambda: MappingProxyType({})
     )
     global_config_overrides: Mapping[str, Any] = field(default_factory=lambda: MappingProxyType({}))
@@ -225,7 +225,7 @@ class Blueprint:
         return create_model("BlueprintConfig", __config__={"extra": "forbid"}, **configs)  # type: ignore[call-overload,no-any-return]
 
     def transports(
-        self, transports: "dict[tuple[str, type], TransportSpec | Transport[Any]]"
+        self, transports: dict[tuple[str, type], TransportSpec | Transport[Any]]
     ) -> "Blueprint":
         return replace(self, transport_map=MappingProxyType({**self.transport_map, **transports}))
 

@@ -287,20 +287,28 @@ class BrokerProvider(AsyncProviderBase):
             logger.warning("Heartbeat failed: %d %s", r.status_code, r.text[:200])
             return
         ack = r.json()
-        ids = {
-            "cmd_unreliable": ack.get("cmd_channel_subscriber_id"),
-            "state_reliable": ack.get("state_channel_subscriber_id"),
-            "state_reliable_back": ack.get("state_back_channel_publisher_id"),
-        }
-        # Track the broker's view: open on join, close on leave, re-open on
-        # rejoin (the broker assigns fresh SCTP ids per operator session).
+        self._reconcile_channels(
+            {
+                "cmd_unreliable": ack.get("cmd_channel_subscriber_id"),
+                "state_reliable": ack.get("state_channel_subscriber_id"),
+                "state_reliable_back": ack.get("state_back_channel_publisher_id"),
+            }
+        )
+
+    def _reconcile_channels(self, ids: dict[str, Any]) -> None:
+        """Track the broker's view: open on join, close on leave, re-open on
+        rejoin (the broker assigns fresh SCTP ids per operator session).
+
+        The id is recorded only after a successful open — if createDataChannel
+        raises, the stale entry keeps the delta alive so the next heartbeat
+        retries instead of skipping the channel forever."""
         for name, raw_id in ids.items():
             sctp_id = int(raw_id) if raw_id is not None else None
             if sctp_id != self._dc_ids.get(name):
                 self._close_channel(name)
-                self._dc_ids[name] = sctp_id
                 if sctp_id is not None:
                     self._open_channel(name, sctp_id)
+                self._dc_ids[name] = sctp_id
 
     def _channel_options(self, name: str) -> dict[str, Any]:
         if name == "cmd_unreliable":

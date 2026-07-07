@@ -384,6 +384,26 @@ def test_failed_connect_runs_disconnect_and_allows_retry() -> None:
     assert p.disconnects == 2 and p._thread is None
 
 
+def test_broker_failed_channel_open_retries_next_heartbeat() -> None:
+    """The broker id must be recorded only after a successful open — otherwise
+    a createDataChannel failure is never retried (id matches, _dcs empty)."""
+    if not WEBRTC_AVAILABLE:
+        pytest.skip("aiortc not installed")
+
+    provider = BrokerConfig(api_key="key")._create()
+    # _pc is None, so _open_channel's assert fires — a stand-in for any
+    # createDataChannel failure inside the heartbeat.
+    with pytest.raises(AssertionError):
+        provider._reconcile_channels({"cmd_unreliable": 5})
+    assert "cmd_unreliable" not in provider._dc_ids, "failed open must not record the id"
+
+    opened: list[tuple[str, int]] = []
+    provider._open_channel = lambda name, sctp_id: opened.append((name, sctp_id))  # type: ignore[method-assign]
+    provider._reconcile_channels({"cmd_unreliable": 5})
+    assert opened == [("cmd_unreliable", 5)], "next heartbeat must retry the open"
+    assert provider._dc_ids["cmd_unreliable"] == 5
+
+
 def test_broker_disconnect_clears_channel_ids() -> None:
     """Stale _dc_ids after stop() would make the reconnect heartbeat skip
     _open_channel when the broker hands out the same SCTP ids."""
