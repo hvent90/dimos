@@ -30,6 +30,8 @@ TELEOP_ROBOT_ID is optional (the broker derives identity from the key).
 from __future__ import annotations
 
 import asyncio
+from collections.abc import Callable
+import contextlib
 import json
 import os
 import time
@@ -38,6 +40,16 @@ import urllib.request
 import pytest
 
 from dimos.protocol.pubsub.impl.webrtc.providers.spec import WEBRTC_AVAILABLE
+
+
+async def _wait_for(cond: Callable[[], bool], timeout: float, what: str) -> None:
+    """Await a condition instead of sleeping a guessed duration."""
+    deadline = time.monotonic() + timeout
+    while not cond():
+        if time.monotonic() > deadline:
+            raise AssertionError(f"timed out after {timeout}s waiting for {what}")
+        await asyncio.sleep(0.05)
+
 
 BROKER = os.environ.get("TELEOP_BROKER_URL", "https://teleop.dimensionalos.com")
 CREDS_PRESENT = all(os.environ.get(k) for k in ("TELEOP_API_KEY", "TELEOP_OPERATOR_TOKEN"))
@@ -77,14 +89,16 @@ def test_operator_to_transport_e2e() -> None:
     from dimos.core.transport import CloudflareTransport, CloudflareVideoTransport
     from dimos.msgs.geometry_msgs.TwistStamped import TwistStamped
     from dimos.msgs.sensor_msgs.Image import Image, ImageFormat
+    from dimos.protocol.pubsub.impl.webrtc.providers.spec import wait_connected, wait_open
 
     received: list[TwistStamped] = []
     transport = CloudflareTransport("cmd_unreliable", TwistStamped)
+    # subscribe() blocks through the provider's _connect(), so the broker
+    # session is registered by the time it returns — no settling sleep needed.
     transport.subscribe(received.append)
     # Robot → operator telemetry + video on the same provider/session.
     back_transport = CloudflareTransport("state_reliable_back", TwistStamped)
     video_transport = CloudflareVideoTransport()
-    time.sleep(3)  # session registration
 
     # The robot's own session id, straight from the shared provider — never
     # guess from the session list (stale sessions from aborted runs linger).
@@ -134,11 +148,7 @@ def test_operator_to_transport_e2e() -> None:
             {"role": "operator", "sdp_offer": pc.localDescription.sdp},
         )
         await pc.setRemoteDescription(RTCSessionDescription(sdp=join["sdp_answer"], type="answer"))
-        for _ in range(100):
-            if pc.connectionState == "connected":
-                break
-            await asyncio.sleep(0.1)
-        assert pc.connectionState == "connected"
+        await wait_connected(pc, timeout=10.0)
 
         bridge = _api("POST", f"/sessions/{session_id}/bridge-datachannel")
         ch = pc.createDataChannel(
@@ -160,12 +170,20 @@ def test_operator_to_transport_e2e() -> None:
         def _on_back(payload: object) -> None:
             back_bytes.append(payload if isinstance(payload, bytes) else str(payload).encode())
 
-        for _ in range(200):
-            if ch.readyState == "open":
-                break
-            await asyncio.sleep(0.1)
-        assert ch.readyState == "open"
-        await asyncio.sleep(3)  # robot heartbeat (1 Hz) delivers subscriber ids
+        await wait_open(ch, timeout=20.0)
+        # The robot side opens its negotiated channels when its heartbeat
+        # (1 Hz) delivers the subscriber ids. The robot provider runs in this
+        # process — wait on its actual channel state, not a guessed sleep.
+        robot_provider = transport._pubsub.provider  # type: ignore[union-attr]
+        await _wait_for(
+            lambda: all(
+                robot_provider._dcs.get(name) is not None
+                and robot_provider._dcs[name].readyState == "open"
+                for name in ("cmd_unreliable", "state_reliable_back")
+            ),
+            timeout=10.0,
+            what="robot heartbeat to open cmd/back channels",
+        )
 
         # Video: complete the broker's pull renegotiation (same as the web
         # client), then feed synthetic frames through the video transport.
@@ -210,8 +228,7 @@ def test_operator_to_transport_e2e() -> None:
         for i in range(10):
             back_transport.broadcast(None, TwistStamped(linear=[0.0, 0.0, 1.0 + i]))
             await asyncio.sleep(0.05)
-        await asyncio.sleep(2)
-        assert back_bytes, "no robot->operator telemetry arrived"
+        await _wait_for(lambda: bool(back_bytes), 5.0, "robot->operator telemetry")
         back_msg = TwistStamped.lcm_decode(back_bytes[-1])
         assert back_msg.linear.z >= 1.0, back_msg.linear
 
@@ -221,7 +238,10 @@ def test_operator_to_transport_e2e() -> None:
             ch.send(msg.lcm_encode())
             sent += 1
             await asyncio.sleep(0.05)
-        await asyncio.sleep(2)
+        # Unreliable channel: wait for the pass condition itself (early exit),
+        # tolerating stragglers; the assert below owns the final verdict.
+        with contextlib.suppress(AssertionError):
+            await _wait_for(lambda: len(received) >= sent * 0.8, 5.0, "cmd delivery")
 
         _api("POST", f"/sessions/{session_id}/leave", {"role": "operator"})
         feeding = False
