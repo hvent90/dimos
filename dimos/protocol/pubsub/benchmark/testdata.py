@@ -504,7 +504,7 @@ if WEBRTC_AVAILABLE:
 
     class _LoopbackProvider:
         def __init__(self) -> None:
-            self._subs: dict[str, list] = {}
+            self._subs: dict[str, list[Callable[[bytes, str], None]]] = {}
             self._started = False
 
         @property
@@ -521,7 +521,9 @@ if WEBRTC_AVAILABLE:
             for cb in self._subs.get(topic, ()):
                 cb(data, topic)
 
-        def subscribe(self, topic: str, callback) -> "Callable[[], None]":  # type: ignore[type-arg]
+        def subscribe(
+            self, topic: str, callback: Callable[[bytes, str], None]
+        ) -> Callable[[], None]:
             self._subs.setdefault(topic, []).append(callback)
 
             def _unsub() -> None:
