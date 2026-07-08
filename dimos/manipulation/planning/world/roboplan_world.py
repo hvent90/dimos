@@ -258,6 +258,37 @@ class RoboPlanWorld:
         self._obstacle_handles[obstacle_id] = handle
         return obstacle_id
 
+    def replace_obstacle(self, obstacle: Obstacle) -> str:
+        """Replace or add an obstacle in the RoboPlan scene."""
+        self._require_finalized()
+        obstacle_id = obstacle.name
+        if obstacle_id not in self._obstacles:
+            return self.add_obstacle(obstacle)
+
+        self._validate_obstacle_for_add(obstacle)
+        previous_obstacle = self._obstacles[obstacle_id]
+        previous_handle = self._obstacle_handles.get(obstacle_id, obstacle_id)
+        scene = self._require_scene()
+        scene.removeGeometry(previous_handle)
+        self._obstacles.pop(obstacle_id, None)
+        self._obstacle_handles.pop(obstacle_id, None)
+        try:
+            handle = self._add_obstacle_to_scene(obstacle, obstacle_id)
+        except Exception:
+            try:
+                restored_handle = self._add_obstacle_to_scene(previous_obstacle, obstacle_id)
+                self._obstacles[obstacle_id] = previous_obstacle
+                self._obstacle_handles[obstacle_id] = restored_handle
+            except Exception:
+                logger.exception(
+                    "Failed to restore RoboPlan obstacle '%s' after replacement failure",
+                    obstacle_id,
+                )
+            raise
+        self._obstacles[obstacle_id] = obstacle
+        self._obstacle_handles[obstacle_id] = handle
+        return obstacle_id
+
     def remove_obstacle(self, obstacle_id: str) -> bool:
         """Remove an obstacle from the RoboPlan scene."""
         self._require_finalized()
@@ -3608,7 +3639,60 @@ class RoboPlanWorld:
             if not obstacle.mesh_path:
                 raise ValueError("MESH obstacle requires mesh_path")
             return scene.addMeshGeometry(obstacle_id, obstacle.mesh_path, matrix)
+        if obstacle.obstacle_type == ObstacleType.OCTREE:
+            points = self._require_octree_points(obstacle)
+            resolution = self._require_octree_resolution(obstacle)
+            return self._add_octree_geometry(scene, obstacle_id, points, resolution, matrix)
         raise ValueError(f"Unsupported obstacle type: {obstacle.obstacle_type}")
+
+    def _validate_obstacle_for_add(self, obstacle: Obstacle) -> None:
+        if obstacle.obstacle_type == ObstacleType.OCTREE:
+            self._require_octree_points(obstacle)
+            self._require_octree_resolution(obstacle)
+
+    def _require_octree_points(self, obstacle: Obstacle) -> NDArray[np.float64]:
+        if obstacle.points is None:
+            raise ValueError("OCTREE obstacle requires points")
+        points = np.asarray(obstacle.points, dtype=np.float64)
+        if points.ndim != 2 or points.shape[1] != 3 or points.shape[0] == 0:
+            raise ValueError("OCTREE obstacle points must be a non-empty Nx3 array")
+        if not np.all(np.isfinite(points)):
+            raise ValueError("OCTREE obstacle points must be finite")
+        return points
+
+    def _require_octree_resolution(self, obstacle: Obstacle) -> float:
+        resolution = obstacle.octree_resolution
+        if resolution is None or not np.isfinite(resolution) or resolution <= 0.0:
+            raise ValueError("OCTREE obstacle requires a positive octree_resolution")
+        return float(resolution)
+
+    def _add_octree_geometry(
+        self,
+        scene: Any,
+        obstacle_id: str,
+        points: NDArray[np.float64],
+        resolution: float,
+        matrix: NDArray[np.float64],
+    ) -> Any:
+        for method_name in (
+            "addOctreeGeometry",
+            "addOctomapGeometry",
+            "addPointCloudGeometry",
+        ):
+            method = getattr(scene, method_name, None)
+            if method is None:
+                continue
+            try:
+                return method(obstacle_id, points, resolution, matrix)
+            except TypeError:
+                try:
+                    return method(obstacle_id, points, matrix, resolution)
+                except TypeError:
+                    return method(obstacle_id, points, resolution)
+        raise NotImplementedError(
+            "RoboPlan scene does not expose octree collision geometry support "
+            "(expected addOctreeGeometry/addOctomapGeometry/addPointCloudGeometry)."
+        )
 
     def _require_dimensions(self, obstacle: Obstacle, n_dims: int) -> None:
         if len(obstacle.dimensions) != n_dims:

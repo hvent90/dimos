@@ -20,6 +20,7 @@ from pathlib import Path
 import threading
 from unittest.mock import MagicMock
 
+import numpy as np
 import pytest
 from pytest_mock import MockerFixture
 
@@ -37,6 +38,7 @@ from dimos.manipulation.planning.spec.config import (
 )
 from dimos.manipulation.planning.spec.enums import (
     IKStatus,
+    ObstacleType,
     ParametrizationStatus,
     PlanningStatus,
     TrajectoryDispatchStatus,
@@ -57,6 +59,7 @@ from dimos.msgs.geometry_msgs.PoseStamped import PoseStamped
 from dimos.msgs.geometry_msgs.Quaternion import Quaternion
 from dimos.msgs.geometry_msgs.Vector3 import Vector3
 from dimos.msgs.sensor_msgs.JointState import JointState
+from dimos.msgs.sensor_msgs.PointCloud2 import PointCloud2
 from dimos.msgs.trajectory_msgs.JointTrajectory import JointTrajectory
 from dimos.msgs.trajectory_msgs.TrajectoryPoint import TrajectoryPoint
 
@@ -121,16 +124,94 @@ class _ManipulationModuleHarness(ManipulationModule):
         self._last_plan = None
         self._last_trajectory = None
         self._motion_speed_scale = 1.0
+        self._latest_planning_voxel_map = None
         self.config = MagicMock(
             planning_timeout=10.0,
             trajectory_parametrization=TrajectoryParametrizationConfig(),
             coordinator_rpc_timeout=3.0,
+            planning_voxel_map_obstacle_id="planning_voxel_map",
+            planning_voxel_map_frame="world",
+            planning_voxel_map_resolution=0.05,
         )
+
+
+class _FakeWorldMonitor:
+    def __init__(self) -> None:
+        self.obstacles = {}
+        self.replace_count = 0
+        self.remove_count = 0
+
+    def replace_obstacle(self, obstacle) -> str:
+        self.replace_count += 1
+        self.obstacles[obstacle.name] = obstacle
+        return obstacle.name
+
+    def remove_obstacle(self, obstacle_id: str) -> bool:
+        self.remove_count += 1
+        return self.obstacles.pop(obstacle_id, None) is not None
 
 
 def _make_module() -> ManipulationModule:
     """Create a lightweight ManipulationModule harness for behavior tests."""
     return _ManipulationModuleHarness()
+
+
+def test_planning_voxel_map_sync_replaces_stale_obstacle_without_duplicates() -> None:
+    module = _make_module()
+    monitor = _FakeWorldMonitor()
+    module._world_monitor = monitor
+    first = PointCloud2.from_numpy(np.array([[1.0, 2.0, 3.0]], dtype=np.float32), frame_id="world")
+    second = PointCloud2.from_numpy(np.array([[4.0, 5.0, 6.0]], dtype=np.float32), frame_id="world")
+
+    module._on_planning_voxel_map(first)
+    assert module._begin_planning()
+    module._state = ManipulationState.IDLE
+    module._on_planning_voxel_map(second)
+    assert module._begin_planning()
+
+    assert module._latest_planning_voxel_map is second
+    assert monitor.replace_count == 2
+    assert list(monitor.obstacles) == ["planning_voxel_map"]
+    obstacle = monitor.obstacles["planning_voxel_map"]
+    assert obstacle.obstacle_type == ObstacleType.OCTREE
+    assert obstacle.pose.frame_id == "world"
+    assert obstacle.octree_resolution == 0.05
+    np.testing.assert_allclose(obstacle.points, np.array([[4.0, 5.0, 6.0]], dtype=np.float64))
+
+
+def test_planning_voxel_map_frame_mismatch_fails_planning() -> None:
+    module = _make_module()
+    monitor = _FakeWorldMonitor()
+    module._world_monitor = monitor
+    cloud = PointCloud2.from_numpy(np.array([[1.0, 2.0, 3.0]], dtype=np.float32), frame_id="map")
+
+    module._on_planning_voxel_map(cloud)
+
+    assert not module._begin_planning()
+    assert module._state == ManipulationState.FAULT
+    assert "frame mismatch" in module._error_message
+    assert monitor.replace_count == 0
+
+
+def test_empty_planning_voxel_map_removes_stale_obstacle_without_fault() -> None:
+    module = _make_module()
+    monitor = _FakeWorldMonitor()
+    module._world_monitor = monitor
+    occupied = PointCloud2.from_numpy(
+        np.array([[1.0, 2.0, 3.0]], dtype=np.float32), frame_id="world"
+    )
+    empty = PointCloud2.from_numpy(np.empty((0, 3), dtype=np.float32), frame_id="world")
+
+    module._on_planning_voxel_map(occupied)
+    assert module._begin_planning()
+    module._state = ManipulationState.IDLE
+    module._on_planning_voxel_map(empty)
+    assert module._begin_planning()
+
+    assert module._state == ManipulationState.PLANNING
+    assert monitor.replace_count == 1
+    assert monitor.remove_count == 1
+    assert "planning_voxel_map" not in monitor.obstacles
 
 
 def _successful_generated_trajectory() -> GeneratedTrajectory:

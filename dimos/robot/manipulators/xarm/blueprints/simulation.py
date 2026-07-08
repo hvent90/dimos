@@ -33,9 +33,12 @@ from dimos.manipulation.grasping.vgn_grasp_gen_module import VGNGraspGenModule
 from dimos.manipulation.pick_and_place_module import PickAndPlaceModule
 from dimos.manipulation.planning.spec.config import RobotModelConfig
 from dimos.manipulation.planning.utils.mesh_utils import prepare_urdf_for_drake
+from dimos.mapping.ray_tracing.module import RayTracingVoxelMap
 from dimos.perception.detection.detectors.yoloe import YoloePromptMode
 from dimos.perception.object_scene_registration import ObjectSceneRegistrationModule
+from dimos.perception.point_cloud_self_filter import PointCloudSelfFilter, SelfFilterRegion
 from dimos.perception.reconstruction import SceneReconstructionModule
+from dimos.protocol.tf.tf_pose_source import TfPoseSource
 from dimos.robot.manipulators.common.blueprints import coordinator, trajectory_task
 from dimos.robot.manipulators.xarm.config import (
     XARM7_SIM_PATH,
@@ -71,6 +74,7 @@ XARM7_RERUN_LINK_FRAMES = unique_link_names(
 )
 
 XARM7_RERUN_HIGHLIGHT_LINKS = ["link7", "xarm_gripper_base_link", "link_tcp"]
+XARM_VOXEL_PLANNING_RESOLUTION = 0.05
 
 
 def _manual_agentic_xarm7_model_config() -> RobotModelConfig:
@@ -250,5 +254,71 @@ manual_agentic_gpd_mujoco_grasp_demo = autoconnect(
     [
         (GPDGraspGenModule, "grasp_candidates", "gpd_grasp_candidates"),
         (AgenticGraspManipulationModule, "_grasp_gen", GPDGraspGenModule),
+    ]
+)
+
+
+xarm_voxel_planning_viser_demo = autoconnect(
+    PickAndPlaceModule.blueprint(
+        robots=[
+            make_xarm7_model_config(
+                name="arm",
+                add_gripper=True,
+                tf_extra_links=XARM7_RERUN_LINK_FRAMES,
+                home_joints=XARM7_VGN_OBSERVATION_HOME,
+                pre_grasp_offset=0.05,
+            )
+        ],
+        planning_timeout=10.0,
+        visualization={"backend": "viser"},
+        world_backend="roboplan",
+        planner_name="roboplan",
+        kinematics={"backend": "roboplan"},
+        planning_voxel_map_resolution=XARM_VOXEL_PLANNING_RESOLUTION,
+    ),
+    MujocoSimModule.blueprint(
+        address=str(XARM7_SIM_PATH),
+        headless=False,
+        dof=7,
+        camera_name="wrist_camera",
+        base_frame_id="link7",
+        enable_depth=True,
+        enable_color=True,
+        enable_pointcloud=True,
+        camera_info_fps=5.0,
+        initial_joint_positions=XARM7_VGN_OBSERVATION_HOME,
+    ),
+    PointCloudSelfFilter.blueprint(
+        regions=[
+            SelfFilterRegion(
+                shape="box",
+                frame_id="link7",
+                size=(0.22, 0.22, 0.30),
+                center=(0.0, 0.0, 0.02),
+            ),
+            SelfFilterRegion(
+                shape="sphere",
+                frame_id="link_tcp",
+                radius=0.16,
+                center=(0.0, 0.0, 0.0),
+            ),
+        ],
+        tf_tolerance_s=0.25,
+    ),
+    TfPoseSource.blueprint(
+        target_frame="world",
+        source_frame="wrist_camera_color_optical_frame",
+        tf_tolerance_s=0.25,
+        publish_rate_hz=10.0,
+    ),
+    RayTracingVoxelMap.blueprint(voxel_size=XARM_VOXEL_PLANNING_RESOLUTION),
+    coordinator(
+        hardware=[_xarm7_sim_hw],
+        tasks=[trajectory_task(_xarm7_sim_hw)],
+    ),
+).remappings(
+    [
+        (RayTracingVoxelMap, "lidar", "filtered_pointcloud"),
+        (PickAndPlaceModule, "planning_voxel_map", "global_map"),
     ]
 )

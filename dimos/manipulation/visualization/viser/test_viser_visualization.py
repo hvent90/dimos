@@ -66,6 +66,7 @@ from dimos.msgs.geometry_msgs.PoseStamped import PoseStamped
 from dimos.msgs.geometry_msgs.Quaternion import Quaternion
 from dimos.msgs.geometry_msgs.Vector3 import Vector3
 from dimos.msgs.sensor_msgs.JointState import JointState
+from dimos.msgs.sensor_msgs.PointCloud2 import PointCloud2
 
 GuiCallback = Callable[[SimpleNamespace], None]
 ThemeValue = str | bool | tuple[int, int, int] | dict[str, str | dict[str, str]] | None
@@ -256,6 +257,29 @@ class FakeGridServer(FakeServer):
         handle.kwargs = dict(kwargs)
         handle.visible = kwargs.get("visible")
         self.grids.append(handle)
+        return handle
+
+
+class FakePointCloudHandle(FakeHandle):
+    def __init__(self, points: np.ndarray, colors: np.ndarray, point_size: float) -> None:
+        super().__init__()
+        self.points = points
+        self.colors = colors
+        self.point_size = point_size
+
+
+class FakePointCloudServer(FakeGridServer):
+    def __init__(self) -> None:
+        super().__init__()
+        self.point_clouds: list[FakePointCloudHandle] = []
+        self.scene.add_point_cloud = self.add_point_cloud
+
+    def add_point_cloud(
+        self, name: str, *, points: np.ndarray, colors: np.ndarray, point_size: float
+    ) -> FakePointCloudHandle:
+        handle = FakePointCloudHandle(points, colors, point_size)
+        handle.name = name
+        self.point_clouds.append(handle)
         return handle
 
 
@@ -949,6 +973,60 @@ def test_scene_adds_reference_grid_when_supported() -> None:
     assert grid.visible is False
     scene.set_reference_grid_visible(True)
     assert grid.visible is True
+
+
+def test_scene_planning_voxel_map_create_update_remove_and_close() -> None:
+    server = FakePointCloudServer()
+    scene = ViserManipulationScene(
+        server, lambda *args, **kwargs: FakeUrdf(("j1",)), preview_fps=10.0
+    )
+    cloud = PointCloud2.from_numpy(
+        np.asarray([[0.0, 0.0, 0.0], [0.1, 0.2, 0.3]], dtype=np.float32), frame_id="world"
+    )
+
+    scene.update_planning_voxel_map(cloud)
+
+    assert len(server.point_clouds) == 1
+    handle = server.point_clouds[0]
+    assert handle.name == "/planning/voxel_map"
+    np.testing.assert_allclose(handle.points, cloud.points_f32())
+    assert handle.colors.dtype == np.uint8
+    assert handle.colors.tolist() == [[0, 180, 255], [0, 180, 255]]
+    assert handle.point_size == 0.035
+
+    updated = PointCloud2.from_numpy(
+        np.asarray([[1.0, 2.0, 3.0]], dtype=np.float32), frame_id="world"
+    )
+    scene.update_planning_voxel_map(updated)
+
+    assert len(server.point_clouds) == 1
+    np.testing.assert_allclose(handle.points, updated.points_f32())
+    assert handle.colors.tolist() == [[0, 180, 255]]
+
+    scene.update_planning_voxel_map(PointCloud2.from_numpy(np.empty((0, 3), dtype=np.float32)))
+    assert handle.removed is True
+    assert scene._planning_map_handle is None
+
+    scene.update_planning_voxel_map(updated)
+    close_handle = server.point_clouds[-1]
+    scene.close()
+    assert close_handle.removed is True
+
+
+def test_scene_planning_voxel_map_downsamples_deterministically(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    monkeypatch.setattr(scene_module, "PLANNING_VOXEL_MAP_MAX_POINTS", 3)
+    server = FakePointCloudServer()
+    scene = ViserManipulationScene(
+        server, lambda *args, **kwargs: FakeUrdf(("j1",)), preview_fps=10.0
+    )
+    points = np.arange(30, dtype=np.float32).reshape((10, 3))
+
+    scene.update_planning_voxel_map(PointCloud2.from_numpy(points, frame_id="world"))
+
+    np.testing.assert_allclose(server.point_clouds[0].points, points[::4])
+    assert len(server.point_clouds[0].colors) == 3
 
 
 def test_preview_visibility_only_affects_preview_ghost_and_close_removes_handles() -> None:

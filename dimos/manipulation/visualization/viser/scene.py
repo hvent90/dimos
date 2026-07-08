@@ -19,6 +19,8 @@ from pathlib import Path
 import time
 from typing import Protocol, TypeAlias, cast
 
+import numpy as np
+
 from dimos.manipulation.planning.spec.config import RobotModelConfig
 from dimos.manipulation.planning.utils.mesh_utils import prepare_urdf_for_drake
 from dimos.manipulation.visualization.viser.animation import (
@@ -32,6 +34,7 @@ from dimos.manipulation.visualization.viser.runtime import (
 )
 from dimos.msgs.geometry_msgs.Pose import Pose
 from dimos.msgs.sensor_msgs.JointState import JointState
+from dimos.msgs.sensor_msgs.PointCloud2 import PointCloud2
 from dimos.utils.logging_config import setup_logger
 
 try:
@@ -39,6 +42,7 @@ try:
         FrameHandle,
         GridHandle,
         MeshHandle,
+        PointCloudHandle,
         TransformControlsEvent,
         TransformControlsHandle,
         ViserServer,
@@ -74,6 +78,10 @@ TARGET_CONTROL_INFEASIBLE_COLOR = (255, 40, 40)
 REFERENCE_GRID_NAME = "/reference_grid"
 REFERENCE_GRID_CELL_COLOR = (44, 54, 58)
 REFERENCE_GRID_SECTION_COLOR = (90, 145, 165)
+PLANNING_VOXEL_MAP_NAME = "/planning/voxel_map"
+PLANNING_VOXEL_MAP_COLOR = (0, 180, 255)
+PLANNING_VOXEL_MAP_POINT_SIZE = 0.035
+PLANNING_VOXEL_MAP_MAX_POINTS = 100_000
 
 SceneHandle: TypeAlias = ViserUrdf | TransformControlsHandle | GridHandle | MeshHandle | FrameHandle
 
@@ -100,6 +108,7 @@ class ViserManipulationScene:
         self._preview_visible: dict[str, bool] = {}
         self._target_active: dict[str, bool] = {}
         self._target_tracks_current: dict[str, bool] = {}
+        self._planning_map_handle: PointCloudHandle | None = None
         self._ensure_reference_grid()
 
     def has_reference_grid(self) -> bool:
@@ -110,6 +119,36 @@ class ViserManipulationScene:
         """Show or hide the optional ground reference grid."""
         self._grid_visible = visible
         self._set_handle_visibility(self._grid_handle, visible)
+
+    def update_planning_voxel_map(self, cloud: PointCloud2 | None) -> None:
+        """Create, update, or remove the planning voxel map point-cloud layer."""
+        if cloud is None:
+            self._remove_planning_voxel_map()
+            return
+        points = np.asarray(cloud.points_f32(), dtype=np.float32).reshape((-1, 3))
+        if len(points) == 0:
+            self._remove_planning_voxel_map()
+            return
+        if len(points) > PLANNING_VOXEL_MAP_MAX_POINTS:
+            stride = int(np.ceil(len(points) / PLANNING_VOXEL_MAP_MAX_POINTS))
+            points = points[::stride]
+        colors = np.broadcast_to(
+            np.asarray(PLANNING_VOXEL_MAP_COLOR, dtype=np.uint8), (len(points), 3)
+        ).copy()
+        if self._planning_map_handle is None:
+            self._planning_map_handle = cast(
+                "PointCloudHandle",
+                self.server.scene.add_point_cloud(
+                    PLANNING_VOXEL_MAP_NAME,
+                    points=points,
+                    colors=colors,
+                    point_size=PLANNING_VOXEL_MAP_POINT_SIZE,
+                ),
+            )
+            return
+        self._planning_map_handle.points = points
+        self._planning_map_handle.colors = colors
+        self._planning_map_handle.point_size = PLANNING_VOXEL_MAP_POINT_SIZE
 
     def register_robot(self, robot_id: str, config: RobotModelConfig) -> None:
         self._configs_by_id[robot_id] = config
@@ -320,6 +359,7 @@ class ViserManipulationScene:
         if self._grid_handle is not None:
             self._remove_scene_handle(self._grid_handle)
             self._grid_handle = None
+        self._remove_planning_voxel_map()
         for urdf in self._urdfs.values():
             self._remove_scene_handle(urdf)
         for frame in self._root_frames.values():
@@ -330,6 +370,11 @@ class ViserManipulationScene:
         self._preview_visible.clear()
         self._target_active.clear()
         self._target_tracks_current.clear()
+
+    def _remove_planning_voxel_map(self) -> None:
+        if self._planning_map_handle is not None:
+            self._remove_scene_handle(self._planning_map_handle)
+            self._planning_map_handle = None
 
     def _ensure_robot_urdfs(self, robot_id: str, config: RobotModelConfig) -> None:
         if not config.model_path:

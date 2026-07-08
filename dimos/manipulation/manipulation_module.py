@@ -32,6 +32,7 @@ import time
 import traceback
 from typing import TYPE_CHECKING, Any, TypeAlias, cast
 
+import numpy as np
 from pydantic import Field
 
 from dimos.agents.annotation import skill
@@ -112,6 +113,7 @@ from dimos.msgs.geometry_msgs.Quaternion import Quaternion
 from dimos.msgs.geometry_msgs.Transform import Transform
 from dimos.msgs.geometry_msgs.Vector3 import Vector3
 from dimos.msgs.sensor_msgs.JointState import JointState
+from dimos.msgs.sensor_msgs.PointCloud2 import PointCloud2
 from dimos.msgs.trajectory_msgs.JointTrajectory import JointTrajectory
 from dimos.msgs.trajectory_msgs.TrajectoryPoint import TrajectoryPoint
 from dimos.utils.logging_config import setup_logger
@@ -183,6 +185,9 @@ class ManipulationModuleConfig(ModuleConfig):
     execution_settle_timeout: float = 15.0
     execution_joint_tolerance: float = 0.08
     execution_poll_interval: float = 0.1
+    planning_voxel_map_obstacle_id: str = "planning_voxel_map"
+    planning_voxel_map_frame: str = "world"
+    planning_voxel_map_resolution: float = Field(default=0.05, gt=0.0)
 
 
 class ManipulationModule(Module):
@@ -198,6 +203,7 @@ class ManipulationModule(Module):
 
     # Input: Joint state from coordinator (for world sync)
     coordinator_joint_state: In[JointState]
+    planning_voxel_map: In[PointCloud2]
 
     def __init__(self, **kwargs: Any) -> None:
         super().__init__(**kwargs)
@@ -227,6 +233,7 @@ class ManipulationModule(Module):
 
         # Init joints: captured from first joint state per robot, used by go_init
         self._init_joints: dict[RobotName, JointState] = {}
+        self._latest_planning_voxel_map: PointCloud2 | None = None
 
         # TF publishing thread
         self._tf_stop_event = threading.Event()
@@ -246,6 +253,10 @@ class ManipulationModule(Module):
         if self.coordinator_joint_state is not None:
             self.coordinator_joint_state.subscribe(self._on_joint_state)
             logger.info("Subscribed to coordinator_joint_state port")
+
+        if self.planning_voxel_map is not None:
+            self.planning_voxel_map.subscribe(self._on_planning_voxel_map)
+            logger.info("Subscribed to planning_voxel_map port")
 
         logger.info("ManipulationModule started")
 
@@ -629,7 +640,52 @@ class ManipulationModule(Module):
                 return False
             self._planning_epoch += 1
             self._state = ManipulationState.PLANNING
+        try:
+            self._sync_planning_voxel_map_to_world()
+        except Exception as exc:
+            return self._fail(f"Failed to sync planning voxel map: {exc}")
         return True
+
+    def _on_planning_voxel_map(self, cloud: PointCloud2) -> None:
+        """Cache latest planning voxel map for pre-plan world synchronization."""
+        with self._lock:
+            self._latest_planning_voxel_map = cloud
+
+    def latest_planning_voxel_map(self) -> PointCloud2 | None:
+        """Return the latest cached planning voxel map for visualization."""
+        with self._lock:
+            return self._latest_planning_voxel_map
+
+    def _sync_planning_voxel_map_to_world(self) -> None:
+        """Replace the planning voxel map obstacle in the planning world if available."""
+        if self._world_monitor is None:
+            raise RuntimeError("Planning not initialized")
+        with self._lock:
+            cloud = self._latest_planning_voxel_map
+        if cloud is None:
+            return
+        expected_frame = self.config.planning_voxel_map_frame
+        if cloud.frame_id != expected_frame:
+            raise ValueError(
+                "Planning voxel map frame mismatch: "
+                f"got '{cloud.frame_id}', expected '{expected_frame}'"
+            )
+        points = np.asarray(cloud.points_f32(), dtype=np.float64)
+        if points.size == 0:
+            self._world_monitor.remove_obstacle(self.config.planning_voxel_map_obstacle_id)
+            return
+        obstacle = Obstacle(
+            name=self.config.planning_voxel_map_obstacle_id,
+            obstacle_type=ObstacleType.OCTREE,
+            pose=PoseStamped(
+                frame_id=expected_frame,
+                position=Vector3(),
+                orientation=Quaternion(),
+            ),
+            points=points,
+            octree_resolution=self.config.planning_voxel_map_resolution,
+        )
+        self._world_monitor.replace_obstacle(obstacle)
 
     def _fail(self, msg: str) -> bool:
         """Set FAULT state with error message."""

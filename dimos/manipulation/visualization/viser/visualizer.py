@@ -163,6 +163,7 @@ class ViserManipulationVisualizer:
                 else self._world_monitor.get_current_joint_state(robot_id)
             )
             self._scene.update_current_robot(str(robot_id), current)
+        self._scene.update_planning_voxel_map(self._manipulation_module.latest_planning_voxel_map())
         if self._gui is not None:
             self._gui.refresh()
 

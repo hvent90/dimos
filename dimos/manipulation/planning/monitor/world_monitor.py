@@ -133,6 +133,15 @@ class WorldMonitor:
         with self._lock:
             return self._world.add_obstacle(obstacle)
 
+    def replace_obstacle(self, obstacle: Obstacle) -> str:
+        """Replace or add an obstacle. Returns obstacle_id."""
+        with self._lock:
+            replace_obstacle = getattr(self._world, "replace_obstacle", None)
+            if callable(replace_obstacle):
+                return str(replace_obstacle(obstacle))
+            self._world.remove_obstacle(obstacle.name)
+            return self._world.add_obstacle(obstacle)
+
     def remove_obstacle(self, obstacle_id: str) -> bool:
         """Remove an obstacle."""
         with self._lock:

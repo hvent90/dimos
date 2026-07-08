@@ -380,6 +380,7 @@ def test_visualizer_publish_preview_and_close_paths(
 ) -> None:
     calls: list[tuple[str, str]] = []
     current = JointState({"name": ["joint1"], "position": [0.5]})
+    latest_map = object()
 
     class FakeRuntime:
         url = "http://localhost:8095"
@@ -407,6 +408,10 @@ def test_visualizer_publish_preview_and_close_paths(
         def update_current_robot(self, robot_id: str, joint_state: JointState | None) -> None:
             assert joint_state == current
             calls.append(("update", robot_id))
+
+        def update_planning_voxel_map(self, cloud: object | None) -> None:
+            assert cloud is latest_map
+            calls.append(("planning_map", "update"))
 
         def show_preview(self, robot_id: str) -> None:
             calls.append(("show", robot_id))
@@ -438,6 +443,7 @@ def test_visualizer_publish_preview_and_close_paths(
         robot_items=lambda: [("arm", "robot-1", robot_config)],
         robot_id_for_name=lambda robot_name: "robot-1" if robot_name == "arm" else None,
         get_robot_config=lambda robot_name: robot_config if robot_name == "arm" else None,
+        latest_planning_voxel_map=lambda: latest_map,
     )
     monkeypatch.setattr(visualizer_module, "ViserRuntime", FakeRuntime)
     monkeypatch.setattr(visualizer_module, "ViserUrdf", FakeViserUrdf)
@@ -464,6 +470,7 @@ def test_visualizer_publish_preview_and_close_paths(
         ("runtime", "start"),
         ("scene", "create"),
         ("update", "robot-1"),
+        ("planning_map", "update"),
         ("show", "robot-1"),
         ("hide", "robot-1"),
         ("animate", "robot-1"),

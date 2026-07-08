@@ -37,19 +37,24 @@ from dimos.manipulation.grasping.target_grasp_demo_controller import TargetGrasp
 from dimos.manipulation.grasping.vgn_grasp_gen_module import VGNGraspGenModule
 from dimos.manipulation.pick_and_place_module import PickAndPlaceModule
 from dimos.manipulation.skill_errors import ManipulationSkillError
+from dimos.mapping.ray_tracing.module import RayTracingVoxelMap
 from dimos.msgs.geometry_msgs.Vector3 import Vector3
 from dimos.msgs.grasping_msgs.GraspCandidateArray import GraspCandidateArray
 from dimos.msgs.perception_msgs.RegisteredObject import RegisteredObject
 from dimos.msgs.sensor_msgs.PointCloud2 import PointCloud2
 from dimos.perception.detection.detectors.yoloe import YoloePromptMode
 from dimos.perception.object_scene_registration import ObjectSceneRegistrationModule
+from dimos.perception.point_cloud_self_filter import PointCloudSelfFilter
 from dimos.perception.reconstruction import SceneReconstructionModule
+from dimos.protocol.tf.tf_pose_source import TfPoseSource
 from dimos.robot.all_blueprints import all_blueprints
 from dimos.robot.manipulators.xarm.blueprints.simulation import (
+    XARM_VOXEL_PLANNING_RESOLUTION,
     gpd_mujoco_grasp_demo,
     manual_agentic_gpd_mujoco_grasp_demo,
     vgn_mujoco_grasp_demo,
     xarm_perception_sim,
+    xarm_voxel_planning_viser_demo,
 )
 from dimos.simulation.engines.mujoco_sim_module import MujocoSimModule
 from dimos.visualization.rerun.bridge import RerunBridgeModule
@@ -159,6 +164,107 @@ def test_manual_agentic_gpd_mujoco_grasp_demo_registry_name_is_stable() -> None:
     assert (
         all_blueprints["manual-agentic-gpd-mujoco-grasp-demo"]
         == "dimos.robot.manipulators.xarm.blueprints.simulation:manual_agentic_gpd_mujoco_grasp_demo"
+    )
+
+
+def test_xarm_voxel_planning_viser_demo_wires_mapping_stack_without_demo_only_modules() -> None:
+    modules = {atom.module for atom in xarm_voxel_planning_viser_demo.blueprints}
+
+    assert PickAndPlaceModule in modules
+    assert MujocoSimModule in modules
+    assert PointCloudSelfFilter in modules
+    assert TfPoseSource in modules
+    assert RayTracingVoxelMap in modules
+    assert GPDGraspGenModule not in modules
+    assert VGNGraspGenModule not in modules
+    assert AgenticGraspManipulationModule not in modules
+    assert GraspingModule not in modules
+    assert PointcloudGraspDemoController not in modules
+    assert TargetGraspDemoController not in modules
+    assert RerunBridgeModule not in modules
+
+
+def test_xarm_voxel_planning_viser_demo_config_and_remappings() -> None:
+    pick_atom = next(
+        atom
+        for atom in xarm_voxel_planning_viser_demo.blueprints
+        if atom.module is PickAndPlaceModule
+    )
+    mapper_atom = next(
+        atom
+        for atom in xarm_voxel_planning_viser_demo.blueprints
+        if atom.module is RayTracingVoxelMap
+    )
+    sim_atom = next(
+        atom for atom in xarm_voxel_planning_viser_demo.blueprints if atom.module is MujocoSimModule
+    )
+    filter_atom = next(
+        atom
+        for atom in xarm_voxel_planning_viser_demo.blueprints
+        if atom.module is PointCloudSelfFilter
+    )
+    tf_atom = next(
+        atom for atom in xarm_voxel_planning_viser_demo.blueprints if atom.module is TfPoseSource
+    )
+
+    assert pick_atom.kwargs["visualization"] == {"backend": "viser"}
+    assert pick_atom.kwargs["world_backend"] == "roboplan"
+    assert pick_atom.kwargs["planner_name"] == "roboplan"
+    assert pick_atom.kwargs["kinematics"] == {"backend": "roboplan"}
+    assert pick_atom.kwargs["planning_voxel_map_resolution"] == XARM_VOXEL_PLANNING_RESOLUTION
+    assert mapper_atom.kwargs["voxel_size"] == XARM_VOXEL_PLANNING_RESOLUTION
+    assert sim_atom.kwargs["enable_depth"] is True
+    assert sim_atom.kwargs["enable_color"] is True
+    assert sim_atom.kwargs["enable_pointcloud"] is True
+    assert tf_atom.kwargs["target_frame"] == "world"
+    assert tf_atom.kwargs["source_frame"] == "wrist_camera_color_optical_frame"
+    regions = filter_atom.kwargs["regions"]
+    assert [(region.shape, region.frame_id) for region in regions] == [
+        ("box", "link7"),
+        ("sphere", "link_tcp"),
+    ]
+    assert regions[0].size == (0.22, 0.22, 0.30)
+    assert regions[1].radius == 0.16
+    robot_config = pick_atom.kwargs["robots"][0]
+    assert "link7" in robot_config.tf_extra_links
+    assert "link_tcp" in robot_config.tf_extra_links
+    assert (
+        xarm_voxel_planning_viser_demo.remapping_map[(RayTracingVoxelMap, "lidar")]
+        == "filtered_pointcloud"
+    )
+    assert (
+        xarm_voxel_planning_viser_demo.remapping_map[(PickAndPlaceModule, "planning_voxel_map")]
+        == "global_map"
+    )
+
+
+def test_xarm_voxel_planning_viser_demo_maps_global_map_to_planning_input() -> None:
+    mapper_atom = next(
+        atom
+        for atom in xarm_voxel_planning_viser_demo.blueprints
+        if atom.module is RayTracingVoxelMap
+    )
+    pick_atom = next(
+        atom
+        for atom in xarm_voxel_planning_viser_demo.blueprints
+        if atom.module is PickAndPlaceModule
+    )
+
+    mapper_streams = {(stream.name, stream.direction) for stream in mapper_atom.streams}
+    pick_streams = {(stream.name, stream.direction) for stream in pick_atom.streams}
+
+    assert ("global_map", "out") in mapper_streams
+    assert ("planning_voxel_map", "in") in pick_streams
+    assert (
+        xarm_voxel_planning_viser_demo.remapping_map[(PickAndPlaceModule, "planning_voxel_map")]
+        == "global_map"
+    )
+
+
+def test_xarm_voxel_planning_viser_demo_registry_name_is_stable() -> None:
+    assert (
+        all_blueprints["xarm-voxel-planning-viser-demo"]
+        == "dimos.robot.manipulators.xarm.blueprints.simulation:xarm_voxel_planning_viser_demo"
     )
 
 

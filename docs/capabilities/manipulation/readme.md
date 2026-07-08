@@ -149,7 +149,8 @@ Backend choices:
 - `meshcat`: embedded Drake/Meshcat visualizer. The planning world must be created with
   embedded visualization enabled, so this is selected through the visualization config.
 - `viser`: in-process Viser visualizer. It renders current robot state, target controls,
-  transient preview ghosts, planned path previews, and optional panel controls.
+  transient preview ghosts, planned path previews, optional panel controls, and the
+  planning voxel map layer for the xArm voxel planning demo.
 - `none`: no manipulation planning visualization.
 
 CLI example:
@@ -241,6 +242,7 @@ visualization backend.
 | `xarm-perception` | XArm7 + RealSense camera for perception |
 | `xarm-perception-agent` | XArm7 perception + LLM agent |
 | `xarm-perception-sim` | XArm7 simulation perception stack |
+| `xarm-voxel-planning-viser-demo` | XArm7 simulation voxel map synced into RoboPlan with Viser |
 
 ### Dual XArm6 RoboPlan + Viser QA
 
