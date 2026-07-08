@@ -21,7 +21,11 @@ from types import ModuleType
 import pytest
 
 from dimos.teleop.openarm_mini.config import OpenArmMiniDependencyError
-from dimos.teleop.openarm_mini.feetech import FeetechLeaderReader, _create_sdk_handlers
+from dimos.teleop.openarm_mini.feetech import (
+    FeetechLeaderReader,
+    _create_sdk_handlers,
+    _read_motor_position,
+)
 
 
 class _FakePortHandler:
@@ -47,6 +51,11 @@ class _FakePacketHandler:
 
     def ReadPos(self, motor_id: int) -> tuple[int, int, int]:
         return (1000 + motor_id, 0, 0)
+
+
+class _FailingPacketHandler:
+    def ReadPos(self, motor_id: int) -> tuple[int, int, int]:
+        return (1000 + motor_id, -1, 2)
 
 
 def _install_fake_sdk(monkeypatch: pytest.MonkeyPatch) -> None:
@@ -92,3 +101,8 @@ def test_create_sdk_handlers_raises_openarm_mini_dependency_error(
 
     with pytest.raises(OpenArmMiniDependencyError):
         _create_sdk_handlers("/dev/missing")
+
+
+def test_read_motor_position_rejects_sdk_error_tuple() -> None:
+    with pytest.raises(RuntimeError, match="position read failed"):
+        _read_motor_position(_FailingPacketHandler(), 3)

@@ -298,7 +298,7 @@ def test_calibrated_motor_radians_uses_zero_offset_full_encoder_span_and_flip() 
     )
 
     assert _calibrated_motor_radians(2200, calibration) == pytest.approx(
-        -(2200 - 2048) * math.tau / FEETECH_POSITION_SPAN
+        -(2200 - 2048) * math.tau / (FEETECH_POSITION_SPAN + 1)
     )
     assert _normalize_motor_position(2200, calibration) == pytest.approx(
         _calibrated_motor_radians(2200, calibration)
@@ -332,7 +332,15 @@ def test_calibration_can_assign_semantic_joint_to_nondefault_motor_id() -> None:
 
     assert calibration.id == 42
     assert _calibrated_motor_radians(1001, calibration) == pytest.approx(
-        math.tau / FEETECH_POSITION_SPAN
+        math.tau / (FEETECH_POSITION_SPAN + 1)
+    )
+
+
+def test_calibrated_motor_radians_wraps_short_way_across_encoder_boundary() -> None:
+    calibration = OpenArmMiniMotorCalibration(id=1, homing_offset=4090, flip=False)
+
+    assert _calibrated_motor_radians(3, calibration) == pytest.approx(
+        9 * math.tau / (FEETECH_POSITION_SPAN + 1)
     )
 
 

@@ -32,6 +32,8 @@ FEETECH_ID_ADDRESS = 5
 FEETECH_TORQUE_ENABLE_ADDRESS = 40
 FEETECH_MIN_MOTOR_ID = 1
 FEETECH_MAX_MOTOR_ID = 253
+FEETECH_TORQUE_ENABLE = 1
+FEETECH_TORQUE_DISABLE = 0
 FEETECH_COMM_SUCCESS = 0
 
 
@@ -116,18 +118,56 @@ def write_motor_id(packet_handler: Any, old_id: int, new_id: int) -> None:
         print(f"Feetech motor is already ID {new_id}; no write needed.")
         return
 
-    _ensure_success(
-        "disable torque",
-        packet_handler.write1ByteTxRx(old_id, FEETECH_TORQUE_ENABLE_ADDRESS, 0),
-    )
-    _ensure_success("unlock EEPROM", packet_handler.unLockEprom(old_id))
-    _ensure_success(
-        "write motor ID",
-        packet_handler.write1ByteTxRx(old_id, FEETECH_ID_ADDRESS, new_id),
-    )
-    _ensure_success("lock EEPROM", packet_handler.LockEprom(new_id))
-    if not ping_motor_id(packet_handler, new_id):
-        raise RuntimeError(f"Feetech motor {new_id} did not respond after ID write")
+    torque_disabled = False
+    eeprom_unlocked = False
+    try:
+        _ensure_success(
+            "disable torque",
+            packet_handler.write1ByteTxRx(
+                old_id, FEETECH_TORQUE_ENABLE_ADDRESS, FEETECH_TORQUE_DISABLE
+            ),
+        )
+        torque_disabled = True
+        _ensure_success("unlock EEPROM", packet_handler.unLockEprom(old_id))
+        eeprom_unlocked = True
+        _ensure_success(
+            "write motor ID",
+            packet_handler.write1ByteTxRx(old_id, FEETECH_ID_ADDRESS, new_id),
+        )
+        _ensure_success("lock EEPROM", packet_handler.LockEprom(new_id))
+        eeprom_unlocked = False
+        if not ping_motor_id(packet_handler, new_id):
+            raise RuntimeError(f"Feetech motor {new_id} did not respond after ID write")
+    except Exception:
+        if eeprom_unlocked:
+            _best_effort_lock_eeprom(packet_handler, candidate_ids=(new_id, old_id))
+        if torque_disabled:
+            _best_effort_enable_torque(packet_handler, candidate_ids=(new_id, old_id))
+        raise
+
+
+def _best_effort_lock_eeprom(packet_handler: Any, candidate_ids: tuple[int, int]) -> None:
+    for motor_id in candidate_ids:
+        try:
+            if _is_success_result(packet_handler.LockEprom(motor_id)):
+                return
+        except Exception:
+            continue
+
+
+def _best_effort_enable_torque(packet_handler: Any, candidate_ids: tuple[int, int]) -> None:
+    for motor_id in candidate_ids:
+        try:
+            if _is_success_result(
+                packet_handler.write1ByteTxRx(
+                    motor_id,
+                    FEETECH_TORQUE_ENABLE_ADDRESS,
+                    FEETECH_TORQUE_ENABLE,
+                )
+            ):
+                return
+        except Exception:
+            continue
 
 
 def _ensure_success(operation: str, result: object) -> None:

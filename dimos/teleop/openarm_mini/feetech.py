@@ -28,6 +28,9 @@ from dimos.teleop.openarm_mini.calibration import (
 )
 from dimos.teleop.openarm_mini.config import missing_dependency_error, validate_side
 
+FEETECH_COMM_SUCCESS = 0
+_FEETECH_ENCODER_TICKS = FEETECH_POSITION_SPAN + 1
+
 
 def _create_sdk_handlers(port: str) -> tuple[Any, Any]:
     """Create optional Feetech SDK port and packet handlers at the hardware boundary."""
@@ -42,7 +45,17 @@ def _create_sdk_handlers(port: str) -> tuple[Any, Any]:
 def _read_motor_position(packet_handler: Any, motor_id: int) -> int:
     result = packet_handler.ReadPos(motor_id)
     if isinstance(result, tuple):
-        position = result[0]
+        values: list[Any] = list(result)
+        if not values:
+            raise RuntimeError(f"Feetech motor {motor_id} position read returned no data")
+        if len(values) >= 3:
+            comm_result = values[-2]
+            error = values[-1]
+            if comm_result != FEETECH_COMM_SUCCESS or error != 0:
+                raise RuntimeError(
+                    f"Feetech motor {motor_id} position read failed with result {values!r}"
+                )
+        position = values[0]
     else:
         position = result
     return int(position)
@@ -126,8 +139,10 @@ class OpenArmMiniLeaderReader:
 
 
 def _calibrated_motor_radians(raw_position: int, calibration: OpenArmMiniMotorCalibration) -> float:
-    centered = raw_position - calibration.homing_offset
-    radians = centered * math.tau / FEETECH_POSITION_SPAN
+    centered = (raw_position - calibration.homing_offset) % _FEETECH_ENCODER_TICKS
+    if centered > _FEETECH_ENCODER_TICKS / 2:
+        centered -= _FEETECH_ENCODER_TICKS
+    radians = centered * math.tau / _FEETECH_ENCODER_TICKS
     if calibration.flip:
         radians = -radians
     return radians

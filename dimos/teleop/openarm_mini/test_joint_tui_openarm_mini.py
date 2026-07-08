@@ -59,8 +59,8 @@ def test_read_side_rows_displays_raw_radians_clamped_and_flip(tmp_path: Path) ->
     assert rows[0].motor_id == 1
     assert rows[0].raw == 2049
     assert rows[0].flip is True
-    assert rows[0].radians == -(math.tau / FEETECH_POSITION_SPAN)
-    assert rows[3].clamped_radians == -0.01
+    assert rows[0].radians == -(math.tau / (FEETECH_POSITION_SPAN + 1))
+    assert rows[3].clamped_radians == 2.4
 
 
 def test_build_joint_dashboard_contains_key_columns(tmp_path: Path) -> None:

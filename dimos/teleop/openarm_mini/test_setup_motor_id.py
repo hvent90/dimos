@@ -19,6 +19,7 @@ import pytest
 import dimos.teleop.openarm_mini.tools.setup_motor_id as setup_motor_id_module
 from dimos.teleop.openarm_mini.tools.setup_motor_id import (
     FEETECH_ID_ADDRESS,
+    FEETECH_TORQUE_ENABLE,
     FEETECH_TORQUE_ENABLE_ADDRESS,
     find_single_motor_id,
     setup_motor_id,
@@ -30,6 +31,7 @@ class _FakePacketHandler:
     def __init__(self, responding_ids: set[int]) -> None:
         self.responding_ids = responding_ids
         self.calls: list[tuple[str, int, int | None, int | None]] = []
+        self.fail_id_write = False
 
     def ping(self, scs_id: int) -> tuple[int, int, int]:
         self.calls.append(("ping", scs_id, None, None))
@@ -39,6 +41,10 @@ class _FakePacketHandler:
 
     def write1ByteTxRx(self, scs_id: int, address: int, value: int) -> tuple[int, int]:
         self.calls.append(("write1", scs_id, address, value))
+        if scs_id not in self.responding_ids:
+            return (-1, 0)
+        if address == FEETECH_ID_ADDRESS and self.fail_id_write:
+            return (-1, 0)
         if address == FEETECH_ID_ADDRESS:
             self.responding_ids.remove(scs_id)
             self.responding_ids.add(value)
@@ -50,6 +56,8 @@ class _FakePacketHandler:
 
     def LockEprom(self, scs_id: int) -> tuple[int, int]:
         self.calls.append(("lock", scs_id, None, None))
+        if scs_id not in self.responding_ids:
+            return (-1, 0)
         return (0, 0)
 
 
@@ -82,6 +90,23 @@ def test_write_motor_id_disables_torque_unlocks_writes_locks_and_verifies() -> N
     assert ("lock", 7, None, None) in packet_handler.calls
     assert ("ping", 7, None, None) in packet_handler.calls
     assert packet_handler.responding_ids == {7}
+
+
+def test_write_motor_id_locks_eeprom_and_restores_torque_after_write_failure() -> None:
+    packet_handler = _FakePacketHandler({3})
+    packet_handler.fail_id_write = True
+
+    with pytest.raises(RuntimeError, match="write motor ID"):
+        write_motor_id(packet_handler, old_id=3, new_id=7)
+
+    assert ("lock", 3, None, None) in packet_handler.calls
+    assert (
+        "write1",
+        3,
+        FEETECH_TORQUE_ENABLE_ADDRESS,
+        FEETECH_TORQUE_ENABLE,
+    ) in packet_handler.calls
+    assert packet_handler.responding_ids == {3}
 
 
 def test_find_single_motor_id_rejects_multiple_connected_motors() -> None:
