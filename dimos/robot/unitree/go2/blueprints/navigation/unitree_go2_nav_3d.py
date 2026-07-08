@@ -171,7 +171,7 @@ unitree_go2_nav_3d = autoconnect(
             (GO2Connection, "odom", "odom_go2"),
         ]
     ),
-    PointLio.blueprint(child_frame_id="body"),
+    PointLio.blueprint(),
     # Publishes the rig's mount frames onto tf.
     Go2Mid360StaticTf.blueprint(),
     RayTracingVoxelMap.blueprint(
