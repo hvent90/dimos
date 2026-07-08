@@ -290,40 +290,6 @@ if __name__ == "__main__":
     blueprint.build().loop()
 ```
 
-### Compressed images
-
-raw images are big — 720p rgb is 2.76MB per frame, ~40MB/s at camera rate. thats fine for shared memory on one host but it kills lcm/zenoh/webrtc the moment you leave it (a single dropped udp fragment loses the whole frame). `CompressedImage` is a first-class msg type (jpeg/png bytes + timestamp + frame_id) and `CodecTransport` wraps any other transport and converts at the edges:
-
-```
-publish(Image)
-  -> CodecTransport.broadcast: jpeg encode ONCE (~3ms, 2.76MB -> 0.14MB)
-  -> inner transport (lcm / zenoh / shm / webrtc), wire carries CompressedImage
-  -> subscriber A (decode=True, default): jpeg decode -> Image, like nothing happend
-  -> subscriber B (decode=False): gets the CompressedImage bytes as-is
-     (rerun renders jpeg directly, VLM agents want jpeg anyway -> zero decodes)
-```
-
-encode happens once at publish, never per subscriber. decode only runs where pixels are actualy needed. already-compressed messages pass through untouched, and depth/16-bit images can't go through jpeg — use `format="png"`.
-
-the go2 basic blueprint with jpeg on the wire instead of raw frames ships as `unitree-go2-compressed-image`, and its the whole diff:
-
-```py skip
-from dimos.core.transport import CodecTransport, LCMTransport
-from dimos.msgs.sensor_msgs.CompressedImage import CompressedImage
-from dimos.msgs.sensor_msgs.Image import Image
-from dimos.robot.unitree.go2.blueprints.basic.unitree_go2_basic import unitree_go2_basic
-
-unitree_go2_compressed_image = unitree_go2_basic.transports(
-    {("color_image", Image): CodecTransport(LCMTransport("/color_image", CompressedImage), quality=80)}
-)
-```
-
-benchmark raw vs compressed yourself (lcm + zenoh, prints a table):
-
-```bash
-CI=1 uv run pytest dimos/core/test_codec_transport.py -k benchmark -s
-```
-
 ## Library API
 
 - [Modules](docs/usage/modules.md)
