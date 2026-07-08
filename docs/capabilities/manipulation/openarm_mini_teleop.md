@@ -95,9 +95,9 @@ python -m dimos.teleop.openarm_mini.tools.calibrate \
 Use `--left-flips none` or `--right-flips none` to record no flipped joints.
 
 At runtime, raw Feetech ticks convert to radians around the captured zero using
-the full Feetech encoder span, then per-joint `flip` is applied. The adapter maps
-semantic leader joints directly to OpenArm follower arm-joint names and clamps
-outgoing positions to OpenArm follower joint limits before publishing. The
+the full Feetech encoder span, then per-joint `flip` is applied. The teleop
+module maps semantic leader joints directly to OpenArm follower arm-joint names
+and clamps outgoing positions to OpenArm follower joint limits before publishing. The
 operator must still align the follower near the leader-implied command before
 enabling teleop authority; automatic startup alignment gating is out of scope for
 v1.

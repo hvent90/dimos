@@ -18,10 +18,20 @@ from __future__ import annotations
 
 from pydantic import Field
 
-from dimos.teleop.openarm_mini.adapter import OpenArmMiniTeleopAdapter
-from dimos.teleop.openarm_mini.config import OpenArmMiniTeleopConfig
+from dimos.teleop.openarm_mini.calibration import load_calibration
+from dimos.teleop.openarm_mini.config import (
+    OpenArmMiniCalibrationError,
+    OpenArmMiniDependencyError,
+    OpenArmMiniSide,
+    OpenArmMiniTeleopConfig,
+)
+from dimos.teleop.openarm_mini.feetech import OpenArmMiniLeaderReader
+from dimos.teleop.openarm_mini.mapping import combine_side_commands, map_side_readings
 from dimos.teleop.runtime.teleop_module import TeleopModule, TeleopModuleConfig
 from dimos.teleop.runtime.types import TeleopCommand
+from dimos.utils.logging_config import setup_logger
+
+logger = setup_logger()
 
 
 class OpenArmMiniTeleopModuleConfig(TeleopModuleConfig):
@@ -41,17 +51,83 @@ class OpenArmMiniTeleopModule(TeleopModule):
 
     def __init__(self, **kwargs: object) -> None:
         super().__init__(**kwargs)
-        self._adapter = OpenArmMiniTeleopAdapter(self.openarm_mini_config.openarm_mini)
+        self._buses: dict[OpenArmMiniSide, OpenArmMiniLeaderReader] = {}
+        self._previous_positions_by_side: dict[OpenArmMiniSide, dict[str, float]] = {}
+        self._last_read_error: str | None = None
+        self._teleop_connected = False
 
     @property
     def openarm_mini_config(self) -> OpenArmMiniTeleopModuleConfig:
         return self.config
 
     def connect_teleop(self) -> None:
-        self._adapter.connect()
+        if self._teleop_connected:
+            return
+        openarm_mini = self.openarm_mini_config.openarm_mini
+        buses: dict[OpenArmMiniSide, OpenArmMiniLeaderReader] = {}
+        try:
+            baudrate = openarm_mini.connection_baudrate()
+            for side in openarm_mini.sides():
+                calibration = load_calibration(openarm_mini.calibration_path(side), side)
+                bus = OpenArmMiniLeaderReader(
+                    side,
+                    openarm_mini.port(side),
+                    calibration,
+                    baudrate,
+                )
+                bus.connect()
+                buses[side] = bus
+        except (
+            OpenArmMiniCalibrationError,
+            OpenArmMiniDependencyError,
+            ValueError,
+            RuntimeError,
+            OSError,
+        ):
+            for bus in buses.values():
+                bus.disconnect()
+            raise
+
+        self._buses = buses
+        self._teleop_connected = True
 
     def disconnect_teleop(self) -> None:
-        self._adapter.disconnect()
+        for bus in self._buses.values():
+            bus.disconnect()
+        self._buses = {}
+        self._previous_positions_by_side = {}
+        self._last_read_error = None
+        self._teleop_connected = False
 
     def get_current_command(self) -> TeleopCommand | None:
-        return self._adapter.get_current_command()
+        openarm_mini = self.openarm_mini_config.openarm_mini
+        if not self._teleop_connected or not openarm_mini.authority_active:
+            return None
+
+        side_commands = []
+        next_previous_positions_by_side: dict[OpenArmMiniSide, dict[str, float]] = {}
+        try:
+            for side in openarm_mini.sides():
+                bus = self._buses[side]
+                side_command = map_side_readings(
+                    side,
+                    bus.read_positions(),
+                    target_joint_names=openarm_mini.target_joint_names(side),
+                    previous_positions_by_joint=self._previous_positions_by_side.get(side),
+                    max_joint_jump_radians=openarm_mini.max_joint_jump_radians,
+                )
+                side_commands.append(side_command)
+                next_previous_positions_by_side[side] = side_command.positions_by_joint
+        except (KeyError, ValueError, RuntimeError, OSError) as exc:
+            error_message = str(exc)
+            if error_message != self._last_read_error:
+                logger.warning(
+                    "OpenArm Mini teleop read failed; dropping command: %s",
+                    error_message,
+                )
+                self._last_read_error = error_message
+            return None
+
+        self._last_read_error = None
+        self._previous_positions_by_side = next_previous_positions_by_side
+        return TeleopCommand(payload=combine_side_commands(side_commands))

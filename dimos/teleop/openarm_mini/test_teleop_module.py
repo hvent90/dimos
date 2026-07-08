@@ -14,7 +14,8 @@
 
 from __future__ import annotations
 
-from collections.abc import Mapping
+from collections.abc import Iterator, Mapping
+from contextlib import contextmanager
 import math
 from pathlib import Path
 from typing import Any
@@ -22,8 +23,7 @@ from typing import Any
 import pytest
 
 from dimos.msgs.sensor_msgs.JointState import JointState
-import dimos.teleop.openarm_mini.adapter as adapter_module
-from dimos.teleop.openarm_mini.adapter import OpenArmMiniTeleopAdapter
+from dimos.teleop.openarm_mini import teleop_module
 from dimos.teleop.openarm_mini.calibration import (
     FEETECH_POSITION_SPAN,
     OPENARM_MINI_ARM_JOINT_NAMES,
@@ -36,6 +36,7 @@ from dimos.teleop.openarm_mini.feetech import (
     _calibrated_motor_radians,
     _normalize_motor_position,
 )
+from dimos.teleop.openarm_mini.teleop_module import OpenArmMiniTeleopModule
 from dimos.teleop.runtime.types import TeleopCommand
 
 
@@ -140,11 +141,27 @@ def _patch_buses(
         created.append((side, port, calibration.side, baudrate))
         return buses[side]
 
-    monkeypatch.setattr(adapter_module, "OpenArmMiniLeaderReader", factory)
+    monkeypatch.setattr(teleop_module, "OpenArmMiniLeaderReader", factory)
     return created
 
 
-def test_adapter_loads_calibration_connects_both_buses_and_returns_joint_command(
+def _module(config: OpenArmMiniTeleopConfig) -> OpenArmMiniTeleopModule:
+    return OpenArmMiniTeleopModule(openarm_mini=config)
+
+
+@contextmanager
+def _connected_module(
+    config: OpenArmMiniTeleopConfig,
+) -> Iterator[OpenArmMiniTeleopModule]:
+    module = _module(config)
+    try:
+        module.connect_teleop()
+        yield module
+    finally:
+        module.stop()
+
+
+def test_teleop_module_loads_calibration_connects_both_buses_and_returns_joint_command(
     tmp_path: Path,
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
@@ -152,7 +169,7 @@ def test_adapter_loads_calibration_connects_both_buses_and_returns_joint_command
     buses = {"left": _FakeBus(_readings()), "right": _FakeBus(_readings())}
     created = _patch_buses(monkeypatch, buses)
 
-    adapter = OpenArmMiniTeleopAdapter(
+    with _connected_module(
         OpenArmMiniTeleopConfig(
             port_left="left-port",
             port_right="right-port",
@@ -160,11 +177,8 @@ def test_adapter_loads_calibration_connects_both_buses_and_returns_joint_command
             right_calibration_path=right_path,
             baudrate=123,
         )
-    )
-
-    adapter.connect()
-    command = adapter.get_current_command()
-    adapter.disconnect()
+    ) as module:
+        command = module.get_current_command()
 
     joint = _payload(command)
     assert joint.name == [
@@ -178,7 +192,7 @@ def test_adapter_loads_calibration_connects_both_buses_and_returns_joint_command
     assert buses["right"].disconnected
 
 
-def test_adapter_left_only_connects_left_bus_and_emits_left_joints(
+def test_teleop_module_left_only_connects_left_bus_and_emits_left_joints(
     tmp_path: Path,
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
@@ -186,13 +200,10 @@ def test_adapter_left_only_connects_left_bus_and_emits_left_joints(
     left_bus = _FakeBus(_readings())
     created = _patch_buses(monkeypatch, {"left": left_bus})
 
-    adapter = OpenArmMiniTeleopAdapter(
+    with _connected_module(
         _configured_config(left_path, right_path, enabled_sides=("left",))
-    )
-
-    adapter.connect()
-    command = adapter.get_current_command()
-    adapter.disconnect()
+    ) as module:
+        command = module.get_current_command()
 
     assert created == [("left", "left-port", "left", 123)]
     joint = _payload(command)
@@ -223,7 +234,7 @@ def test_config_rejects_wrong_target_joint_name_count() -> None:
         OpenArmMiniTeleopConfig(target_joint_names_by_side={"right": ("only_one",)})
 
 
-def test_adapter_returns_none_without_authority(
+def test_teleop_module_returns_none_without_authority(
     tmp_path: Path,
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
@@ -231,18 +242,15 @@ def test_adapter_returns_none_without_authority(
     buses = {"left": _FakeBus(_readings()), "right": _FakeBus(_readings())}
     _patch_buses(monkeypatch, buses)
 
-    adapter = OpenArmMiniTeleopAdapter(
+    with _connected_module(
         _configured_config(left_path, right_path, authority_active=False)
-    )
-
-    adapter.connect()
-    command = adapter.get_current_command()
-    adapter.disconnect()
+    ) as module:
+        command = module.get_current_command()
 
     assert command is None
 
 
-def test_adapter_emits_configured_global_target_joint_names(
+def test_teleop_module_emits_configured_global_target_joint_names(
     tmp_path: Path,
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
@@ -251,25 +259,22 @@ def test_adapter_emits_configured_global_target_joint_names(
     target_names = tuple(f"right_arm/openarm_right_joint{i}" for i in range(1, 8))
     created = _patch_buses(monkeypatch, {"right": right_bus})
 
-    adapter = OpenArmMiniTeleopAdapter(
+    with _connected_module(
         _configured_config(
             left_path,
             right_path,
             enabled_sides=("right",),
             target_joint_names_by_side={"right": target_names},
         )
-    )
-
-    adapter.connect()
-    command = adapter.get_current_command()
-    adapter.disconnect()
+    ) as module:
+        command = module.get_current_command()
 
     joint = _payload(command)
     assert joint.name == list(target_names)
     assert created == [("right", "right-port", "right", 123)]
 
 
-def test_adapter_rejects_jump_threshold_by_returning_no_command(
+def test_teleop_module_rejects_jump_threshold_by_returning_no_command(
     tmp_path: Path,
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
@@ -279,15 +284,12 @@ def test_adapter_rejects_jump_threshold_by_returning_no_command(
     buses = {"left": left_bus, "right": right_bus}
     _patch_buses(monkeypatch, buses)
 
-    adapter = OpenArmMiniTeleopAdapter(
+    with _connected_module(
         _configured_config(left_path, right_path, max_joint_jump_radians=0.1)
-    )
-
-    adapter.connect()
-    first = adapter.get_current_command()
-    left_bus.readings = {**_readings(), "joint_2": -1.0}
-    second = adapter.get_current_command()
-    adapter.disconnect()
+    ) as module:
+        first = module.get_current_command()
+        left_bus.readings = {**_readings(), "joint_2": -1.0}
+        second = module.get_current_command()
 
     assert first is not None
     assert second is None
@@ -308,7 +310,7 @@ def test_calibrated_motor_radians_uses_zero_offset_full_encoder_span_and_flip() 
     )
 
 
-def test_adapter_clamps_over_limit_sender_side(
+def test_teleop_module_clamps_over_limit_sender_side(
     tmp_path: Path,
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
@@ -316,11 +318,8 @@ def test_adapter_clamps_over_limit_sender_side(
     buses = {"left": _FakeBus({**_readings(), "joint_1": 5.0}), "right": _FakeBus(_readings())}
     _patch_buses(monkeypatch, buses)
 
-    adapter = OpenArmMiniTeleopAdapter(_configured_config(left_path, right_path))
-
-    adapter.connect()
-    command = adapter.get_current_command()
-    adapter.disconnect()
+    with _connected_module(_configured_config(left_path, right_path)) as module:
+        command = module.get_current_command()
 
     joint = _payload(command)
     assert joint.position[0] == pytest.approx(1.35)
@@ -347,23 +346,20 @@ def test_calibrated_motor_radians_wraps_short_way_across_encoder_boundary() -> N
     )
 
 
-def test_adapter_returns_none_when_bus_reports_invalid_reading(
+def test_teleop_module_returns_none_when_bus_reports_invalid_reading(
     tmp_path: Path,
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
     left_path, right_path = _write_calibrations(tmp_path)
     _patch_buses(monkeypatch, {"left": _FailingBus(), "right": _FakeBus(_readings())})
 
-    adapter = OpenArmMiniTeleopAdapter(_configured_config(left_path, right_path))
-
-    adapter.connect()
-    command = adapter.get_current_command()
-    adapter.disconnect()
+    with _connected_module(_configured_config(left_path, right_path)) as module:
+        command = module.get_current_command()
 
     assert command is None
 
 
-def test_adapter_returns_none_when_bus_read_raises_runtime_error(
+def test_teleop_module_returns_none_when_bus_read_raises_runtime_error(
     tmp_path: Path,
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
@@ -376,10 +372,7 @@ def test_adapter_returns_none_when_bus_read_raises_runtime_error(
         },
     )
 
-    adapter = OpenArmMiniTeleopAdapter(_configured_config(left_path, right_path))
-
-    adapter.connect()
-    command = adapter.get_current_command()
-    adapter.disconnect()
+    with _connected_module(_configured_config(left_path, right_path)) as module:
+        command = module.get_current_command()
 
     assert command is None
