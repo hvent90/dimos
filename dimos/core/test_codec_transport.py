@@ -184,11 +184,43 @@ def _bench(transport, frame: Image, n: int, wire_bytes: int) -> dict | None:
     if not latencies:
         return None
     lat = statistics.median(latencies)
-    return {"latency_ms": lat * 1000, "wire_bytes": wire_bytes, "fps": 1 / lat, "drops": drops}
+    return {
+        "latency_ms": lat * 1000,
+        "max_ms": max(latencies) * 1000,
+        "wire_bytes": wire_bytes,
+        "fps": 1 / lat,
+        "drops": drops,
+        "n": n,
+    }
+
+
+@pytest.fixture(scope="module")
+def bench_results():
+    """Collect rows across the parametrized benchmark; print one grid at the end."""
+    rows: list[tuple[str, str, dict | None]] = []
+    yield rows
+    if not rows:
+        return
+    print("\n\n" + " " * 18 + "720p Image round-trip: raw vs CodecTransport")
+    print(f"\n{'':17}{'wire/frame':>12}{'median':>10}{'max':>10}{'fps':>8}{'drops':>9}")
+    for proto, mode, r in rows:
+        label = f"{proto:<7}{mode:<10}"
+        if r is None:
+            print(f"{label}{'UNDELIVERABLE (every frame lost)':>44}")
+        else:
+            print(
+                f"{label}{r['wire_bytes'] / 1e6:>10.2f} MB{r['latency_ms']:>8.1f} ms"
+                f"{r['max_ms']:>8.1f} ms{r['fps']:>8.0f}{r['drops']:>6}/{r['n']}"
+            )
+    print(
+        "\nlatency = one broadcast() -> subscriber callback on localhost, so it"
+        "\nincludes the jpeg encode+decode cpu for codec but near-zero wire cost;"
+        "\non a real link the raw frame pays ~20x more transmit time than the jpeg"
+    )
 
 
 @pytest.mark.parametrize("proto", ["lcm", "zenoh"])
-def test_benchmark_image_vs_compressed(proto, session_pool) -> None:
+def test_benchmark_image_vs_compressed(proto, session_pool, bench_results) -> None:
     """Old path (raw Image on the wire) vs CodecTransport(CompressedImage), same transport."""
     frame = make_image()  # 720p, 2.76 MB raw
     n = 15
@@ -205,18 +237,8 @@ def test_benchmark_image_vs_compressed(proto, session_pool) -> None:
     codec = _bench(
         CodecTransport(inner(f"dimos/bench/{proto}_jpeg", CompressedImage)), frame, n, jpeg_wire
     )
-
-    print(f"\n{proto} 720p Image, median of {n} round-trips (encode+wire+decode):")
-    for name, r in (("raw Image", raw), ("CodecTransport jpeg", codec)):
-        if r is None:
-            print(f"  {name:<20} UNDELIVERABLE (every frame lost)")
-        else:
-            print(
-                f"  {name:<20} {r['wire_bytes'] / 1e6:7.2f} MB/frame"
-                f"  {r['latency_ms']:7.2f} ms/frame  {r['fps']:6.1f} fps"
-                f"  drops {r['drops']}/{n}"
-            )
-    print(f"  wire reduction: {raw_wire / jpeg_wire:.1f}x")
+    bench_results.append((proto, "raw", raw))
+    bench_results.append((proto, "codec q75", codec))
 
     assert codec is not None and codec["drops"] == 0, "codec path must deliver every frame"
     assert jpeg_wire < raw_wire * 0.15, "JPEG should cut wire size by >85%"
