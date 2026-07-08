@@ -117,18 +117,18 @@ sender-side clamped follower radians, motor ids, and flip values:
 
 ```bash
 python -m dimos.teleop.openarm_mini.tools.joint_tui \
-  --side both \
-  --port-left <left-feetech-port> \
-  --port-right <right-feetech-port> \
-  --baudrate <feetech-baudrate>
+  --port <feetech-port>
 ```
 
 The TUI is also leader-only: it reads OpenArm Mini Feetech ports and existing
 calibration files, but does not start `ControlCoordinator` or connect follower
 OpenArm hardware.
 
-Use `--left-calibration-path` and `--right-calibration-path` to write or read
-non-default calibration directories.
+The TUI visualizes one side at a time. It uses the only existing default side
+calibration when there is exactly one. Use `--calibration-path` to select a
+non-default calibration artifact or disambiguate when both left and right
+calibrations exist. The default baudrate is `1000000`; pass `--baudrate` only if
+your leader was configured differently.
 
 ## Visualization-only Viser bring-up
 
