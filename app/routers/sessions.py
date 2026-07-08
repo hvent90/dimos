@@ -547,9 +547,18 @@ async def join_session(
                 await _release_operator_slot(db, session_id, user_id)
             raise HTTPException(status_code=503, detail="LiveKit backend not configured")
         room = livekit.room_name(session.id)
+        # LiveKit enforces one participant per identity per room, so a second
+        # join with the same identity force-disconnects the first. Distinguish
+        # the operator (one, exclusive) from viewers, and make each viewer
+        # unique, so opening a viewer tab (or a viewer at all) can't kick the
+        # live operator out of the room.
+        if body.role == "operator":
+            identity = f"op-{user_id}"
+        else:
+            identity = f"viewer-{user_id}-{uuid.uuid4().hex[:8]}"
         try:
             token = livekit.mint_token(
-                identity=f"op-{user_id}",
+                identity=identity,
                 name=user_id,
                 room=room,
                 can_publish=False,  # operator drives via data; no media uplink
@@ -1089,7 +1098,15 @@ async def _reap_stale_operators() -> None:
         )).scalars().all()
         for s in stale:
             async with _session_lock(s.id):
-                idle = (datetime.now(timezone.utc) - _utc(s.last_operator_heartbeat)).total_seconds()
+                # Re-read under the lock: an op-heartbeat can land between the
+                # SELECT above and here, refreshing last_operator_heartbeat on a
+                # different db session. Without this refresh + re-check we'd
+                # commit the stale in-memory row and evict a live operator.
+                await db.refresh(s)
+                last_hb = _utc(s.last_operator_heartbeat)
+                if s.state != "active" or last_hb is None or last_hb >= threshold:
+                    continue  # recovered, already reaped, or changed hands
+                idle = (datetime.now(timezone.utc) - last_hb).total_seconds()
                 log.warning(
                     "reaping stale operator session=%s operator=%s idle_for=%.1fs",
                     s.id, s.operator_id, idle,
