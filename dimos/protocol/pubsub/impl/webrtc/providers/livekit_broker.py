@@ -16,28 +16,18 @@
 
 The robot asks the ``dimensional-teleop`` broker for a LiveKit room + JWT
 (``POST /api/v1/sessions {transport:"livekit"}`` → ``{url, token, room}``),
-then connects straight to the LiveKit SFU. Unlike the Cloudflare ``broker.py``
-path there is no SDP relay, no SCTP-id juggling, and no heartbeat-driven
-channel lifecycle: LiveKit data is bidirectional and topic-addressed, so a
-single room carries every channel.
-
-Topics (kept identical to the Cloudflare path so the typed-fingerprint demux at
-the transport layer is unchanged):
+then connects straight to the LiveKit SFU. Data is bidirectional and
+topic-addressed, so one room carries every channel — no SDP relay or per-channel
+lifecycle. Topics match the Cloudflare path so the transport-layer demux is
+unchanged:
     cmd_unreliable      operator → robot   commands (lossy)
     state_reliable      operator → robot   control plane (reliable)
     state_reliable_back robot → operator   telemetry (reliable)
 
 Video: ``set_video_frame()`` pushes camera frames into a sendonly LiveKit track
-(published lazily on the first frame) — typically via ``LiveKitVideoTransport``
-bound to a blueprint's Image stream.
-
-Config comes from the blueprint's ``transports.broker.*`` flow (env form
-``TRANSPORTS__BROKER__<FIELD>``, or ``-o transports.broker.<field>=...``), the
-same scheme as the Cloudflare ``BrokerConfig``:
-    TRANSPORTS__BROKER__BROKER_URL  — default https://teleop.dimensionalos.com
-    TRANSPORTS__BROKER__API_KEY     — robot API key (dtk_live_*); derives identity
-    TRANSPORTS__BROKER__ROBOT_ID    — optional robot identifier override
-    TRANSPORTS__BROKER__ROBOT_NAME  — human-readable robot name
+(published lazily on the first frame), typically via ``LiveKitVideoTransport``.
+Config comes from the blueprint's ``transports.broker.*`` flow (see
+``LiveKitBrokerConfig``).
 """
 
 from __future__ import annotations

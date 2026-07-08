@@ -53,8 +53,6 @@ from dimos.utils.decorators.decorators import simple_mcache
 from dimos.utils.logging_config import setup_logger
 from dimos.utils.reactive import backpressure, callback_to_observable
 
-logger = setup_logger()
-
 VideoMessage: TypeAlias = NDArray[np.uint8]  # Shape: (height, width, 3)
 
 logger = setup_logger()
@@ -375,8 +373,7 @@ class UnitreeWebRTCConnection(Resource):
         BalanceStand → 2059 {data:enable} → SwitchJoystick(True). When on,
         normal move() twists drive at the ~2.5 m/s rage envelope.
         """
-        # Re-establish BalanceStand before toggling (notes: always BalanceStand
-        # before flipping Rage).
+        # Always BalanceStand before flipping Rage.
         if not self.balance_stand():
             logger.warning("balance_stand() failed before rage toggle — proceeding")
         time.sleep(0.3)
@@ -393,12 +390,10 @@ class UnitreeWebRTCConnection(Resource):
         # Settle both directions — FSM transition needs time before SwitchJoystick.
         time.sleep(2.0)
         # Joystick stays ON in both directions — rage only changes the speed
-        # envelope. Passing `enable` here disabled joystick listening whenever
-        # rage was turned OFF (including the hosted boot force-reset), which
-        # silently killed WASD drive until something re-enabled it.
+        # envelope (passing `enable` here would kill WASD drive when rage is off).
         joystick_ok = self.switch_joystick(True)
         if not joystick_ok:
-            logger.warning("SwitchJoystick failed after rage toggle", enabled=enable)
+            logger.warning("SwitchJoystick failed after rage toggle")
         return joystick_ok
 
     def liedown(self) -> bool:

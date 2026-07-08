@@ -549,12 +549,6 @@ class LiveKitVideoTransport(WebRTCVideoTransport):
     _config_cls = LiveKitBrokerConfig
 
 
-class LiveKitVideoTransport(WebRTCVideoTransport):
-    """Camera → teleop web client via the hosted broker + LiveKit (see WebRTCVideoTransport)."""
-
-    _config_cls = LiveKitBrokerConfig
-
-
 class ZenohTransport(PubSubTransport[T]):
     """Zenoh transport with LCM encoding for typed DimosMsg.
 

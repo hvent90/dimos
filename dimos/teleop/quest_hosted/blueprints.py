@@ -45,7 +45,6 @@ teleop_hosted_go2 = autoconnect(
 # Hosted teleop over CF Realtime. Run with -o transports.broker.api_key=dtk_live_...
 # VoxelGridMapper → CostMapper build the OccupancyGrid; Go2HostedConnection
 # encodes it (+ odom) onto state_reliable_back for the operator minimap.
-# VoxelGridMapper (not the old Map module) keeps per-frame cost flat.
 teleop_hosted_go2_transport = (
     autoconnect(
         unitree_go2_basic.disabled_modules(GO2Connection),
