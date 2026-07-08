@@ -21,7 +21,7 @@ use validator::ValidationError;
 
 use crate::adjacency::{build_surface_cells, build_surface_lookup, rebuild_edges_around, CellId};
 use crate::edges::{build_node_edges, build_node_edges_region, PlannerGraph};
-use crate::nodes::{place_nodes, place_nodes_region};
+use crate::nodes::{self, place_nodes, place_nodes_region};
 use crate::planner;
 use crate::surfaces::{
     add_to_by_col, extract_surfaces, extract_surfaces_region, remove_from_by_col, ColumnIz,
@@ -255,6 +255,7 @@ impl Planner {
             config.wall_buffer_weight,
             config.step_penalty_weight,
             &mut self.graph.wall_state,
+            &mut self.graph.local_width,
             &mut self.graph.node_scratch,
             &mut self.graph.nodes,
         );
@@ -441,6 +442,7 @@ impl Planner {
             config.wall_buffer_weight,
             config.step_penalty_weight,
             &mut self.graph.wall_state,
+            &mut self.graph.local_width,
             &mut self.graph.node_scratch,
             &mut self.graph.nodes,
         );
@@ -515,6 +517,28 @@ impl Planner {
             .map(|id| {
                 let d = dist.get(id as usize).copied().unwrap_or(f32::INFINITY);
                 (self.graph.cells.coord(id), d)
+            })
+            .collect()
+    }
+
+    /// Surface cells paired with the wall penalty the planner applies. Blocked
+    /// cells report +inf.
+    pub fn surface_penalty(
+        &self,
+        clearance_m: f32,
+        buffer_m: f32,
+        weight: f32,
+    ) -> Vec<(VoxelKey, f32)> {
+        let dist = &self.graph.wall_state.dist;
+        let width = &self.graph.local_width;
+        self.graph
+            .cells
+            .ids()
+            .map(|id| {
+                let d = dist.get(id as usize).copied().unwrap_or(f32::INFINITY);
+                let w = width.get(id as usize).copied().unwrap_or(0.0);
+                let p = nodes::penalty_of(d, clearance_m, buffer_m, weight, w);
+                (self.graph.cells.coord(id), p)
             })
             .collect()
     }

@@ -127,16 +127,16 @@ def _log_odometry(
         rr.log("world/odom_path", rr.LineStrips3D([trail], colors=[[255, 255, 255]], radii=0.015))
 
 
-def _clearance_colors(
-    clearance: NDArray[np.float32], clamp_m: float, hard_clearance: float
-) -> NDArray[np.uint8]:
-    """Color surface cells by wall clearance, red inside the hard clearance."""
-    norm = np.clip(np.nan_to_num(clearance / clamp_m, nan=1.0, posinf=1.0), 0.0, 1.0)
-    blocked = np.array([4.0, 8.0, 48.0], dtype=np.float64)
-    clear = np.array([150.0, 200.0, 255.0], dtype=np.float64)
-    rgb: NDArray[np.float64] = blocked + norm[:, None] * (clear - blocked)
+def _penalty_colors(penalty: NDArray[np.float32], weight: float) -> NDArray[np.uint8]:
+    """Color surface cells by the wall penalty: light at a free centerline
+    (penalty 1) to dark at the wall (penalty 1 + weight), red where blocked."""
+    span = max(weight, 1e-6)
+    goodness = np.clip(1.0 - (np.nan_to_num(penalty, posinf=1.0 + span) - 1.0) / span, 0.0, 1.0)
+    wall = np.array([4.0, 8.0, 48.0], dtype=np.float64)
+    free = np.array([150.0, 200.0, 255.0], dtype=np.float64)
+    rgb: NDArray[np.float64] = wall + goodness[:, None] * (free - wall)
     out = rgb.astype(np.uint8)
-    out[clearance < hard_clearance] = (255, 0, 0)
+    out[~np.isfinite(penalty)] = (255, 0, 0)  # hard clearance
     return out
 
 
@@ -144,8 +144,7 @@ def _log_shared(
     start: tuple[float, float, float],
     planner: MLSPlanner,
     render_voxel: float,
-    clearance_clamp: float,
-    hard_clearance: float,
+    weight: float,
 ) -> tuple[NDArray[np.float32], NDArray[np.float32], NDArray[np.float32]]:
     """Log the map artifacts shared by every config from a reference planner.
 
@@ -160,13 +159,13 @@ def _log_shared(
             rr.Points3D(voxel_map, colors=[[180, 125, 125]], radii=render_voxel / 2),
         )
 
-    surface = planner.surface_clearance_map()
+    surface = planner.surface_penalty_map()
     if surface.size:
         rr.log(
             "world/surface_map",
             rr.Points3D(
                 surface[:, :3],
-                colors=_clearance_colors(surface[:, 3], clearance_clamp, hard_clearance),
+                colors=_penalty_colors(surface[:, 3], weight),
                 radii=render_voxel / 2,
             ),
         )
@@ -230,8 +229,7 @@ def _process_frame(
     goal: tuple[float, float, float],
     robot_height: float,
     render_voxel: float,
-    clearance_clamp: float,
-    hard_clearance: float,
+    weight: float,
 ) -> dict[str, float]:
     """Plan every config for one frame, log paths/map/metrics, return the ref timing."""
     assert ray_obs.pose_tuple is not None
@@ -257,9 +255,7 @@ def _process_frame(
                 "plan_ms": (t2 - t1) * 1000,
                 "total_ms": (t2 - t0) * 1000,
             }
-            surface, nodes, edges = _log_shared(
-                start, planner, render_voxel, clearance_clamp, hard_clearance
-            )
+            surface, nodes, edges = _log_shared(start, planner, render_voxel, weight)
 
     for key, value in ref_timing.items():
         rr.log(f"metrics/timing/{key}", rr.Scalars(value))
@@ -350,9 +346,6 @@ def main(
         False, "--live", help="Also spawn the rerun viewer when --out is set"
     ),
     render_voxel: float = typer.Option(0.05, "--render-voxel", help="Rerun voxel render size (m)"),
-    clearance_clamp: float = typer.Option(
-        1.0, "--clearance-clamp", help="Max clearance (m) for the surface color scale"
-    ),
     from_time: float | None = typer.Option(
         None, "--from-time", help="Start timestamp (s); default is the stream start"
     ),
@@ -390,7 +383,7 @@ def main(
         )
 
         configs = _parse_configs(config, wall_clearance, wall_buffer, wall_buffer_weight)
-        ref_clearance = configs[0][0]
+        ref_weight = configs[0][2]
         planners = _build_planners(
             configs,
             voxel_size,
@@ -432,8 +425,7 @@ def main(
                     goal,
                     robot_height,
                     render_voxel,
-                    clearance_clamp,
-                    ref_clearance,
+                    ref_weight,
                 )
                 _log_odometry(ray_obs.pose_tuple, ray_obs.ts, odom_trail)
                 frame += 1

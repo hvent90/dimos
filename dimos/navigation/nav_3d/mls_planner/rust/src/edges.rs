@@ -57,6 +57,9 @@ pub struct PlannerGraph {
     pub cell_state: DijkstraState,
     /// Each cell's distance to the nearest wall.
     pub wall_state: DijkstraState,
+    /// Each cell's local corridor half-width: the ridge wall distance it drains
+    /// up to, capped at the outer buffer edge. Parallel to wall_state.dist.
+    pub local_width: Vec<f32>,
     /// Reusable dense scratch for node placement, shared across region frames.
     pub node_scratch: NodeScratch,
 }

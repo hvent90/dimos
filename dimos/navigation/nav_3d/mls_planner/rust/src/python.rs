@@ -185,6 +185,31 @@ impl MLSPlanner {
             .into_pyarray(py)
     }
 
+    /// Surface cells as (M, 4) float32 rows of x, y, z, penalty, the wall cost
+    /// multiplier the planner applies. Blocked cells report +inf.
+    fn surface_penalty_map<'py>(&self, py: Python<'py>) -> Bound<'py, PyArray2<f32>> {
+        let voxel_size = self.config.voxel_size;
+        let clearance_m = self.config.wall_clearance_m;
+        let buffer_m = self.config.wall_buffer_m;
+        let weight = self.config.wall_buffer_weight;
+        let values: Vec<f32> = py.allow_threads(|| {
+            let cells = self.planner.surface_penalty(clearance_m, buffer_m, weight);
+            let mut out: Vec<f32> = Vec::with_capacity(cells.len() * 4);
+            for ((ix, iy, iz), penalty) in cells {
+                let (x, y, z) = surface_point_xyz(ix, iy, iz, voxel_size);
+                out.push(x);
+                out.push(y);
+                out.push(z);
+                out.push(penalty);
+            }
+            out
+        });
+        let n = values.len() / 4;
+        Array2::from_shape_vec((n, 4), values)
+            .expect("4 elements pushed per cell")
+            .into_pyarray(py)
+    }
+
     fn nodes<'py>(&self, py: Python<'py>) -> Bound<'py, PyArray2<f32>> {
         let graph = self.planner.graph();
         let positions: Vec<f32> = py.allow_threads(|| {

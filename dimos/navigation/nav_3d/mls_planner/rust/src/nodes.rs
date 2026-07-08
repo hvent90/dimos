@@ -48,6 +48,7 @@ pub fn place_nodes(
     wall_buffer_weight: f32,
     step_penalty_weight: f32,
     state: &mut DijkstraState,
+    local_width: &mut Vec<f32>,
     scratch: &mut NodeScratch,
     out_nodes: &mut Vec<NodeData>,
 ) {
@@ -59,6 +60,12 @@ pub fn place_nodes(
     let mut wall_seeds: Vec<CellId> = Vec::new();
     collect_wall_adjacent_cells(cells, by_col, clearance_cells, step_cells, &mut wall_seeds);
     dijkstra(cells, &wall_seeds, state, Weight::Base);
+    compute_local_width(
+        cells,
+        &state.dist,
+        wall_clearance_m + wall_buffer_m,
+        local_width,
+    );
 
     // Floor is the hard clearance. NMS already prefers the clearest cells.
     let node_floor = wall_clearance_m;
@@ -82,6 +89,7 @@ pub fn place_nodes(
     apply_wall_safe_penalty(
         cells,
         &state.dist,
+        local_width,
         wall_clearance_m,
         wall_buffer_m,
         wall_buffer_weight,
@@ -132,6 +140,7 @@ pub fn place_nodes_region(
     wall_buffer_weight: f32,
     step_penalty_weight: f32,
     wall_state: &mut DijkstraState,
+    local_width: &mut Vec<f32>,
     scratch: &mut NodeScratch,
     nodes: &mut Vec<NodeData>,
 ) {
@@ -172,16 +181,54 @@ pub fn place_nodes_region(
         .collect();
     ensure_node_per_component(cells, &wall_state.dist, voxel_size, &domain, scratch, nodes);
 
+    // The window and its boundary, whose distance the region pass may have shifted.
+    let affected = window_and_boundary(cells, window, scratch);
+    compute_local_width_region(
+        cells,
+        &wall_state.dist,
+        wall_clearance_m + wall_buffer_m,
+        &affected,
+        local_width,
+    );
     apply_wall_safe_penalty_region(
         cells,
         &wall_state.dist,
+        local_width,
         wall_clearance_m,
         wall_buffer_m,
         wall_buffer_weight,
         step_penalty_weight,
-        window,
-        scratch,
+        &affected,
     );
+}
+
+/// The window plus its one-cell boundary, deduped via the dense seen mask.
+fn window_and_boundary(
+    cells: &SurfaceCells,
+    window: &AHashSet<CellId>,
+    scratch: &mut NodeScratch,
+) -> Vec<CellId> {
+    scratch.ensure_capacity(cells.slot_capacity());
+    let mut affected: Vec<CellId> = Vec::with_capacity(window.len() * 2);
+    {
+        let seen = &mut scratch.seen;
+        for &w in window {
+            if !seen[w as usize] {
+                seen[w as usize] = true;
+                affected.push(w);
+            }
+            for e in cells.neighbors(w) {
+                if !seen[e.dest as usize] {
+                    seen[e.dest as usize] = true;
+                    affected.push(e.dest);
+                }
+            }
+        }
+    }
+    for &id in &affected {
+        scratch.seen[id as usize] = false;
+    }
+    affected
 }
 
 /// Wall-adjacency over a cell subset, matching collect_wall_adjacent_cells.
@@ -269,39 +316,19 @@ fn edge_in_direction(
 fn apply_wall_safe_penalty_region(
     cells: &mut SurfaceCells,
     dist: &[f32],
+    local_width: &[f32],
     clearance_m: f32,
     buffer_m: f32,
     buffer_weight: f32,
     step_weight: f32,
-    window: &AHashSet<CellId>,
-    scratch: &mut NodeScratch,
+    affected: &[CellId],
 ) {
-    // The window and its boundary, deduped via the dense seen mask.
-    scratch.ensure_capacity(cells.slot_capacity());
-    let mut affected: Vec<CellId> = Vec::with_capacity(window.len() * 2);
-    {
-        let seen = &mut scratch.seen;
-        for &w in window {
-            if !seen[w as usize] {
-                seen[w as usize] = true;
-                affected.push(w);
-            }
-            for e in cells.neighbors(w) {
-                if !seen[e.dest as usize] {
-                    seen[e.dest as usize] = true;
-                    affected.push(e.dest);
-                }
-            }
-        }
-    }
-    for &id in &affected {
-        scratch.seen[id as usize] = false;
-    }
-    for &id in &affected {
+    for &id in affected {
         scale_edges(
             cells.edges_mut(id),
             id,
             dist,
+            local_width,
             clearance_m,
             buffer_m,
             buffer_weight,
@@ -390,9 +417,11 @@ fn nms_grid(
 
 /// Scale each edge by its endpoints' average wall penalty and add the step
 /// penalty. Unreached cells (dist +INFINITY) collapse the wall penalty to 1.0.
+#[allow(clippy::too_many_arguments)]
 fn apply_wall_safe_penalty(
     cells: &mut SurfaceCells,
     dist: &[f32],
+    local_width: &[f32],
     clearance_m: f32,
     buffer_m: f32,
     buffer_weight: f32,
@@ -404,6 +433,7 @@ fn apply_wall_safe_penalty(
             edges,
             *src,
             dist,
+            local_width,
             clearance_m,
             buffer_m,
             buffer_weight,
@@ -414,42 +444,112 @@ fn apply_wall_safe_penalty(
 
 /// Rescale one cell's outgoing edges from base_cost. Idempotent, so a regional
 /// repass cannot compound the penalty.
+#[allow(clippy::too_many_arguments)]
 #[inline]
 fn scale_edges(
     edges: &mut [Edge],
     src: CellId,
     dist: &[f32],
+    local_width: &[f32],
     clearance_m: f32,
     buffer_m: f32,
     buffer_weight: f32,
     step_weight: f32,
 ) {
-    let pu = penalty_of(dist[src as usize], clearance_m, buffer_m, buffer_weight);
+    let pu = penalty_of(
+        dist[src as usize],
+        clearance_m,
+        buffer_m,
+        buffer_weight,
+        local_width[src as usize],
+    );
     for edge in edges.iter_mut() {
         let pv = penalty_of(
             dist[edge.dest as usize],
             clearance_m,
             buffer_m,
             buffer_weight,
+            local_width[edge.dest as usize],
         );
         edge.cost = edge.base_cost * (pu + pv) / 2.0 + step_weight * edge.rise;
     }
 }
 
 /// Lateral wall multiplier: infinite inside clearance, ramping convexly from
-/// 1 + weight at the clearance edge down to 1 at clearance_m + buffer_m.
+/// 1 + weight at the clearance edge down to 1 at the reach edge, where reach is
+/// `w_local` capped at clearance_m + buffer_m.
 #[inline]
-pub(crate) fn penalty_of(d: f32, clearance_m: f32, buffer_m: f32, weight: f32) -> f32 {
+pub(crate) fn penalty_of(
+    d: f32,
+    clearance_m: f32,
+    buffer_m: f32,
+    weight: f32,
+    w_local: f32,
+) -> f32 {
     if d < clearance_m {
         return f32::INFINITY;
     }
-    let outer = clearance_m + buffer_m;
-    if d >= outer {
+    let reach = w_local.min(clearance_m + buffer_m);
+    if d >= reach {
         return 1.0;
     }
-    let band = buffer_m.max(1e-3);
-    let t = (outer - d) / band; // 0 at the outer edge, 1 at the clearance edge
+    let band = (reach - clearance_m).max(1e-3);
+    let t = (reach - d) / band; // 0 at the reach edge, 1 at the clearance edge
     1.0 + weight * t * t
+}
+
+/// Watershed over the descending distance field: each cell takes the highest
+/// ridge distance reachable by ascending, capped at `cap`.
+fn accumulate_local_width(
+    cells: &SurfaceCells,
+    dist: &[f32],
+    cap: f32,
+    order: &[CellId],
+    out: &mut [f32],
+) {
+    for &id in order {
+        let d = dist[id as usize];
+        let mut w = d.min(cap);
+        for e in cells.neighbors(id) {
+            if dist[e.dest as usize] >= d {
+                w = w.max(out[e.dest as usize]);
+            }
+        }
+        out[id as usize] = w;
+    }
+}
+
+/// Full-graph local width: watershed over every reachable cell.
+fn compute_local_width(cells: &SurfaceCells, dist: &[f32], cap: f32, out: &mut Vec<f32>) {
+    out.clear();
+    out.resize(cells.slot_capacity(), 0.0);
+    let mut order: Vec<CellId> = cells
+        .ids()
+        .filter(|&id| dist[id as usize].is_finite())
+        .collect();
+    order.par_sort_unstable_by(|&a, &b| dist[b as usize].total_cmp(&dist[a as usize]));
+    accumulate_local_width(cells, dist, cap, &order, out);
+}
+
+/// Regional local width: rerun the watershed only over `region`. Cells outside
+/// keep their prior width.
+fn compute_local_width_region(
+    cells: &SurfaceCells,
+    dist: &[f32],
+    cap: f32,
+    region: &[CellId],
+    out: &mut Vec<f32>,
+) {
+    if out.len() < cells.slot_capacity() {
+        out.resize(cells.slot_capacity(), 0.0);
+    }
+    let mut order: Vec<CellId> = region
+        .iter()
+        .copied()
+        .filter(|&id| dist[id as usize].is_finite())
+        .collect();
+    order.par_sort_unstable_by(|&a, &b| dist[b as usize].total_cmp(&dist[a as usize]));
+    accumulate_local_width(cells, dist, cap, &order, out);
 }
 
 /// Seed a node in every connected component in `domain` that the clearance
@@ -671,6 +771,7 @@ mod tests {
             1.0,
             0.0,
             &mut state,
+            &mut Vec::new(),
             &mut scratch,
             &mut nodes,
         );
@@ -704,6 +805,7 @@ mod tests {
             1.0,
             0.0,
             &mut state,
+            &mut Vec::new(),
             &mut scratch,
             &mut nodes,
         );
@@ -736,6 +838,7 @@ mod tests {
             1.0,
             0.0,
             &mut state,
+            &mut Vec::new(),
             &mut scratch,
             &mut nodes,
         );
@@ -757,18 +860,85 @@ mod tests {
     fn penalty_ramps_across_buffer_zone() {
         // clearance 0.1, soft zone 0.4 wide, so the outer edge is at 0.5.
         let (clearance, buffer, w) = (0.1, 0.4, 4.0);
-        assert!(penalty_of(0.05, clearance, buffer, w).is_infinite());
-        assert!((penalty_of(0.1, clearance, buffer, w) - 5.0).abs() < 1e-6);
-        assert!((penalty_of(0.5, clearance, buffer, w) - 1.0).abs() < 1e-6);
-        assert!((penalty_of(1.0, clearance, buffer, w) - 1.0).abs() < 1e-6);
-        assert!((penalty_of(0.3, clearance, buffer, w) - 2.0).abs() < 1e-6);
+        let wide = f32::INFINITY;
+        assert!(penalty_of(0.05, clearance, buffer, w, wide).is_infinite());
+        assert!((penalty_of(0.1, clearance, buffer, w, wide) - 5.0).abs() < 1e-6);
+        assert!((penalty_of(0.5, clearance, buffer, w, wide) - 1.0).abs() < 1e-6);
+        assert!((penalty_of(1.0, clearance, buffer, w, wide) - 1.0).abs() < 1e-6);
+        assert!((penalty_of(0.3, clearance, buffer, w, wide) - 2.0).abs() < 1e-6);
+    }
+
+    #[test]
+    fn penalty_ramps_across_a_narrow_corridor_width() {
+        // Ridge only 0.2 from the walls, inside the 0.5 outer edge: the ramp
+        // spans its own width, so the edge is penalized and the ridge is free.
+        let (clearance, buffer, w) = (0.1, 0.4, 4.0);
+        let ridge = 0.2;
+        assert!((penalty_of(0.1, clearance, buffer, w, ridge) - 5.0).abs() < 1e-6);
+        assert!((penalty_of(0.2, clearance, buffer, w, ridge) - 1.0).abs() < 1e-6);
+        assert!((penalty_of(0.15, clearance, buffer, w, ridge) - 2.0).abs() < 1e-6);
+    }
+
+    #[test]
+    fn local_width_inherits_the_corridor_ridge() {
+        // Width-3 corridor: the center row is the ridge one voxel off the walls.
+        // The wall rows drain up to it and inherit its width.
+        let mut cells_in: Vec<VoxelKey> = Vec::new();
+        for ix in 0..8 {
+            for iy in 0..3 {
+                cells_in.push((ix, iy, 0));
+            }
+        }
+        let sc = build_cells(&cells_in, 2);
+        let mut state = DijkstraState::default();
+        let mut seeds = Vec::new();
+        collect_wall_adjacent_cells(&sc, &ColumnIz::default(), 5, 2, &mut seeds);
+        dijkstra(&sc, &seeds, &mut state, Weight::Base);
+        let mut lw = Vec::new();
+        compute_local_width(&sc, &state.dist, 0.3, &mut lw);
+        let ridge = sc.id((4, 1, 0)).unwrap();
+        let edge = sc.id((4, 0, 0)).unwrap();
+        assert!(
+            (lw[ridge as usize] - VOXEL).abs() < 1e-6,
+            "ridge {}",
+            lw[ridge as usize]
+        );
+        assert!(
+            (lw[edge as usize] - VOXEL).abs() < 1e-6,
+            "edge {}",
+            lw[edge as usize]
+        );
+    }
+
+    #[test]
+    fn local_width_caps_at_the_outer_edge() {
+        // Wide open patch: ridge distance exceeds the buffer, so width caps at
+        // the outer edge.
+        let sc = build_cells(&open_patch(0, 0, 20), 2);
+        let mut state = DijkstraState::default();
+        let mut seeds = Vec::new();
+        collect_wall_adjacent_cells(&sc, &ColumnIz::default(), 5, 2, &mut seeds);
+        dijkstra(&sc, &seeds, &mut state, Weight::Base);
+        let mut lw = Vec::new();
+        compute_local_width(&sc, &state.dist, 0.3, &mut lw);
+        let center = sc.id((10, 10, 0)).unwrap();
+        assert!(
+            (lw[center as usize] - 0.3).abs() < 1e-6,
+            "center {}",
+            lw[center as usize]
+        );
     }
 
     #[test]
     fn wall_penalty_doubles_cost_at_the_wall() {
-        // On a 1-wide strip every cell is wall-adjacent (d = 0), so with zero
-        // clearance the ramp peaks at 2 and edge cost is twice the geometric.
-        let cells_in: Vec<VoxelKey> = (0..10).map(|ix| (ix, 0, 0)).collect();
+        // 3-wide corridor, zero clearance: the wall rows (d = 0) ramp to penalty
+        // 2 and the center ridge falls to 1, so an edge chord costs twice a ridge.
+        let mut cells_in: Vec<VoxelKey> = Vec::new();
+        for ix in 0..10 {
+            for iy in 0..3 {
+                cells_in.push((ix, iy, 0));
+            }
+        }
         let mut sc = build_cells(&cells_in, 2);
         let mut state = DijkstraState::default();
         let mut scratch = NodeScratch::default();
@@ -785,11 +955,24 @@ mod tests {
             1.0,
             0.0,
             &mut state,
+            &mut Vec::new(),
             &mut scratch,
             &mut nodes,
         );
-        let id = sc.id((5, 0, 0)).unwrap();
-        assert!((sc.neighbors(id)[0].cost - 2.0 * VOXEL).abs() < 1e-5);
+        let edge_cost = same_row_cost(&sc, (5, 0, 0), (6, 0, 0));
+        let ridge_cost = same_row_cost(&sc, (5, 1, 0), (6, 1, 0));
+        assert!((edge_cost - 2.0 * VOXEL).abs() < 1e-5, "edge {edge_cost}");
+        assert!((ridge_cost - VOXEL).abs() < 1e-5, "ridge {ridge_cost}");
+    }
+
+    /// Cost of the edge from `from` to `to`, both surface cells.
+    fn same_row_cost(sc: &SurfaceCells, from: VoxelKey, to: VoxelKey) -> f32 {
+        let (fid, tid) = (sc.id(from).unwrap(), sc.id(to).unwrap());
+        sc.neighbors(fid)
+            .iter()
+            .find(|e| e.dest == tid)
+            .unwrap()
+            .cost
     }
 
     #[test]
@@ -814,6 +997,7 @@ mod tests {
                 1.0,
                 step_weight,
                 &mut state,
+                &mut Vec::new(),
                 &mut scratch,
                 &mut nodes,
             );

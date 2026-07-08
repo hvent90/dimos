@@ -230,7 +230,8 @@ fn chord_cost(
                         .get(id as usize)
                         .copied()
                         .unwrap_or(f32::INFINITY);
-                    penalty_of(dist, wc.clearance_m, wc.buffer_m, wc.buffer_weight)
+                    let w_local = plg.local_width.get(id as usize).copied().unwrap_or(0.0);
+                    penalty_of(dist, wc.clearance_m, wc.buffer_m, wc.buffer_weight, w_local)
                 }
                 None => 1.0,
             };
