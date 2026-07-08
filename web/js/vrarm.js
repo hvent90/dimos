@@ -103,6 +103,10 @@ function updateVideoTexture() {
 // ── Arm command plane: stream controller pose + Joy per hand ─────────
 let lastSend = 0;
 
+// Throttle debug logging to ~1/sec so the Quest console stays readable.
+let _lastDbg = 0;
+function _dbg(now) { if (now - _lastDbg < 1000) return false; _lastDbg = now; return true; }
+
 function streamArmPose(frame) {
     const now = performance.now();
     if (now - lastSend < sendInterval) return;
@@ -125,7 +129,10 @@ function streamArmPose(frame) {
         const hand = src.handedness;
         if (hand !== 'left' && hand !== 'right') continue;
         const pose = frame.getPose(space, state.xrRefSpace);
-        if (!pose) continue;
+        if (!pose) { if (_dbg(now)) console.warn(`[arm] no pose for ${hand} (refSpace?)`); continue; }
+
+        const p = pose.transform.position;
+        if (_dbg(now)) console.info(`[arm] ${hand} pos ${p.x.toFixed(3)},${p.y.toFixed(3)},${p.z.toFixed(3)} space=${src.gripSpace ? 'grip' : 'ray'}`);
 
         chan.send(buildPoseStamped(hand, pose.transform.position, pose.transform.orientation, nowMs).encode());
         state.cmdSendCount++;
@@ -218,7 +225,10 @@ export async function startArmVR() {
 
     state.xrSession = session;
     await renderer.xr.setSession(session);
-    state.xrRefSpace = renderer.xr.getReferenceSpace();
+    // Sample controller poses against a reference space we own (matches the
+    // working quest reference client). three.js's getReferenceSpace() can lag a
+    // recenter/reset, which would freeze getPose and stall the arm.
+    state.xrRefSpace = await session.requestReferenceSpace('local-floor');
     initControllers();
 
     // Route acks + robot-state onto the arm cockpit.
