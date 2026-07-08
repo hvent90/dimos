@@ -285,6 +285,63 @@ class JpegShmTransport(PubSubTransport[T]):
         self._started = False
 
 
+class CodecTransport(PubSubTransport[T]):
+    """Image↔CompressedImage codec over any inner transport.
+
+    The wire always carries a typed sensor_msgs.CompressedImage; ts/frame_id
+    survive. With decode=False subscribers receive the CompressedImage as-is.
+    """
+
+    def __init__(
+        self,
+        inner: PubSubTransport[Any],
+        format: str = "jpeg",
+        quality: int = 75,
+        max_width: int | None = None,
+        decode: bool = True,
+    ) -> None:
+        if isinstance(inner, CodecTransport):
+            raise ValueError("CodecTransport cannot wrap another CodecTransport")
+        super().__init__(inner.topic)
+        self.inner = inner
+        self.format = format
+        self.quality = quality
+        self.max_width = max_width
+        self.decode = decode
+
+    def __reduce__(self):  # type: ignore[no-untyped-def]
+        return (
+            CodecTransport,
+            (self.inner, self.format, self.quality, self.max_width, self.decode),
+        )
+
+    def broadcast(self, stream: Out[T] | None, msg: T) -> None:
+        from dimos.msgs.sensor_msgs.CompressedImage import (
+            CompressedImage,
+        )  # deferred to avoid pulling in Image/cv2/rerun
+
+        if not isinstance(msg, CompressedImage):
+            msg = CompressedImage.from_image(  # type: ignore[assignment]
+                msg,  # type: ignore[arg-type]
+                format=self.format,  # type: ignore[arg-type]
+                quality=self.quality,
+                max_width=self.max_width,
+            )
+        self.inner.broadcast(stream, msg)
+
+    def subscribe(
+        self, callback: Callable[[T], Any], selfstream: Stream[T] | None = None
+    ) -> Callable[[], None]:
+        cb = (lambda m: callback(m.decode())) if self.decode else callback
+        return self.inner.subscribe(cb, selfstream)  # type: ignore[no-any-return]
+
+    def start(self) -> None:
+        self.inner.start()
+
+    def stop(self) -> None:
+        self.inner.stop()
+
+
 class ROSTransport(PubSubTransport[DimosMsg]):
     _ros: DimosROS | None = None
 
