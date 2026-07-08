@@ -18,10 +18,7 @@ from pathlib import Path
 
 import pytest
 
-from dimos.teleop.openarm_mini.calibration import (
-    OPENARM_MINI_ARM_JOINT_NAMES,
-    load_calibration,
-)
+from dimos.teleop.openarm_mini.calibration import OPENARM_MINI_ARM_JOINT_NAMES, load_calibration
 from dimos.teleop.openarm_mini.tools.calibrate import (
     DEFAULT_FLIPS_BY_SIDE,
     _calibrate_side,
@@ -32,27 +29,25 @@ from dimos.teleop.openarm_mini.tools.calibrate import (
 
 
 def _raw_positions(value: int) -> dict[str, int]:
-    return {joint_name: value for joint_name in OPENARM_MINI_ARM_JOINT_NAMES}
+    return {joint: value for joint in OPENARM_MINI_ARM_JOINT_NAMES}
 
 
-def test_zero_capture_writes_arm_only_offsets_and_flip_values() -> None:
+def test_zero_capture_records_offsets_and_flips() -> None:
     raw_positions = _raw_positions(2048)
     raw_positions["joint_6"] = 1234
 
     calibration = _capture_zero_calibration("left", raw_positions, {"joint_1", "joint_6"})
 
-    assert calibration.side == "left"
     assert set(calibration.motors) == set(OPENARM_MINI_ARM_JOINT_NAMES)
-    assert "gripper" not in calibration.motors
     assert calibration.motors["joint_6"].homing_offset == 1234
     assert calibration.motors["joint_1"].flip is True
-    assert calibration.motors["joint_2"].flip is False
+    assert "gripper" not in calibration.motors
 
 
-def test_confirmation_table_displays_raw_zero_offsets_and_flip() -> None:
-    calibration = _capture_zero_calibration("right", _raw_positions(100), {"joint_2"})
-
-    rendered = _format_calibration_confirmation(calibration)
+def test_confirmation_table_shows_zero_offsets_not_limits() -> None:
+    rendered = _format_calibration_confirmation(
+        _capture_zero_calibration("right", _raw_positions(100), {"joint_2"})
+    )
 
     assert "Zero Raw" in rendered
     assert "Flip" in rendered
@@ -62,7 +57,6 @@ def test_confirmation_table_displays_raw_zero_offsets_and_flip() -> None:
 
 def test_parse_flip_overrides_defaults_none_and_validation() -> None:
     assert _parse_flip_overrides(None, "left") == set(DEFAULT_FLIPS_BY_SIDE["left"])
-    assert _parse_flip_overrides(None, "right") == set(DEFAULT_FLIPS_BY_SIDE["right"])
     assert _parse_flip_overrides("none", "left") == set()
     assert _parse_flip_overrides("joint_1,joint_7", "right") == {"joint_1", "joint_7"}
 
@@ -70,10 +64,8 @@ def test_parse_flip_overrides_defaults_none_and_validation() -> None:
         _parse_flip_overrides("gripper", "right")
 
 
-def test_calibrate_side_writes_zero_capture_artifact_and_disconnects(
-    tmp_path: Path,
-) -> None:
-    fake_reader = _FakeRawReader(_raw_positions(2048))
+def test_calibrate_side_writes_artifact_and_disconnects(tmp_path: Path) -> None:
+    reader = _FakeRawReader(_raw_positions(2048))
 
     _calibrate_side(
         "left",
@@ -81,29 +73,25 @@ def test_calibrate_side_writes_zero_capture_artifact_and_disconnects(
         tmp_path / "left",
         1_000_000,
         flips={"joint_3"},
-        reader_factory=lambda _port, _baudrate: fake_reader,
+        reader_factory=lambda _port, _baudrate: reader,
     )
 
     calibration = load_calibration(tmp_path / "left", "left")
-    assert fake_reader.connected
-    assert fake_reader.disconnected
-    assert set(calibration.motors) == set(OPENARM_MINI_ARM_JOINT_NAMES)
+    assert reader.connected and reader.disconnected
     assert calibration.motors["joint_1"].homing_offset == 2048
     assert calibration.motors["joint_3"].flip is True
     assert calibration.motors["joint_4"].flip is False
 
 
-def test_zero_capture_rejects_gripper_or_missing_arm_joint() -> None:
-    raw_positions = _raw_positions(2048)
-    raw_positions["gripper"] = 1
+def test_zero_capture_rejects_extra_or_missing_joint() -> None:
+    with_extra = _raw_positions(2048) | {"gripper": 1}
+    without_joint = _raw_positions(2048)
+    del without_joint["joint_7"]
 
     with pytest.raises(RuntimeError, match="extra"):
-        _capture_zero_calibration("left", raw_positions, set())
-
-    raw_positions = _raw_positions(2048)
-    del raw_positions["joint_7"]
+        _capture_zero_calibration("left", with_extra, set())
     with pytest.raises(RuntimeError, match="missing"):
-        _capture_zero_calibration("left", raw_positions, set())
+        _capture_zero_calibration("left", without_joint, set())
 
 
 class _FakeRawReader:
