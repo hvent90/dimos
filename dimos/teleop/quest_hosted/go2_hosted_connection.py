@@ -14,11 +14,9 @@
 
 """Go2 driver + hosted-teleop control plane in ONE module.
 
-The broker provider is a per-process singleton, and ``GO2Connection`` is
-``dedicated_worker=True`` (its own process), so all hosted broker transports
-(cmd, video, state, state_back) must live on this one module to share a single
-CF session — a separate bridge module lands in another worker = a 2nd session
-the operator can't see. Opt-in subclass; plain ``GO2Connection`` is unchanged.
+All hosted broker transports must live on this one module to share a single
+CF session — GO2Connection is dedicated_worker, and the broker provider is a
+per-process singleton. Opt-in subclass; plain GO2Connection is unchanged.
 """
 
 from __future__ import annotations
@@ -86,13 +84,8 @@ class Go2HostedConnectionConfig(ConnectionConfig):
 
 
 class Go2HostedConnection(GO2Connection, HostedConnectionMixin):
-    """GO2Connection + the hosted-teleop state plane, colocated (one session).
-
-    The shared control plane (state_json dispatch, camera mux + latency
-    stamp, cmd_ack, telemetry loop) lives in ``HostedConnectionMixin``; this
-    class adds the Go2 parts: sport commands, rage mode, obstacle avoidance,
-    the head LED, and the serialized command executor they run on.
-    """
+    """GO2Connection + hosted state plane. Shared control plane lives in
+    HostedConnectionMixin; this adds the Go2 commands + serialized executor."""
 
     config: Go2HostedConnectionConfig
 
@@ -177,6 +170,7 @@ class Go2HostedConnection(GO2Connection, HostedConnectionMixin):
             self._cmd_executor.shutdown(wait=False, cancel_futures=True)
             self._cmd_executor = None
         self._stop_telemetry()
+        set_audio_sink(None)  # drop the provider's ref to this module's sink
         # Graceful broker disconnect so the worker exits promptly instead of
         # being force-killed and reaped ~30s later. See shutdown_all_providers.
         shutdown_all_providers()
@@ -199,8 +193,7 @@ class Go2HostedConnection(GO2Connection, HostedConnectionMixin):
     # ─── Click-to-navigate ────────────────────────────────────────────
 
     def _handle_nav_goal(self, msg: dict[str, Any]) -> None:
-        """Operator map click → PoseStamped goal for the planner (world frame,
-        identity heading — the planner only uses the position)."""
+        """Operator map click → PoseStamped goal for the planner."""
         nonce = msg.get("nonce")
         if self._estopped:
             logger.warning("nav_goal rejected: E-STOP latched")
@@ -228,8 +221,7 @@ class Go2HostedConnection(GO2Connection, HostedConnectionMixin):
         self._send_ack(nonce, True)
 
     def _on_nav_cmd(self, twist: Twist) -> None:
-        """Planner → base. Live operator input suppresses autonomy: any twist
-        from the operator within nav_yield_sec wins over the planner's."""
+        """Planner → base, unless the operator steered within nav_yield_sec."""
         if self._estopped:
             return
         now = time.time()
@@ -239,7 +231,6 @@ class Go2HostedConnection(GO2Connection, HostedConnectionMixin):
         GO2Connection.move(self, twist)  # base move — the wire guards don't apply
 
     def _cancel_nav(self) -> None:
-        """Best-effort planner goal cancel (E-STOP / operator loss)."""
         try:
             msg = Bool()
             msg.data = True
@@ -250,8 +241,7 @@ class Go2HostedConnection(GO2Connection, HostedConnectionMixin):
     # ─── E-STOP latch + operator-loss safety ─────────────────────────
 
     def _handle_estop(self, nonce: Any) -> None:
-        """Latch FIRST (gates move() immediately, before the RPC lands), then
-        Damp urgently — never queued behind slower commands."""
+        # Latch first so move() is gated before the Damp RPC even lands.
         self._estopped = True
         logger.warning("E-STOP latched by operator")
         self._cancel_nav()
@@ -265,19 +255,14 @@ class Go2HostedConnection(GO2Connection, HostedConnectionMixin):
         self._submit_cmd("estop", nonce, task, urgent=True)
 
     def _handle_estop_clear(self, nonce: Any) -> None:
-        """Re-arm. Deliberately does NOT move the robot — the operator must
-        explicitly Stand/Drive afterwards."""
+        # Re-arm only; does NOT move — operator must Stand/Drive explicitly.
         self._estopped = False
         logger.warning("E-STOP cleared by operator")
         self._send_ack(nonce, True)
 
     def _on_operator_lost(self) -> None:
-        """Provider-injected when the operator's command plane goes away.
-
-        Always zero the base (belt to the 0.2s cmd_vel deadman's braces — an
-        in-flight duration move keeps publishing without it) and drop the
-        nonce cache: browser nonces restart at 1 on the next session, so a
-        stale entry would re-ack instead of executing. Damp only if configured."""
+        # Zero the base and clear the nonce cache (browser nonces restart at 1
+        # per session, so a stale entry would re-ack instead of executing).
         logger.warning("operator link lost — stopping motion")
         self._cancel_nav()
         with self._cmd_lock:
@@ -301,14 +286,9 @@ class Go2HostedConnection(GO2Connection, HostedConnectionMixin):
     def _submit_cmd(
         self, label: str, nonce: Any, task: Callable[[], bool], *, urgent: bool = False
     ) -> None:
-        """Run a blocking command off the WebRTC/video loop and ack the result.
-
-        Non-urgent commands go through a single worker — strict ordering, so
-        stateful toggles (rage) can't interleave — with a bounded backlog:
-        past _MAX_PENDING_CMDS they're busy-rejected (ack ok=False) instead of
-        piling up threads. urgent=True (Damp / E-STOP) bypasses the queue on a
-        dedicated thread: a stop must never wait behind a 3s StandReady.
-        """
+        """Run a blocking command off the loop and ack it. Non-urgent commands
+        serialize on one worker (bounded backlog, busy-rejected past
+        _MAX_PENDING_CMDS); urgent (Damp/E-STOP) bypasses the queue."""
 
         # E-STOP latch: only urgent work (Damp itself) may run while latched.
         if self._estopped and not urgent:
@@ -392,7 +372,7 @@ class Go2HostedConnection(GO2Connection, HostedConnectionMixin):
             self._send_ack(nonce, False)
 
     def _handle_sport_cmd(self, msg: dict[str, Any]) -> None:
-        """Operator button → allow-listed SPORT_MOD request, ack on cmd_ack."""
+        """Operator button → allow-listed SPORT_MOD request."""
         name = msg.get("name")
         nonce = msg.get("nonce")
 
@@ -418,14 +398,9 @@ class Go2HostedConnection(GO2Connection, HostedConnectionMixin):
         self._submit_cmd(f"sport_cmd {name}", nonce, task, urgent=(name == "Damp"))
 
     def _stand_ready_task(self) -> bool:
-        """Standup → RecoveryStand → BalanceStand → joystick ON (drive-ready).
-
-        WASD drives via wireless-controller stick emulation, which needs BOTH
-        the BalanceStand FSM (so ending in RecoveryStand left drive dead) and
-        firmware joystick listening enabled — SwitchJoystick(False) is left
-        behind by rage-off transitions on older set_rage_mode. RecoveryStand
-        runs mid-sequence to recover from Sit / Damp / Rage weirdness.
-        """
+        # Standup → RecoveryStand → BalanceStand → joystick ON. WASD drives via
+        # stick emulation, which needs BOTH the BalanceStand FSM and firmware
+        # joystick listening on; the sequence + sleeps are load-bearing.
         self.connection.standup()
         time.sleep(3.0)  # standup must finish before the FSM transitions
         self.connection.sport_command(ALLOWED_SPORT_CMDS["RecoveryStand"])
@@ -437,8 +412,8 @@ class Go2HostedConnection(GO2Connection, HostedConnectionMixin):
         return True
 
     def _handle_set_mode(self, msg: dict[str, Any]) -> None:
-        """Speed-mode select. normal/high differ only by browser-side scale;
-        only the rage on/off boundary toggles the firmware (set_rage_mode)."""
+        """Speed mode. normal/high are browser-side scale only; only the rage
+        boundary toggles firmware."""
         mode = msg.get("mode")
         nonce = msg.get("nonce")
         if mode not in ("normal", "high", "rage"):
@@ -474,13 +449,11 @@ class Go2HostedConnection(GO2Connection, HostedConnectionMixin):
         self._submit_cmd(f"obstacle_avoidance {enabled}", nonce, task)
 
     def _handle_light(self, msg: dict[str, Any]) -> None:
-        """Head-LED brightness. The slider sends brightness 0..1; the original
-        toggle sent an ``enabled`` bool — map it so deployed frontends keep
-        working. 0..1 → firmware level 0-10 (0 = off)."""
+        """Head-LED brightness 0..1 → firmware level 0-10."""
         nonce = msg.get("nonce")
         raw = msg.get("brightness")
         if raw is None:
-            raw = 1.0 if msg.get("enabled") else 0.0
+            raw = 1.0 if msg.get("enabled") else 0.0  # legacy on/off toggle
         try:
             brightness = float(raw)
         except (TypeError, ValueError):
@@ -530,9 +503,8 @@ class Go2HostedConnection(GO2Connection, HostedConnectionMixin):
         return super().move(twist, duration)
 
     def _on_cmd_raw(self, data: Any) -> None:
-        """Decode the operator cmd: record its send-stamp for latency stats and
-        re-publish it as ``TwistStamped`` so the recorder can tap it over LCM
-        (avoids a 2nd CF session — see quest_hosted/blueprints.py)."""
+        # Record the send-stamp for latency stats and re-publish as TwistStamped
+        # so the recorder can tap it over LCM (no 2nd CF session).
         if isinstance(data, str):
             data = data.encode()
         try:
@@ -545,12 +517,8 @@ class Go2HostedConnection(GO2Connection, HostedConnectionMixin):
     # ─── Map overlay (robot → operator minimap, on map_unreliable) ──
 
     def _on_costmap(self, grid: OccupancyGrid) -> None:
-        """Throttle, coarsen, colorize, and push an occupancy grid to the operator.
-
-        Rides map_out (map_unreliable channel). Coarsen + PNG keeps the payload
-        under the 16 KB CF datachannel ceiling. Best-effort — dropped downstream
-        while no operator is connected.
-        """
+        """Throttle, coarsen, colorize, PNG-encode and push the map to the
+        operator. Coarsen + PNG keeps it under the 16 KB CF message ceiling."""
         now = time.monotonic()
         if now - self._last_map_pub < 1.0 / self.config.map_hz:
             return
@@ -575,7 +543,9 @@ class Go2HostedConnection(GO2Connection, HostedConnectionMixin):
 
             ok, buf = cv2.imencode(".png", png_bgra)
         except Exception:
-            logger.debug("map encode failed", exc_info=True)
+            # Unlike a dropped publish, a broken encode (e.g. missing cv2)
+            # kills the minimap permanently — say so audibly.
+            logger.warning("map encode failed", exc_info=True)
             return
         if not ok:
             return
@@ -602,12 +572,8 @@ class Go2HostedConnection(GO2Connection, HostedConnectionMixin):
         self._last_map_pub = now
 
     def _on_odom(self, pose: PoseStamped) -> None:
-        """Throttle the Go2 pose and push a compact 2D pose to the operator.
-
-        Rides map_unreliable alongside the map (same channel, distinct "type") so
-        the marker moves at odom rate between the slower map frames. Only x/y/yaw
-        — planar yaw is derived here so the browser needs no quaternion math.
-        """
+        """Throttle and push a compact 2D pose (x/y/yaw) on map_unreliable so
+        the marker moves at odom rate between the slower map frames."""
         now = time.monotonic()
         if now - self._last_odom_pub < 1.0 / self.config.odom_hz:
             return
@@ -627,10 +593,8 @@ class Go2HostedConnection(GO2Connection, HostedConnectionMixin):
         self._last_odom_pub = now
 
     def _on_audio_frame(self, pcm: bytes, sample_rate: int, channels: int) -> None:
-        """Operator mic frame (from the broker provider's audio track) →
-        audio_out + the dog's speaker track. audio_out is self-describing:
-        8-byte header (sample_rate u32, channels u16, format u16 = 0 for s16
-        interleaved) then the raw PCM."""
+        """Operator mic frame → speaker track + audio_out (8-byte header:
+        sample_rate u32, channels u16, format u16=0 for s16, then raw PCM)."""
         track = self._speaker_track
         if track is not None:
             track.push(pcm, sample_rate, channels)
@@ -641,14 +605,8 @@ class Go2HostedConnection(GO2Connection, HostedConnectionMixin):
             logger.debug("audio publish failed", exc_info=True)
 
     def _attach_speaker(self) -> None:
-        """Feed the dog PC's already-negotiated sendrecv audio m-line.
-
-        The driver adds the transceiver on every connection but never gives the
-        sender a track — replaceTrack fills that half, switchAudioChannel("on")
-        enables the dog's audio plane (what the app's intercom flips). Runs on
-        the dog connection's loop. Best-effort: replay/mock connections have no
-        PC, and a failed attach just means no speaker, never a failed start.
-        """
+        """Feed the dog PC's negotiated audio m-line: replaceTrack + enable the
+        audio channel. Best-effort — sim/replay have no PC and just skip."""
         # Driver internals, not on the connection protocol — narrow via getattr.
         drv = getattr(self.connection, "conn", None)  # unitree_webrtc_connect driver
         loop = getattr(self.connection, "loop", None)
@@ -671,11 +629,8 @@ class Go2HostedConnection(GO2Connection, HostedConnectionMixin):
 
     @staticmethod
     def _block_max(cells: Any, factor: int) -> Any:
-        """Downsample an int8 occupancy grid by `factor` via block maximum.
-
-        Max (not mean) so coarsening never erases an obstacle. Unknown (-1) is
-        lowest priority — a block with any known cell reports the known state.
-        """
+        """Downsample an int8 occupancy grid by block maximum (max not mean, so
+        coarsening never erases an obstacle; unknown -1 is lowest priority)."""
         import numpy as np
 
         h, w = cells.shape[:2]
@@ -694,12 +649,8 @@ class Go2HostedConnection(GO2Connection, HostedConnectionMixin):
 
     @staticmethod
     def _occupancy_to_bgra(cells: Any) -> Any:
-        """Colorize occupancy int8 {-1,0,1..100} → BGRA for a color PNG.
-
-        Single cyan hue matching the cockpit accent: dark cyan free, bright cyan
-        obstacles, white-hot lethal. Unknown is transparent so the map floats
-        over the canvas. BGRA because cv2.imencode uses OpenCV order.
-        """
+        """Colorize occupancy int8 {-1,0,1..100} → BGRA (cv2 order) for a PNG:
+        free/obstacle/lethal in the cockpit cyan, unknown transparent."""
         import numpy as np
 
         # (B, G, R, A) — RGB reversed for OpenCV.
@@ -716,8 +667,8 @@ class Go2HostedConnection(GO2Connection, HostedConnectionMixin):
         return out
 
     def _battery_soc(self) -> int | None:
-        """Battery SOC from the cached lowstate, without invoking the logged
-        ``get_battery_soc`` skill (which the 3 Hz telemetry loop would spam)."""
+        """Battery SOC from the cached lowstate (not the logged skill, which the
+        3 Hz telemetry loop would spam)."""
         try:
             return int(self._latest_lowstate["data"]["bms_state"]["soc"])  # type: ignore[index]
         except (KeyError, TypeError, ValueError):
@@ -727,8 +678,7 @@ class Go2HostedConnection(GO2Connection, HostedConnectionMixin):
         return {"soc": self._battery_soc()}
 
     def _telemetry_state(self) -> dict[str, Any]:
-        """Robot-authoritative UI state — posture, rage, obstacle avoidance,
-        head LED (cams + estopped are merged in by the mixin)."""
+        """Robot UI state (cams + estopped merged in by the mixin)."""
         return {
             "posture": self._posture,
             "rage": self._rage_active,

@@ -550,6 +550,8 @@ module = [
     "geometry_msgs.*",
     "h5py",
     "h5py.*",
+    "livekit",
+    "livekit.*",
     "mcap",
     "mcap.*",
     "mujoco",

@@ -98,11 +98,11 @@ class BrokerProvider(AsyncProviderBase):
     Inbound (operator → robot): ``cmd_unreliable`` + ``state_reliable``;
     subscribers get the bytes of the channel matching their topic, and typed
     demux by LCM fingerprint happens at the transport layer. Outbound
-    (robot → operator): ``publish()`` on ``state_reliable_back``; while no
-    operator is connected the channel doesn't exist and messages drop, which
-    is normal pubsub behaviour. Together with ``CloudflareTransport`` this
-    replaces ``HostedTeleopModule`` for the data planes; video remains there
-    until this provider grows media-track support.
+    (robot → operator): ``publish()`` on ``state_reliable_back`` /
+    ``map_unreliable``; while no operator is connected the channel doesn't
+    exist and messages drop, which is normal pubsub behaviour. Media rides the
+    same session: a sendonly camera track (``set_video_frame``) and, opt-in,
+    the operator's mic track (``audio_in`` → ``set_audio_frame_callback``).
     """
 
     INBOUND_CHANNELS = ("cmd_unreliable", "state_reliable")
@@ -302,7 +302,7 @@ class BrokerProvider(AsyncProviderBase):
             if track.kind != "audio":
                 return
             logger.debug("operator audio track received")
-            self._audio_task = asyncio.get_event_loop().create_task(self._read_audio_track(track))
+            self._audio_task = asyncio.get_running_loop().create_task(self._read_audio_track(track))
 
     async def _read_audio_track(self, track: Any) -> None:
         """Pull av.AudioFrames off the track → PCM bytes → sink callback.
@@ -325,7 +325,8 @@ class BrokerProvider(AsyncProviderBase):
                     channels = len(frame.layout.channels) or 1
                     cb(pcm.tobytes(), int(frame.sample_rate), channels)
                 except Exception:
-                    logger.debug("audio sink callback error", exc_info=True)
+                    # A raising sink is a bug in the wired module, not the wire.
+                    logger.warning("audio sink callback error", exc_info=True)
         except Exception:
             logger.debug("operator audio track ended")
 

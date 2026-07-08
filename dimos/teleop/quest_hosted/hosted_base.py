@@ -28,7 +28,7 @@ session) plus an In[Image] per camera; provide ``self._stop_event`` and
 
 Required hooks: ``_handle_estop(nonce)``, ``_handle_estop_clear(nonce)``,
 ``_on_operator_lost()``, ``_telemetry_state()``. Optional:
-``_handle_robot_msg(kind, msg)``, ``_telemetry_extra()``, ``_telemetry_tick()``.
+``_handle_robot_msg(kind, msg)``, ``_telemetry_extra()``.
 
 Clock-sync pings never reach here — ``BrokerProvider`` answers them inline.
 """
@@ -149,14 +149,10 @@ class HostedConnectionMixin(CameraMuxMixin):
             "robot_ts": time.time(),
         }
 
-    def _telemetry_tick(self) -> None:
-        """Per-interval hook before the payload is built (e.g. watchdogs)."""
-
     def _start_telemetry(self) -> None:
         def runner() -> None:
             interval = 1.0 / max(self.config.telemetry_hz, 0.1)  # type: ignore[attr-defined]
             while not self._stop_event.is_set():  # type: ignore[attr-defined]
-                self._telemetry_tick()
                 payload = json.dumps(self._telemetry_payload())
                 # debug (not warning): this fires at telemetry_hz with no
                 # operator connected, so a failed publish here is the norm
