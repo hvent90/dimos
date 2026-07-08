@@ -22,6 +22,8 @@ from typing import Annotated, Literal, Self
 
 from pydantic import Field, model_validator
 
+from dimos.core.stream import Out
+from dimos.msgs.sensor_msgs.JointState import JointState
 from dimos.robot.manipulators.openarm.config import openarm_joints
 from dimos.teleop.openarm_mini.calibration import (
     OpenArmMiniCalibrationError,
@@ -109,6 +111,7 @@ class OpenArmMiniTeleopModule(TeleopModule):
     """Teleop module for OpenArm Mini leader devices."""
 
     config: OpenArmMiniTeleopModuleConfig  # type: ignore[assignment]
+    joint_command: Out[JointState]
 
     def __init__(self, **kwargs: object) -> None:
         super().__init__(**kwargs)
@@ -192,3 +195,11 @@ class OpenArmMiniTeleopModule(TeleopModule):
         self._last_read_error = None
         self._previous_positions_by_side = next_previous_positions_by_side
         return TeleopCommand(payload=combine_side_commands(side_commands))
+
+    def publish_command_payload(self, payload: object) -> None:
+        """Publish OpenArm Mini teleop commands to the coordinator joint stream."""
+        if not isinstance(payload, JointState):
+            raise TypeError(
+                f"unsupported OpenArm Mini teleop payload type: {type(payload).__name__}"
+            )
+        self.joint_command.publish(payload)

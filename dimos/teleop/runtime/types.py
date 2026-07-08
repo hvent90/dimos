@@ -16,20 +16,13 @@ from __future__ import annotations
 
 from dataclasses import dataclass, field
 import time
-from typing import TypeAlias
-
-from dimos.msgs.geometry_msgs.PoseStamped import PoseStamped
-from dimos.msgs.geometry_msgs.Twist import Twist
-from dimos.msgs.sensor_msgs.JointState import JointState
-
-TeleopPayload: TypeAlias = JointState | PoseStamped | Twist
 
 
 @dataclass(frozen=True)
 class TeleopCommand:
     """Command envelope containing one typed payload or an explicit stop."""
 
-    payload: TeleopPayload | None = None
+    payload: object | None = None
     timestamp: float = field(default_factory=time.monotonic)
     stop: bool = False
 

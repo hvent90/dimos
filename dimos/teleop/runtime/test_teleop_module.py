@@ -19,8 +19,6 @@ from typing import Any
 
 import pytest
 
-from dimos.msgs.geometry_msgs.PoseStamped import PoseStamped
-from dimos.msgs.geometry_msgs.Twist import Twist
 from dimos.msgs.sensor_msgs.JointState import JointState
 from dimos.teleop.runtime.teleop_module import TeleopModule
 from dimos.teleop.runtime.types import TeleopCommand
@@ -48,6 +46,7 @@ class _TestTeleopModule(TeleopModule):
     def __init__(self, runtime_adapter: _Adapter, **kwargs: Any) -> None:
         super().__init__(**kwargs)
         self._runtime_adapter = runtime_adapter
+        self.published_payloads: list[object] = []
 
     def connect_teleop(self) -> None:
         self._runtime_adapter.connect()
@@ -57,6 +56,9 @@ class _TestTeleopModule(TeleopModule):
 
     def get_current_command(self) -> TeleopCommand | None:
         return self._runtime_adapter.get_current_command()
+
+    def publish_command_payload(self, payload: object) -> None:
+        self.published_payloads.append(payload)
 
 
 @pytest.fixture
@@ -75,21 +77,6 @@ def module_factory() -> Iterator[Callable[..., _TestTeleopModule]]:
         module.stop()
 
 
-def _publishers(mocker: Any, module: TeleopModule) -> dict[str, Any]:
-    return {
-        "joint_command": mocker.patch.object(module.joint_command, "publish"),
-        "coordinator_cartesian_command": mocker.patch.object(
-            module.coordinator_cartesian_command, "publish"
-        ),
-        "twist_command": mocker.patch.object(module.twist_command, "publish"),
-    }
-
-
-def _assert_nothing_published(publishers: dict[str, Any]) -> None:
-    for publisher in publishers.values():
-        publisher.assert_not_called()
-
-
 def test_command_envelope_requires_payload_unless_stopping() -> None:
     joint = JointState({"name": ["j0"], "position": [1.0]})
 
@@ -105,38 +92,32 @@ def test_explicit_stop_command_is_not_published(
     mocker: Any, module_factory: Callable[..., _TestTeleopModule]
 ) -> None:
     module = module_factory(_Adapter([TeleopCommand(timestamp=1.0, stop=True)]))
-    publishers = _publishers(mocker, module)
     mocker.patch.object(module, "_now", return_value=1.0)
 
     module.tick()
 
-    _assert_nothing_published(publishers)
+    assert module.published_payloads == []
 
 
 @pytest.mark.parametrize(
-    ("payload", "stream_name"),
+    "payload",
     [
-        (JointState({"name": ["j0"], "position": [1.0]}), "joint_command"),
-        (PoseStamped(position=[1.0, 2.0, 3.0]), "coordinator_cartesian_command"),
-        (Twist(linear=[1.0, 0.0, 0.0], angular=[0.0, 0.0, 0.0]), "twist_command"),
+        JointState({"name": ["j0"], "position": [1.0]}),
+        "cartesian-command",
+        {"twist": [1.0, 0.0, 0.0]},
     ],
 )
-def test_tick_routes_payload_by_type(
-    payload: JointState | PoseStamped | Twist,
-    stream_name: str,
+def test_tick_publishes_payload_via_concrete_hook(
+    payload: object,
     mocker: Any,
     module_factory: Callable[..., _TestTeleopModule],
 ) -> None:
     module = module_factory(_Adapter([TeleopCommand(payload, timestamp=1.0)]))
-    publishers = _publishers(mocker, module)
     mocker.patch.object(module, "_now", return_value=1.0)
 
     module.tick()
 
-    publishers[stream_name].assert_called_once_with(payload)
-    for name, publisher in publishers.items():
-        if name != stream_name:
-            publisher.assert_not_called()
+    assert module.published_payloads == [payload]
 
 
 def test_stale_commands_are_not_published(
@@ -144,12 +125,11 @@ def test_stale_commands_are_not_published(
 ) -> None:
     joint = JointState({"name": ["j0"], "position": [1.0]})
     module = module_factory(_Adapter([TeleopCommand(joint, timestamp=1.0)]))
-    publishers = _publishers(mocker, module)
     mocker.patch.object(module, "_now", return_value=2.01)
 
     module.tick()
 
-    _assert_nothing_published(publishers)
+    assert module.published_payloads == []
 
 
 def test_rate_limiting_skips_commands(
@@ -161,13 +141,12 @@ def test_rate_limiting_skips_commands(
         _Adapter([TeleopCommand(first, timestamp=1.0), TeleopCommand(second, timestamp=1.0)]),
         max_publish_rate_hz=10.0,
     )
-    publishers = _publishers(mocker, module)
     mocker.patch.object(module, "_now", side_effect=[1.0, 1.0, 1.0, 1.05, 1.05])
 
     module.tick()
     module.tick()
 
-    publishers["joint_command"].assert_called_once_with(first)
+    assert module.published_payloads == [first]
 
 
 def test_start_stop_connect_disconnect_and_no_publish_after_stop(
@@ -177,7 +156,6 @@ def test_start_stop_connect_disconnect_and_no_publish_after_stop(
     joint = JointState({"name": ["j0"], "position": [1.0]})
     adapter = _Adapter([TeleopCommand(joint, timestamp=1.0)])
     module = module_factory(adapter)
-    publishers = _publishers(mocker, module)
     mocker.patch("dimos.teleop.runtime.teleop_module.threading.Thread.start")
     mocker.patch("dimos.teleop.runtime.teleop_module.threading.Thread.join")
     mocker.patch.object(module, "_now", return_value=1.0)
@@ -188,4 +166,4 @@ def test_start_stop_connect_disconnect_and_no_publish_after_stop(
 
     assert adapter.connected
     assert adapter.disconnected
-    _assert_nothing_published(publishers)
+    assert module.published_payloads == []

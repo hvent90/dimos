@@ -379,3 +379,25 @@ def test_teleop_module_returns_none_when_bus_read_raises_runtime_error(
         command = module.get_current_command()
 
     assert command is None
+
+
+def test_teleop_module_publishes_joint_command_payload(mocker: Any) -> None:
+    module = OpenArmMiniTeleopModule()
+    try:
+        joint = JointState({"name": ["openarm_left_joint1"], "position": [0.1]})
+        publish = mocker.patch.object(module.joint_command, "publish")
+
+        module.publish_command_payload(joint)
+
+        publish.assert_called_once_with(joint)
+    finally:
+        module.stop()
+
+
+def test_teleop_module_rejects_non_joint_command_payload() -> None:
+    module = OpenArmMiniTeleopModule()
+    try:
+        with pytest.raises(TypeError, match="unsupported"):
+            module.publish_command_payload("not-a-joint-state")
+    finally:
+        module.stop()

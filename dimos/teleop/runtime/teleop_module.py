@@ -14,7 +14,6 @@
 
 from __future__ import annotations
 
-from functools import singledispatchmethod
 import threading
 import time
 from typing import Any
@@ -22,10 +21,6 @@ from typing import Any
 from dimos.constants import DEFAULT_THREAD_JOIN_TIMEOUT
 from dimos.core.core import rpc
 from dimos.core.module import Module, ModuleConfig
-from dimos.core.stream import Out
-from dimos.msgs.geometry_msgs.PoseStamped import PoseStamped
-from dimos.msgs.geometry_msgs.Twist import Twist
-from dimos.msgs.sensor_msgs.JointState import JointState
 from dimos.teleop.runtime.types import TeleopCommand
 
 
@@ -36,13 +31,13 @@ class TeleopModuleConfig(ModuleConfig):
 
 
 class TeleopModule(Module):
-    """Generic teleop runtime module that routes typed command payloads to outputs."""
+    """Generic teleop runtime module.
+
+    Concrete teleop modules own output declarations and publishing. This base
+    only manages lifecycle, polling, stale-command filtering, and rate limiting.
+    """
 
     config: TeleopModuleConfig  # type: ignore[assignment]
-
-    joint_command: Out[JointState]
-    coordinator_cartesian_command: Out[PoseStamped]
-    twist_command: Out[Twist]
 
     def __init__(self, **kwargs: Any) -> None:
         super().__init__(**kwargs)
@@ -85,7 +80,7 @@ class TeleopModule(Module):
             return
         if command.payload is None:
             raise ValueError("TeleopCommand payload is missing")
-        self._publish_payload(command.payload)
+        self.publish_command_payload(command.payload)
         self._last_publish_time = self._now()
 
     def _run_loop(self) -> None:
@@ -121,18 +116,6 @@ class TeleopModule(Module):
         """Return the current teleop command from the concrete source."""
         raise NotImplementedError
 
-    @singledispatchmethod
-    def _publish_payload(self, payload: object) -> None:
-        raise TypeError(f"unsupported teleop payload type: {type(payload).__name__}")
-
-    @_publish_payload.register
-    def _(self, payload: JointState) -> None:
-        self.joint_command.publish(payload)
-
-    @_publish_payload.register
-    def _(self, payload: PoseStamped) -> None:
-        self.coordinator_cartesian_command.publish(payload)
-
-    @_publish_payload.register
-    def _(self, payload: Twist) -> None:
-        self.twist_command.publish(payload)
+    def publish_command_payload(self, payload: object) -> None:
+        """Publish a concrete command payload to module-specific outputs."""
+        raise NotImplementedError
