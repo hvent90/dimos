@@ -23,7 +23,11 @@ let renderer = null, scene = null, camera = null;
 let cockpit = null, controllers = [];
 let videoMesh = null, videoTex = null;
 let stallGate = null;
+let camEl = null;  // #robot-cam, resolved once per session (not per frame)
 const raycaster = new THREE.Raycaster();
+// Reused scratch for per-frame raycasting — avoid allocating in the XR loop.
+const _rayOrigin = new THREE.Vector3();
+const _rayDir = new THREE.Vector3();
 
 function buildScene() {
     scene = new THREE.Scene();
@@ -73,9 +77,9 @@ function onSelect(ctrl) {
 }
 
 function raycastPanels(ctrl) {
-    const origin = new THREE.Vector3().setFromMatrixPosition(ctrl.matrixWorld);
-    const dir = new THREE.Vector3(0, 0, -1).applyQuaternion(ctrl.quaternion).normalize();
-    raycaster.set(origin, dir);
+    _rayOrigin.setFromMatrixPosition(ctrl.matrixWorld);
+    _rayDir.set(0, 0, -1).applyQuaternion(ctrl.quaternion).normalize();
+    raycaster.set(_rayOrigin, _rayDir);
     const hits = raycaster.intersectObjects(cockpit.meshes, false);
     return hits.length ? hits[0] : null;
 }
@@ -83,7 +87,7 @@ function raycastPanels(ctrl) {
 // Bind (or rebind) the robot video to the camera panel; crop the benchmark
 // strip via the texture UV window (same effect as the DOM clip-path).
 function updateVideoTexture() {
-    const v = document.getElementById('robot-cam');
+    const v = camEl;
     if (!v || v.readyState < 2 || !v.videoWidth) return;
     if (!videoTex || videoTex.image !== v) {
         videoTex?.dispose();
@@ -109,11 +113,10 @@ function driveFromSticks(frame) {
     if (now - lastDriveSend < sendInterval) return;
     lastDriveSend = now;
 
-    // Video-freshness gate — don't drive blind on a frozen frame.
-    const gate = stallGate.sample(videoMediaTime(document.getElementById('robot-cam')), now,
-        /*keysHeld*/ false);
-    state.videoStall = gate;
-
+    // Read the sticks FIRST — the neutral gate needs to know whether an input
+    // is held so it can keep drive blocked after a video stall clears until
+    // the operator releases the stick (else a held-forward stick lunges the
+    // robot the instant the picture unfreezes).
     let lx = 0, ly = 0, rx = 0, boost = 1;
     for (const src of frame.session.inputSources) {
         const gp = src.gamepad;
@@ -127,6 +130,11 @@ function driveFromSticks(frame) {
     }
     const dz = (n) => (Math.abs(n) < STICK_DEADZONE ? 0 : n);
     const fwd = -dz(ly), strafe = -dz(lx), turn = -dz(rx);
+    const held = fwd !== 0 || strafe !== 0 || turn !== 0;
+
+    // Video-freshness gate — don't drive blind on a frozen frame.
+    const gate = stallGate.sample(videoMediaTime(camEl), now, held);
+    state.videoStall = gate;
 
     const canDrive = state.driveEnabled && !vui.estopped && !gate.blocked
         && state.cmdChannel && state.cmdChannel.readyState === 'open';
@@ -184,9 +192,10 @@ function sampleCmdHz(nowMs) {
 }
 
 // Continuous hover: point each controller, highlight the hovered chip, park a
-// reticle at the hit point.
+// reticle at the hit point. Allocation-free (runs every XR frame): clear all
+// panels, then set the one each ray hits.
 function updateHover() {
-    const hovered = new Map();  // panel → id
+    for (const p of cockpit.panels) p.setHover(null);
     for (const ctrl of controllers) {
         const dot = ctrl.userData.dot;
         const hit = raycastPanels(ctrl);
@@ -194,12 +203,14 @@ function updateHover() {
         dot.visible = true;
         dot.position.copy(hit.point);
         const panel = hit.object.userData.panel;
-        hovered.set(panel, panel.hitTest(hit.uv));
+        panel.setHover(panel.hitTest(hit.uv));
     }
-    for (const p of cockpit.panels) p.setHover(hovered.get(p) ?? null);
 }
 
 function onFrame(timeMs, frame) {
+    // #robot-cam is created by webrtc.js ontrack (after startVR); resolve it
+    // once it appears, then reuse — no per-frame DOM query for the session.
+    if (!camEl) camEl = document.getElementById('robot-cam');
     if (frame) { driveFromSticks(frame); }
     updateHover();
     updateVideoTexture();
@@ -208,7 +219,7 @@ function onFrame(timeMs, frame) {
         const stalled = vui.robotVideoStalled || state.videoStall?.stalled;
         videoMesh.material.color.setHex(stalled ? 0x552222 : 0xffffff);
     }
-    cockpit.tick();
+    cockpit.tick(timeMs);
     sampleCmdHz(timeMs);
     renderer.render(scene, camera);
 }
@@ -264,6 +275,11 @@ export async function startVR() {
         renderer.setAnimationLoop(null);
         cockpit?.dispose();
         cockpit = null;
+        // Release the camera panel's GPU resources too (buildScene makes fresh
+        // ones each connect; without this they orphan across reconnect cycles).
+        videoTex?.dispose(); videoTex = null;
+        videoMesh?.geometry.dispose(); videoMesh?.material.dispose(); videoMesh = null;
+        camEl = null;
         disconnect();
     });
     renderer.setAnimationLoop(onFrame);

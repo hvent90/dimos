@@ -484,6 +484,7 @@ function handleMapClick(panel, uv) {
 // ─────────────────────────────────────────────────────────────────────
 let _allPanels = [];
 let _mapPanel = null;
+let _lastStatsMs = 0;  // throttle the stats-panel repaint to ~1Hz
 
 export function buildCockpit(scene, headPos) {
     // One tight cluster around the camera panel (1.4m wide, centre z=-1.6):
@@ -511,6 +512,7 @@ export function buildCockpit(scene, headPos) {
     for (const p of [map, console_, stats]) { scene.add(p.mesh); p.mesh.renderOrder = 3; }
 
     _allPanels = [map, console_, stats];
+    _lastStatsMs = 0;  // paint stats on the first frame of this session
     console_._render = renderConsole;
     stats._render = renderStats;
     map._render = renderMap;
@@ -523,9 +525,13 @@ export function buildCockpit(scene, headPos) {
             const id = panel.hitTest(uv);
             if (id) handleButtonsClick(id, panel);
         },
-        // Redraw dirty panels + the always-live stats (health/telemetry tick).
-        tick() {
-            stats.markDirty();  // stats change continuously
+        // Redraw dirty panels each XR frame; refresh the always-live stats
+        // panel at ~1Hz only (its data changes at 1Hz, but a per-frame full
+        // canvas repaint + 380x680 texture upload at 72-90Hz would burn GPU
+        // bandwidth and risk judder on the Quest). Buttons/map still redraw
+        // immediately via their own dirty flags on interaction/telemetry.
+        tick(nowMs) {
+            if (nowMs - _lastStatsMs >= 1000) { stats.markDirty(); _lastStatsMs = nowMs; }
             for (const p of _allPanels) {
                 if (!p.dirty) continue;
                 p._render(p);
