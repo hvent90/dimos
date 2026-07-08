@@ -15,7 +15,6 @@
 from __future__ import annotations
 
 import builtins
-from collections.abc import Iterator, Mapping, Sequence
 import sys
 from types import ModuleType
 
@@ -50,33 +49,23 @@ class _FakePacketHandler:
         return (1000 + motor_id, 0, 0)
 
 
-class _FakeScservoSdk(ModuleType):
-    PortHandler: type[_FakePortHandler]
-    sms_sts: type[_FakePacketHandler]
-
-
-@pytest.fixture
-def fake_sdk(monkeypatch: pytest.MonkeyPatch) -> _FakeScservoSdk:
-    sdk = _FakeScservoSdk("scservo_sdk")
-    sdk.PortHandler = _FakePortHandler
-    sdk.sms_sts = _FakePacketHandler
+def _install_fake_sdk(monkeypatch: pytest.MonkeyPatch) -> None:
+    sdk = ModuleType("scservo_sdk")
+    sdk.__dict__.update({"PortHandler": _FakePortHandler, "sms_sts": _FakePacketHandler})
     monkeypatch.setitem(sys.modules, "scservo_sdk", sdk)
-    return sdk
-
-
-@pytest.fixture
-def connected_reader(fake_sdk: _FakeScservoSdk) -> Iterator[FeetechLeaderReader]:
-    del fake_sdk
-    reader = FeetechLeaderReader("/dev/fake", 123456)
-    reader.connect()
-    yield reader
-    reader.disconnect()
 
 
 def test_feetech_reader_uses_direct_optional_sdk_import(
-    connected_reader: FeetechLeaderReader,
+    monkeypatch: pytest.MonkeyPatch,
 ) -> None:
-    raw_positions = connected_reader.read_raw_positions({"joint_1": 1, "joint_2": 7})
+    _install_fake_sdk(monkeypatch)
+    reader = FeetechLeaderReader("/dev/fake", 123456)
+
+    reader.connect()
+    try:
+        raw_positions = reader.read_raw_positions({"joint_1": 1, "joint_2": 7})
+    finally:
+        reader.disconnect()
 
     assert raw_positions == {"joint_1": 1001, "joint_2": 1007}
 
@@ -90,9 +79,9 @@ def test_create_sdk_handlers_raises_openarm_mini_dependency_error(
 
     def fake_import(
         name: str,
-        globals: Mapping[str, object] | None = None,
-        locals: Mapping[str, object] | None = None,
-        fromlist: Sequence[str] = (),
+        globals: dict[str, object] | None = None,
+        locals: dict[str, object] | None = None,
+        fromlist: tuple[str, ...] = (),
         level: int = 0,
     ) -> object:
         if name == "scservo_sdk":

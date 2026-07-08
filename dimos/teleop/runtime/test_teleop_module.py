@@ -14,26 +14,17 @@
 
 from __future__ import annotations
 
-from collections.abc import Iterator, Sequence
-from dataclasses import dataclass
+from collections.abc import Callable, Iterator, Sequence
 from typing import Any
 
 import pytest
 
-from dimos.core.stream import Out
 from dimos.msgs.geometry_msgs.PoseStamped import PoseStamped
 from dimos.msgs.geometry_msgs.Twist import Twist
 from dimos.msgs.sensor_msgs.JointState import JointState
 from dimos.teleop.openarm_mini.config import OpenArmMiniTeleopConfig
 from dimos.teleop.runtime.teleop_module import TeleopModule
 from dimos.teleop.runtime.types import TeleopCommand
-
-
-@dataclass
-class _CapturedOutputs:
-    joint: list[JointState]
-    cartesian: list[PoseStamped]
-    twist: list[Twist]
 
 
 class _Adapter:
@@ -55,30 +46,34 @@ class _Adapter:
 
 
 @pytest.fixture
-def managed_modules() -> Iterator[list[TeleopModule]]:
+def module_factory() -> Iterator[Callable[..., TeleopModule]]:
     modules: list[TeleopModule] = []
-    yield modules
+
+    def make(runtime_adapter: _Adapter, **kwargs: Any) -> TeleopModule:
+        config = {"max_publish_rate_hz": 100.0, "stale_command_timeout_s": 1.0, **kwargs}
+        module = TeleopModule(runtime_adapter=runtime_adapter, **config)
+        modules.append(module)
+        return module
+
+    yield make
+
     for module in modules:
         module.stop()
 
 
-def _module(
-    adapter: _Adapter, managed_modules: list[TeleopModule]
-) -> tuple[TeleopModule, _CapturedOutputs]:
-    module = TeleopModule(
-        runtime_adapter=adapter,
-        max_publish_rate_hz=100.0,
-        stale_command_timeout_s=1.0,
-    )
-    captured = _CapturedOutputs(joint=[], cartesian=[], twist=[])
-    module.joint_command = Out(JointState, "joint_command")
-    module.coordinator_cartesian_command = Out(PoseStamped, "coordinator_cartesian_command")
-    module.twist_command = Out(Twist, "twist_command")
-    module.joint_command.subscribe(captured.joint.append)
-    module.coordinator_cartesian_command.subscribe(captured.cartesian.append)
-    module.twist_command.subscribe(captured.twist.append)
-    managed_modules.append(module)
-    return module, captured
+def _publishers(mocker: Any, module: TeleopModule) -> dict[str, Any]:
+    return {
+        "joint_command": mocker.patch.object(module.joint_command, "publish"),
+        "coordinator_cartesian_command": mocker.patch.object(
+            module.coordinator_cartesian_command, "publish"
+        ),
+        "twist_command": mocker.patch.object(module.twist_command, "publish"),
+    }
+
+
+def _assert_nothing_published(publishers: dict[str, Any]) -> None:
+    for publisher in publishers.values():
+        publisher.assert_not_called()
 
 
 def test_command_envelope_requires_payload_unless_stopping() -> None:
@@ -93,87 +88,93 @@ def test_command_envelope_requires_payload_unless_stopping() -> None:
 
 
 def test_module_config_creates_adapter_from_discriminated_backend(
-    managed_modules: list[TeleopModule],
+    module_factory: Callable[..., TeleopModule],
 ) -> None:
-    module = TeleopModule(adapter={"backend": "openarm_mini", "enabled_sides": ("right",)})
-    managed_modules.append(module)
+    module = module_factory(
+        _Adapter(), adapter={"backend": "openarm_mini", "enabled_sides": ("right",)}
+    )
 
     assert isinstance(module.teleop_config.adapter, OpenArmMiniTeleopConfig)
     assert module.teleop_config.adapter.enabled_sides == ("right",)
 
 
 def test_explicit_stop_command_is_not_published(
-    mocker: Any, managed_modules: list[TeleopModule]
+    mocker: Any, module_factory: Callable[..., TeleopModule]
 ) -> None:
-    adapter = _Adapter([TeleopCommand(timestamp=1.0, stop=True)])
-    module, captured = _module(adapter, managed_modules)
+    module = module_factory(_Adapter([TeleopCommand(timestamp=1.0, stop=True)]))
+    publishers = _publishers(mocker, module)
     mocker.patch.object(module, "_now", return_value=1.0)
 
     module.tick()
 
-    assert captured.joint == []
+    _assert_nothing_published(publishers)
 
 
-def test_tick_routes_only_active_primary_output(
-    mocker: Any, managed_modules: list[TeleopModule]
+@pytest.mark.parametrize(
+    ("payload", "stream_name"),
+    [
+        (JointState({"name": ["j0"], "position": [1.0]}), "joint_command"),
+        (PoseStamped(position=[1.0, 2.0, 3.0]), "coordinator_cartesian_command"),
+        (Twist(linear=[1.0, 0.0, 0.0], angular=[0.0, 0.0, 0.0]), "twist_command"),
+    ],
+)
+def test_tick_routes_payload_by_type(
+    payload: JointState | PoseStamped | Twist,
+    stream_name: str,
+    mocker: Any,
+    module_factory: Callable[..., TeleopModule],
+) -> None:
+    module = module_factory(_Adapter([TeleopCommand(payload, timestamp=1.0)]))
+    publishers = _publishers(mocker, module)
+    mocker.patch.object(module, "_now", return_value=1.0)
+
+    module.tick()
+
+    publishers[stream_name].assert_called_once_with(payload)
+    for name, publisher in publishers.items():
+        if name != stream_name:
+            publisher.assert_not_called()
+
+
+def test_stale_commands_are_not_published(
+    mocker: Any, module_factory: Callable[..., TeleopModule]
 ) -> None:
     joint = JointState({"name": ["j0"], "position": [1.0]})
-    cartesian = PoseStamped(position=[1.0, 2.0, 3.0])
-    twist = Twist(linear=[1.0, 0.0, 0.0], angular=[0.0, 0.0, 0.0])
-    module_outputs = [
-        _module(_Adapter([TeleopCommand(joint, timestamp=1.0)]), managed_modules),
-        _module(_Adapter([TeleopCommand(cartesian, timestamp=1.0)]), managed_modules),
-        _module(_Adapter([TeleopCommand(twist, timestamp=1.0)]), managed_modules),
-    ]
-    modules = [module for module, _captured in module_outputs]
-    for module in modules:
-        mocker.patch.object(module, "_now", return_value=1.0)
-
-    for module in modules:
-        module.tick()
-
-    assert module_outputs[0][1].joint == [joint]
-    assert module_outputs[1][1].cartesian == [cartesian]
-    assert module_outputs[2][1].twist == [twist]
-
-
-def test_stale_commands_are_not_published(mocker: Any, managed_modules: list[TeleopModule]) -> None:
-    joint = JointState({"name": ["j0"], "position": [1.0]})
-    adapter = _Adapter([TeleopCommand(joint, timestamp=1.0)])
-    module, captured = _module(adapter, managed_modules)
+    module = module_factory(_Adapter([TeleopCommand(joint, timestamp=1.0)]))
+    publishers = _publishers(mocker, module)
     mocker.patch.object(module, "_now", return_value=2.01)
 
     module.tick()
 
-    assert captured.joint == []
+    _assert_nothing_published(publishers)
 
 
-def test_rate_limiting_skips_commands(mocker: Any, managed_modules: list[TeleopModule]) -> None:
+def test_rate_limiting_skips_commands(
+    mocker: Any, module_factory: Callable[..., TeleopModule]
+) -> None:
     first = JointState({"name": ["j0"], "position": [1.0]})
     second = JointState({"name": ["j0"], "position": [2.0]})
-    adapter = _Adapter(
-        [
-            TeleopCommand(first, timestamp=1.0),
-            TeleopCommand(second, timestamp=1.0),
-        ]
+    module = module_factory(
+        _Adapter([TeleopCommand(first, timestamp=1.0), TeleopCommand(second, timestamp=1.0)]),
+        max_publish_rate_hz=10.0,
     )
-    module, captured = _module(adapter, managed_modules)
-    module.teleop_config.max_publish_rate_hz = 10.0
+    publishers = _publishers(mocker, module)
     mocker.patch.object(module, "_now", side_effect=[1.0, 1.0, 1.0, 1.05, 1.05])
 
     module.tick()
     module.tick()
 
-    assert captured.joint == [first]
+    publishers["joint_command"].assert_called_once_with(first)
 
 
 def test_start_stop_connect_disconnect_and_no_publish_after_stop(
     mocker: Any,
-    managed_modules: list[TeleopModule],
+    module_factory: Callable[..., TeleopModule],
 ) -> None:
     joint = JointState({"name": ["j0"], "position": [1.0]})
     adapter = _Adapter([TeleopCommand(joint, timestamp=1.0)])
-    module, captured = _module(adapter, managed_modules)
+    module = module_factory(adapter)
+    publishers = _publishers(mocker, module)
     mocker.patch("dimos.teleop.runtime.teleop_module.threading.Thread.start")
     mocker.patch("dimos.teleop.runtime.teleop_module.threading.Thread.join")
     mocker.patch.object(module, "_now", return_value=1.0)
@@ -184,4 +185,4 @@ def test_start_stop_connect_disconnect_and_no_publish_after_stop(
 
     assert adapter.connected
     assert adapter.disconnected
-    assert captured.joint == []
+    _assert_nothing_published(publishers)

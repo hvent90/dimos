@@ -14,6 +14,7 @@
 
 from __future__ import annotations
 
+from collections.abc import Mapping
 import math
 from pathlib import Path
 from typing import Any
@@ -35,6 +36,7 @@ from dimos.teleop.openarm_mini.feetech import (
     _calibrated_motor_radians,
     _normalize_motor_position,
 )
+from dimos.teleop.runtime.types import TeleopCommand
 
 
 class _FakeBus:
@@ -64,9 +66,9 @@ class _FailingBus:
         raise ValueError("read failure")
 
 
-def _payload(command: object) -> JointState:
+def _payload(command: TeleopCommand | None) -> JointState:
     assert command is not None
-    payload = command.payload  # type: ignore[attr-defined]
+    payload = command.payload
     assert isinstance(payload, JointState)
     return payload
 
@@ -120,26 +122,32 @@ def _readings() -> dict[str, float]:
     }
 
 
+def _patch_buses(
+    monkeypatch: pytest.MonkeyPatch,
+    buses: Mapping[str, _FakeBus | _FailingBus],
+) -> list[tuple[str, str, str, int]]:
+    created: list[tuple[str, str, str, int]] = []
+
+    def factory(
+        side: str,
+        port: str,
+        calibration: OpenArmMiniCalibration,
+        baudrate: int,
+    ) -> _FakeBus | _FailingBus:
+        created.append((side, port, calibration.side, baudrate))
+        return buses[side]
+
+    monkeypatch.setattr(adapter_module, "OpenArmMiniLeaderReader", factory)
+    return created
+
+
 def test_adapter_loads_calibration_connects_both_buses_and_returns_joint_command(
     tmp_path: Path,
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
     left_path, right_path = _write_calibrations(tmp_path)
     buses = {"left": _FakeBus(_readings()), "right": _FakeBus(_readings())}
-
-    def bus_factory(
-        side: str,
-        port: str,
-        calibration: OpenArmMiniCalibration,
-        baudrate: int,
-    ) -> _FakeBus:
-        assert port in ("left-port", "right-port")
-        assert baudrate == 123
-        assert calibration.side == side
-        assert "gripper" not in calibration.motors
-        return buses[side]
-
-    monkeypatch.setattr(adapter_module, "OpenArmMiniLeaderReader", bus_factory)
+    created = _patch_buses(monkeypatch, buses)
 
     adapter = OpenArmMiniTeleopAdapter(
         OpenArmMiniTeleopConfig(
@@ -160,6 +168,7 @@ def test_adapter_loads_calibration_connects_both_buses_and_returns_joint_command
         *[f"openarm_left_joint{i}" for i in range(1, 8)],
         *[f"openarm_right_joint{i}" for i in range(1, 8)],
     ]
+    assert created == [("left", "left-port", "left", 123), ("right", "right-port", "right", 123)]
     assert buses["left"].connected
     assert buses["right"].connected
     assert buses["left"].disconnected
@@ -172,21 +181,7 @@ def test_adapter_left_only_connects_left_bus_and_emits_left_joints(
 ) -> None:
     left_path, right_path = _write_calibrations(tmp_path)
     left_bus = _FakeBus(_readings())
-    created_sides: list[str] = []
-
-    def bus_factory(
-        side: str,
-        port: str,
-        calibration: OpenArmMiniCalibration,
-        baudrate: int,
-    ) -> _FakeBus:
-        created_sides.append(side)
-        assert side == "left"
-        assert port == "left-port"
-        assert calibration.side == "left"
-        return left_bus
-
-    monkeypatch.setattr(adapter_module, "OpenArmMiniLeaderReader", bus_factory)
+    created = _patch_buses(monkeypatch, {"left": left_bus})
 
     adapter = OpenArmMiniTeleopAdapter(
         _configured_config(left_path, right_path, enabled_sides=("left",))
@@ -196,7 +191,7 @@ def test_adapter_left_only_connects_left_bus_and_emits_left_joints(
     command = adapter.get_current_command()
     adapter.disconnect()
 
-    assert created_sides == ["left"]
+    assert created == [("left", "left-port", "left", 123)]
     joint = _payload(command)
     assert joint.name == [f"openarm_left_joint{i}" for i in range(1, 8)]
     assert left_bus.connected
@@ -207,7 +202,7 @@ def test_config_rejects_invalid_or_duplicate_enabled_sides() -> None:
     with pytest.raises(ValueError, match="at least one side"):
         OpenArmMiniTeleopConfig(enabled_sides=())
     with pytest.raises(ValueError, match="side must be"):
-        OpenArmMiniTeleopConfig(enabled_sides=("center",))  # type: ignore[arg-type]
+        OpenArmMiniTeleopConfig(enabled_sides=("center",))
     with pytest.raises(ValueError, match="duplicate"):
         OpenArmMiniTeleopConfig(enabled_sides=("left", "left"))
 
@@ -231,16 +226,7 @@ def test_adapter_returns_none_without_authority(
 ) -> None:
     left_path, right_path = _write_calibrations(tmp_path)
     buses = {"left": _FakeBus(_readings()), "right": _FakeBus(_readings())}
-
-    def bus_factory(
-        side: str,
-        port: str,
-        calibration: OpenArmMiniCalibration,
-        baudrate: int,
-    ) -> _FakeBus:
-        return buses[side]
-
-    monkeypatch.setattr(adapter_module, "OpenArmMiniLeaderReader", bus_factory)
+    _patch_buses(monkeypatch, buses)
 
     adapter = OpenArmMiniTeleopAdapter(
         _configured_config(left_path, right_path, authority_active=False)
@@ -260,17 +246,7 @@ def test_adapter_emits_configured_global_target_joint_names(
     left_path, right_path = _write_calibrations(tmp_path)
     right_bus = _FakeBus(_readings())
     target_names = tuple(f"right_arm/openarm_right_joint{i}" for i in range(1, 8))
-
-    def bus_factory(
-        side: str,
-        port: str,
-        calibration: OpenArmMiniCalibration,
-        baudrate: int,
-    ) -> _FakeBus:
-        assert side == "right"
-        return right_bus
-
-    monkeypatch.setattr(adapter_module, "OpenArmMiniLeaderReader", bus_factory)
+    created = _patch_buses(monkeypatch, {"right": right_bus})
 
     adapter = OpenArmMiniTeleopAdapter(
         _configured_config(
@@ -287,6 +263,7 @@ def test_adapter_emits_configured_global_target_joint_names(
 
     joint = _payload(command)
     assert joint.name == list(target_names)
+    assert created == [("right", "right-port", "right", 123)]
 
 
 def test_adapter_rejects_jump_threshold_by_returning_no_command(
@@ -297,16 +274,7 @@ def test_adapter_rejects_jump_threshold_by_returning_no_command(
     left_bus = _FakeBus(_readings())
     right_bus = _FakeBus(_readings())
     buses = {"left": left_bus, "right": right_bus}
-
-    def bus_factory(
-        side: str,
-        port: str,
-        calibration: OpenArmMiniCalibration,
-        baudrate: int,
-    ) -> _FakeBus:
-        return buses[side]
-
-    monkeypatch.setattr(adapter_module, "OpenArmMiniLeaderReader", bus_factory)
+    _patch_buses(monkeypatch, buses)
 
     adapter = OpenArmMiniTeleopAdapter(
         _configured_config(left_path, right_path, max_joint_jump_radians=0.1)
@@ -343,16 +311,7 @@ def test_adapter_clamps_over_limit_sender_side(
 ) -> None:
     left_path, right_path = _write_calibrations(tmp_path)
     buses = {"left": _FakeBus({**_readings(), "joint_1": 5.0}), "right": _FakeBus(_readings())}
-
-    def bus_factory(
-        side: str,
-        port: str,
-        calibration: OpenArmMiniCalibration,
-        baudrate: int,
-    ) -> _FakeBus:
-        return buses[side]
-
-    monkeypatch.setattr(adapter_module, "OpenArmMiniLeaderReader", bus_factory)
+    _patch_buses(monkeypatch, buses)
 
     adapter = OpenArmMiniTeleopAdapter(_configured_config(left_path, right_path))
 
@@ -382,16 +341,7 @@ def test_adapter_returns_none_when_bus_reports_invalid_reading(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
     left_path, right_path = _write_calibrations(tmp_path)
-
-    def bus_factory(
-        side: str,
-        port: str,
-        calibration: OpenArmMiniCalibration,
-        baudrate: int,
-    ) -> _FailingBus | _FakeBus:
-        return _FailingBus() if side == "left" else _FakeBus(_readings())
-
-    monkeypatch.setattr(adapter_module, "OpenArmMiniLeaderReader", bus_factory)
+    _patch_buses(monkeypatch, {"left": _FailingBus(), "right": _FakeBus(_readings())})
 
     adapter = OpenArmMiniTeleopAdapter(_configured_config(left_path, right_path))
 
