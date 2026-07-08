@@ -146,7 +146,7 @@ def _patch_buses(
 
 
 def _module(config: OpenArmMiniTeleopConfig) -> OpenArmMiniTeleopModule:
-    return OpenArmMiniTeleopModule(openarm_mini=config)
+    return OpenArmMiniTeleopModule(**config.model_dump())
 
 
 @contextmanager

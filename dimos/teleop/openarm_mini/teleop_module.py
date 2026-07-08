@@ -16,8 +16,6 @@
 
 from __future__ import annotations
 
-from pydantic import Field
-
 from dimos.teleop.openarm_mini.calibration import load_calibration
 from dimos.teleop.openarm_mini.config import (
     OpenArmMiniCalibrationError,
@@ -34,14 +32,12 @@ from dimos.utils.logging_config import setup_logger
 logger = setup_logger()
 
 
-class OpenArmMiniTeleopModuleConfig(TeleopModuleConfig):
+class OpenArmMiniTeleopModuleConfig(TeleopModuleConfig, OpenArmMiniTeleopConfig):
     """Config for OpenArm Mini leader teleoperation."""
 
     # Default to one side so running the concrete module directly only requires
     # one leader calibration/port override. Dual-arm blueprints opt into both.
-    openarm_mini: OpenArmMiniTeleopConfig = Field(
-        default_factory=lambda: OpenArmMiniTeleopConfig(enabled_sides=("left",))
-    )
+    enabled_sides: tuple[OpenArmMiniSide, ...] = ("left",)
 
 
 class OpenArmMiniTeleopModule(TeleopModule):
@@ -57,13 +53,13 @@ class OpenArmMiniTeleopModule(TeleopModule):
         self._teleop_connected = False
 
     @property
-    def openarm_mini_config(self) -> OpenArmMiniTeleopModuleConfig:
+    def openarm_mini_config(self) -> OpenArmMiniTeleopConfig:
         return self.config
 
     def connect_teleop(self) -> None:
         if self._teleop_connected:
             return
-        openarm_mini = self.openarm_mini_config.openarm_mini
+        openarm_mini = self.openarm_mini_config
         buses: dict[OpenArmMiniSide, OpenArmMiniLeaderReader] = {}
         try:
             baudrate = openarm_mini.connection_baudrate()
@@ -100,7 +96,7 @@ class OpenArmMiniTeleopModule(TeleopModule):
         self._teleop_connected = False
 
     def get_current_command(self) -> TeleopCommand | None:
-        openarm_mini = self.openarm_mini_config.openarm_mini
+        openarm_mini = self.openarm_mini_config
         if not self._teleop_connected or not openarm_mini.authority_active:
             return None
 

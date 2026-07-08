@@ -15,42 +15,19 @@
 from __future__ import annotations
 
 from collections.abc import Iterable, Mapping
-from dataclasses import asdict, is_dataclass
 from typing import TYPE_CHECKING, Any
 
 from dimos.core.coordination.python_worker import PythonWorker
 from dimos.core.global_config import GlobalConfig
 from dimos.core.module import ModuleBase, ModuleSpec
 from dimos.core.rpc_client import ModuleProxyProtocol, RPCClient
-from dimos.protocol.service.spec import BaseConfig
 from dimos.utils.logging_config import setup_logger
-from dimos.utils.safe_thread_map import ExceptionGroup, safe_thread_map
+from dimos.utils.safe_thread_map import safe_thread_map
 
 if TYPE_CHECKING:
     from dimos.core.resource_monitor.monitor import StatsMonitor
 
 logger = setup_logger()
-
-
-def _normalize_config_value(value: Any) -> Any:
-    if isinstance(value, BaseConfig):
-        return value.model_dump()
-    if is_dataclass(value) and not isinstance(value, type):
-        return asdict(value)
-    return value
-
-
-def _merge_config_args(defaults: Mapping[str, Any], overrides: Mapping[str, Any]) -> dict[str, Any]:
-    """Recursively merge CLI/module overrides into blueprint defaults."""
-    merged = {key: _normalize_config_value(value) for key, value in defaults.items()}
-    for key, override_value in overrides.items():
-        normalized_override = _normalize_config_value(override_value)
-        default_value = merged.get(key)
-        if isinstance(default_value, Mapping) and isinstance(normalized_override, Mapping):
-            merged[key] = _merge_config_args(default_value, normalized_override)
-        else:
-            merged[key] = normalized_override
-    return merged
 
 
 class WorkerManagerPython:
@@ -181,14 +158,10 @@ class WorkerManagerPython:
         workers_by_index: dict[int, PythonWorker] = {}
         order = sorted(range(len(specs)), key=lambda i: not specs[i][0].dedicated_worker)
         for i in order:
-            module_class, global_config, kwargs = specs[i]
+            module_class, _, kwargs = specs[i]
             worker = self._select_worker(dedicated=module_class.dedicated_worker)
             worker.reserve_slot()
-            specs[i] = (
-                module_class,
-                global_config,
-                _merge_config_args(kwargs, blueprint_args.get(module_class.name, {})),
-            )
+            kwargs.update(blueprint_args.get(module_class.name, {}))
             workers_by_index[i] = worker
 
         assignments = [(workers_by_index[i], specs[i]) for i in range(len(specs))]
@@ -201,7 +174,7 @@ class WorkerManagerPython:
 
         try:
             return safe_thread_map(assignments, _deploy)
-        except ExceptionGroup:
+        except:
             self.stop()
             raise
 

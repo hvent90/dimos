@@ -22,7 +22,6 @@ import pytest
 
 from dimos.control.coordinator import ControlCoordinator, TaskConfig
 from dimos.core.coordination.blueprints import Blueprint
-from dimos.core.coordination.worker_manager_python import _merge_config_args
 from dimos.manipulation.manipulation_module import ManipulationModule
 from dimos.robot.cli.dimos import load_config_args
 from dimos.robot.manipulators.openarm.blueprints import teleop
@@ -54,7 +53,7 @@ def _teleop_config_after_cli_override(
         Path("/tmp/nonexistent-dimos-config.json"),
     )
     module_kwargs = _module_kwargs(blueprint, OpenArmMiniTeleopModule).copy()
-    module_kwargs = _merge_config_args(module_kwargs, config_args[OpenArmMiniTeleopModule.name])
+    module_kwargs.update(config_args[OpenArmMiniTeleopModule.name])
     return OpenArmMiniTeleopModuleConfig(**module_kwargs)
 
 
@@ -92,7 +91,8 @@ def test_openarm_mini_viser_blueprints_use_teleop_coordinator_and_manipulation(
         ManipulationModule,
     ]
 
-    teleop_config = _module_kwargs(blueprint, OpenArmMiniTeleopModule)["openarm_mini"]
+    teleop_kwargs = _module_kwargs(blueprint, OpenArmMiniTeleopModule)
+    teleop_config = OpenArmMiniTeleopModuleConfig(**teleop_kwargs)
     assert isinstance(teleop_config, OpenArmMiniTeleopConfig)
     assert teleop_config.enabled_sides == enabled_sides
 
@@ -119,25 +119,25 @@ def test_right_openarm_mini_cli_port_override_preserves_right_side_default() -> 
     config = _teleop_config_after_cli_override(
         teleop.openarm_mini_right_teleop_viser,
         [
-            "openarmminiteleopmodule.openarm_mini.port_right=/dev/ttyACM0",
+            "openarmminiteleopmodule.port_right=/dev/ttyACM0",
         ],
     )
 
-    assert isinstance(config.openarm_mini, OpenArmMiniTeleopConfig)
-    assert config.openarm_mini.enabled_sides == ("right",)
-    assert config.openarm_mini.port_right == "/dev/ttyACM0"
-    assert config.openarm_mini.connection_baudrate() == OPENARM_MINI_DEFAULT_BAUDRATE
+    assert isinstance(config, OpenArmMiniTeleopConfig)
+    assert config.enabled_sides == ("right",)
+    assert config.port_right == "/dev/ttyACM0"
+    assert config.connection_baudrate() == OPENARM_MINI_DEFAULT_BAUDRATE
 
 
 def test_dual_openarm_mini_cli_port_override_preserves_dual_side_default() -> None:
     config = _teleop_config_after_cli_override(
         teleop.openarm_mini_dual_teleop_viser,
         [
-            "openarmminiteleopmodule.openarm_mini.port_right=/dev/ttyACM0",
+            "openarmminiteleopmodule.port_right=/dev/ttyACM0",
         ],
     )
 
-    assert isinstance(config.openarm_mini, OpenArmMiniTeleopConfig)
-    assert config.openarm_mini.enabled_sides == ("left", "right")
-    assert config.openarm_mini.port_right == "/dev/ttyACM0"
-    assert config.openarm_mini.connection_baudrate() == OPENARM_MINI_DEFAULT_BAUDRATE
+    assert isinstance(config, OpenArmMiniTeleopConfig)
+    assert config.enabled_sides == ("left", "right")
+    assert config.port_right == "/dev/ttyACM0"
+    assert config.connection_baudrate() == OPENARM_MINI_DEFAULT_BAUDRATE

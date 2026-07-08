@@ -137,11 +137,11 @@ before connecting any OpenArm follower hardware:
 
 ```bash
 dimos run openarm-mini-left-teleop-viser \
-  -o openarmminiteleopmodule.openarm_mini.port_left=<left-feetech-port>
+  -o openarmminiteleopmodule.port_left=<left-feetech-port>
 ```
 
 Teleop defaults to the standard Feetech serial baudrate of `1000000`. Override
-`openarmminiteleopmodule.openarm_mini.baudrate` only if your leader was
+`openarmminiteleopmodule.baudrate` only if your leader was
 configured differently.
 
 The blueprint requires:
@@ -167,7 +167,7 @@ Run with the required right leader connection settings:
 
 ```bash
 uv run dimos run openarm-mini-right-teleop-viser \
-  -o openarmminiteleopmodule.openarm_mini.port_right=<right-feetech-port>
+  -o openarmminiteleopmodule.port_right=<right-feetech-port>
 ```
 
 The blueprint requires:
@@ -196,8 +196,8 @@ Run with the required leader connection settings:
 
 ```bash
 uv run dimos run openarm-mini-dual-teleop-viser \
-  -o openarmminiteleopmodule.openarm_mini.port_left=<left-feetech-port> \
-  -o openarmminiteleopmodule.openarm_mini.port_right=<right-feetech-port>
+  -o openarmminiteleopmodule.port_left=<left-feetech-port> \
+  -o openarmminiteleopmodule.port_right=<right-feetech-port>
 ```
 
 The dual blueprint publishes ManipulationModule-compatible coordinator joint
