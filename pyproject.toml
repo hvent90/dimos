@@ -573,6 +573,8 @@ module = [
     "reportlab",
     "reportlab.*",
     "sam2.*",
+    "scservo_sdk",
+    "scservo_sdk.*",
     "scipy",
     "scipy.*",
     "sensor_msgs.*",
