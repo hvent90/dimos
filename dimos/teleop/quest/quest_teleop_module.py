@@ -74,6 +74,10 @@ class QuestTeleopConfig(ModuleConfig):
 
     control_loop_hz: float = 50.0
     server_port: int = 8443
+    # The WebXR client is a headset on the LAN — loopback (the
+    # FastAPIServer default via global_config.listen_host) would make the
+    # server unreachable from it.
+    listen_host: str = "0.0.0.0"
 
 
 _Config = TypeVar("_Config", bound=QuestTeleopConfig)
@@ -118,6 +122,7 @@ class QuestTeleopModule(Module):
 
         # Embedded web server — RobotWebInterface provides FastAPI app + run()/shutdown()
         self._web_server = RobotWebInterface(port=self.config.server_port)
+        self._web_server.host = self.config.listen_host
         self._web_server_thread: threading.Thread | None = None
 
         # Fingerprint-based message dispatch table
@@ -267,7 +272,10 @@ class QuestTeleopModule(Module):
             name="QuestTeleopWebServer",
         )
         self._web_server_thread.start()
-        logger.info(f"Quest teleop web server started on https://0.0.0.0:{self.config.server_port}")
+        logger.info(
+            f"Quest teleop web server started on "
+            f"https://{self.config.listen_host}:{self.config.server_port}"
+        )
 
     def _stop_server(self) -> None:
         """Shutdown the embedded web server."""
