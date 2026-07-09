@@ -7,15 +7,28 @@ FetchContent_Declare(
   GIT_REPOSITORY https://github.com/doctest/doctest.git
   GIT_TAG v2.4.11
 )
-FetchContent_MakeAvailable(doctest)
+FetchContent_Declare(
+  nlohmann_json
+  GIT_REPOSITORY https://github.com/nlohmann/json.git
+  GIT_TAG v3.11.3
+)
+FetchContent_MakeAvailable(doctest nlohmann_json)
 
 add_executable(dimos_native_tests
   test_main.cpp
   test_transport.cpp
   test_log.cpp
   test_transport_selection.cpp
+  test_config.cpp
+  test_module.cpp
 )
-target_link_libraries(dimos_native_tests PRIVATE dimos_native doctest::doctest)
+find_package(Threads REQUIRED)
+target_link_libraries(dimos_native_tests PRIVATE
+  dimos_native
+  doctest::doctest
+  nlohmann_json::nlohmann_json
+  Threads::Threads
+)
 target_compile_options(dimos_native_tests PRIVATE -Wall -Wextra -Werror)
 
 # LcmTransport needs liblcm, which isn't always present (system pkg-config often
