@@ -46,7 +46,9 @@ from dimos.robot.unitree.keyboard_teleop import KeyboardTeleop
 
 r1lite_keyboard_teleop = autoconnect(
     r1lite_coordinator,
-    KeyboardTeleop.blueprint(),
+    # Gentler than the 0.5/0.8 defaults for indoor bench driving
+    # (validated test_03 creep was 0.05 m/s; Shift still boosts 2x).
+    KeyboardTeleop.blueprint(linear_speed=0.2, angular_speed=0.4),
 )
 
 __all__ = ["r1lite_keyboard_teleop"]
