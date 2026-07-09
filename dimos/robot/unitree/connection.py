@@ -138,9 +138,7 @@ class UnitreeWebRTCConnection(Resource):
                     timeout=3.0
                 )
             except Exception:
-                logger.warning(
-                    "best-effort disconnect on connect failure failed", exc_info=True
-                )
+                logger.warning("best-effort disconnect on connect failure failed", exc_info=True)
             self.loop.call_soon_threadsafe(self.loop.stop)
             self.thread.join(timeout=DEFAULT_THREAD_JOIN_TIMEOUT)
             raise
