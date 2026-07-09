@@ -126,8 +126,13 @@ class K1Connection(Module, Camera):
         self._camera_info_thread = Thread(target=self._publish_camera_info, daemon=True)
         self._camera_info_thread.start()
 
-        # Arm the robot so it accepts velocity commands.
-        self.standup()
+        # Arm the robot so it accepts velocity commands. On failure keep the module
+        # (and camera) running for diagnosis, but say loudly that moves will be dropped.
+        if not self.standup():
+            logger.error(
+                "K1 did not reach WALKING on start; velocity commands will be dropped. "
+                "Resolve the robot's mode, then call the `standup` RPC (or `stand` skill)."
+            )
         logger.info("K1Connection started (ip=%s)", self.config.ip)
 
     @rpc
