@@ -140,12 +140,16 @@ class HostedConnectionMixin(CameraMuxMixin):
     def _start_telemetry(self) -> None:
         def runner() -> None:
             interval = 1.0 / max(self.config.telemetry_hz, 0.1)  # type: ignore[attr-defined]
+            warned = False  # log the first failure of a streak, not every tick
             while not self._stop_event.is_set():  # type: ignore[attr-defined]
                 payload = json.dumps(self._telemetry_payload())
                 try:
                     self.telemetry_out.publish(payload.encode())  # type: ignore[attr-defined]
+                    warned = False
                 except Exception:
-                    logger.debug("telemetry publish failed", exc_info=True)
+                    if not warned:
+                        warned = True
+                        logger.debug("telemetry publish failing", exc_info=True)
                 self._stop_event.wait(interval)  # type: ignore[attr-defined]
 
         self._telemetry_thread = threading.Thread(

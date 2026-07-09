@@ -346,11 +346,17 @@ class BrokerProvider(AsyncProviderBase):
         # Stop after 5 consecutive 401/404 — session force-deleted or key
         # revoked; otherwise the loop log-floods at heartbeat_hz forever.
         terminal_streak = 0
+        # Log the first failure of a streak, not every tick at heartbeat_hz.
+        exc_warned = False
+        fail_warned = False
         while True:
             try:
                 status = await self._heartbeat_once()
+                exc_warned = False
             except Exception:
-                logger.exception("Broker heartbeat failed")
+                if not exc_warned:
+                    exc_warned = True
+                    logger.exception("Broker heartbeat failing")
                 status = None
             if status in (401, 404):
                 terminal_streak += 1
@@ -363,6 +369,12 @@ class BrokerProvider(AsyncProviderBase):
                     return
             else:
                 terminal_streak = 0
+            if status is not None and status != 200:
+                if not fail_warned:
+                    fail_warned = True
+                    logger.warning("Heartbeat failing: %d", status)
+            else:
+                fail_warned = False
             await asyncio.sleep(interval)
 
     async def _heartbeat_once(self) -> int | None:
@@ -375,7 +387,7 @@ class BrokerProvider(AsyncProviderBase):
             json={},
         )
         if r.status_code != 200:
-            logger.warning("Heartbeat failed: %d %s", r.status_code, r.text[:200])
+            logger.debug("Heartbeat non-200: %d %s", r.status_code, r.text[:200])
             return r.status_code
         ack = r.json()
         # state_reliable_back first so the state_reliable ping handler can
