@@ -284,8 +284,6 @@ class BrokerProvider(AsyncProviderBase):
     async def _read_audio_track(self, track: Any) -> None:
         """Pull av.AudioFrames off the track → PCM → sink callback. A decode
         error ends the loop (track gone); a sink error must not."""
-        import av  # noqa: F401  (aiortc dep; AudioFrame comes off the track)
-
         try:
             while True:
                 frame = await track.recv()  # av.AudioFrame
