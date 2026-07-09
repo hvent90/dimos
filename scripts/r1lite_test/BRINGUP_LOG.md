@@ -524,3 +524,17 @@ the 1s moves, or software wheel commands route below/beside that topic
 just like RC manual does. Irrelevant to the integration (our interface is
 /motion_target/*, proven working); logged for completeness.
 BRING-UP PHASE COMPLETE — next: R1LiteConnection module.
+
+**Day-3 correction (routing curiosity CLOSED):** synchronized rclpy
+recording (both topics, domain 2, 3671 msgs each) during two more test_03
+PASSes shows /motion_control/control_chassis DOES carry the wheel commands:
+v_des ramps 0.03→0.05 on the three drive wheels one second before measured
+motion appears. Plumbing is exactly as documented (node → control_chassis
+→ HDAS → CAN → VCU); mode:0 + empty kp/kd are normal for velocity-mode
+wheels. All earlier "all-zeros during software drive" captures were tooling
+failures, NOT hidden routing. The RC-manual-bypasses-ROS conclusion stands
+(that capture was valid and received messages fine).
+Tooling lesson for the record: non-interactive SSH does not source
+~/.bashrc → any remote ros2/rclpy one-liner MUST set ROS_DOMAIN_ID=2
+explicitly, and robot-side `ros2` CLI depends on a flaky daemon — prefer
+direct rclpy via python3 heredoc for instrumentation.
