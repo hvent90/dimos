@@ -104,10 +104,6 @@ function updateVideoTexture() {
 // ── Arm command plane: stream controller pose + Joy per hand ─────────
 let lastSend = 0;
 
-// Throttle debug logging to ~1/sec so the Quest console stays readable.
-let _lastDbg = 0;
-function _dbg(now) { if (now - _lastDbg < 1000) return false; _lastDbg = now; return true; }
-
 function streamArmPose(frame) {
     const now = performance.now();
     if (now - lastSend < sendInterval) return;
@@ -130,10 +126,7 @@ function streamArmPose(frame) {
         const hand = src.handedness;
         if (hand !== 'left' && hand !== 'right') continue;
         const pose = frame.getPose(space, state.xrRefSpace);
-        if (!pose) { if (_dbg(now)) console.warn(`[arm] no pose for ${hand} (refSpace?)`); continue; }
-
-        const p = pose.transform.position;
-        if (_dbg(now)) console.info(`[arm] ${hand} pos ${p.x.toFixed(3)},${p.y.toFixed(3)},${p.z.toFixed(3)} space=${src.gripSpace ? 'grip' : 'ray'}`);
+        if (!pose) continue;
 
         chan.send(buildPoseStamped(hand, pose.transform.position, pose.transform.orientation, nowMs).encode());
         state.cmdSendCount++;
