@@ -288,11 +288,9 @@ class Go2HostedConnection(GO2Connection, HostedConnectionMixin):
         with self._cmd_lock:
             self._nonce_results.clear()
         try:
-            # Not on the connection protocol — the webrtc deadman stop; sim
-            # connections don't have it and the 0.2s cmd_vel timeout covers them.
-            stop = getattr(self.connection, "stop_movement", None)
-            if stop is not None:
-                stop()
+            # The webrtc deadman stop; sim connections implement it as a no-op
+            # (the 0.2s cmd_vel timeout covers them).
+            self.connection.stop_movement()
         except Exception:
             logger.exception("stop_movement on operator loss failed")
         if self.config.damp_on_operator_lost:
