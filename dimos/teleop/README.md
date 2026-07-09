@@ -70,12 +70,10 @@ teleop/
 │   └── web/
 │       └── static/index.html    # WebXR client
 ├── quest_hosted/
-│   ├── go2_hosted_connection.py # Go2 driver + hosted plane (transport-swap)
-│   ├── hosted_base.py           # Shared control-plane mixin + camera mux
+│   ├── hosted_teleop_module.py  # Hosted Quest teleop (Cloudflare SFU broker)
+│   ├── hosted_extensions.py     # HostedArmTeleop, HostedTwistTeleop
 │   ├── blueprints.py            # Pre-wired blueprints
-│   ├── README.md                # Channel/CF gotchas, threads, sidecars
-│   ├── hosted_teleop_module.py  # DEPRECATED — legacy self-connecting base
-│   └── hosted_extensions.py     # DEPRECATED — legacy Arm/Twist subclasses
+│   └── README.md                # Channel/CF gotchas, threads, sidecars
 ├── phone/
 │   ├── phone_teleop_module.py   # Base Phone teleop module
 │   ├── phone_extensions.py      # SimplePhoneTeleop

@@ -1,4 +1,4 @@
-# Hosted Teleop
+# Hosted Teleop Module
 
 Robot dials out to the [dimensional-teleop](https://github.com/dimensionalOS/dimensional-teleop)
 broker (Cloudflare Realtime SFU) — no inbound ports needed. The browser/VR
@@ -7,22 +7,11 @@ robot video goes out as a WebRTC track.
 
 ## Files
 
-The session (dial-out, datachannel lifecycle, video track) is owned by the
-per-process `BrokerProvider` (`dimos/protocol/pubsub/impl/webrtc/providers/`);
-blueprints bind `Cloudflare*`/`LiveKit*` transports to the streams of ONE
-module per robot so everything shares that single session:
-
-- **`go2_hosted_connection.py`** — Go2 driver + hosted plane in one module
-  (subclasses `GO2Connection`; the driver is `dedicated_worker=True`, so the
-  broker-bound streams must live in its process).
-- **`hosted_base.py`** — `HostedConnectionMixin`: the shared control plane
-  (state_json dispatch, cmd_ack, E-STOP latch, telemetry) + camera mux
-  (`dimos/teleop/utils/camera_mux.py`). A new robot shape implements its hooks.
-- **`blueprints.py`** — wires the above to robots, cameras, and transports.
-- **`hosted_teleop_module.py`** / **`hosted_extensions.py`** — DEPRECATED,
-  do not use for new work: the pre-transport-swap stack (the module owns its
-  own RTCPeerConnection). Still used by the `teleop-hosted-go2` blueprint;
-  delete once it migrates to the transport-swap module above.
+- **`hosted_teleop_module.py`** — base. Owns the dial-out, datachannel
+  lifecycle, video send, clock-sync, and the command-plane telemetry pushed
+  back to the HUD. Subclassed for actuation.
+- **`hosted_extensions.py`** — concrete subclasses: arm IK, mobile-base twist.
+- **`blueprints.py`** — wires the module to a robot driver.
 
 The operator HTML lives in the [dimensional-teleop](https://github.com/dimensionalOS/dimensional-teleop)
 broker repo (`web/`), not here.
@@ -100,12 +89,12 @@ the call sites but the *why* lives here:
 
 ## Reconnect
 
-Operator-side reconnect is handled in the broker — it closes the stale
-`state_reliable_back` push (CF `datachannels/close`, not in prose docs but in
-the OpenAPI spec) before re-pushing. CF does **not** auto-reap datachannel
-pushes (the 30s GC is media-only), so without that close, the long-lived robot
-session accumulates half-dead pushes and the second bridge 502s with
-`repeated_local_track_error`.
+Operator-side reconnect is handled in the broker (`fix3/reconnection`) — it
+closes the stale `state_reliable_back` push (CF `datachannels/close`, not in
+prose docs but in the OpenAPI spec) before re-pushing. CF does **not** auto-reap
+datachannel pushes (the 30s GC is media-only), so without that close, the long-
+lived robot session accumulates half-dead pushes and the second bridge 502s
+with `repeated_local_track_error`.
 
-Robot-side auto-redial is not yet implemented and is gated behind TURN
-landing first.
+Robot-side auto-redial (R2b in the roadmap) is not yet implemented and is
+gated behind TURN landing first.
