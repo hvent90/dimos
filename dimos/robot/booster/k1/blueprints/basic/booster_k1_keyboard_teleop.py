@@ -45,5 +45,3 @@ booster_k1_keyboard_teleop = autoconnect(
         (RerunWebSocketServer, "tele_cmd_vel", "cmd_vel"),
     ]
 )
-
-__all__ = ["booster_k1_keyboard_teleop"]

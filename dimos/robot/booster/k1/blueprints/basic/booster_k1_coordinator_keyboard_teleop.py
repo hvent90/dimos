@@ -32,5 +32,3 @@ booster_k1_coordinator_keyboard_teleop = autoconnect(
     booster_k1_coordinator,
     KeyboardTeleop.blueprint(publish_only_when_active=True),
 )
-
-__all__ = ["booster_k1_coordinator_keyboard_teleop"]

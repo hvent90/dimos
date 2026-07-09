@@ -88,5 +88,3 @@ booster_k1_coordinator = (
     )
     .global_config(n_workers=6, robot_model="booster_k1")
 )
-
-__all__ = ["booster_k1_coordinator"]

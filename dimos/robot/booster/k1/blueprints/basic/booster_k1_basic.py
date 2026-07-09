@@ -82,8 +82,3 @@ booster_k1_basic = autoconnect(
     _with_vis,
     K1Connection.blueprint(),
 ).global_config(n_workers=4, robot_model="booster_k1")
-
-__all__ = [
-    "booster_k1_basic",
-    "rerun_config",
-]
