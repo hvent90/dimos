@@ -12,7 +12,7 @@ import * as THREE from 'three';
 
 import { transportLabel } from './hud.js';
 import { state } from './state.js';
-import { sendCameraSelect, sendEstop, sendEstopClear } from './xarmcmd.js';
+import { sendEstop, sendEstopClear } from './xarmcmd.js';
 
 const C = {
     bg: 'rgba(18,19,19,0.92)', bgSolid: '#121313', panel: '#0d0e0e',
@@ -21,13 +21,10 @@ const C = {
     estopBorder: '#d97777',
 };
 
-const CAMS = [{ id: 'cam1', label: 'Cam 1' }, { id: 'cam2', label: 'Cam 2' }];
-
 // Cockpit UI state — reconciled from robot_telemetry (authoritative on connect).
 export const aui = {
     engaged: { left: false, right: false },
     estopped: false,
-    selectedCams: ['cam1'],
     nonce: 0,
     pending: new Map(),   // nonce → { id, expiry } for cmd_ack feedback
 };
@@ -127,25 +124,19 @@ function renderConsole(p) {
     p.header('xArm cockpit');
 
     // Engage status (read-only; the robot decides engage from the held button).
+    // Both cameras are always shown as two screens, so there's no camera toggle.
     const x = p.ctx;
     x.fillStyle = C.dim; x.font = '600 20px ui-monospace, monospace';
     x.fillText('ENGAGE', 24, 96);
     p.pill(150, 74, 130, 44, `L ${aui.engaged.left ? 'ON' : '—'}`, aui.engaged.left);
     p.pill(292, 74, 130, 44, `R ${aui.engaged.right ? 'ON' : '—'}`, aui.engaged.right);
 
-    // Camera select.
-    x.fillStyle = C.dim; x.fillText('CAMERA', 24, 176);
-    CAMS.forEach((c, i) => {
-        const on = aui.selectedCams.includes(c.id);
-        p.chip(`cam:${c.id}`, 150 + i * 142, 154, 130, 44, c.label, on ? 'active' : 'idle');
-    });
-
     // E-STOP / clear — always reachable, big.
     if (aui.estopped) {
-        p.chip('estop_clear', 24, 238, 540, 120, 'E-STOP LATCHED — CLEAR', 'error');
+        p.chip('estop_clear', 24, 168, 540, 130, 'E-STOP LATCHED — CLEAR', 'error');
     } else {
         const pend = [...aui.pending.values()].some((v) => v.id === 'estop');
-        p.chip('estop', 24, 238, 540, 120, 'E-STOP', pend ? 'pending' : 'idle');
+        p.chip('estop', 24, 168, 540, 130, 'E-STOP', pend ? 'pending' : 'idle');
     }
 
     // Stats line (transport + robot-measured cmd latency).
@@ -166,15 +157,6 @@ function handleClick(id) {
         aui.estopped = false;
         markPending('estop_clear');
         sendEstopClear(state.stateChannel, nextNonce);
-    } else if (id.startsWith('cam:')) {
-        const cam = id.slice(4);
-        // Toggle within the known set; never allow an empty selection.
-        let sel = aui.selectedCams.includes(cam)
-            ? aui.selectedCams.filter((c) => c !== cam)
-            : [...aui.selectedCams, cam];
-        if (sel.length === 0) sel = [cam];
-        aui.selectedCams = CAMS.map((c) => c.id).filter((c) => sel.includes(c));
-        sendCameraSelect(state.stateChannel, aui.selectedCams);
     }
 }
 
@@ -192,7 +174,6 @@ export function onCmdAck(msg) {
 export function onRobotState(s) {
     if (s.engaged) aui.engaged = { left: !!s.engaged.left, right: !!s.engaged.right };
     if (typeof s.estopped === 'boolean') aui.estopped = s.estopped;
-    if (Array.isArray(s.cams) && s.cams.length) aui.selectedCams = s.cams;
     _dirty();
 }
 

@@ -18,15 +18,21 @@ import { disconnect } from './disconnect.js';
 import { sendInterval, state } from './state.js';
 import { buildArmCockpit, aui, onCmdAck, onRobotState } from './vrarmui.js';
 import { getVRRenderer } from './vrrenderer.js';
-import { buildJoy, buildPoseStamped, sendEstop } from './xarmcmd.js';
+import { buildJoy, buildPoseStamped, sendCameraSelect, sendEstop } from './xarmcmd.js';
 
 const HEAD = new THREE.Vector3(0, 1.55, 0);
-// Camera panel — front centre, 16:9. Matches vrarmui console placement.
-const CAM = { w: 1.4, h: 0.7875, x: 0, y: 1.52, z: -1.6 };
+// Two side-by-side camera screens (cam1 left, cam2 right), each ~16:9. The robot
+// muxes both cams into ONE hstacked 1696×480 video track; we split that texture
+// down the middle so each panel shows one full-aspect feed — a dual-monitor
+// cockpit rather than a single switched view.
+const SCREEN = { w: 1.24, h: 0.70, y: 1.52, z: -1.62 };
+const SCREEN_GAP = 0.06;     // seam between the two panels (metres)
+const SCREEN_YAW = 0.20;     // toe-in so both face the operator (~11°)
 
 let renderer = null, scene = null, camera = null;
 let cockpit = null, controllers = [];
-let videoMesh = null, videoTex = null;
+// videoMeshes[0] = left/cam1 (texture left half), [1] = right/cam2 (right half).
+let videoMeshes = [], videoTexes = [];
 let stallGate = null;
 let camEl = null;
 let estopNonce = 0;
@@ -39,13 +45,23 @@ function buildScene() {
     scene = new THREE.Scene();
     camera = new THREE.PerspectiveCamera(70, 1, 0.05, 100);
 
-    videoMesh = new THREE.Mesh(
-        new THREE.PlaneGeometry(CAM.w, CAM.h),
-        new THREE.MeshBasicMaterial({ color: 0x0d0e0e }),
-    );
-    videoMesh.position.set(CAM.x, CAM.y, CAM.z);
-    videoMesh.renderOrder = 1;
-    scene.add(videoMesh);
+    // Two panels, toed-in toward the operator. Left edge of the right panel and
+    // right edge of the left panel meet near centre with a small gap.
+    const halfW = SCREEN.w / 2;
+    const centreX = halfW + SCREEN_GAP / 2;
+    videoMeshes = [];
+    for (let i = 0; i < 2; i++) {
+        const mesh = new THREE.Mesh(
+            new THREE.PlaneGeometry(SCREEN.w, SCREEN.h),
+            new THREE.MeshBasicMaterial({ color: 0x0d0e0e }),
+        );
+        const sign = i === 0 ? -1 : 1;  // left panel, then right panel
+        mesh.position.set(sign * centreX, SCREEN.y, SCREEN.z);
+        mesh.rotation.y = -sign * SCREEN_YAW;  // toe-in
+        mesh.renderOrder = 1;
+        scene.add(mesh);
+        videoMeshes.push(mesh);
+    }
 
     cockpit = buildArmCockpit(scene, HEAD);
 }
@@ -88,17 +104,33 @@ function raycastPanels(ctrl) {
 function updateVideoTexture() {
     const v = camEl;
     if (!v || v.readyState < 2 || !v.videoWidth) return;
-    if (!videoTex || videoTex.image !== v) {
-        videoTex?.dispose();
-        videoTex = new THREE.VideoTexture(v);
-        videoTex.colorSpace = THREE.SRGBColorSpace;
-        videoMesh.material.dispose();
-        videoMesh.material = new THREE.MeshBasicMaterial({ map: videoTex });
+
+    // (Re)bind a texture per panel off the same video element. Each panel samples
+    // one horizontal half of the muxed frame: left→cam1, right→cam2.
+    if (videoTexes.length !== 2 || videoTexes[0].image !== v) {
+        for (const t of videoTexes) t.dispose();
+        videoTexes = videoMeshes.map((mesh) => {
+            const tex = new THREE.VideoTexture(v);
+            tex.colorSpace = THREE.SRGBColorSpace;
+            mesh.material.dispose();
+            mesh.material = new THREE.MeshBasicMaterial({ map: tex });
+            return tex;
+        });
     }
+
+    // Vertical crop: drop the latency stamp strip (rows appended below the frame).
     const strip = state.liveStats.stampStripPx || 0;
-    const frac = strip && v.videoHeight ? strip / v.videoHeight : 0;
-    videoTex.offset.y = frac;
-    videoTex.repeat.y = 1 - frac;
+    const yFrac = strip && v.videoHeight ? strip / v.videoHeight : 0;
+
+    // Horizontal split. Two cams → wide frame (aspect ≥ ~2.4): each panel takes
+    // its half. One cam → square-ish frame: both panels show the whole frame
+    // (graceful fallback until the robot sends both).
+    const dual = v.videoWidth >= v.videoHeight * 2;
+    for (let i = 0; i < videoTexes.length; i++) {
+        const tex = videoTexes[i];
+        tex.offset.set(dual ? i * 0.5 : 0, yFrac);
+        tex.repeat.set(dual ? 0.5 : 1, 1 - yFrac);
+    }
 }
 
 // ── Arm command plane: stream controller pose + Joy per hand ─────────
@@ -169,14 +201,26 @@ function updateHover() {
     }
 }
 
+// Ask the robot for BOTH cameras once the state channel opens (the mux defaults
+// to cam1 only). One-shot: the dual-screen cockpit always wants both muxed.
+let _requestedBothCams = false;
+function requestBothCams() {
+    if (_requestedBothCams) return;
+    if (!state.stateChannel || state.stateChannel.readyState !== 'open') return;
+    sendCameraSelect(state.stateChannel, ['cam1', 'cam2']);
+    _requestedBothCams = true;
+}
+
 function onFrame(timeMs, frame) {
     if (!camEl) camEl = document.getElementById('robot-cam');
+    requestBothCams();
     if (frame) streamArmPose(frame);
     updateHover();
     updateVideoTexture();
-    if (videoMesh.material.map) {
-        const stalled = state.videoStall?.stalled;
-        videoMesh.material.color.setHex(stalled ? 0x552222 : 0xffffff);
+    // Tint both screens red when the robot video is stalled/frozen.
+    const stalled = state.videoStall?.stalled;
+    for (const mesh of videoMeshes) {
+        if (mesh.material.map) mesh.material.color.setHex(stalled ? 0x552222 : 0xffffff);
     }
     cockpit.tick(timeMs);
     tickCmdHz(timeMs);
@@ -184,7 +228,7 @@ function onFrame(timeMs, frame) {
 }
 
 export async function startArmVR() {
-    lastCmdSampleMs = 0; lastSend = 0;
+    lastCmdSampleMs = 0; lastSend = 0; _requestedBothCams = false;
     stallGate = createStallGate();
     state.videoStall = { stalled: false, blocked: false, armed: false };
     document.getElementById('canvas').style.display = 'block';
@@ -226,8 +270,9 @@ export async function startArmVR() {
         renderer.setAnimationLoop(null);
         cockpit?.dispose();
         cockpit = null;
-        videoTex?.dispose(); videoTex = null;
-        videoMesh?.geometry.dispose(); videoMesh?.material.dispose(); videoMesh = null;
+        for (const t of videoTexes) t.dispose();
+        for (const m of videoMeshes) { m.geometry.dispose(); m.material.dispose(); }
+        videoTexes = []; videoMeshes = [];
         camEl = null;
         disconnect();
     });
