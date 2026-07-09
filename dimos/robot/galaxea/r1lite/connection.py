@@ -309,19 +309,20 @@ class R1LiteConnection(Module):
 
     @rpc
     def stop(self) -> None:
-        # Leave the chassis with an explicit zero target before tearing
-        # down — the robot-side node latches whatever it heard last.
-        try:
-            self._publish_chassis_command(Twist())
-        except Exception:  # noqa: BLE001 — best-effort courtesy stop
-            pass
-
+        # Stop the publish loop FIRST so it can't race the ROS teardown,
+        # then leave the chassis with an explicit zero target — the
+        # robot-side node latches whatever it heard last.
         self._stop_event.set()
         self._sensor_stop.set()
 
         if self._publish_thread is not None and self._publish_thread.is_alive():
             self._publish_thread.join(timeout=DEFAULT_THREAD_JOIN_TIMEOUT)
             self._publish_thread = None
+
+        try:
+            self._publish_chassis_command(Twist())
+        except Exception:  # noqa: BLE001 — best-effort courtesy stop
+            pass
 
         # Sensor teardown first — its callbacks reference the isolated
         # context and will hot-loop on a shut-down node otherwise.
@@ -857,8 +858,12 @@ class R1LiteConnection(Module):
 
             # Chassis: stream the fresh command, or zeros once cmd_vel has
             # ever been used (dead-man — robot side latches forever).
-            if chassis_active:
-                self._publish_chassis_command(cmd_vel if cmd_fresh else zero)  # type: ignore[arg-type]
+            if chassis_active and not self._stop_event.is_set():
+                try:
+                    self._publish_chassis_command(cmd_vel if cmd_fresh else zero)  # type: ignore[arg-type]
+                except Exception as exc:  # noqa: BLE001 — teardown race: context can die first
+                    logger.warning(f"chassis publish failed (shutting down?): {exc}")
+                    break
 
             next_tick += period
             sleep_for = next_tick - time.perf_counter()
