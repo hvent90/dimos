@@ -1,0 +1,7 @@
+# Out-of-source build dir (recommended layout)
+build/
+
+CMakeCache.txt
+CMakeFiles/
+cmake_install.cmake
+Makefile
