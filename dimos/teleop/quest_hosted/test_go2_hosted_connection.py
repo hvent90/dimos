@@ -77,6 +77,7 @@ def _bare_connection() -> Go2HostedConnection:
         odom_hz=15.0,
         nav_yield_sec=1.0,
         max_nav_goal_m=100.0,
+        allow_acrobatics=False,
     )
     conn._last_map_pub = 0.0
     conn._last_drive_ts = 0.0
@@ -107,7 +108,11 @@ def _twist(ts: float) -> Any:
 # ─── sport-command allow-list ────────────────────────────────────────
 
 
-@pytest.mark.parametrize("name", list(ALLOWED_SPORT_CMDS))
+# Acrobatics are gated separately (allow_acrobatics) — tested below.
+_NON_ACROBATIC = [n for n in ALLOWED_SPORT_CMDS if n not in ("FrontJump", "FrontPounce")]
+
+
+@pytest.mark.parametrize("name", _NON_ACROBATIC)
 def test_allowed_sport_cmd_dispatched(name: str, monkeypatch: pytest.MonkeyPatch) -> None:
     """Every allow-listed name maps to its api_id and calls sport_command."""
     conn = _bare_connection()
@@ -124,6 +129,37 @@ def test_allowed_sport_cmd_dispatched(name: str, monkeypatch: pytest.MonkeyPatch
 
     conn.connection.sport_command.assert_called_once_with(ALLOWED_SPORT_CMDS[name])
     assert acks == [(7, True)]
+
+
+@pytest.mark.parametrize("name", ["FrontJump", "FrontPounce"])
+def test_acrobatics_blocked_by_default(name: str, monkeypatch: pytest.MonkeyPatch) -> None:
+    """Acrobatic leaps are rejected unless allow_acrobatics is set — no firmware call."""
+    conn = _bare_connection()  # fixture default allow_acrobatics=False
+    acks: list[tuple[Any, bool]] = []
+    monkeypatch.setattr(conn, "_send_ack", lambda nonce, ok: acks.append((nonce, ok)))
+
+    conn._handle_sport_cmd({"name": name, "nonce": 3})
+
+    assert acks == [(3, False)]
+    conn.connection.sport_command.assert_not_called()
+
+
+@pytest.mark.parametrize("name", ["FrontJump", "FrontPounce"])
+def test_acrobatics_allowed_when_enabled(name: str, monkeypatch: pytest.MonkeyPatch) -> None:
+    conn = _bare_connection()
+    conn.config.allow_acrobatics = True
+    conn.connection.sport_command.return_value = True
+    acks: list[tuple[Any, bool]] = []
+    monkeypatch.setattr(conn, "_send_ack", lambda nonce, ok: acks.append((nonce, ok)))
+
+    conn._handle_sport_cmd({"name": name, "nonce": 4})
+    for _ in range(200):
+        if acks:
+            break
+        time.sleep(0.005)
+
+    conn.connection.sport_command.assert_called_once_with(ALLOWED_SPORT_CMDS[name])
+    assert acks == [(4, True)]
 
 
 @pytest.mark.parametrize("name", ["Backflip", "", "sport_command", None, 1013])
@@ -376,13 +412,34 @@ def test_stand_ready_ends_drive_ready(monkeypatch: pytest.MonkeyPatch) -> None:
     conn = _bare_connection()
     monkeypatch.setattr(time, "sleep", lambda _s: None)
 
+    conn.connection.standup.return_value = True
+    conn.connection.sport_command.return_value = True
+    conn.connection.balance_stand.return_value = True
+    conn.connection.switch_joystick.return_value = True
+
     assert conn._stand_ready_task() is True
 
     names = [c[0] for c in conn.connection.method_calls]
     assert names == ["standup", "sport_command", "balance_stand", "switch_joystick"]
     conn.connection.sport_command.assert_called_once_with(ALLOWED_SPORT_CMDS["RecoveryStand"])
     conn.connection.switch_joystick.assert_called_once_with(True)
-    assert conn._posture == "StandReady"
+
+
+def test_stand_ready_returns_false_and_stops_on_step_failure(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """A failed step aborts the sequence and reports False (no false-success ack)."""
+    conn = _bare_connection()
+    conn._posture = "Sit"  # not already StandReady, so we can see it stays put
+    monkeypatch.setattr(time, "sleep", lambda _s: None)
+    conn.connection.standup.return_value = True
+    conn.connection.sport_command.return_value = True
+    conn.connection.balance_stand.return_value = False  # fails here
+
+    assert conn._stand_ready_task() is False
+    # switch_joystick is never reached, and posture is not latched to StandReady.
+    conn.connection.switch_joystick.assert_not_called()
+    assert conn._posture == "Sit"
 
 
 # ─── telemetry state snapshot (operator UI seeding) ──────────────────

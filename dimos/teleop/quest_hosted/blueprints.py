@@ -77,7 +77,9 @@ teleop_hosted_go2_transport = (
 )
 
 
-# LiveKit twin of teleop_hosted_go2_transport — same channels, LiveKit SFU.
+# LiveKit backend: drive + camera + state/telemetry. No minimap or
+# click-to-nav yet (the CF transport blueprint wires VoxelGridMapper/CostMapper/
+# ReplanningAStarPlanner + map_unreliable; LiveKit doesn't).
 # Run with -o transports.broker.api_key=dtk_live_...
 teleop_hosted_go2_livekit = (
     autoconnect(

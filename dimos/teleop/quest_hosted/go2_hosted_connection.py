@@ -69,6 +69,11 @@ ALLOWED_SPORT_CMDS: dict[str, int] = {
 # return to the prior stance, so they don't touch it).
 _POSTURE_SPORT_CMDS = frozenset({"StandDown", "RecoveryStand", "Sit", "Damp"})
 
+# High-risk acrobatic leaps — gated off the default allow-list; enable only
+# with config.allow_acrobatics (a hosted web operator shouldn't trigger these
+# by default).
+_ACROBATIC_SPORT_CMDS = frozenset({"FrontPounce", "FrontJump"})
+
 
 class Go2HostedConnectionConfig(ConnectionConfig):
     telemetry_hz: float = 3.0
@@ -82,7 +87,9 @@ class Go2HostedConnectionConfig(ConnectionConfig):
     odom_hz: float = 15.0
     speaker: bool = True
     nav_yield_sec: float = 1.0
-    max_nav_goal_m: float = 100.0  # reject click-to-nav goals beyond this radius
+    # Reject click-to-nav goals beyond this (axis-aligned bound, not radius).
+    max_nav_goal_m: float = 100.0
+    allow_acrobatics: bool = False  # let the operator trigger FrontJump/Pounce
 
 
 class Go2HostedConnection(GO2Connection, HostedConnectionMixin):
@@ -111,6 +118,7 @@ class Go2HostedConnection(GO2Connection, HostedConnectionMixin):
     _MAX_PENDING_CMDS = 4
     _NONCE_TTL_SEC = 10.0
     _NONCE_CACHE_MAX = 64
+    _MAX_MAP_BYTES = 16 * 1024  # CF datachannel per-message ceiling
 
     def __init__(self, **kwargs: Any) -> None:
         super().__init__(**kwargs)
@@ -392,6 +400,10 @@ class Go2HostedConnection(GO2Connection, HostedConnectionMixin):
             logger.warning("sport_cmd: disallowed/unknown name %r", name)
             self._send_ack(nonce, False)
             return
+        if name in _ACROBATIC_SPORT_CMDS and not self.config.allow_acrobatics:
+            logger.warning("sport_cmd: %s blocked (allow_acrobatics=False)", name)
+            self._send_ack(nonce, False)
+            return
 
         def task() -> bool:
             ok = bool(self.connection.sport_command(api_id))
@@ -406,14 +418,26 @@ class Go2HostedConnection(GO2Connection, HostedConnectionMixin):
     def _stand_ready_task(self) -> bool:
         # Standup → RecoveryStand → BalanceStand → joystick ON. WASD drives via
         # stick emulation, which needs BOTH the BalanceStand FSM and firmware
-        # joystick listening on; the sequence + sleeps are load-bearing.
-        self.connection.standup()
+        # joystick listening on; the sequence + sleeps are load-bearing. Each
+        # step is checked so the operator's ack reflects reality, not optimism.
+        def _step(label: str, ok: object) -> bool:
+            if not ok:
+                logger.warning("StandReady: %s failed", label)
+            return bool(ok)
+
+        if not _step("standup", self.connection.standup()):
+            return False
         time.sleep(3.0)  # standup must finish before the FSM transitions
-        self.connection.sport_command(ALLOWED_SPORT_CMDS["RecoveryStand"])
+        if not _step(
+            "RecoveryStand", self.connection.sport_command(ALLOWED_SPORT_CMDS["RecoveryStand"])
+        ):
+            return False
         time.sleep(0.3)
-        self.connection.balance_stand()
+        if not _step("balance_stand", self.connection.balance_stand()):
+            return False
         time.sleep(0.3)
-        self.connection.switch_joystick(True)
+        if not _step("switch_joystick", self.connection.switch_joystick(True)):
+            return False
         self._posture = "StandReady"
         return True
 
@@ -570,8 +594,16 @@ class Go2HostedConnection(GO2Connection, HostedConnectionMixin):
             "stamp": float(grid.ts),
             "png_b64": png_b64,
         }
+        data = json.dumps(payload, separators=(",", ":")).encode()
+        # Coarsening usually keeps this under the ceiling; a high-entropy grid
+        # can still exceed it, and an oversized send destabilizes the channel —
+        # drop it rather than blow the datachannel.
+        if len(data) > self._MAX_MAP_BYTES:
+            logger.warning("map payload too large (%d bytes), dropping frame", len(data))
+            self._last_map_pub = now  # don't retry the same oversized frame immediately
+            return
         try:
-            self.map_out.publish(json.dumps(payload).encode())
+            self.map_out.publish(data)
         except Exception:
             logger.debug("map publish failed", exc_info=True)
             return
