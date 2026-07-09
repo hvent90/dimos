@@ -42,6 +42,7 @@ from typing import TYPE_CHECKING, Any
 
 from dimos.protocol.pubsub.impl.webrtc.providers.sdp import propagate_bundle_candidates
 from dimos.protocol.pubsub.impl.webrtc.providers.spec import (
+    DEFAULT_BROKER_URL,
     WEBRTC_AVAILABLE,
     AsyncProviderBase,
     ProviderConfig,
@@ -59,7 +60,7 @@ if TYPE_CHECKING:
 class BrokerConfig(ProviderConfig):
     """Hosted teleop broker access. ``api_key`` is required; the rest defaults."""
 
-    broker_url: str = "https://teleop.dimensionalos.com"
+    broker_url: str = DEFAULT_BROKER_URL
     api_key: str | None = None
     robot_id: str | None = None
     robot_name: str = "robot"

@@ -54,6 +54,7 @@ from dimos.msgs.geometry_msgs.TwistStamped import TwistStamped
 from dimos.msgs.sensor_msgs.Image import Image
 from dimos.msgs.sensor_msgs.Joy import Joy
 from dimos.protocol.pubsub.impl.webrtc.providers.sdp import propagate_bundle_candidates
+from dimos.protocol.pubsub.impl.webrtc.providers.spec import DEFAULT_BROKER_URL
 from dimos.protocol.pubsub.impl.webrtc.providers.video_track import CameraVideoTrack
 from dimos.teleop.quest.quest_types import Buttons, Hand, QuestControllerState
 from dimos.teleop.utils.stream_stats import LiveStreamStats
@@ -67,7 +68,7 @@ logger = setup_logger()
 class HostedTeleopConfig(ModuleConfig):
     control_loop_hz: float = 50.0
 
-    broker_url: str = "https://teleop.dimensionalos.com"
+    broker_url: str = DEFAULT_BROKER_URL
     # Set via the module-config flow (-o hosted-teleop.broker_api_key=... or env).
     broker_api_key: str = ""
     robot_id: str = ""
