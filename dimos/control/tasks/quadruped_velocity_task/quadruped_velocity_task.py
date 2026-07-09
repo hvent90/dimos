@@ -148,6 +148,13 @@ class QuadrupedVelocityTaskConfig:
     height_scan_rays: int = 187
     height_scan_scale: float = 0.2
     height_scan_miss: float = 5.0
+    # Clamp scan heights before feeding the policy. Training terrain was
+    # continuous, so raw miss values (5.0 = "bottomless cliff") are far
+    # out of distribution and make the policy crouch-freeze or collapse
+    # the moment part of the grid hangs over a platform edge. 1.0 m keeps
+    # edge readings inside the depth range the policy saw in training
+    # while still signalling "big drop, don't step there".
+    height_scan_clip: float = 1.0
     # Per-axis gain from the stack's cmd_vel convention to the policy's
     # command units, applied in the obs (same pattern as
     # G1GrootWBCTaskConfig.cmd_scale). 2.0 maps the nav planner's and
@@ -358,6 +365,7 @@ class QuadrupedVelocityTask(BaseControlTask):
             )
         else:
             heights = np.asarray(scan, dtype=np.float32)
+        heights = np.minimum(heights, self._config.height_scan_clip)
 
         with self._cmd_lock:
             if (
