@@ -257,6 +257,3 @@ class G1QuestTeleopModule(QuestTeleopModule):
                 logger.info("G1 Quest cmd_vel active: vx=%.2f vy=%.2f wz=%.2f", vx, vy, yaw_rate)
             else:
                 logger.info("G1 Quest cmd_vel zeroed")
-
-
-g1_quest_teleop = G1QuestTeleopModule.blueprint
