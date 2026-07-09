@@ -35,6 +35,7 @@ import time
 from typing import TYPE_CHECKING, Any, ClassVar
 
 from dimos.protocol.pubsub.impl.webrtc.providers.spec import (
+    DEFAULT_BROKER_URL,
     AsyncProviderBase,
     ProviderConfig,
 )
@@ -73,10 +74,10 @@ class LiveKitBrokerConfig(ProviderConfig):
     # "livekitbroker" from the class name (see transport_config_name).
     _config_name: ClassVar[str] = "broker"
 
-    broker_url: str | None = None
+    broker_url: str = DEFAULT_BROKER_URL
     api_key: str | None = None
     robot_id: str | None = None
-    robot_name: str | None = None
+    robot_name: str = "robot"
     heartbeat_hz: float = 1.0
     # Publish-side encoder caps (0 = LiveKit defaults) to bound uplink usage.
     video_max_bitrate_bps: int = 0
@@ -201,10 +202,10 @@ class LiveKitBrokerProvider(AsyncProviderBase):
             raise RuntimeError("livekit and httpx required: pip install dimos[livekit]")
         super().__init__()
         config = config or LiveKitBrokerConfig()
-        self._broker_url = (config.broker_url or "https://teleop.dimensionalos.com").rstrip("/")
+        self._broker_url = config.broker_url.rstrip("/")
         self._api_key = config.api_key or ""
         self._robot_id = config.robot_id or ""
-        self._robot_name = config.robot_name or "robot"
+        self._robot_name = config.robot_name
         if not self._api_key:
             raise RuntimeError(
                 "transports.broker.api_key required "
