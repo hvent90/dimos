@@ -110,6 +110,15 @@ function paintStatus() {
 }
 
 export function renderArm(c) {
+    // A prior VR/preview session may have left a hidden #robot-cam appended to
+    // <body> (ensureRobotCam creates one when a view has no <video>). navigate()
+    // only replaces #app, so that stale element survives — and since it's earlier
+    // in document order, getElementById('robot-cam') would return IT, so the
+    // WebRTC track attaches to the invisible element and our video stays black.
+    // Drop it before we render ours.
+    document.querySelectorAll('#robot-cam').forEach((el) => {
+        if (!el.closest('#app')) el.remove();
+    });
     c.innerHTML = `
     <div class="min-h-screen flex flex-col md:flex-row gap-4 p-4 fade-in">
         <!-- Video -->
@@ -120,16 +129,11 @@ export function renderArm(c) {
             </div>
             <!-- setStatus() targets #teleop-status -->
             <div id="teleop-status" class="text-sm text-gray-300 px-3 py-2 bg-bg-950 border border-[#2a2a2a] rounded-lg mb-3">Negotiating…</div>
-            <!-- Stage: relative + flex-1 + min-h-0 so the video actually gets
-                 height in the flex column (mirrors the go2 view's #stage). The
-                 <video> fills it absolutely; object-contain letterboxes. -->
-            <div class="relative flex-1 min-h-0 bg-black rounded-lg border border-[#2a2a2a] overflow-hidden" style="min-height:320px;">
-                <!-- Starts display:none; webrtc.js flips it to block when the track
-                     arrives (that relayout is what forces the first paint — the
-                     go2/keyboard views rely on the same toggle). -->
-                <video id="robot-cam" autoplay muted playsinline
-                    class="absolute inset-0 w-full h-full object-contain" style="display:none;"></video>
-            </div>
+            <!-- Exact markup from the working keyboard view: plain block video,
+                 display:none until webrtc.js reveals it on track arrival. -->
+            <video id="robot-cam" autoplay muted playsinline
+                class="w-full rounded-lg border border-[#2a2a2a] bg-black"
+                style="display:none; max-height:70vh; object-fit:contain;"></video>
         </div>
         <!-- Right control panel -->
         <div class="w-full md:w-72 flex flex-col gap-3">
