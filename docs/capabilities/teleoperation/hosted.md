@@ -126,6 +126,7 @@ robot                          broker (Cloudflare / LiveKit)      operator brows
   state_reliable_back   ────►  (robot → operator, json)    ────►   pong, robot_telemetry, cmd_ack
   map_unreliable        ────►  (robot → operator, lossy)   ────►   minimap grid + odom
   video track           ────►  broker publishes + pulls    ────►   <video> sink
+  audio track           ◄────  broker pulls operator mic   ◄────    mic (opt-in, audio_in)
 ```
 
 For the WebRTC / aiortc / Cloudflare implementation details (MAX_BUNDLE, SCTP

@@ -3,7 +3,8 @@
 Robot dials out to the [dimensional-teleop](https://github.com/dimensionalOS/dimensional-teleop)
 broker (Cloudflare Realtime SFU) — no inbound ports needed. The browser/VR
 operator connects through the broker; commands arrive over WebRTC datachannels,
-robot video goes out as a WebRTC track.
+robot video goes out as a WebRTC track, and — opt-in (`audio_in`) — the
+operator's mic comes back on a recvonly audio track.
 
 ## Files
 
@@ -36,7 +37,9 @@ broker repo (`web/`), not here.
 ## How a session connects
 
 1. Robot creates an `RTCPeerConnection` (MAX_BUNDLE, **must** — see below),
-   `addTrack(video)`, opens a throwaway negotiated DataChannel on SCTP id 0,
+   `addTrack(video)`, adds a recvonly audio transceiver if `audio_in` is set
+   (the broker later pulls the operator's mic onto it and renegotiates via a
+   heartbeat-ack offer), opens a throwaway negotiated DataChannel on SCTP id 0,
    creates an offer, gathers ICE non-trickle.
 2. `POST /api/v1/sessions` to the broker with the offer. Broker creates a CF
    session, returns the answer + a `session_id` keyed off the robot.
