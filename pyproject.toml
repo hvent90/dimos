@@ -628,7 +628,9 @@ env = [
   "GOOGLE_MAPS_API_KEY=AIzafake_google_key",
   "PYTHONWARNINGS=ignore:cupyx.jit.rawkernel is experimental:FutureWarning",
 ]
-addopts = "--dist=loadfile --durations=10 --timeout=600 --timeout-method=thread -v -ra --showlocals --cov-report=xml -p no:launch_testing -p no:launch_ros --import-mode=importlib --color=yes -m 'not (self_hosted or mujoco or self_hosted_large)'"
+# --ignore=dimos/experimental: experimental modules don't gate CI; run their
+# tests explicitly with `pytest dimos/experimental/... -o addopts=""` (or a trimmed addopts)
+addopts = "--dist=loadfile --durations=10 --timeout=600 --timeout-method=thread -v -ra --showlocals --cov-report=xml -p no:launch_testing -p no:launch_ros --import-mode=importlib --color=yes --ignore=dimos/experimental -m 'not (self_hosted or mujoco or self_hosted_large)'"
 asyncio_mode = "auto"
 asyncio_default_fixture_loop_scope = "function"
 
