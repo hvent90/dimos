@@ -45,6 +45,7 @@ from dimos.memory2.module import pose_setter_for
 from dimos.msgs.geometry_msgs.PoseStamped import PoseStamped
 from dimos.msgs.sensor_msgs.PointCloud2 import PointCloud2
 from dimos.navigation.dannav.holonomic_tc.module import DanHolonomicTC
+from dimos.navigation.lidar_shield.module import LidarShield
 from dimos.navigation.movement_manager.movement_manager import MovementManager
 from dimos.navigation.nav_3d.mls_planner.goal_relay import GoalRelay
 from dimos.navigation.nav_3d.mls_planner.mls_planner_native import MLSPlannerNative
@@ -62,6 +63,7 @@ voxel_size = 0.08
 _axis_len = 0.5
 # Arrow radius as a fraction of the triad length.
 _AXIS_RADIUS_RATIO = 25
+_PURPLE = (170, 0, 255)
 
 
 class Go2Mid360Recorder(PointlioRecorder):
@@ -97,16 +99,12 @@ def _render_global_map(msg: Any) -> Any:
     return msg.to_rerun()
 
 
-# Local path drawn purple; Path.to_rerun defaults to green.
-_PATH_COLOR = (170, 0, 255)
-
-
 def _render_path(msg: Any) -> Any:
     # The planner emits an empty path when it finds no route to the goal.
     # Logging those would blank the line, so drop them and keep the last path.
     if len(msg.poses) == 0:
         return None
-    return msg.to_rerun(color=_PATH_COLOR)
+    return msg.to_rerun(color=_PURPLE)
 
 
 def _render_costmap(msg: Any) -> Any:
@@ -114,6 +112,13 @@ def _render_costmap(msg: Any) -> Any:
     # cells the solver actually repels from) as a flat point slice below the
     # robot. Draw them as red voxel boxes so the obstacle field is legible.
     return msg.to_rerun(colors=[255, 0, 0], mode="boxes", voxel_size=0.1)
+
+
+def _render_shield_points(msg: Any) -> Any:
+    # LidarShield's breach points — the obstacle returns inside the stop bubble
+    # that engaged the shield. Draw them as orange spheres so an active shield is
+    # obvious in the viewer.
+    return msg.to_rerun(colors=[255, 140, 0], mode="spheres", voxel_size=0.1)
 
 
 def _static_robot_body(rr: Any) -> list[Any]:
@@ -177,6 +182,7 @@ _nav_rerun_config = {
         "world/global_map": _render_global_map,
         "world/path": _render_path,
         "world/costmap_cloud": _render_costmap,
+        "world/shield_points": _render_shield_points,
         "world/camera_info": None,
         "world/color_image": None,
         "world/lidar": None,
@@ -252,8 +258,32 @@ unitree_go2_mls_htc_mid360 = autoconnect(
     DanHolonomicTC.blueprint(run_profile="walk").remappings(
         [(DanHolonomicTC, "odom", "start_pose")]
     ),
-    MovementManager.blueprint(),
-).global_config(n_workers=10, robot_model="unitree_go2", obstacle_avoidance=False)
+    # MovementManager's cmd_vel is diverted through the shield: it publishes to
+    # cmd_vel_raw, the shield gates it, and the shield drives the robot's cmd_vel.
+    MovementManager.blueprint().remappings([(MovementManager, "cmd_vel", "cmd_vel_raw")]),
+    # danvi's LidarShield (from danvi/feat/go2-oav): a last-line velocity gate that
+    # brakes/blocks cmd_vel when an obstacle is inside shield_radius_m, and injects
+    # the obstacle back into the map so the planner reroutes. It needs a
+    # WORLD/odom-frame obstacle cloud + pose; PointLio's raw `lidar` is in the
+    # sensor frame (mid360_link), so — unlike the oav_draft which fed raw lidar —
+    # we feed the odom-frame `local_map` instead, and inject reinforcement back
+    # into `local_map` (which is also RepulsiveFieldNative's costmap source, so
+    # detected obstacles directly stiffen the planner's field). The shield skips
+    # its own injected frames via their `intensities` tag, so sharing the topic is
+    # safe.
+    LidarShield.blueprint(
+        shield_radius_m=0.45,
+        inject_voxel_m=voxel_size,
+    ).remappings(
+        [
+            (LidarShield, "lidar", "local_map"),
+            (LidarShield, "odom", "start_pose"),
+            (LidarShield, "cmd_vel_in", "cmd_vel_raw"),
+            (LidarShield, "cmd_vel_out", "cmd_vel"),
+            (LidarShield, "map_out", "local_map"),
+        ]
+    ),
+).global_config(n_workers=11, robot_model="unitree_go2", obstacle_avoidance=False)
 
 # The nav blueprint leaves PointLio on its default lidar / odometry topics, so
 # remap the recorder's ports onto them. Streams are recorded under the port
