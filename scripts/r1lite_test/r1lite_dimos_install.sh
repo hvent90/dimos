@@ -30,7 +30,7 @@ step 1 "Preflight"
 [ "$(uname -m)" = "x86_64" ] || { echo "unexpected arch"; exit 1; }
 avail_gb=$(df --output=avail -BG "$HOME" | tail -1 | tr -dc '0-9')
 [ "$avail_gb" -gt 40 ] || { echo "need >40GB free, have ${avail_gb}G"; exit 1; }
-timeout 5 curl -sI https://github.com >/dev/null || { echo "no internet"; exit 1; }
+timeout 10 git ls-remote --heads "$REPO_URL" >/dev/null 2>&1 || { echo "cannot reach github"; exit 1; }
 echo "    arch/disk/internet OK (${avail_gb}G free)"
 
 step 2 "Docker"
@@ -69,7 +69,10 @@ if ! $DOCKER ps -a --format '{{.Names}}' | grep -qx "$CONTAINER"; then
     # --network host: DDS to the Galaxea stack.
     # -v /dev/shm: CRITICAL same-host FastDDS uses shared memory; a private
     #   container /dev/shm means "topics visible, zero messages".
-    # X11 mounts: allow ssh -X forwarded pygame teleop.
+    # X11 mounts: allow ssh -X forwarded pygame teleop. The touch matters:
+    # on a headless box with no ~/.Xauthority, docker would create the
+    # mount source as a root-owned DIRECTORY, breaking ssh -X forever.
+    touch "$HOME/.Xauthority"
     $DOCKER run -d --name "$CONTAINER" --network host \
         -v "$DIMOS_DIR":/app \
         -v /dev/shm:/dev/shm \

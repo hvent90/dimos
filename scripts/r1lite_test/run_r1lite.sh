@@ -36,6 +36,11 @@ CONTAINER=dimos-dev-r1lite
 IMAGE=ghcr.io/dimensionalos/ros-dev:dev
 REPO_ROOT="$(git rev-parse --show-toplevel)"
 
+# Right after a fresh install the docker group isn't active until the next
+# login — fall back to sudo (mirrors r1lite_dimos_install.sh).
+DOCKER=docker
+docker info >/dev/null 2>&1 || DOCKER="sudo docker"
+
 # On-robot mode: this script also runs on the R1 Lite's own PC (see
 # r1lite_dimos_install.sh). Detected by the Galaxea install dir.
 ON_ROBOT=0
@@ -59,31 +64,34 @@ fi
 # One-time provisioning: create the dev container if this machine doesn't
 # have it yet (fresh clone). Mounts THIS checkout at /app, host networking
 # (required for DDS multicast to the robot).
-if ! docker ps -a --format '{{.Names}}' | grep -qx "$CONTAINER"; then
+if ! $DOCKER ps -a --format '{{.Names}}' | grep -qx "$CONTAINER"; then
     echo "[run_r1lite] container $CONTAINER not found — creating it"
     echo "[run_r1lite] (needs ghcr access: gh auth token | docker login ghcr.io -u <user> --password-stdin)"
-    docker run -d --name "$CONTAINER" --network host \
+    # -v /dev/shm: same-host FastDDS uses shared memory — without it the
+    # on-robot container sees topics but zero messages. Harmless on laptops.
+    $DOCKER run -d --name "$CONTAINER" --network host \
         -v "$REPO_ROOT":/app \
+        -v /dev/shm:/dev/shm \
         -v /tmp/.X11-unix:/tmp/.X11-unix \
         -e PYTHONUNBUFFERED=1 -e PYTHONPATH=/app \
         -it "$IMAGE" /bin/bash >/dev/null
 fi
-docker start "$CONTAINER" >/dev/null 2>&1 || true
+$DOCKER start "$CONTAINER" >/dev/null 2>&1 || true
 
 # The venv must be the container-built py3.10 one (Humble rclpy). Host
 # syncs (py3.12) silently break it — rebuild takes a few minutes, so we
 # refuse loudly instead of doing it behind your back.
-if ! docker exec "$CONTAINER" bash -c 'test -x /app/.venv/bin/python && /app/.venv/bin/python -c "import sys; sys.exit(sys.version_info[:2] != (3,10))"' 2>/dev/null; then
+if ! $DOCKER exec "$CONTAINER" bash -c 'test -x /app/.venv/bin/python && /app/.venv/bin/python -c "import sys; sys.exit(sys.version_info[:2] != (3,10))"' 2>/dev/null; then
     echo "[run_r1lite] ERROR: /app/.venv is missing or not the container py3.10 build."
     echo "[run_r1lite] Fix (one-time, ~3 min):"
-    echo "    docker exec -it $CONTAINER bash -c 'cd /app && rm -rf .venv && UV_PYTHON=3.10 uv sync --all-extras --no-extra dds --no-extra unitree-dds'"
+    echo "    $DOCKER exec -it $CONTAINER bash -c 'cd /app && rm -rf .venv && UV_PYTHON=3.10 uv sync --all-extras --no-extra dds --no-extra unitree-dds'"
     exit 1
 fi
 
 if [ "$WEB" = "1" ]; then
     if ! ss -tln | grep -q ':9877 '; then
         echo "[run_r1lite] starting headless web sidecar in container (:9877 grpc, :9090 browser)"
-        docker exec -d "$CONTAINER" rerun --serve-web --port 9877 --memory-limit 2GB
+        $DOCKER exec -d "$CONTAINER" rerun --serve-web --port 9877 --memory-limit 2GB
         sleep 2
     fi
     echo "[run_r1lite] BROWSER VIEWER (open on any machine that can reach this one):"
@@ -106,7 +114,7 @@ else
 fi
 
 echo "[run_r1lite] launching $BLUEPRINT in container (Ctrl-C stops it)"
-exec docker exec -it -e DISPLAY="$DISPLAY" "$CONTAINER" bash -c "
+exec $DOCKER exec -it -e DISPLAY="$DISPLAY" "$CONTAINER" bash -c "
     cd /app &&
     source .venv/bin/activate &&
     source /opt/ros/humble/setup.bash &&
