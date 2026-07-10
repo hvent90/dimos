@@ -27,6 +27,11 @@ export const aui = {
     estopped: false,
     nonce: 0,
     pending: new Map(),   // nonce → { id, expiry } for cmd_ack feedback
+    // Control mode (local, operator preference — the robot arbitrates whichever
+    // command plane it receives): 'pose' streams absolute controller poses
+    // (engage + move, the default); 'joystick' streams EE-twist from thumbsticks
+    // (sticks → XYZ, trigger held → RPY), driving the coordinator's eef_twist.
+    controlMode: 'pose',
 };
 
 function nextNonce() { return ++aui.nonce; }
@@ -131,12 +136,18 @@ function renderConsole(p) {
     p.pill(150, 74, 130, 44, `L ${aui.engaged.left ? 'ON' : '—'}`, aui.engaged.left);
     p.pill(292, 74, 130, 44, `R ${aui.engaged.right ? 'ON' : '—'}`, aui.engaged.right);
 
+    // Control-mode toggle: Pose (engage + move) ↔ Joystick (thumbstick EE-twist).
+    const modeLabel = aui.controlMode === 'joystick'
+        ? 'MODE: JOYSTICK (STICKS XYZ · TRIGGER RPY)'
+        : 'MODE: POSE (ENGAGE + MOVE)';
+    p.chip('control_mode', 24, 132, 540, 44, modeLabel, 'active');
+
     // E-STOP / clear — always reachable, big.
     if (aui.estopped) {
-        p.chip('estop_clear', 24, 168, 540, 130, 'E-STOP LATCHED — CLEAR', 'error');
+        p.chip('estop_clear', 24, 188, 540, 120, 'E-STOP LATCHED — CLEAR', 'error');
     } else {
         const pend = [...aui.pending.values()].some((v) => v.id === 'estop');
-        p.chip('estop', 24, 168, 540, 130, 'E-STOP', pend ? 'pending' : 'idle');
+        p.chip('estop', 24, 188, 540, 120, 'E-STOP', pend ? 'pending' : 'idle');
     }
 
     // Stats line (transport + robot-measured cmd latency).
@@ -149,6 +160,11 @@ function renderConsole(p) {
 }
 
 function handleClick(id) {
+    if (id === 'control_mode') {
+        aui.controlMode = aui.controlMode === 'pose' ? 'joystick' : 'pose';
+        _dirty();
+        return;
+    }
     if (id === 'estop') {
         aui.estopped = true;  // optimistic; robot_telemetry reconciles
         markPending('estop');

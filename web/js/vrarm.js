@@ -18,7 +18,7 @@ import { disconnect } from './disconnect.js';
 import { sendInterval, state } from './state.js';
 import { buildArmCockpit, aui, onCmdAck, onRobotState } from './vrarmui.js';
 import { getVRRenderer } from './vrrenderer.js';
-import { buildJoy, buildPoseStamped, sendCameraSelect, sendEstop } from './xarmcmd.js';
+import { buildEEFTwist, buildJoy, buildPoseStamped, sendCameraSelect, sendEstop } from './xarmcmd.js';
 
 const HEAD = new THREE.Vector3(0, 1.55, 0);
 // Two side-by-side camera screens (cam1 left, cam2 right), each ~16:9. The robot
@@ -152,6 +152,20 @@ function streamArmPose(frame) {
     if (gate.blocked) return;
 
     const nowMs = Date.now() + state.clockOffsetMs;
+    // Menu button (index 6, either hand) → E-STOP in both modes.
+    for (const src of frame.session.inputSources) {
+        if (src.gamepad?.buttons[6]?.pressed) { triggerEstop(); break; }
+    }
+    if (aui.controlMode === 'joystick') {
+        streamArmJoystick(frame, chan, nowMs);
+    } else {
+        streamArmPoseMode(frame, chan, nowMs);
+    }
+}
+
+// Pose mode (default): stream absolute controller pose + Joy per hand. The robot
+// re-bases on engage and applies deltas → TeleopIKTask.
+function streamArmPoseMode(frame, chan, nowMs) {
     for (const src of frame.session.inputSources) {
         const space = src.gripSpace || src.targetRaySpace;
         if (!space) continue;
@@ -163,12 +177,52 @@ function streamArmPose(frame) {
         chan.send(buildPoseStamped(hand, pose.transform.position, pose.transform.orientation, nowMs).encode());
         state.cmdSendCount++;
 
-        if (src.gamepad) {
-            chan.send(buildJoy(hand, src.gamepad, nowMs).encode());
-            // Menu button (index 6) → E-STOP, debounced.
-            if (src.gamepad.buttons[6]?.pressed) triggerEstop();
-        }
+        if (src.gamepad) chan.send(buildJoy(hand, src.gamepad, nowMs).encode());
     }
+}
+
+// Joystick mode: thumbsticks drive an EE-twist (coordinator's eef_twist task,
+// same plane as the browser keyboard cockpit). No trigger → translate; trigger
+// held → rotate. Right stick = X/Y, left stick = Z / yaw. Tuned conservatively;
+// refine axis assignment on hardware.
+const VR_LIN_SPEED = 0.15;   // m/s at full stick
+const VR_ANG_SPEED = 0.9;    // rad/s at full stick
+const STICK_DEADZONE = 0.12;
+
+function dz(v) { return Math.abs(v) < STICK_DEADZONE ? 0 : v; }
+
+function stickXY(gp) {
+    // xr-standard exposes the thumbstick on axes[2]/[3]; older mappings on [0]/[1].
+    const xr = gp.mapping === 'xr-standard';
+    return [dz((xr ? gp.axes[2] : gp.axes[0]) ?? 0), dz((xr ? gp.axes[3] : gp.axes[1]) ?? 0)];
+}
+
+function streamArmJoystick(frame, chan, nowMs) {
+    let left = null, right = null;
+    let rotate = false;
+    for (const src of frame.session.inputSources) {
+        if (!src.gamepad) continue;
+        if (src.handedness === 'left') left = src.gamepad;
+        else if (src.handedness === 'right') right = src.gamepad;
+        // Trigger (button 0) on either hand → rotate mode.
+        if (src.gamepad.buttons[0]?.value > 0.5) rotate = true;
+    }
+    const linear = { x: 0, y: 0, z: 0 };
+    const angular = { x: 0, y: 0, z: 0 };
+
+    if (right) {
+        const [rx, ry] = stickXY(right);
+        if (rotate) { angular.x += ry * VR_ANG_SPEED; angular.y += rx * VR_ANG_SPEED; }  // roll / pitch
+        else { linear.x += -ry * VR_LIN_SPEED; linear.y += rx * VR_LIN_SPEED; }          // fwd/back · left/right
+    }
+    if (left) {
+        const [lx, ly] = stickXY(left);
+        if (rotate) { angular.z += lx * VR_ANG_SPEED; }         // yaw
+        else { linear.z += -ly * VR_LIN_SPEED; }                // up/down
+    }
+
+    chan.send(buildEEFTwist(linear, angular, nowMs).encode());
+    state.cmdSendCount++;
 }
 
 function triggerEstop() {
