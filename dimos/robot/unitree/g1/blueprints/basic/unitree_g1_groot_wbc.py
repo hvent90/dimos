@@ -331,10 +331,7 @@ else:
     # Same nav middle as unitree-g1-nav-simple, fed by Point-LIO from the
     # MID-360, executed through the coordinator's twist_command.
     _nav_stack = autoconnect(
-        PointLio.blueprint(
-            host_ip=os.getenv("LIDAR_HOST_IP", "192.168.123.164"),
-            lidar_ip=os.getenv("LIDAR_IP", "192.168.123.120"),
-        ),
+        PointLio.blueprint(),
         RayTracingVoxelMap.blueprint(
             voxel_size=_G1_REAL_NAV_VOXEL_RESOLUTION,
             emit_every=0,  # no local_map consumer here
