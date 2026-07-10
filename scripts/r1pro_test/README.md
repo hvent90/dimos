@@ -8,12 +8,17 @@ ethernet. The robot runs ROS2 Humble on a Jetson Orin (Ubuntu 22.04 / L4T).
 The laptop runs DiMOS inside a **Humble-on-22.04 docker container** so the
 ROS2 stack matches the robot exactly (no cross-version DDS issues).
 
-**Current status (2026-05-09)**: Connection module + coordinator blueprint
-running end-to-end. All sensor streams flowing through LCM into the rerun
-bridge (verified). Chassis Twist teleop blueprint shipped. Manipulation
-(planner-coordinator) blueprint researched but **not yet implemented** —
-three viable paths identified, decision deferred. See "Session Log —
-Connection-module refactor (2026-05-09)" at the bottom.
+**Current status (2026-07-09)**: Migrated to the **new-gen R1 Pro**
+(firmware **V2.3.0**, `ROS_DOMAIN_ID=1`). V2.3.0 replaced the standalone
+mobiman control nodes with a unified `moca_adapter` that refuses external
+chassis commands — we bypass it and run the standalone
+`chassis_control_node` (which still ships) via the `~/galaxea-dimos` tree.
+Chassis verified driving smoothly. See §14 for the full migration story.
+Connection module + coordinator blueprint run end-to-end; sensor streams
+flow through LCM into the rerun bridge. Manipulation (planner-coordinator)
+blueprint researched but **not yet implemented** (§12.E). Stream-drop
+elimination on the new gen in progress —
+[NEWGEN_DROP_ELIMINATION.md](NEWGEN_DROP_ELIMINATION.md).
 
 ---
 
@@ -24,21 +29,24 @@ Connection-module refactor (2026-05-09)" at the bottom.
 - Robot ethernet port: `eth1` on the robot
 
 ### Robot IP (persistent after netplan config)
-- Robot `eth1`: `192.168.123.150/24`
-- Laptop ethernet (`enxf8e43bb7046c`): `192.168.123.100/24`
+- **New-gen robot**: `192.168.1.88` (laptop ethernet: `192.168.1.100`)
+- Old-gen robot `eth1`: `192.168.123.150/24` (laptop ethernet
+  `enxf8e43bb7046c`: `192.168.123.100/24`)
 
 ### Set laptop ethernet IP (if not already set)
 ```bash
-sudo ip addr add 192.168.123.100/24 dev enxf8e43bb7046c
+sudo ip addr add 192.168.1.100/24 dev enxf8e43bb7046c     # new-gen robot
+sudo ip addr add 192.168.123.100/24 dev enxf8e43bb7046c   # old-gen robot
 ```
 
 ### SSH into robot
 ```bash
-ssh nvidia@192.168.123.150
+ssh nvidia@192.168.1.88        # new-gen robot
+ssh nvidia@192.168.123.150     # old-gen robot
 # password: nvidia
 ```
 
-### Make robot IP persistent across reboots (already done)
+### Make robot IP persistent across reboots (old-gen robot — already done)
 Edit `/etc/netplan/50-cloud-init.yaml` on the robot, add `192.168.123.150/24`
 to eth1 addresses:
 ```yaml
@@ -50,78 +58,125 @@ Then: `sudo netplan apply`
 
 ---
 
-## Robot Startup Procedure
+## Robot Startup Procedure — NEW-GEN robot (V2.3.0 — updated 2026-07-09)
 
-Run these commands on the robot via SSH every session:
+The new-gen R1 Pro runs firmware **V2.3.0** on **`ROS_DOMAIN_ID=1`** and
+starts CAN via **`canfd.sh`** (the current script name on the r1pro — older
+docs referenced `can.sh`). Same dual-tree pattern as the old gen — boot ONE
+tree at a time (they share tmux session names; `./robot_startup.sh kill`
+switches between them):
+
+| Tree | Behavior |
+|---|---|
+| `~/galaxea` | 100% factory stock (V2.3.0). The RC teleop drives the chassis via `moca_adapter`. Never modified. |
+| `~/galaxea-dimos` | Byte-for-byte copy of stock + the 4-item diff below. Bypasses moca: standalone control stack + chassis gatekeeper, RC teleop disabled. Chassis accepts external commands. |
 
 ```bash
-# Step 1: Start CAN bus driver
-bash ~/can.sh
+# Step 1: CAN bus driver
+bash ~/canfd.sh
 
-# Step 2: Launch full robot stack (ros2_discovery, mobiman, hdas, tools)
-cd ~/galaxea/install/startup_config/share/startup_config/script
+# Step 2: Boot the Dimensional tree (kill first if the other tree is up)
+cd ~/galaxea-dimos/install/startup_config/share/startup_config/script
+./robot_startup.sh kill
 ./robot_startup.sh boot ../sessions.d/ATCStandard/R1PROBody.d/
 
-# Step 3: Wait ~30 seconds for HDAS to fully init (arms open/close = healthy)
+# Step 3: Wait ~30s for HDAS (arms open/close = healthy). The gatekeeper
+#         opens all chassis gates automatically — no --controller-mode
+#         flags, no relaunch script, no manual gatekeeper step.
 
-# Step 4: Launch Livox MID360 LiDAR driver
-#   The R1PROBody.d session config does NOT include the lidar launch — you have
-#   to start it by hand each session, otherwise /hdas/lidar_chassis_left has
-#   zero publishers and the connection sits subscribed to silence.
-#   Hardware is at 192.168.2.100; verify reachable with `ping 192.168.2.100`.
-bash ~/galaxea/install/startup_config/share/startup_config/script/boot/modules/hdas/start_livox_lidar.sh
-
-# Step 5: Verify the head depth stream
-#   The signal_camera_head launch publishes RGB but sometimes does NOT publish
-#   /hdas/camera_head/depth/depth_registered. If `ros2 topic info` shows 0
-#   publishers on that topic, restart the head signal camera launch:
-#   bash ~/galaxea/install/startup_config/share/startup_config/script/boot/modules/hdas/start_signal_camera_head.sh
-
-# Step 6: Start chassis gatekeeper (required for chassis control from laptop)
-source ~/galaxea/install/setup.bash
-export ROS_DOMAIN_ID=41
-python3 ~/chassis_gatekeeper.py
+# Step 4: Smoke-test the chassis with a plain drive (no gate flags needed):
+python3 ~/chassis_poke.py --vx 0.12 --duration 4.0
 ```
 
 ```bash
-# Step 7: Verify everything is publishing (run on the robot or laptop)
-source ~/galaxea/install/setup.bash
-export ROS_DOMAIN_ID=41
+# Verify everything is publishing (run on robot or laptop)
+source ~/galaxea-dimos/install/setup.bash
+export ROS_DOMAIN_ID=1
 ros2 topic list --no-daemon | grep -E 'hdas|lidar' | head -20
-# Expected: /hdas/feedback_arm_left, /hdas/feedback_arm_right, /hdas/lidar_chassis_left, etc.
 
 # Spot-check rates on the streams the connection consumes:
-ros2 topic hz /hdas/lidar_chassis_left                                    # ~10 Hz
 ros2 topic hz /hdas/camera_wrist_left/color/image_raw/compressed          # ~15 Hz
 ros2 topic hz /hdas/camera_wrist_right/color/image_raw/compressed         # ~15 Hz
 ros2 topic hz /hdas/camera_head/left_raw/image_raw_color/compressed       # ~15 Hz
 ```
 
-### Sensors that should auto-start (and what to do when they don't)
+### What the `~/galaxea-dimos` tree changes (the entire diff vs stock)
 
-`robot_startup.sh` reads sessions from `R1PROBody.d/` and runs each entry's
-launch script. On a clean boot the session brings up:
+After a firmware reflash, re-rsync `~/galaxea` → `~/galaxea-dimos` and
+re-apply these (same recovery pattern as §13):
 
-- **HDAS** (CAN-side: arms, torso, chassis, grippers, IMUs) via
-  `start_hdas_r1pro.sh`
-- **RealSense wrist cameras** (left + right D405) via
-  `start_realsense_camera_r1pro.sh` — reads serials from
-  `/opt/galaxea/sensor/realsense/RS_LEFT` and `RS_RIGHT`
-- **Head signal camera** (head RGB stereo + depth) via
-  `start_signal_camera_head.sh`
+- **`sessions.d/.../mobiman.yaml`** — moca replaced with the standalone
+  stack (chassis, joint-PID, gripper, EE-pose nodes) + a gatekeeper pane
+  running `start_chassis_gatekeeper.sh`.
+- **`mobiman/.../r1_pro_chassis_control_launch.py`** — `/controller` →
+  `/controller_unused` remap on the chassis node (Gate 2 workaround).
+- **New `~/chassis_gatekeeper.py` + `start_chassis_gatekeeper.sh`** —
+  holds `mode=5` on `/controller_unused` + `brake_mode=False` + a nonzero
+  `acc_limit`. All gate handling now lives on the robot.
+- **`sessions.d/.../teleop.yaml` → `.disabled`** — stock V2.3.0's
+  `homogeneous_teleoperation` co-publishes zeros onto
+  `/motion_target/target_speed_chassis` at 200 Hz, out-shouting external
+  commands. Disabled so there's no RC competitor.
 
-The session does NOT bring up the **Livox MID360 LiDAR** — Step 4 above is the
-manual workaround. If you want it to launch automatically, add a session
-entry under `~/galaxea/install/startup_config/share/startup_config/script/sessions.d/ATCStandard/R1PROBody.d/`
-that invokes
-`~/galaxea/install/startup_config/share/startup_config/script/boot/modules/hdas/start_livox_lidar.sh`
-(this hasn't been pushed upstream — keep the manual step in sync until that
-session config gets fixed on the robot).
+Notes for the new gen:
+
+- **Base has NO surround chassis cameras** (lidars only); sensors are the
+  head/top cameras + 2 wrist D405s. `enable_chassis_cameras` stays `False`
+  in `R1ProConnectionConfig` (the default).
+- **Lidar is not auto-started** by this tree yet. `start_livox_lidar.sh`
+  ships stock — add one line in `hdas.yaml` when you want it.
+- Arms/torso/grippers run on the standalone nodes but were **not
+  re-verified** in the 2026-07-09 session (chassis was).
 
 If a wrist camera reports `RS2_USB_STATUS_BUSY` or repeatedly disconnects
 (check `~/.ros/log/realsense2_camera_node_*_*.log`), it's a USB-layer fault
 — reseat the cable on that camera and rerun
 `start_realsense_camera_r1pro.sh`.
+
+### Old-gen robot (V2.2.1) startup — HISTORICAL RECORD
+
+Kept for reference / if the old-gen robot comes back into service. The
+old-gen trees were `~/galaxea` (stock V2.2.1) and `~/dimos_galaxea`
+(Dimensional copy), on **`ROS_DOMAIN_ID=41`**. The CAN script was
+documented as `can.sh` at the time; the r1pro's updated script is
+`canfd.sh` — use whichever exists in `~`:
+
+```bash
+# Step 1: CAN bus driver
+bash ~/can.sh        # (updated script: ~/canfd.sh)
+
+# Step 2: Boot the Dimensional tree (or ~/galaxea/... for stock)
+cd ~/dimos_galaxea/install/startup_config/share/startup_config/script
+./robot_startup.sh boot ../sessions.d/ATCStandard/R1PROBody.d/
+
+# Step 3: Wait ~30s for HDAS, then drive from the laptop via /cmd_vel.
+#         The tree started lidar, chassis cams, and gatekeeper itself.
+# Verify: source ~/dimos_galaxea/install/setup.bash; export ROS_DOMAIN_ID=41
+```
+
+The old `~/dimos_galaxea` diff vs stock was four files:
+
+- **`mobiman/.../r1_pro_chassis_control_launch.py`** — `/controller` →
+  `/controller_unused` remap (Gate 2 workaround, one line).
+- **`sessions.d/.../mobiman.yaml`** — 5th pane runs
+  `start_chassis_gatekeeper.sh` (gatekeeper at `~/dimos_galaxea/chassis_gatekeeper.py`;
+  also does `ip link set lo multicast on`).
+- **`sessions.d/.../hdas.yaml`** — ZED pane (no ZED on that robot) replaced
+  with `start_livox_lidar.sh`; 5th pane runs `start_chassis_cameras_v4l2.sh`
+  (v4l2 launch at `~/dimos_galaxea/chassis_cameras_v4l2.launch.py`).
+
+Key differences vs the new gen: V2.2.1 had **no moca** — the standalone
+`chassis_control_node` was already the control path, so mobiman.yaml only
+*added* a gatekeeper pane rather than swapping the whole control stack;
+HDAS flooded `/controller` with **mode 2** (V2.3.0 floods mode 3 — same
+lock, same remap fix); there was no `teleop.yaml` RC competitor to disable;
+the base had 5 surround chassis cams (started via v4l2 launch) which the
+new base doesn't have. Old-gen rate expectations included
+`ros2 topic hz /hdas/lidar_chassis_left` at ~10 Hz.
+
+On a clean boot HDAS (both gens) also brings up the **RealSense wrist
+cameras** (left + right D405) via `start_realsense_camera_r1pro.sh` and the
+**head signal camera** via `start_signal_camera_head.sh`.
 
 ### Robot tmux sessions
 | Session | Purpose |
@@ -144,8 +199,12 @@ DiMOS runs inside the dev docker container. Open a shell into it via the
 cd /app
 source .venv/bin/activate                      # Python 3.10 venv (see §6 + §12)
 source /opt/ros/humble/setup.bash              # Humble's rclpy on PYTHONPATH
-export ROS_DOMAIN_ID=41                        # match the robot
+export ROS_DOMAIN_ID=1                         # new-gen robot (old gen was 41)
 ```
+
+The domain ID is the **only** laptop-side change between old-gen and
+new-gen robots — nothing in the dimos code hardcodes it; `R1ProConnection`
+picks it up from the environment.
 
 **One-time on a fresh checkout** — opt into the r1pro direnv template
 (see §12.A for the rationale):
@@ -173,29 +232,39 @@ that block multicast.
 ## Chassis Gatekeeper (Key Concept)
 
 The R1 Pro `chassis_control_node` has **three internal gates** that all must be
-unlocked simultaneously for chassis movement to work. The on-robot gatekeeper
-script handles all three; the new `R1ProConnection` module on the laptop side
-also opens Gate 1 and Gate 3 itself (see §12).
+unlocked simultaneously for chassis movement to work. On the new gen
+(V2.3.0) the on-robot gatekeeper owns **all** gate handling — a plain
+`TwistStamped` on `/motion_target/target_speed_chassis` drives the chassis;
+the laptop side needs no gate logic. (`R1ProConnection` still opens Gate 1
+and Gate 3 itself from the old-gen days — harmless/redundant now, see §12.)
+
+Note the gates live in the **standalone** `chassis_control_node`. V2.3.0's
+stock control path is the new unified `moca_adapter`, which refuses external
+chassis commands entirely (no gate we could find unlocks it) — the
+`~/galaxea-dimos` tree bypasses moca and runs the standalone node instead
+(see §14).
 
 ### The 3 Gates
 
 | Gate | What blocks it | Where it's opened |
 |---|---|---|
-| **Gate 1**: Subscriber count on `/motion_control/chassis_speed` | Node skips IK if nobody subscribes | `R1ProConnection._on_chassis_speed` subscribes (also drives odom dead-reckoning) |
-| **Gate 2**: `breaking_mode_` flag from `/controller` | HDAS publishes `mode=2` at 200Hz, setting `breaking_mode_=1` | On-robot: launch remaps `/controller` → `/controller_unused`, gatekeeper publishes `mode=5` |
-| **Gate 3**: `acc_limit` defaults to zero | `calculateNextVelocity` uses `acc_limit * dt` which stays 0 | `R1ProConnection._on_cmd_vel` publishes nonzero `TwistStamped` to `/motion_target/chassis_acc_limit` on every Twist command |
+| **Gate 1**: Subscriber count on `/motion_control/chassis_speed` | Node skips IK if nobody subscribes | Gatekeeper subscribes; `R1ProConnection._on_chassis_speed` also subscribes (drives odom dead-reckoning) |
+| **Gate 2**: `breaking_mode_` flag from `/controller` | HDAS floods `/controller` with a lock mode at 200 Hz — **mode 2 on V2.2.1, mode 3 on V2.3.0**; unlock is mode 5. Fighting HDAS directly = jerky. | On-robot: launch remaps `/controller` → `/controller_unused`, gatekeeper holds `mode=5` there uncontested |
+| **Gate 3**: `acc_limit` defaults to zero | `calculateNextVelocity` uses `acc_limit * dt` which stays 0 | Gatekeeper publishes a nonzero acc_limit (new gen); `R1ProConnection._on_cmd_vel` also publishes it per Twist command |
 
-### Prerequisites (one-time on robot)
-1. Edit `~/galaxea/src/mobiman/launch/r1_pro_chassis_control_launch.py`
-2. Uncomment/add: `remappings=[('/controller', '/controller_unused')]`
-3. Rebuild and restart mobiman
+The gatekeeper also publishes `brake_mode=False` (the "4th gate" —
+`/motion_target/brake_mode`, see §13).
+
+### Prerequisites (baked into the `~/galaxea-dimos` tree)
+The `/controller` → `/controller_unused` remap, the standalone-stack swap,
+and the gatekeeper auto-start all live in the Dimensional tree's
+launch/session files. Launch files live only in the **install** tree
+(vendor firmware ships no `src/`) — edit them directly, no rebuild.
+Booting `~/galaxea-dimos` starts the gatekeeper for you; no manual
+`python3 ~/chassis_gatekeeper.py` step.
 
 ### Running
 ```bash
-# On robot:
-source ~/galaxea/install/setup.bash && export ROS_DOMAIN_ID=41
-python3 ~/chassis_gatekeeper.py
-
 # From laptop container — direct LCM publish to test the chassis path:
 dimos run r1pro-coordinator         # in one shell
 # Then: publish a Twist on LCM /cmd_vel from another shell or use the keyboard
@@ -388,11 +457,15 @@ For the DiMOS-side, the canonical verification is now:
 
 - **Platform**: Jetson Orin (aarch64), Ubuntu 22.04, L4T (Jetpack)
 - **ROS2**: Humble, FastDDS (rmw_fastrtps_cpp)
-- **ROS_DOMAIN_ID**: 41
-- **CAN bus**: arms and torso communicate via CAN (`can.sh` starts the driver)
+- **ROS_DOMAIN_ID**: **1** on the new-gen robot (V2.3.0); the old-gen robot was 41
+- **CAN bus**: arms and torso communicate via CAN (`~/canfd.sh` starts the
+  driver — older docs called it `can.sh`)
 - **HDAS**: Hardware abstraction layer — publishes all sensor feedback, receives
   all motion commands
-- **mobiman**: Motion manager — handles kinematics, IK, safety limits
+- **mobiman**: Motion manager — handles kinematics, IK, safety limits. On
+  stock V2.3.0 this is the unified `moca_adapter`; the `~/galaxea-dimos`
+  tree swaps it for the standalone nodes (chassis, joint-PID, gripper,
+  EE-pose) — see §14
 - **Custom message package**: `hdas_msg` — used for motor control, BMS, LED,
   version info. Standard ROS2 types used for joint states and geometry
 - **Chassis type**: W1 (3-wheel swerve drive), from `/opt/galaxea/body/hardware.json`
@@ -416,6 +489,12 @@ For the DiMOS-side, the canonical verification is now:
 - [x] **Rerun bridge refactored to team-standard pattern — inline blueprint factory in coordinator, gated on `--viewer rerun` (§12.G)**
 - [x] **`.envrc.r1pro` direnv template — opt-in `UV_PYTHON=3.10` without committing repo-wide `.python-version=3.10` (§12.H)**
 - [x] **Test scripts restored from `task/mustafa/r1pro-dual-arm-testing` (test_01..06, run_all_tests.py, SENSOR_DROP_RUNBOOK.md)**
+- [x] **Dual-tree robot setup (`~/galaxea` stock vs `~/dimos_galaxea`) — one-shot boot, reflash-proof (2026-06-13, §13)**
+- [x] **New-gen robot (V2.3.0) chassis control — moca bypass via `~/galaxea-dimos` tree, verified driving smoothly (2026-07-09, §14)**
+- [ ] Boot-test `~/galaxea-dimos` from a clean boot (recipe so far only exercised via the manual relaunch path)
+- [ ] Re-verify arms/torso/grippers on the new gen's standalone nodes (chassis verified; the rest not re-checked since the moca bypass)
+- [ ] Add lidar auto-start to the new-gen tree (`start_livox_lidar.sh` ships stock — one line in `hdas.yaml`)
+- [ ] New-gen stream-drop elimination (T0–T5) — see [NEWGEN_DROP_ELIMINATION.md](NEWGEN_DROP_ELIMINATION.md)
 - [ ] Manipulation blueprint (planner-coordinator) — researched, three paths identified, decision deferred (see §12.E)
 - [ ] Push the URDF + meshes (`data/r1_pro_description/`) to git LFS so manipulation-blueprint paths can run on a fresh clone
 - [ ] Torso planning approach — fold torso into bimanual planner (richer reachability) vs hold-fixed (simpler). Open question.
@@ -920,6 +999,98 @@ The original v1 of this branch shipped a standalone bridge launcher
 (`scripts/r1pro_test/run_rerun_bridge.py`) plus a separate layout file
 (`dimos/robot/galaxea/r1pro/rerun.py`). Worked, but diverged from how
 Go2 and G1 do it. 
+
+### 13. V2.2.1 firmware reflash silently reverted everything (2026-06-13)
+
+**Symptom** — after a firmware reflash the chassis wouldn't move even with the
+gatekeeper running; arms were fine.
+
+**Root cause 1 — robot-local DDS discovery broken.** `lo` was missing its
+MULTICAST flag (boot-dependent). FastDDS announcements went out every
+interface but were never delivered locally; only ~4 nodes showed in
+`ros2 node list --no-daemon` (unicast fallback covers participant indices 0–3)
+while dozens ran, so the gatekeeper couldn't see `chassis_control_node`. Arms
+still worked because laptop↔robot discovery over eth1 is unaffected. Telltale:
+`ROS_LOCALHOST_ONLY=1` pub/echo works, `=0` doesn't.
+**Fix:** `sudo ip link set lo multicast on` (non-persistent; now applied by
+`start_chassis_gatekeeper.sh` on every Dimensional boot).
+
+**Root cause 2 — the reflash wiped all our hooks.** Gone: the `/controller`
+remap (so HDAS's 200 Hz mode=2 re-locked Gate 2), the entire `~/galaxea/src`
+tree (launch files now live only in the install tree — editable directly, no
+rebuild), the lidar/chassis-cam session entries, and
+`start_chassis_cameras_v4l2.sh`. V2.2.1 also adds a `vr_controller` node
+publishing `/motion_target/target_speed_chassis` (a competing chassis
+commander) and a `/motion_target/brake_mode` (Bool) subscription on the
+chassis node — nothing publishes it, default permits motion; it's the 4th gate
+to check if a future firmware flips it.
+
+**Resolution — the dual-tree setup** (see Robot Startup Procedure). Vendor tree
+stays byte-for-byte stock, all Dimensional changes live in `~/dimos_galaxea`,
+so reflashes can never silently revert us again. To recover after a reflash:
+re-rsync `~/galaxea` → `~/dimos_galaxea` and re-apply the 4-file diff.
+(An intermediate runtime takeover/restore approach lives at
+`~/dimos_ws/src/dimos_r1pro_bringup` — superseded but still functional.)
+
+Still laptop-side (unchanged from §11): if depth/chassis cams render on the
+robot but not in rerun, it's the laptop's IP-fragmentation sysctls. Head depth
+will NEVER render — no ZED on this robot, the topic has no producer.
+
+### 14. New-gen robot migration — V2.3.0 moca bypass (2026-07-09)
+
+**Situation** — moved from the old-gen robot to the **new-gen R1 Pro**:
+firmware **V2.3.0** (old was V2.2.1), `ROS_DOMAIN_ID=1` (old was 41), CAN
+via `canfd.sh`, base has **lidars only** (no surround chassis cams).
+V2.3.0 replaced the standalone mobiman control nodes with a
+new unified **`moca_adapter`** — that architectural change is what broke
+the old setup: none of our old hooks existed and the control path moved.
+
+**Why the chassis wouldn't move from the laptop (two stacked blockers on
+stock):**
+
+1. **RC teleop competes** — `homogeneous_teleoperation` co-publishes zeros
+   onto `/motion_target/target_speed_chassis` at 200 Hz, out-shouting
+   external commands.
+2. **moca refuses external chassis commands** — with teleop killed, moca
+   still output zero to the wheels while happily driving the arms. It's a
+   chassis-specific refusal inside moca we couldn't unlock (not brake, not
+   acc, not QoS, not RC mode).
+
+**Decision — bypass moca.** It's new in V2.3.0 and isn't what
+`R1ProConnection` was built for. The old robot had no moca — we drove the
+standalone `chassis_control_node` directly, and that node still ships in
+V2.3.0. So we went back to it.
+
+**The fix (verified driving smoothly):** on `chassis_control_node`, Gate 2
+(see "Chassis Gatekeeper" above) is real on this firmware too — HDAS floods
+`/controller` with **mode 3** (V2.2.1 used mode 2); it needs mode 5 to
+unlock, and fighting HDAS directly is jerky. So:
+
+- Remap `/controller` → `/controller_unused` on the chassis node → HDAS
+  can't reach it.
+- Gatekeeper holds `mode=5` on `/controller_unused` (uncontested) +
+  `brake_mode=False` + a nonzero `acc_limit`.
+- Then a plain `TwistStamped` on `/motion_target/target_speed_chassis`
+  drives smoothly.
+
+**What was built — `~/galaxea-dimos/`** (byte-for-byte copy of stock +
+these changes only; `~/galaxea` stays 100% stock so reflashes can't
+silently revert us — same insurance as §13):
+
+- `mobiman.yaml`: moca → standalone stack (chassis, joint-PID, gripper,
+  EE-pose) + gatekeeper pane
+- chassis launch: `/controller` → `/controller_unused` remap
+- new `chassis_gatekeeper.py` + `start_chassis_gatekeeper.sh`
+- `teleop.yaml` → `.disabled` (no RC competitor)
+
+**Laptop side:** point `R1ProConnection` at
+`/motion_target/target_speed_chassis` as before — **no gate handling needed
+on the laptop anymore**; the on-robot gatekeeper owns it. The only
+laptop-side change is `export ROS_DOMAIN_ID=1`.
+
+**Still open** (mirrored in Next Steps): clean-boot test of
+`~/galaxea-dimos`; arms/torso/grippers not re-verified on the standalone
+nodes; lidar auto-start (`start_livox_lidar.sh`, one line in `hdas.yaml`).
 
 ---
 

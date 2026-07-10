@@ -1,5 +1,19 @@
 # R1 Pro Sensor Drop Diagnostic Runbook (adapted to current implementation)
 
+> **⚠️ 2026-07-03 — READ FIRST:** the root cause of the recurring stream
+> collapses was found and it is **upstream of everything in this runbook**:
+> the robot's CSI/VI camera-capture subsystem melts down when multiple
+> chassis cameras stream simultaneously (capture timeout→reset loop + kernel
+> SMMU/IRQ fault storm that kills all streams and crashes driver nodes).
+> Before running any procedure here, check `dmesg -Tw` on the robot for
+> `tegra-camrtc-capture-vi: uncorr_err` / `arm-smmu` faults — if present,
+> this runbook's network/DDS phases will only measure symptoms. See
+> [STREAM_RELIABILITY_DIAGNOSTIC.md](STREAM_RELIABILITY_DIAGNOSTIC.md)
+> (CURRENT UNDERSTANDING header + status log) and use
+> [stream_dashboard.py](stream_dashboard.py) for live per-topic flow.
+> Known-healthy interim config: head + wrist colors + lidar; skip chassis
+> surround cams pending Galaxea/TZTEK escalation.
+
 **Purpose:** Find the layer at which camera/LiDAR frames are being dropped when the ControlCoordinator tick loop starts, apply the cheapest fix that resolves it, and capture enough data that if the first round doesn't resolve it the next session has everything it needs to decide on architectural changes.
 
 **What this runbook assumes about the code** (verified against the current repo; if any of this is wrong, stop and re-read the adapter):
@@ -595,3 +609,31 @@ If (1) holds but (2)–(4) don't, you have a fragile fix. Worth digging more bef
 - Full adapter log from launch through 60 seconds of regression (so we can see the 5-second summary lines cross the threshold)
 
 With those in hand we can decide process separation vs. ProcessPool vs. deeper DDS work on evidence rather than intuition.
+
+---
+
+## Appendix — HDAS launch edit applied on the old-gen robot (2026-07-03)
+
+State of the robot's HDAS tmux launch config as we left it after the VI/SMMU
+meltdown diagnosis (see [STREAM_RELIABILITY_DIAGNOSTIC.md](STREAM_RELIABILITY_DIAGNOSTIC.md)):
+chassis CSI camera panes disabled, everything else kept.
+
+```yaml
+  - shell_command:
+      - sleep 1
+      - ./start_livox_lidar.sh
+  - shell_command:
+      - sleep 1
+      - ./start_realsense_camera_r1pro.sh
+  # DIMENSIONAL 2026-07-03: CSI camera panes disabled. Since the V2.2.1 reflash,
+  # ANY Tegra VI/CSI capture floods dmesg with "VPR violation" / SMMU context
+  # faults (verified by staged bring-up: lidar=clean, realsense=clean,
+  # head signal_camera=faults + 0 frames, chassis v4l2=faults but 30 Hz frames).
+  # Re-enable by restoring the panes below.
+  - shell_command:
+      - sleep 1
+      - ./start_signal_camera_head.sh
+  # - shell_command:
+  #     - sleep 1
+  #     - ./start_chassis_cameras_v4l2.sh
+```
