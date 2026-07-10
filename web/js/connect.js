@@ -75,6 +75,7 @@ export async function connectArmBrowser(sessionId, robotName, transport) {
         navigate('arm');           // renderArm draws the cockpit
         await setupTransport(sessionId, transport);
         startArmLoop();            // keyboard jog loop over the datachannel
+        mountHud();                // always-on latency / transport / TURN pill
         setStatus(`Connected — ${robotName}`);
     } catch (e) {
         console.error(e);

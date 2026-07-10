@@ -35,6 +35,7 @@ let _gripperClosed = false;
 let _estopNonce = 0;
 let _cams = ['cam1', 'cam2'];  // default: both (robot muxes them side-by-side)
 let _camsRequested = false;
+let _wasSending = false;  // true while actively jogging (for one-shot stop on release)
 
 function trackedKey(e) {
     const k = e.key.length === 1 ? e.key.toLowerCase() : e.key;
@@ -189,13 +190,25 @@ export function startArmLoop() {
             videoMediaTime(document.getElementById('robot-cam')), performance.now(), held,
         );
         state.videoStall = gate;
-        // Don't jog on a frozen frame, or while E-STOP is latched.
-        if (gate.blocked || _estopped) return;
+
+        // Send only while jogging (or one zero-twist on release / block / estop),
+        // NOT every tick — flooding the datachannel with idle zero-twists competes
+        // with the video and adds latency. The robot's eef_twist holds when idle.
+        const shouldStop = gate.blocked || _estopped || !held;
+        if (shouldStop) {
+            if (_wasSending) {
+                const nowMs = Date.now() + state.clockOffsetMs;
+                chan.send(buildEEFTwist({ x: 0, y: 0, z: 0 }, { x: 0, y: 0, z: 0 }, nowMs).encode());
+                _wasSending = false;
+            }
+            return;
+        }
 
         const { linear, angular } = buildTwist();
         const nowMs = Date.now() + state.clockOffsetMs;
         chan.send(buildEEFTwist(linear, angular, nowMs).encode());
         state.cmdSendCount++;
+        _wasSending = true;
 
         const out = document.getElementById('arm-readout');
         if (out) out.textContent =
