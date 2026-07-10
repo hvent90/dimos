@@ -23,12 +23,19 @@ import {
 const LINEAR_SPEED = 0.12;   // m/s
 const ANGULAR_SPEED = 0.8;   // rad/s
 
-// key → (vector, axis, sign). Same keys serve linear (no Shift) and angular
-// (with Shift); the loop picks which vector based on the Shift state.
+// key → (axis, sign) for LINEAR jog (no Shift).
 const AXIS_KEYS = {
     w: ['x', +1], s: ['x', -1],   // forward / back
     a: ['y', +1], d: ['y', -1],   // left / right
     q: ['z', +1], e: ['z', -1],   // up / down
+};
+
+// key → (axis, sign) for ANGULAR jog (Shift held). W/S and A/D swap axes vs
+// linear so W/S drive pitch (Y) and A/D drive roll (X); Q/E stays yaw (Z).
+const ROT_AXIS_KEYS = {
+    w: ['y', +1], s: ['y', -1],   // pitch
+    a: ['x', +1], d: ['x', -1],   // roll
+    q: ['z', +1], e: ['z', -1],   // yaw
 };
 
 const _held = new Set();
@@ -77,8 +84,9 @@ function buildTwist() {
     const rot = _held.has('Shift');
     const vec = rot ? angular : linear;
     const speed = rot ? ANGULAR_SPEED : LINEAR_SPEED;
+    const map = rot ? ROT_AXIS_KEYS : AXIS_KEYS;
     for (const key of _held) {
-        const b = AXIS_KEYS[key];
+        const b = map[key];
         if (b) vec[b[0]] += b[1] * speed;
     }
     return { linear, angular };
@@ -132,11 +140,15 @@ export function renderArm(c) {
             </div>
             <!-- setStatus() targets #teleop-status -->
             <div id="teleop-status" class="text-sm text-gray-300 px-3 py-2 bg-bg-950 border border-[#2a2a2a] rounded-lg mb-3">Negotiating…</div>
-            <!-- Exact markup from the working keyboard view: plain block video,
-                 display:none until webrtc.js reveals it on track arrival. -->
-            <video id="robot-cam" autoplay muted playsinline
-                class="w-full rounded-lg border border-[#2a2a2a] bg-black"
-                style="display:none; max-height:70vh; object-fit:contain;"></video>
+            <!-- Fixed-size stage (like the go2 view's #stage): the box keeps a
+                 constant 16:9 area and the video letterboxes inside it via
+                 object-contain, so the frame never resizes the layout. Starts
+                 display:none; webrtc.js reveals it on track arrival. -->
+            <div class="relative w-full bg-black rounded-lg border border-[#2a2a2a] overflow-hidden" style="aspect-ratio:16/9;">
+                <video id="robot-cam" autoplay muted playsinline
+                    class="absolute inset-0 w-full h-full object-contain"
+                    style="display:none;"></video>
+            </div>
         </div>
         <!-- Right control panel -->
         <div class="w-full md:w-72 flex flex-col gap-3">
@@ -165,7 +177,7 @@ export function renderArm(c) {
             <div class="bg-bg-950 border border-[#2a2a2a] rounded-lg p-3 text-sm text-gray-300 leading-relaxed">
                 <div class="text-gray-400 text-xs term-caps mb-2">Controls</div>
                 <div><b class="text-white">W/S</b> ± X &nbsp; <b class="text-white">A/D</b> ± Y &nbsp; <b class="text-white">Q/E</b> ± Z</div>
-                <div class="mt-1"><b class="text-white">Shift</b> + keys → roll/pitch/yaw</div>
+                <div class="mt-1"><b class="text-white">Shift</b>: <b class="text-white">W/S</b> pitch &nbsp; <b class="text-white">A/D</b> roll &nbsp; <b class="text-white">Q/E</b> yaw</div>
                 <div class="mt-1"><b class="text-white">Space</b> → gripper</div>
                 <pre id="arm-readout" class="text-gray-500 text-xs mt-3 font-mono"></pre>
             </div>
