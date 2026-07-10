@@ -49,18 +49,18 @@ _chassis_joints = make_twist_base_joints("chassis")
 
 
 def _r1pro_rerun_blueprint() -> Any:
-    """Two-tab viewer layout: main (wrist+head+3D) and surround chassis cams + depth.
+    """Two-tab viewer layout: main (head stereo + 3D) and all cameras + depth.
 
     Entity paths assume the bridge's default ``entity_prefix="world"`` — so
-    LCM topic ``/r1pro/head_color`` lands at ``world/r1pro/head_color``.
+    LCM topic ``/r1pro/head_left_color`` lands at ``world/r1pro/head_left_color``.
     """
     import rerun as rr
     import rerun.blueprint as rrb
 
     main_tab = rrb.Horizontal(
         rrb.Vertical(
-            rrb.Spatial2DView(origin="world/r1pro/head_color", name="Head color"),
-            rrb.Spatial2DView(origin="world/r1pro/head_depth", name="Head depth"),
+            rrb.Spatial2DView(origin="world/r1pro/head_left_color", name="Head left"),
+            rrb.Spatial2DView(origin="world/r1pro/head_right_color", name="Head right"),
         ),
         rrb.Spatial3DView(
             origin="world",
@@ -71,18 +71,20 @@ def _r1pro_rerun_blueprint() -> Any:
             ),
         ),
         column_shares=[1, 2],
-        name="3D + head",
+        name="Head + 3D",
     )
 
     cameras_tab = rrb.Grid(
-        rrb.Spatial2DView(origin="world/r1pro/chassis_front_left", name="Chassis front-left"),
-        rrb.Spatial2DView(origin="world/r1pro/chassis_front_right", name="Chassis front-right"),
-        rrb.Spatial2DView(origin="world/r1pro/chassis_left", name="Chassis left"),
-        rrb.Spatial2DView(origin="world/r1pro/chassis_right", name="Chassis right"),
-        rrb.Spatial2DView(origin="world/r1pro/chassis_rear", name="Chassis rear"),
+        # Row 1 — RGB.
+        rrb.Spatial2DView(origin="world/r1pro/head_left_color", name="Head left"),
+        rrb.Spatial2DView(origin="world/r1pro/head_right_color", name="Head right"),
         rrb.Spatial2DView(origin="world/r1pro/wrist_left_color", name="Wrist left"),
         rrb.Spatial2DView(origin="world/r1pro/wrist_right_color", name="Wrist right"),
-        grid_columns=3,
+        # Row 2 — depth.
+        rrb.Spatial2DView(origin="world/r1pro/head_depth", name="Head depth"),
+        rrb.Spatial2DView(origin="world/r1pro/wrist_left_depth", name="Wrist left depth"),
+        rrb.Spatial2DView(origin="world/r1pro/wrist_right_depth", name="Wrist right depth"),
+        grid_columns=4,
         name="All cameras",
     )
 
@@ -98,14 +100,10 @@ def _r1pro_rerun_blueprint() -> Any:
 # affecting what the ControlCoordinator sees. Keys are rerun entity paths
 # (entity_prefix "world" + the LCM topic).
 _RERUN_MAX_HZ = {
-    "world/r1pro/head_color": 10.0,
+    "world/r1pro/head_left_color": 10.0,
+    "world/r1pro/head_right_color": 10.0,
     "world/r1pro/wrist_left_color": 10.0,
     "world/r1pro/wrist_right_color": 10.0,
-    "world/r1pro/chassis_front_left": 5.0,
-    "world/r1pro/chassis_front_right": 5.0,
-    "world/r1pro/chassis_left": 5.0,
-    "world/r1pro/chassis_right": 5.0,
-    "world/r1pro/chassis_rear": 5.0,
     "world/r1pro/head_depth": 3.0,
     "world/r1pro/wrist_left_depth": 3.0,
     "world/r1pro/wrist_right_depth": 3.0,
@@ -187,17 +185,16 @@ _r1pro_base = (
             ("twist_command", Twist): LCMTransport("/cmd_vel", Twist),
             # Sensor pass-throughs — downstream consumers (rerun bridge,
             # perception modules, etc.) attach to these topics directly.
-            ("head_color", Image): JpegLcmTransport("/r1pro/head_color", Image),
+            # Chassis surround cams intentionally absent: disabled by default
+            # in R1ProConnectionConfig (CSI capture meltdown — see
+            # scripts/r1pro_test/STREAM_RELIABILITY_DIAGNOSTIC.md) and the new
+            # chassis has none. To bring them back: enable_chassis_cameras=True
+            # on R1ProConnection.blueprint() + re-pin their JpegLcmTransports.
+            ("head_left_color", Image): JpegLcmTransport("/r1pro/head_left_color", Image),
+            ("head_right_color", Image): JpegLcmTransport(
+                "/r1pro/head_right_color", Image
+            ),
             ("head_depth", Image): LCMTransport("/r1pro/head_depth", Image),
-            ("chassis_front_left", Image): JpegLcmTransport(
-                "/r1pro/chassis_front_left", Image
-            ),
-            ("chassis_front_right", Image): JpegLcmTransport(
-                "/r1pro/chassis_front_right", Image
-            ),
-            ("chassis_left", Image): JpegLcmTransport("/r1pro/chassis_left", Image),
-            ("chassis_right", Image): JpegLcmTransport("/r1pro/chassis_right", Image),
-            ("chassis_rear", Image): JpegLcmTransport("/r1pro/chassis_rear", Image),
             ("lidar", PointCloud2): LCMTransport("/r1pro/lidar", PointCloud2),
             ("wrist_left_color", Image): JpegLcmTransport("/r1pro/wrist_left_color", Image),
             ("wrist_left_depth", Image): LCMTransport("/r1pro/wrist_left_depth", Image),
@@ -212,6 +209,9 @@ _r1pro_base = (
             ("joint_command", JointState): LCMTransport("/r1pro/joint_command", JointState),
         }
     )
+    # One worker per module: the 100 Hz ControlCoordinator tick loop must not
+    # share an interpreter with the connection's camera-decode threads.
+    .global_config(n_workers=3)
 )
 
 

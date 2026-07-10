@@ -80,9 +80,17 @@ _R1PRO_UPPER_BODY_BARE: list[str] = (
 R1PRO_UPPER_BODY_JOINTS: list[str] = [f"r1pro/{j}" for j in _R1PRO_UPPER_BODY_BARE]
 assert len(R1PRO_UPPER_BODY_JOINTS) == _NUM_MOTORS
 
-# Chassis RGB cameras: stream name → ROS topic.
+# Head stereo pair: stream name → ROS topic.
+_HEAD_CAMERAS: dict[str, str] = {
+    "head_left_color":     "/hdas/camera_head/left_raw/image_raw_color/compressed",
+    "head_right_color":    "/hdas/camera_head/right_raw/image_raw_color/compressed",
+}
+
+# Off by default (config.enable_chassis_cameras): streaming several surround
+# cams concurrently melts the robot's CSI/VI capture subsystem (see
+# scripts/r1pro_test/STREAM_RELIABILITY_DIAGNOSTIC.md), and the next chassis
+# revision has no surround cameras.
 _CHASSIS_CAMERAS: dict[str, str] = {
-    "head_color":          "/hdas/camera_head/left_raw/image_raw_color/compressed",
     "chassis_front_left":  "/hdas/camera_chassis_front_left/rgb/compressed",
     "chassis_front_right": "/hdas/camera_chassis_front_right/rgb/compressed",
     "chassis_left":        "/hdas/camera_chassis_left/rgb/compressed",
@@ -135,6 +143,9 @@ class R1ProConnectionConfig(ModuleConfig):
     # decoded/decode-ms per camera/lidar/imu). 0 disables the periodic log;
     # the ``sensor_stats`` rpc is always available regardless.
     sensor_stats_interval_s: float = Field(default=10.0)
+    # Subscribe to the 5 chassis surround cameras. Off by default — see the
+    # _CHASSIS_CAMERAS comment (CSI capture meltdown; absent on new chassis).
+    enable_chassis_cameras: bool = Field(default=False)
 
 
 class R1ProConnection(Module):
@@ -155,7 +166,8 @@ class R1ProConnection(Module):
     odom: Out[PoseStamped]
 
     # Chassis perception.
-    head_color: Out[Image]
+    head_left_color: Out[Image]
+    head_right_color: Out[Image]
     head_depth: Out[Image]
     chassis_front_left: Out[Image]
     chassis_front_right: Out[Image]
@@ -454,8 +466,12 @@ class R1ProConnection(Module):
         )
         self._sensor_executor.add_node(self._sensor_node)
 
-        # Chassis RGB cameras → 6 decode workers.
-        for stream_name, ros_topic in _CHASSIS_CAMERAS.items():
+        # JPEG color cameras (head + optional chassis surround) → one decode
+        # worker each.
+        jpeg_cameras = dict(_HEAD_CAMERAS)
+        if self.config.enable_chassis_cameras:
+            jpeg_cameras.update(_CHASSIS_CAMERAS)
+        for stream_name, ros_topic in jpeg_cameras.items():
             cam_q: queue.Queue[Any] = queue.Queue(maxsize=1)
             self._cam_queues[stream_name] = cam_q
             self._sensor_node.create_subscription(
@@ -466,7 +482,7 @@ class R1ProConnection(Module):
             )
             self._sensor_workers.append(
                 Thread(
-                    target=self._chassis_camera_decode_loop,
+                    target=self._jpeg_camera_decode_loop,
                     args=(stream_name, cam_q),
                     daemon=True,
                     name=f"r1pro-{stream_name}",
@@ -574,7 +590,9 @@ class R1ProConnection(Module):
         self._sensor_spin_thread.start()
 
         logger.info(
-            "R1Pro sensor streams up: 6 chassis cams + head_depth + lidar + 2 imus + 4 wrist (isolated DDS)"
+            f"R1Pro sensor streams up: {len(jpeg_cameras)} color cams "
+            f"(chassis surround {'on' if self.config.enable_chassis_cameras else 'off'}) "
+            "+ head_depth + lidar + 2 imus + 4 wrist (isolated DDS)"
         )
 
     def _sensor_spin(self) -> None:
@@ -888,7 +906,7 @@ class R1ProConnection(Module):
 
     # Decode workers — convert ROS messages off the spin thread and publish
 
-    def _chassis_camera_decode_loop(self, stream_name: str, q: queue.Queue[Any]) -> None:
+    def _jpeg_camera_decode_loop(self, stream_name: str, q: queue.Queue[Any]) -> None:
         import cv2
         import numpy as np
 
