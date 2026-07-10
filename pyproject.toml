@@ -653,4 +653,5 @@ ignore = [
     "*/package-lock.json",
     "*/Cargo.lock",
     "dimos/web/dimos_interface/themes.json",
+    "dimos/navigation/nav_3d/repulsive_local_planner/local_planner.py",
 ]
