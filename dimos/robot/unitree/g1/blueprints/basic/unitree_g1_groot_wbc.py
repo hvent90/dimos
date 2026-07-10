@@ -132,7 +132,10 @@ _MUJOCO_LIDAR_BASE_KWARGS: dict[str, Any] = {
 _G1_COMPOSED_MJB_KEY = "unitree-g1-groot-wbc_spawn_9p2_11p8_yaw_m1p57_static_only_lidar"
 _G1_COMPOSED_MJB_ROBOT = "unitree-g1-groot-wbc"
 _G1_COMPOSED_MJB_ENTITY_POLICY = "static-only"
-_G1_NAV_VOXEL_RESOLUTION = 0.05
+# 0.08 matches go2 nav_3d. 0.05 made the raytracer the biggest CPU consumer
+# on the Orin (254%), backlogging its input queues until scans registered
+# with minute-old poses — the map visibly rotated with the robot.
+_G1_NAV_VOXEL_RESOLUTION = 0.08
 _G1_NAV_OVERHEAD_SAFETY_MARGIN = 0.2
 _G1_NAV_MAX_STEP_HEIGHT = 0.10
 _G1_NAV_ROTATION_DIAMETER = 0.8
@@ -292,6 +295,8 @@ if global_config.simulation == "mujoco":
         voxel_size=_G1_NAV_VOXEL_RESOLUTION,
         emit_every=0,
         global_emit_every=1,
+        max_health=10,
+        graze_cos=0.85,
     )
     _nav_stack = autoconnect(
         _mapper,
@@ -373,6 +378,9 @@ else:
             # recomputes per emit, so this also paces the costmap. Full-rate
             # emits saturated the Orin (load ~26/8) and starved the LIO.
             global_emit_every=4,
+            # Clearing behavior matched to go2 nav_3d.
+            max_health=10,
+            graze_cos=0.85,
         ),
         CostMapper.blueprint(
             config=HeightCostConfig(
