@@ -16,10 +16,11 @@
 """3D navigation on Go2 with a Livox Mid-360 lidar, PointLIO odometry, ray-traced
 voxel mapping, MLS planning, and holonomic trajectory control.
 
-This is the Mid-360 counterpart to ``unitree_go2_mls_htc``: it keeps the same
-DanLocalPlanner + DanHolonomicTC control stack but replaces the Go2's onboard L1
-lidar (over WebRTC) with the head-mounted Mid-360 driven by PointLIO, matching
-the sensing front-end of ``unitree_go2_nav_3d``.
+This is the Mid-360 counterpart to ``unitree_go2_mls_htc``: it keeps the
+DanHolonomicTC follower but swaps in the rust ``RepulsiveFieldNative`` local
+planner and replaces the Go2's onboard L1 lidar (over WebRTC) with the
+head-mounted Mid-360 driven by PointLIO, matching the sensing front-end of
+``unitree_go2_nav_3d``.
 
 PointLIO needs the Mid-360 reachable: set ``DIMOS_POINTLIO_LIDAR_IP`` (and
 optionally ``DIMOS_POINTLIO_HOST_IP``). GO2Connection is still used, but only for
@@ -44,10 +45,12 @@ from dimos.memory2.module import pose_setter_for
 from dimos.msgs.geometry_msgs.PoseStamped import PoseStamped
 from dimos.msgs.sensor_msgs.PointCloud2 import PointCloud2
 from dimos.navigation.dannav.holonomic_tc.module import DanHolonomicTC
-from dimos.navigation.dannav.local_planner.module import DanLocalPlanner
 from dimos.navigation.movement_manager.movement_manager import MovementManager
 from dimos.navigation.nav_3d.mls_planner.goal_relay import GoalRelay
 from dimos.navigation.nav_3d.mls_planner.mls_planner_native import MLSPlannerNative
+from dimos.navigation.nav_3d.repulsive_local_planner.repulsive_field_native import (
+    RepulsiveFieldNative,
+)
 from dimos.robot.unitree.go2.blueprints.basic.unitree_go2_basic import rerun_config
 from dimos.robot.unitree.go2.connection import GO2Connection
 from dimos.robot.unitree.go2.go2_mid360_static_transforms import MID360_PITCH_DOWN
@@ -210,12 +213,30 @@ unitree_go2_mls_htc_mid360 = autoconnect(
         ]
     ),
     GoalRelay.blueprint(),
-    # DanLocalPlanner + DanHolonomicTC replace BasicPathFollower. They track on a
-    # PoseStamped `odom`; GoalRelay's `start_pose` is the robot pose in the same
-    # frame the planner plans in, so remap both controllers onto it.
-    DanLocalPlanner.blueprint(resample_spacing_m=0.1).remappings(
-        [(DanLocalPlanner, "odom", "start_pose")]
+    # RepulsiveFieldNative (rust) replaces DanLocalPlanner as the local planner: it
+    # owns its costmap internally from the raytraced `local_map` pointcloud and
+    # re-solves the MLS route (`planner_path`) fresh every tick, emitting a
+    # collision-shaped `local_path`. Remap it into the same odom-frame stream the
+    # rest of the stack plans in:
+    #   - terrain_map  <- RayTracingVoxelMap.local_map (internal costmap source)
+    #   - global_path  <- MLSPlannerNative.path (already remapped to planner_path)
+    #   - odometry     <- PointLio.odometry (auto-wired by port name)
+    #   - local_path   -> DanHolonomicTC.path (the followed route)
+    # output_base_frame=False keeps the output in world_frame so DanHolonomicTC,
+    # which tracks against GoalRelay's odom-frame start_pose, sees a matching frame.
+    RepulsiveFieldNative.blueprint(
+        world_frame="odom",
+        output_base_frame=False,
+        resolution=voxel_size,
+    ).remappings(
+        [
+            (RepulsiveFieldNative, "terrain_map", "local_map"),
+            (RepulsiveFieldNative, "global_path", "planner_path"),
+            (RepulsiveFieldNative, "local_path", "path"),
+        ]
     ),
+    # DanHolonomicTC tracks on a PoseStamped `odom`; GoalRelay's `start_pose` is the
+    # robot pose in the same frame the planner plans in, so remap it onto that.
     DanHolonomicTC.blueprint(run_profile="walk").remappings(
         [(DanHolonomicTC, "odom", "start_pose")]
     ),
