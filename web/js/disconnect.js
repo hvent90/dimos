@@ -4,6 +4,7 @@ import { api, brokerOrigin } from './api.js';
 import { unmountHud } from './hud.js';
 import { navigate } from './router.js';
 import { state } from './state.js';
+import { stopArmLoop } from './views/arm.js';
 import { stopTick } from './views/go2.js';
 import { stopKeyboardLoop } from './views/keyboard.js';
 import { stopClockSync, stopOpHeartbeat, stopVideoStats } from './webrtc.js';
@@ -20,6 +21,7 @@ export async function disconnect() {
     }
 
     stopKeyboardLoop();
+    stopArmLoop();  // arm cockpit: remove its key/blur listeners
     stopTick();  // go2 cockpit: clear telemetry tick + cmd-ack hook
     stopClockSync();
     stopVideoStats();

@@ -1,0 +1,174 @@
+// Desktop browser cockpit for the hosted xArm — keyboard EE-jog, in parallel
+// with the Quest VR cockpit (both drive the same ControlCoordinator; the robot
+// arbitrates, VR overriding keyboard when engaged). Mirrors views/go2.js.
+//
+//   WASD/QE            → EE linear X/Y/Z    (m/s)
+//   Shift + WASD/QE    → EE angular R/P/Y   (rad/s)
+//   Space              → gripper toggle open/close
+//   E-STOP button      → latch/clear
+//
+// Twist → cmd_unreliable (state.cmdChannel) as TwistStamped frame_id
+// "eef_twist_arm"; gripper + estop → state_reliable JSON. Shares transport with
+// vrarm.js/xarmcmd.js against the same ArmHostedConnection.
+
+import { createStallGate, videoMediaTime } from '../stall.js';
+import { escHtml, sendInterval, state } from '../state.js';
+import { buildEEFTwist, sendEstop, sendEstopClear, sendGripper } from '../xarmcmd.js';
+
+// Jog speeds. Modest so the arm is controllable near singularities.
+const LINEAR_SPEED = 0.12;   // m/s
+const ANGULAR_SPEED = 0.8;   // rad/s
+
+// key → (vector, axis, sign). Same keys serve linear (no Shift) and angular
+// (with Shift); the loop picks which vector based on the Shift state.
+const AXIS_KEYS = {
+    w: ['x', +1], s: ['x', -1],   // forward / back
+    a: ['y', +1], d: ['y', -1],   // left / right
+    q: ['z', +1], e: ['z', -1],   // up / down
+};
+
+const _held = new Set();
+let _estopped = false;
+let _gripperClosed = false;
+let _estopNonce = 0;
+
+function trackedKey(e) {
+    const k = e.key.length === 1 ? e.key.toLowerCase() : e.key;
+    if (k in AXIS_KEYS || k === 'Shift' || k === ' ') return k === ' ' ? 'Space' : k;
+    return null;
+}
+
+function onKeyDown(e) {
+    const k = trackedKey(e);
+    if (k === null) return;
+    e.preventDefault();
+    if (k === 'Space') {
+        // Edge-triggered gripper toggle (once per press, not per repeat).
+        if (!e.repeat) {
+            _gripperClosed = !_gripperClosed;
+            sendGripper(state.stateChannel, _gripperClosed);
+            paintStatus();
+        }
+        return;
+    }
+    _held.add(k);
+}
+function onKeyUp(e) {
+    const k = trackedKey(e);
+    if (k === null) return;
+    e.preventDefault();
+    _held.delete(k);
+}
+function clearHeld() { _held.clear(); }
+
+function buildTwist() {
+    const linear = { x: 0, y: 0, z: 0 };
+    const angular = { x: 0, y: 0, z: 0 };
+    const rot = _held.has('Shift');
+    const vec = rot ? angular : linear;
+    const speed = rot ? ANGULAR_SPEED : LINEAR_SPEED;
+    for (const key of _held) {
+        const b = AXIS_KEYS[key];
+        if (b) vec[b[0]] += b[1] * speed;
+    }
+    return { linear, angular };
+}
+
+function triggerEstop() {
+    if (_estopped) { _estopped = false; sendEstopClear(state.stateChannel, () => ++_estopNonce); }
+    else { _estopped = true; sendEstop(state.stateChannel, () => ++_estopNonce); }
+    paintStatus();
+}
+
+function paintStatus() {
+    const grip = document.getElementById('arm-grip');
+    if (grip) {
+        grip.textContent = _gripperClosed ? 'CLOSED' : 'OPEN';
+        grip.className = _gripperClosed ? 'text-amber-400 font-bold' : 'text-green-400 font-bold';
+    }
+    const es = document.getElementById('arm-estop-btn');
+    if (es) {
+        es.textContent = _estopped ? 'E-STOP LATCHED — CLEAR' : 'E-STOP';
+        es.className = _estopped
+            ? 'w-full px-4 py-4 bg-red-900 border border-red-500 text-red-100 font-bold rounded-lg'
+            : 'w-full px-4 py-4 bg-red-600 hover:bg-red-500 text-white font-bold rounded-lg';
+    }
+}
+
+export function renderArm(c) {
+    c.innerHTML = `
+    <div class="min-h-screen flex flex-col md:flex-row gap-4 p-4 fade-in">
+        <!-- Video -->
+        <div class="flex-1 flex flex-col">
+            <h1 class="text-2xl font-bold text-white mb-2">${escHtml(state.activeRobot?.robot_name || 'xArm teleop')}</h1>
+            <div id="arm-status" class="text-sm text-gray-300 px-3 py-2 bg-bg-950 border border-[#2a2a2a] rounded-lg mb-3">Negotiating…</div>
+            <video id="robot-cam" autoplay muted playsinline
+                class="w-full rounded-lg border border-[#2a2a2a] bg-black flex-1"
+                style="min-height:320px; object-fit:contain;"></video>
+        </div>
+        <!-- Right control panel -->
+        <div class="w-full md:w-72 flex flex-col gap-3">
+            <div class="bg-bg-950 border border-[#2a2a2a] rounded-lg p-4">
+                <div class="text-gray-400 text-xs term-caps mb-2">Gripper</div>
+                <div class="text-2xl"><span id="arm-grip" class="text-green-400 font-bold">OPEN</span></div>
+                <div class="text-gray-500 text-xs mt-1">Space to toggle</div>
+            </div>
+            <div class="bg-bg-950 border border-[#2a2a2a] rounded-lg p-4 text-sm text-gray-300 leading-relaxed">
+                <div class="text-gray-400 text-xs term-caps mb-2">Controls</div>
+                <div><b class="text-white">W/S</b> ± X &nbsp; <b class="text-white">A/D</b> ± Y &nbsp; <b class="text-white">Q/E</b> ± Z</div>
+                <div class="mt-1"><b class="text-white">Shift</b> + keys → roll/pitch/yaw</div>
+                <div class="mt-1"><b class="text-white">Space</b> → gripper</div>
+                <pre id="arm-readout" class="text-gray-500 text-xs mt-3 font-mono"></pre>
+            </div>
+            <button id="arm-estop-btn"
+                class="w-full px-4 py-4 bg-red-600 hover:bg-red-500 text-white font-bold rounded-lg">E-STOP</button>
+        </div>
+    </div>`;
+
+    document.getElementById('arm-estop-btn').onclick = triggerEstop;
+    paintStatus();
+}
+
+export function startArmLoop() {
+    stopArmLoop();
+    _held.clear();
+    _estopped = false;
+    _gripperClosed = false;
+    window.addEventListener('keydown', onKeyDown);
+    window.addEventListener('keyup', onKeyUp);
+    window.addEventListener('blur', clearHeld);
+
+    const stallGate = createStallGate();
+    state.videoStall = { stalled: false, blocked: false, armed: false };
+
+    state.kbInterval = setInterval(() => {
+        const chan = state.cmdChannel;
+        if (!chan || chan.readyState !== 'open') return;
+
+        const held = _held.size > 0;
+        const gate = stallGate.sample(
+            videoMediaTime(document.getElementById('robot-cam')), performance.now(), held,
+        );
+        state.videoStall = gate;
+        // Don't jog on a frozen frame, or while E-STOP is latched.
+        if (gate.blocked || _estopped) return;
+
+        const { linear, angular } = buildTwist();
+        const nowMs = Date.now() + state.clockOffsetMs;
+        chan.send(buildEEFTwist(linear, angular, nowMs).encode());
+        state.cmdSendCount++;
+
+        const out = document.getElementById('arm-readout');
+        if (out) out.textContent =
+            `lin  ${linear.x.toFixed(2)} ${linear.y.toFixed(2)} ${linear.z.toFixed(2)}\n` +
+            `ang  ${angular.x.toFixed(2)} ${angular.y.toFixed(2)} ${angular.z.toFixed(2)}`;
+    }, sendInterval);
+}
+
+export function stopArmLoop() {
+    window.removeEventListener('keydown', onKeyDown);
+    window.removeEventListener('keyup', onKeyUp);
+    window.removeEventListener('blur', clearHeld);
+    if (state.kbInterval) { clearInterval(state.kbInterval); state.kbInterval = null; }
+    _held.clear();
+}

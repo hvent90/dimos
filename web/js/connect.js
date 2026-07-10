@@ -7,6 +7,7 @@ import { mountHud } from './hud.js';
 import { setupLiveKit } from './livekit.js';
 import { navigate } from './router.js';
 import { state } from './state.js';
+import { startArmLoop, stopArmLoop } from './views/arm.js';
 import { stopTick } from './views/go2.js';
 import { startKeyboardLoop, stopKeyboardLoop } from './views/keyboard.js';
 import { startVR } from './vr.js';
@@ -61,6 +62,23 @@ export async function connectXArm(sessionId, robotName, transport) {
         setStatus(`Connected — ${robotName}`);
     } catch (e) {
         console.error(e);
+        setStatus(`Connection failed: ${e.message}`);
+        setTimeout(() => navigate('dashboard'), 3000);
+    }
+}
+
+// xArm desktop browser cockpit — keyboard EE-jog (no WebXR). Drives the same
+// hosted arm as connectXArm; the robot arbitrates VR vs keyboard.
+export async function connectArmBrowser(sessionId, robotName, transport) {
+    state.activeRobot = { session_id: sessionId, robot_name: robotName, transport: transport || 'cloudflare' };
+    try {
+        navigate('arm');           // renderArm draws the cockpit
+        await setupTransport(sessionId, transport);
+        startArmLoop();            // keyboard jog loop over the datachannel
+        setStatus(`Connected — ${robotName}`);
+    } catch (e) {
+        console.error(e);
+        stopArmLoop();
         setStatus(`Connection failed: ${e.message}`);
         setTimeout(() => navigate('dashboard'), 3000);
     }

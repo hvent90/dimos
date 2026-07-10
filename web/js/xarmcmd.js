@@ -64,8 +64,30 @@ export function buildJoy(handedness, gamepad, nowMs) {
     });
 }
 
+// ── Browser keyboard cockpit: EE-twist (cmd_unreliable) ──────────────
+//
+// Velocity jog of the end-effector. frame_id "eef_twist_arm" routes to the
+// coordinator's EEFTwistTask (via ArmHostedConnection's _on_twist_bytes). linear
+// = EE X/Y/Z m/s, angular = roll/pitch/yaw rad/s. Same channel/cadence as VR.
+export function buildEEFTwist(linear, angular, nowMs) {
+    return new geometry_msgs.TwistStamped({
+        header: new std_msgs.Header({ stamp: stamp(nowMs), frame_id: 'eef_twist_arm' }),
+        twist: new geometry_msgs.Twist({
+            linear: new geometry_msgs.Vector3({ x: linear.x, y: linear.y, z: linear.z }),
+            angular: new geometry_msgs.Vector3({ x: angular.x, y: angular.y, z: angular.z }),
+        }),
+    });
+}
+
 function chanReady(chan) {
     return chan && chan.readyState === 'open';
+}
+
+// Gripper toggle over the reliable JSON plane. The robot maps closed → the
+// coordinator's eef_twist gripper target (open/closed positions live robot-side).
+export function sendGripper(chan, closed) {
+    if (!chanReady(chan)) return;
+    chan.send(JSON.stringify({ type: 'gripper', closed: !!closed }));
 }
 
 // ── JSON control plane (state_reliable) ──────────────────────────────

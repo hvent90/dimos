@@ -1,7 +1,7 @@
 // Dashboard: API key management + available robots list.
 
 import { api, brokerOrigin, logout } from '../api.js';
-import { connectGo2, connectToRobot, connectXArm } from '../connect.js';
+import { connectArmBrowser, connectGo2, connectToRobot, connectXArm } from '../connect.js';
 import { escHtml, state, timeAgo, xrDetection } from '../state.js';
 
 // Manual robot-type toggle (interim — until the broker surfaces robot_type):
@@ -222,18 +222,15 @@ async function loadRobots() {
             </div>
         `;
         }).join('');
-        // Pick the cockpit from the robot-type toggle. Arm is VR-only for now;
-        // Go2 keeps its desktop cockpit when no headset (arm desktop 2D is TODO).
+        // Pick the cockpit from the robot-type toggle + device. Arm: headset →
+        // VR immersive cockpit, desktop → keyboard cockpit (both drive the same
+        // arm, the robot arbitrates). Go2: headset → VR, desktop → Go2 cockpit.
         listEl.querySelectorAll('.connect-btn').forEach(btn => {
             btn.addEventListener('click', (e) => {
                 const arm = robotKind() === 'xarm';
                 const handler = arm
-                    ? connectXArm
+                    ? (state.xrSupported ? connectXArm : connectArmBrowser)
                     : (state.xrSupported ? connectToRobot : connectGo2);
-                if (arm && !state.xrSupported) {
-                    alert('Arm teleop needs a WebXR headset (Quest). Open this on the headset browser.');
-                    return;
-                }
                 handler(e.target.dataset.id, e.target.dataset.name, e.target.dataset.transport);
             });
         });

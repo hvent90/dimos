@@ -4,6 +4,7 @@
 import { installPagehideLeave } from './disconnect.js';
 import { navigate, register } from './router.js';
 import { state } from './state.js';
+import { renderArm } from './views/arm.js';
 import { renderAuth } from './views/auth.js';
 import { renderDashboard } from './views/dashboard.js';
 import { renderGo2 } from './views/go2.js';
@@ -11,6 +12,7 @@ import { renderKeyboard } from './views/keyboard.js';
 import { renderTeleop } from './views/teleop.js';
 import { renderVRPreview } from './vrpreview.js';
 
+register('arm', renderArm);
 register('auth', renderAuth);
 register('dashboard', renderDashboard);
 register('go2', renderGo2);
