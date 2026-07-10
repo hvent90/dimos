@@ -17,40 +17,76 @@ A declarative `Module` subclass whose implementation runs outside `PythonWorker`
 _Avoid_: NativeModule compatibility wrapper, process supervisor
 
 **External Implementation Reference**:
-The `ExternalModule` declaration that identifies what Runtime Host runs. A string identifies a packaged Python class; a `pathlib.Path` identifies a native executable relative to its convention-discovered implementation directory.
-_Avoid_: Deployment-level implementation override, implementation kind flag
+The `ExternalModule` declaration that identifies what Runtime Host runs. It may be written as a string or `pathlib.Path`; the convention-discovered implementation layout, not the Python value type, determines whether it denotes a Python class or native executable.
+_Avoid_: Deployment-level implementation override, value-type runtime discriminator
 
 **NativeModule Compatibility Path**:
 The existing `NativeModule` design in which a Python wrapper runs in `PythonWorker` and directly builds, launches, logs, and supervises a native subprocess. It remains available during migration to `ExternalModule`.
 _Avoid_: Final external-module architecture, flag-day migration
 
 **Convention Preset**:
-A built-in recognizer that converts a standard implementation layout into prepare and launch behavior. V1 conventions include `python/pyproject.toml`, `rust/Cargo.toml`, and `cpp/CMakeLists.txt`.
+A built-in preparation strategy selected automatically from a standard implementation layout. V1 heuristics recognize `python/pyproject.toml`, `rust/Cargo.toml`, and `cpp/CMakeLists.txt`; Deployment Specs override the inferred preset only for exceptional deployments.
 _Avoid_: Hand-written prepare commands for every module, required manifest for standard layouts
 
+**Unambiguous Convention Resolution**:
+The rule that automatic preparation succeeds only when exactly one supported implementation layout is detected. No match or multiple matches fail planning unless the Module Deployment provides explicit Preparation and Runtime Environment behavior that selects and validates one implementation folder within the discovered package root.
+_Avoid_: Convention precedence, silently selecting one of several implementations
+
 **Deployment Spec**:
-A deployment-owned description that references a Blueprint, defines named execution targets, and assigns Module classes to target names. It does not redefine module implementation details or Blueprint wiring.
-_Avoid_: Module package declaration, Blueprint replacement
+A first-class runnable deployment description that references a Blueprint, defines reusable named targets, and groups each module's execution target, build target, Preparation, and Runtime Environment choices in a Module Deployment. It does not redefine module identity or Blueprint wiring.
+_Avoid_: Module package declaration, Blueprint replacement, deployment registry entry
 
 **Execution Target**:
 A named machine or execution substrate on which modules may be prepared and run. In v1, each target name identifies one distinct machine.
-_Avoid_: Module implementation, Deployment Assignment
+_Avoid_: Module implementation, Module Deployment
 
-**Deployment Assignment**:
-A class-keyed mapping from a Module to an execution-target string name. Unassigned modules use the implicit local target.
-_Avoid_: Target definition, implementation override
+**Resolved Target Platform**:
+The single detected and optionally asserted platform identity of an Execution Target. Worker bootstrap, Preparation, and artifact validation consume this identity rather than declaring independent destination platforms.
+_Avoid_: Preparation-specific target platform, competing compiler-target declarations
+
+**Deployment Root**:
+The configured directory on an Execution Target containing DimOS-managed control environments, source snapshots, artifacts, runtime environments, run state, logs, caches, and locks. External system stores and provisioned devices may remain outside it.
+_Avoid_: Generic source workspace, scattered DimOS state directories
+
+**Hermetic Worker Bootstrap**:
+The target bootstrap model in which DimOS transfers a pinned environment tool and provisions Python plus the version-matched ExternalWorker control environment inside the Deployment Root rather than relying on target-global installations.
+_Avoid_: Module Runtime Environment, unmanaged system Python dependency
+
+**Module Deployment**:
+The grouped deployment policy for one Module: where it builds, where it executes, how deployable material is prepared, and how its runtime environment is materialized. Omitted choices use local placement or convention-derived behavior.
+_Avoid_: Parallel assignment, build-location, and override maps
 
 **Implicit Local Target**:
-The execution target that exists in every Deployment Spec without explicit declaration. Modules absent from Deployment Assignments run locally.
+The execution target that exists in every Deployment Spec without explicit declaration. Its Deployment Root comes from GlobalConfig-backed DimOS state, and modules absent from the `modules` map run locally.
 _Avoid_: Required local target declaration, implicit remote placement
 
 **Deployment Plan**:
-An immutable, validated resolution of Deployment Spec, Blueprint modules, implementation conventions, prepare steps, concrete target definitions, target assignments, and worker routes.
+An immutable, validated resolution of Deployment Spec, Blueprint modules, implementation conventions, preparation behavior, concrete target definitions, Module Deployments, and worker routes.
 _Avoid_: Behavioral reconciler, mutable deployment state
 
 **Deployment Prepare Phase**:
-The phase that realizes implementation requirements before launch, including locked Python environment setup, native builds, cross-compilation, and artifact sync.
+The pre-worker phase that stages source and produces deployable material through target access, including native builds, cross-compilation, and artifact sync. It completes before the target-side ExternalWorker materializes module Runtime Environments.
 _Avoid_: Module start, implicit build during run
+
+**Preparation**:
+A single deployment workflow that may coordinate build and execution targets and transfer artifacts between them. Convention Presets provide normal Preparation behavior; a Deployment Spec may substitute an exceptional Preparation.
+_Avoid_: One preparation per machine, ExternalWorker lifecycle
+
+**Runtime Environment**:
+The execution-target environment materialized by ExternalWorker from staged deployment inputs before a Runtime Host starts. It may install dependencies or artifacts and provision deployment-owned target resources.
+_Avoid_: Build workflow, Runtime Host, ExternalWorker bootstrap environment
+
+**Runtime Environment Spec**:
+The serializable top-level import reference and JSON-compatible configuration from which ExternalWorker constructs a Runtime Environment. It is part of a Module Deployment only when convention-derived behavior needs an exceptional override.
+_Avoid_: Live coordinator object, pickled class instance
+
+**Shared Runtime Environment**:
+A Runtime Environment reused within one deployment run when modules have the same source digest, execution-machine identity, and resolved Runtime Environment Spec. Setup is serialized and may rerun idempotently; teardown occurs only after all dependent Runtime Hosts in that run stop.
+_Avoid_: Planner-level workflow merging, per-module environment copies
+
+**Deployment Source Snapshot**:
+A content-addressed copy of a module package staged on a target before deployment. It includes the dependency-light contract and deployment extensions as well as implementation source, and is published atomically after transfer.
+_Avoid_: Mutable shared source workspace, partial in-place rsync
 
 **Idempotent Prepare**:
 The rule that prepare executes required package-manager, build, and sync steps and relies on their caches or up-to-date checks rather than maintaining a separate DimOS freshness database.
@@ -65,16 +101,24 @@ The manager for in-environment Python modules. It owns and schedules the local `
 _Avoid_: External-module manager, target worker
 
 **WorkerManagerExternal**:
-The manager for `ExternalModule` deployments. It owns target assignments and one `ExternalWorker` per execution machine, coordinates prepare and deployment, and aggregates rollback and health.
+The manager for `ExternalModule` deployments. It owns Module Deployments and Target Sessions, coordinates prepare and deployment, starts one `ExternalWorker` per execution machine, and aggregates rollback and health.
 _Avoid_: Per-machine manager, separate deployment reconciler
 
 **PythonWorker**:
 A coordinator-side handle to one Python worker process that hosts one or more in-environment Python module instances.
 _Avoid_: ExternalWorker, WorkerManagerPython
 
+**Target Session**:
+The coordinator-side access path to an Execution Target. A local session executes commands and transfers files directly; an SSH session executes commands, transfers artifacts, starts the ExternalWorker, and tunnels its control RPC.
+_Avoid_: Module stream transport, Runtime Host control protocol
+
 **ExternalWorker**:
-A coordinator-side handle to one target-side external worker process on one execution machine. The handle sends requests over one control connection; the target-side entrypoint executes prepare steps and owns Runtime Host handles for ExternalModules assigned to that machine.
-_Avoid_: One worker per module, WorkerManagerExternal, persistent target agent
+The target-side process that owns Runtime Host handles for all ExternalModules assigned to one execution machine for one run. It starts only after the Deployment Prepare Phase succeeds.
+_Avoid_: Coordinator-side handle, one worker per module, preparation executor, persistent target agent
+
+**ExternalWorker Client**:
+The coordinator-side RPC handle to an ExternalWorker. For an SSH target, its ordinary RPC connection is carried through the Target Session's SSH tunnel.
+_Avoid_: SSH command executor, Runtime Host, stream transport
 
 **Runtime Host**:
 The external equivalent of a module instance inside `PythonWorker`. It hosts exactly one ExternalModule implementation, receives a Module Launch Envelope, initializes control and stream bindings, and reports ready or failure.
@@ -89,7 +133,7 @@ The unified serialized handoff to Runtime Host containing module identity, imple
 _Avoid_: Separate user-facing config and connection payloads
 
 **Deployment Control Plane**:
-The command and lifecycle path between ModuleCoordinator, WorkerManagerExternal, ExternalWorker, and Runtime Host. Prepare terminates at the target-side ExternalWorker entrypoint; deployed module lifecycle, status, logs, health, and method calls continue to Runtime Host.
+The command and lifecycle path between ModuleCoordinator, WorkerManagerExternal, Target Sessions, ExternalWorker Clients, ExternalWorkers, and Runtime Hosts. Target Sessions handle pre-worker bootstrap and preparation; ExternalWorker RPC handles deployed lifecycle, status, logs, health, and method calls. SSH may carry that RPC through a tunnel but never carries module stream data.
 _Avoid_: Stream data transport
 
 **Deployment Data Plane**:
