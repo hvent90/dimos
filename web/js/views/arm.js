@@ -13,7 +13,9 @@
 
 import { createStallGate, videoMediaTime } from '../stall.js';
 import { escHtml, sendInterval, state } from '../state.js';
-import { buildEEFTwist, sendEstop, sendEstopClear, sendGripper } from '../xarmcmd.js';
+import {
+    buildEEFTwist, sendCameraSelect, sendEstop, sendEstopClear, sendGripper,
+} from '../xarmcmd.js';
 
 // Jog speeds. Modest so the arm is controllable near singularities.
 const LINEAR_SPEED = 0.12;   // m/s
@@ -31,6 +33,8 @@ const _held = new Set();
 let _estopped = false;
 let _gripperClosed = false;
 let _estopNonce = 0;
+let _cams = ['cam1', 'cam2'];  // default: both (robot muxes them side-by-side)
+let _camsRequested = false;
 
 function trackedKey(e) {
     const k = e.key.length === 1 ? e.key.toLowerCase() : e.key;
@@ -93,6 +97,13 @@ function paintStatus() {
             ? 'w-full px-4 py-4 bg-red-900 border border-red-500 text-red-100 font-bold rounded-lg'
             : 'w-full px-4 py-4 bg-red-600 hover:bg-red-500 text-white font-bold rounded-lg';
     }
+    // Highlight the active camera selection.
+    const active = _cams.length === 2 ? 'both' : _cams[0];
+    document.querySelectorAll('.cam-btn').forEach((b) => {
+        const on = b.dataset.cam === active;
+        b.className = 'cam-btn flex-1 px-2 py-2 rounded text-sm '
+            + (on ? 'bg-dim-500 text-bg-950 font-medium' : 'bg-[#1f1f1f] text-gray-300 hover:bg-[#2a2a2a]');
+    });
 }
 
 export function renderArm(c) {
@@ -101,13 +112,22 @@ export function renderArm(c) {
         <!-- Video -->
         <div class="flex-1 flex flex-col">
             <h1 class="text-2xl font-bold text-white mb-2">${escHtml(state.activeRobot?.robot_name || 'xArm teleop')}</h1>
-            <div id="arm-status" class="text-sm text-gray-300 px-3 py-2 bg-bg-950 border border-[#2a2a2a] rounded-lg mb-3">Negotiating…</div>
+            <!-- setStatus() targets #teleop-status -->
+            <div id="teleop-status" class="text-sm text-gray-300 px-3 py-2 bg-bg-950 border border-[#2a2a2a] rounded-lg mb-3">Negotiating…</div>
             <video id="robot-cam" autoplay muted playsinline
                 class="w-full rounded-lg border border-[#2a2a2a] bg-black flex-1"
                 style="min-height:320px; object-fit:contain;"></video>
         </div>
         <!-- Right control panel -->
         <div class="w-full md:w-72 flex flex-col gap-3">
+            <div class="bg-bg-950 border border-[#2a2a2a] rounded-lg p-4">
+                <div class="text-gray-400 text-xs term-caps mb-2">Camera</div>
+                <div id="arm-cams" class="flex gap-2">
+                    <button data-cam="cam1" class="cam-btn flex-1 px-2 py-2 rounded text-sm">Cam 1</button>
+                    <button data-cam="cam2" class="cam-btn flex-1 px-2 py-2 rounded text-sm">Cam 2</button>
+                    <button data-cam="both" class="cam-btn flex-1 px-2 py-2 rounded text-sm">Both</button>
+                </div>
+            </div>
             <div class="bg-bg-950 border border-[#2a2a2a] rounded-lg p-4">
                 <div class="text-gray-400 text-xs term-caps mb-2">Gripper</div>
                 <div class="text-2xl"><span id="arm-grip" class="text-green-400 font-bold">OPEN</span></div>
@@ -126,6 +146,15 @@ export function renderArm(c) {
     </div>`;
 
     document.getElementById('arm-estop-btn').onclick = triggerEstop;
+    document.querySelectorAll('.cam-btn').forEach((b) => {
+        b.onclick = () => selectCam(b.dataset.cam);
+    });
+    paintStatus();
+}
+
+function selectCam(which) {
+    _cams = which === 'both' ? ['cam1', 'cam2'] : [which];
+    sendCameraSelect(state.stateChannel, _cams);
     paintStatus();
 }
 
@@ -134,6 +163,8 @@ export function startArmLoop() {
     _held.clear();
     _estopped = false;
     _gripperClosed = false;
+    _cams = ['cam1', 'cam2'];
+    _camsRequested = false;
     window.addEventListener('keydown', onKeyDown);
     window.addEventListener('keyup', onKeyUp);
     window.addEventListener('blur', clearHeld);
@@ -142,6 +173,14 @@ export function startArmLoop() {
     state.videoStall = { stalled: false, blocked: false, armed: false };
 
     state.kbInterval = setInterval(() => {
+        // Once the reliable channel opens, ask the robot for both cameras (the
+        // mux defaults to cam1 only). One-shot.
+        if (!_camsRequested && state.stateChannel && state.stateChannel.readyState === 'open') {
+            sendCameraSelect(state.stateChannel, _cams);
+            _camsRequested = true;
+            paintStatus();
+        }
+
         const chan = state.cmdChannel;
         if (!chan || chan.readyState !== 'open') return;
 
