@@ -1,7 +1,11 @@
 #!/bin/bash
 # One-time dimos provisioning for an R1 Lite ONBOARD PC.
-# RUN THIS ON THE ROBOT (ssh r1lite), as the r1lite user:
-#     bash r1lite_dimos_install.sh
+# RUN THIS ON THE ROBOT (ssh r1lite), as the r1lite user. Standard flow
+# for any fresh R1 Lite (repo is public — no credentials needed):
+#     git clone -b krishna/task/r1lite-integration \
+#         https://github.com/dimensionalOS/dimos.git ~/dimos
+#     cd ~/dimos && bash scripts/r1lite_test/r1lite_dimos_install.sh
+# (If run standalone outside a checkout, it clones ~/dimos itself.)
 #
 # Idempotent: safe to re-run; completed steps are skipped. Prompts before
 # every host change. Host changes it makes (with your consent):
@@ -23,7 +27,11 @@ BRANCH=krishna/task/r1lite-integration
 REPO_URL=https://github.com/dimensionalOS/dimos.git
 IMAGE=ghcr.io/dimensionalos/ros-dev:dev
 CONTAINER=dimos-dev-r1lite
-DIMOS_DIR="$HOME/dimos"
+
+# Use the checkout this script lives in; fall back to ~/dimos if the
+# script was copied out and run standalone.
+SCRIPT_REPO="$(cd "$(dirname "${BASH_SOURCE[0]}")" && git rev-parse --show-toplevel 2>/dev/null || true)"
+DIMOS_DIR="${SCRIPT_REPO:-$HOME/dimos}"
 
 step()    { echo; echo "=== [$1] $2"; }
 confirm() { read -r -p "    Proceed? [y/N] " a; [ "$a" = "y" ] || { echo "    skipped."; return 1; }; }
@@ -51,10 +59,9 @@ else
     fi
 fi
 
-step 3 "dimos checkout at $DIMOS_DIR (branch $BRANCH)"
+step 3 "dimos checkout at $DIMOS_DIR"
 if [ -d "$DIMOS_DIR/.git" ]; then
-    git -C "$DIMOS_DIR" fetch origin "$BRANCH" -q && git -C "$DIMOS_DIR" checkout -q "$BRANCH" && git -C "$DIMOS_DIR" pull -q
-    echo "    updated to $(git -C "$DIMOS_DIR" rev-parse --short HEAD)"
+    echo "    using existing checkout: branch $(git -C "$DIMOS_DIR" rev-parse --abbrev-ref HEAD) @ $(git -C "$DIMOS_DIR" rev-parse --short HEAD)"
 else
     git clone --branch "$BRANCH" "$REPO_URL" "$DIMOS_DIR"
 fi
