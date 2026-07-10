@@ -20,7 +20,7 @@ FetchContent_Declare(dimos_lcm
 FetchContent_MakeAvailable(dimos_lcm)
 
 # JSON parser used by the SDK's stdin config. Prefer a system/nix package
-# (nix provides it via buildInputs); fall back to fetching for a plain build.
+# (nix provides it via buildInputs), else fetch it for a plain build.
 find_package(nlohmann_json QUIET)
 if(NOT nlohmann_json_FOUND)
   FetchContent_Declare(nlohmann_json

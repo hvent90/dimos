@@ -33,7 +33,7 @@ target_link_libraries(dimos_native_tests PRIVATE
 target_compile_options(dimos_native_tests PRIVATE -Wall -Wextra -Werror)
 
 # LcmTransport needs liblcm, which isn't always present (system pkg-config often
-# lacks it; it comes in via nix). Compile-check the adapter only when LCM is
+# lacks it, it comes in via nix). Compile-check the adapter only when LCM is
 # discoverable, so the core suite still builds anywhere.
 find_package(PkgConfig QUIET)
 if(PkgConfig_FOUND)

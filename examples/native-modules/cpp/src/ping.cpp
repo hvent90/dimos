@@ -1,7 +1,7 @@
 // Copyright 2026 Dimensional Inc.
 // SPDX-License-Identifier: Apache-2.0
 //
-// Ping: publishes a Twist on `data` at 5 Hz and logs echoes from `confirm`.
+// Ping: publishes a Twist on data at 5 Hz and logs echoes from confirm.
 // C++ mirror of examples/native-modules/rust/src/ping.rs.
 
 #include <chrono>

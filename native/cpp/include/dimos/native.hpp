@@ -17,7 +17,7 @@
 namespace dimos::native {
 
 /// Run module `M` over the transport named by DIMOS_TRANSPORT (LCM today).
-/// The coordinator always sets it; an unset or unknown value is fatal.
+/// The coordinator always sets it. An unset or unknown value is fatal.
 template <class M>
 void run_with_transport() {
     run<M>(make_transport_from_env());

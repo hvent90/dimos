@@ -3,17 +3,16 @@
 //
 // Module runtime for dimos C++ native modules. Mirrors the Rust SDK's design:
 //
-//   ingestion   the transport's receive thread decodes each message and pushes
-//               it onto that input's bounded queue (drop-newest + throttled warn)
+//   ingestion   the transport receive thread decodes each message onto that
+//               input's bounded queue (drop-newest + throttled warn)
 //   handlers    run serialized on the handle() thread, so a module mutates its
-//               own state with no locks, exactly like Rust's &mut self
-//   publishing   Output::publish enqueues encoded bytes; one worker per output
-//               channel drains to the transport, so a slow channel can't block
-//               ingestion, handlers, or sibling channels
+//               own state without locks, like Rust's &mut self
+//   publishing  Output::publish enqueues encoded bytes. One worker per output
+//               drains to the transport, so a slow channel blocks only itself
 //
 // A module subclasses Module, declares Output<T> members, and in build() reads
 // its config, wires outputs, and registers input handlers. The default handle()
-// dispatches inputs until shutdown; a driver with its own loop overrides it.
+// dispatches inputs until shutdown. A driver with its own loop overrides it.
 
 #pragma once
 
@@ -229,8 +228,8 @@ template <class T>
 class Output {
 public:
     Output() = default;
-    Output(std::string topic, EncodeFn<T> encode, std::shared_ptr<PublishQueue> queue)
-        : topic_(std::move(topic)), encode_(std::move(encode)), queue_(std::move(queue)) {}
+    Output(EncodeFn<T> encode, std::shared_ptr<PublishQueue> queue)
+        : encode_(std::move(encode)), queue_(std::move(queue)) {}
 
     void publish(const T& msg) const {
         if (!queue_) {
@@ -239,10 +238,7 @@ public:
         queue_->push(encode_(msg));
     }
 
-    const std::string& topic() const { return topic_; }
-
 private:
-    std::string topic_;
     EncodeFn<T> encode_;
     std::shared_ptr<PublishQueue> queue_;
 };
@@ -263,7 +259,7 @@ public:
     }
 
     // Register a member function as the handler, with the decoder defaulting to
-    // the generic lcm codec. `builder.input<Twist>("data", &Pong::on_data, this)`.
+    // the generic lcm codec.
     template <class T, class Self>
     void input(const std::string& port, void (Self::*handler)(const T&), Self* self,
                DecodeFn<T> decode = lcm_decode<T>) {
@@ -277,7 +273,7 @@ public:
         std::string topic = topic_for(port);
         auto queue = std::make_shared<PublishQueue>(topic);
         publish_queues_.push_back(queue);
-        return Output<T>(topic, std::move(encode), queue);
+        return Output<T>(std::move(encode), queue);
     }
 
     std::string topic_for(const std::string& port) const {
@@ -411,17 +407,30 @@ void run_fallible(std::unique_ptr<Transport> transport) {
     install_signal_handlers();
     module.bind_runtime(&builder.input_ports(), &notifier);
 
+    // Tear down on every exit path, including a throw from setup/handle/teardown.
+    // The publish workers reference the transport, and the transport receive
+    // thread dispatches into builder's input channels and notifier, so both must
+    // be joined before those locals are destroyed. Declared last, destroyed first.
+    struct Shutdown {
+        Builder& builder;
+        std::vector<std::thread>& workers;
+        std::unique_ptr<Transport>& transport;
+        ~Shutdown() {
+            for (const auto& queue : builder.publish_queues()) {
+                queue->stop();
+            }
+            for (std::thread& worker : workers) {
+                if (worker.joinable()) {
+                    worker.join();
+                }
+            }
+            transport.reset();
+        }
+    } shutdown{builder, workers, transport};
+
     module.setup();
     module.handle();
     module.teardown();
-
-    for (const auto& queue : builder.publish_queues()) {
-        queue->stop();
-    }
-    for (std::thread& worker : workers) {
-        worker.join();
-    }
-    // transport destroyed on return: its receive thread joins.
 }
 
 /// Run module `M` over `transport`, reading config from stdin and blocking until

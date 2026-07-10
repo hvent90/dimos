@@ -7,6 +7,7 @@
 #include <chrono>
 #include <cstdint>
 #include <cstring>
+#include <stdexcept>
 #include <string>
 #include <thread>
 #include <unordered_map>
@@ -203,6 +204,38 @@ TEST_CASE("a full input queue drops newest and caps at capacity") {
     CHECK(drained == kInputQueueCapacity);
 }
 
+TEST_CASE("a decode error drops the message and never reaches the handler") {
+    Notifier notifier;
+    Builder builder({}, &notifier);
+    int handled = 0;
+    builder.input<Bytes>(
+        "data", [](const uint8_t*, std::size_t) -> Bytes { throw std::runtime_error("bad"); },
+        [&](Bytes) { ++handled; });
+
+    Dispatch dispatch = builder.routes()[0].second;
+    uint8_t byte = 1;
+    dispatch(&byte, 1);  // decode throws inside make_dispatch, message dropped
+
+    InputPort* port = builder.input_ports()[0];
+    CHECK_FALSE(port->drain_one());
+    CHECK(handled == 0);
+}
+
+TEST_CASE("a full publish queue drops newest and caps at capacity") {
+    PublishQueue queue("/out");
+    for (std::size_t i = 0; i < kPublishQueueCapacity + 5; ++i) {
+        queue.push({static_cast<uint8_t>(i)});
+    }
+    queue.stop();
+
+    std::size_t drained = 0;
+    Bytes out;
+    while (queue.pop(out)) {
+        ++drained;
+    }
+    CHECK(drained == kPublishQueueCapacity);
+}
+
 TEST_CASE("a blocked publish channel does not stall a sibling channel") {
     MockTransport transport;
     transport.block_channel = "/block";
@@ -244,12 +277,29 @@ struct WaitModule : Module {
     void build(Builder&, Config&) override {}
     void invoke_default_handle() { default_handle(); }
 };
+
+// Save and restore the process-wide shutdown flag around a test that sets it.
+struct ShutdownFlagGuard {
+    bool prev = shutdown_flag().load();
+    ~ShutdownFlagGuard() { shutdown_flag().store(prev); }
+};
 }  // namespace
 
-TEST_CASE("default_handle returns promptly once shutdown is requested") {
-    shutdown_flag().store(true);
+TEST_CASE("default_handle returns without draining once shutdown is requested") {
+    ShutdownFlagGuard guard;
+    Notifier notifier;
+    Builder builder({}, &notifier);
+    int handled = 0;
+    builder.input<Bytes>("data", identity_decode, [&](Bytes) { ++handled; });
+
+    Dispatch dispatch = builder.routes()[0].second;
+    uint8_t byte = 1;
+    dispatch(&byte, 1);  // one message waiting to be drained
+
     WaitModule m;
-    m.invoke_default_handle();  // no inputs bound; returns because shutdown is set
-    shutdown_flag().store(false);
-    CHECK(true);
+    m.bind_runtime(&builder.input_ports(), &notifier);
+    shutdown_flag().store(true);
+    m.invoke_default_handle();  // returns immediately, loop body never runs
+
+    CHECK(handled == 0);
 }

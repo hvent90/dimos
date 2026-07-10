@@ -2,8 +2,8 @@
 // SPDX-License-Identifier: Apache-2.0
 //
 // Only compiled when liblcm is available (see tests/CMakeLists.txt). Its job is
-// to typecheck LcmTransport's inline bodies against the real LCM headers/lib;
-// it does not open an LCM endpoint, since unit tests must not assume a multicast
+// to typecheck LcmTransport's inline bodies against the real LCM headers and lib.
+// It does not open an LCM endpoint, since unit tests must not assume a multicast
 // route exists.
 
 #include <doctest/doctest.h>

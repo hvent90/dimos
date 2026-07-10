@@ -4,7 +4,7 @@
 // LCM implementation of the Transport seam. A single receive thread runs the
 // LCM handle loop and demuxes each message to the callbacks registered for its
 // channel, mirroring the Rust LcmTransport. Publishing is a direct, thread-safe
-// lcm_publish; the per-channel publish workers that decouple slow publishes live
+// lcm_publish. The per-channel publish workers that decouple slow publishes live
 // in the module runtime, not here.
 
 #pragma once
@@ -70,7 +70,7 @@ public:
             updated.push_back(std::move(on_msg));
             routes_[channel] = std::make_shared<const std::vector<Dispatch>>(std::move(updated));
         }
-        // One LCM subscription per channel; extra callbacks fan out in on_lcm_message.
+        // One LCM subscription per channel. Extra callbacks fan out in on_lcm_message.
         if (first_for_channel) {
             lcm_.subscribe(channel, &LcmTransport::on_lcm_message, this);
         }

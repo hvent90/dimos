@@ -1,15 +1,10 @@
 // Copyright 2026 Dimensional Inc.
 // SPDX-License-Identifier: Apache-2.0
 //
-// Strict config access over the `config` object the coordinator sends on stdin.
-// Mirrors the Rust SDK's contract, minus the derive macro: Python owns every
-// default and always sends every field, so the C++ side never fills anything in.
-//
-//   - require<T>(key)          every field must be present (missing => error)
-//   - enforce_all_consumed()   no unknown fields (extra key => error)
-//
-// Together these are the Rust runtime's one-to-one key check: the set of fields
-// the module reads must exactly equal the set of fields Python sent.
+// Strict config access over the config object the coordinator sends on stdin.
+// Mirrors the Rust SDK's contract: Python owns every default and always sends
+// every field, so parse<T>() requires every field to be present and rejects any
+// unknown field. The C++ side never fills anything in.
 
 #pragma once
 
@@ -49,35 +44,6 @@ public:
         }
     }
 
-    /// Read a required field. Throws if absent or not convertible to `T`.
-    /// Records the field as consumed for enforce_all_consumed().
-    template <class T>
-    T require(const std::string& key) {
-        auto it = obj_.find(key);
-        if (it == obj_.end()) {
-            throw std::runtime_error("config: missing required field '" + key + "'");
-        }
-        consumed_.insert(key);
-        try {
-            return it->get<T>();
-        } catch (const std::exception& e) {
-            throw std::runtime_error("config: field '" + key + "' has the wrong type: " +
-                                     e.what());
-        }
-    }
-
-    /// Read a required numeric field and check `min <= value <= max`.
-    template <class T>
-    T require_in_range(const std::string& key, T min, T max) {
-        T value = require<T>(key);
-        if (value < min || value > max) {
-            throw std::runtime_error("config: field '" + key + "' out of range [" +
-                                     std::to_string(min) + ", " + std::to_string(max) +
-                                     "], got " + std::to_string(value));
-        }
-        return value;
-    }
-
     /// Throw if any field Python sent was never read. This is the deny-unknown
     /// half of the one-to-one check and surfaces both typos and dead config.
     void enforce_all_consumed() const {
@@ -97,10 +63,10 @@ public:
     }
 
     /// Deserialize the whole config into a struct declared with
-    /// DIMOS_NATIVE_CONFIG. Enforces the same one-to-one key check as the
-    /// field-by-field API (every field present, no unknown fields) and runs the
-    /// struct's optional validate() method. Python owns all defaults, so a
-    /// missing field is an error, never a fallback.
+    /// DIMOS_NATIVE_CONFIG. Enforces the one-to-one key check (every field
+    /// present, no unknown fields) and runs the struct's optional validate()
+    /// method. Python owns all defaults, so a missing field is an error, never a
+    /// fallback.
     template <class T>
     T parse() {
         T out;
@@ -120,8 +86,6 @@ public:
         return out;
     }
 
-    bool empty() const { return obj_.empty(); }
-
 private:
     nlohmann::json obj_;
     std::set<std::string> keys_;
@@ -132,5 +96,5 @@ private:
 
 // Declare a config struct's fields once (mirrors Rust's #[native_config]).
 // Generates the JSON (de)serialization Config::parse<T>() uses. Every listed
-// field is required; add a `void validate() const` method for range checks.
+// field is required. Add a void validate() const method for range checks.
 #define DIMOS_NATIVE_CONFIG(Type, ...) NLOHMANN_DEFINE_TYPE_NON_INTRUSIVE(Type, __VA_ARGS__)
