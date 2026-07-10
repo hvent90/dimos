@@ -72,10 +72,9 @@ export async function connectXArm(sessionId, robotName, transport) {
 export async function connectArmBrowser(sessionId, robotName, transport) {
     state.activeRobot = { session_id: sessionId, robot_name: robotName, transport: transport || 'cloudflare' };
     try {
-        navigate('arm');           // renderArm draws the cockpit
+        navigate('arm');           // renderArm draws the cockpit (inline HUD panel)
         await setupTransport(sessionId, transport);
-        startArmLoop();            // keyboard jog loop over the datachannel
-        mountHud();                // always-on latency / transport / TURN pill
+        startArmLoop();            // keyboard jog loop + telemetry tick
         setStatus(`Connected — ${robotName}`);
     } catch (e) {
         console.error(e);

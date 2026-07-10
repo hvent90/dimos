@@ -11,6 +11,8 @@
 // "eef_twist_arm"; gripper + estop → state_reliable JSON. Shares transport with
 // vrarm.js/xarmcmd.js against the same ArmHostedConnection.
 
+import { disconnect } from '../disconnect.js';
+import { hudDetailRows, hudSummaryLine, sampleCmdHz, statsHealth, transportLabel } from '../hud.js';
 import { createStallGate, videoMediaTime } from '../stall.js';
 import { escHtml, sendInterval, state } from '../state.js';
 import {
@@ -112,7 +114,10 @@ export function renderArm(c) {
     <div class="min-h-screen flex flex-col md:flex-row gap-4 p-4 fade-in">
         <!-- Video -->
         <div class="flex-1 flex flex-col">
-            <h1 class="text-2xl font-bold text-white mb-2">${escHtml(state.activeRobot?.robot_name || 'xArm teleop')}</h1>
+            <div class="flex items-center justify-between mb-2">
+                <h1 class="text-2xl font-bold text-white">${escHtml(state.activeRobot?.robot_name || 'xArm teleop')}</h1>
+                <button id="disconnectBtn" class="term-caps px-3 py-1.5 text-xs text-gray-400 hover:text-white border border-[#2a2a2a] rounded">[ disconnect ]</button>
+            </div>
             <!-- setStatus() targets #teleop-status -->
             <div id="teleop-status" class="text-sm text-gray-300 px-3 py-2 bg-bg-950 border border-[#2a2a2a] rounded-lg mb-3">Negotiating…</div>
             <video id="robot-cam" autoplay muted playsinline
@@ -121,7 +126,16 @@ export function renderArm(c) {
         </div>
         <!-- Right control panel -->
         <div class="w-full md:w-72 flex flex-col gap-3">
-            <div class="bg-bg-950 border border-[#2a2a2a] rounded-lg p-4">
+            <!-- Telemetry: summary always; click to expand full detail. -->
+            <section class="bg-bg-950 border border-[#2a2a2a] rounded-lg p-3">
+                <button id="hud-toggle" class="w-full flex items-center justify-between mb-2">
+                    <span class="term-caps text-xs text-gray-500">Telemetry <span id="hud-caret" class="text-gray-600">▸</span></span>
+                    <span id="hud-health" class="pill pill-good"><span class="dot"></span><span id="hud-transport">—</span></span>
+                </button>
+                <pre id="hud-summary" class="text-xs text-dim-400 leading-relaxed">—</pre>
+                <div id="hud-detail" class="hidden mt-2 pt-2 border-t border-[#2a2a2a] space-y-2.5"></div>
+            </section>
+            <div class="bg-bg-950 border border-[#2a2a2a] rounded-lg p-3">
                 <div class="text-gray-400 text-xs term-caps mb-2">Camera</div>
                 <div id="arm-cams" class="flex gap-2">
                     <button data-cam="cam1" class="cam-btn flex-1 px-2 py-2 rounded text-sm">Cam 1</button>
@@ -129,12 +143,12 @@ export function renderArm(c) {
                     <button data-cam="both" class="cam-btn flex-1 px-2 py-2 rounded text-sm">Both</button>
                 </div>
             </div>
-            <div class="bg-bg-950 border border-[#2a2a2a] rounded-lg p-4">
+            <div class="bg-bg-950 border border-[#2a2a2a] rounded-lg p-3">
                 <div class="text-gray-400 text-xs term-caps mb-2">Gripper</div>
                 <div class="text-2xl"><span id="arm-grip" class="text-green-400 font-bold">OPEN</span></div>
                 <div class="text-gray-500 text-xs mt-1">Space to toggle</div>
             </div>
-            <div class="bg-bg-950 border border-[#2a2a2a] rounded-lg p-4 text-sm text-gray-300 leading-relaxed">
+            <div class="bg-bg-950 border border-[#2a2a2a] rounded-lg p-3 text-sm text-gray-300 leading-relaxed">
                 <div class="text-gray-400 text-xs term-caps mb-2">Controls</div>
                 <div><b class="text-white">W/S</b> ± X &nbsp; <b class="text-white">A/D</b> ± Y &nbsp; <b class="text-white">Q/E</b> ± Z</div>
                 <div class="mt-1"><b class="text-white">Shift</b> + keys → roll/pitch/yaw</div>
@@ -146,11 +160,62 @@ export function renderArm(c) {
         </div>
     </div>`;
 
+    document.getElementById('disconnectBtn').onclick = disconnect;
     document.getElementById('arm-estop-btn').onclick = triggerEstop;
     document.querySelectorAll('.cam-btn').forEach((b) => {
         b.onclick = () => selectCam(b.dataset.cam);
     });
+    // Telemetry expand/collapse — summary always, full detail grid on expand.
+    document.getElementById('hud-toggle').addEventListener('click', () => {
+        const detail = document.getElementById('hud-detail');
+        const collapsed = detail.classList.toggle('hidden');
+        document.getElementById('hud-caret').textContent = collapsed ? '▸' : '▾';
+        if (!collapsed) renderTelemetryGrid();
+    });
     paintStatus();
+}
+
+const HEALTH_TINT = { good: 'text-[#b0e1f0]', warn: 'text-[#eab308]', bad: 'text-[#f3b4b4]' };
+
+function renderTelemetryGrid() {
+    const el = document.getElementById('hud-detail');
+    if (!el || el.classList.contains('hidden')) return;
+    el.innerHTML = hudDetailRows().map((g) => `
+        <div>
+            <div class="term-caps text-[10px] text-gray-600 mb-1">${g.group}</div>
+            <div class="grid grid-cols-2 gap-x-3 gap-y-1">
+                ${g.rows.map((r) => `
+                    <span class="text-xs text-gray-500">${r.label}</span>
+                    <span class="text-xs text-right font-mono ${HEALTH_TINT[r.health] || 'text-gray-300'}">${r.value}</span>
+                `).join('')}
+            </div>
+        </div>`).join('');
+}
+
+// 1Hz telemetry tick: sample the operator send rate, refresh the always-on
+// summary + health pill (+ detail grid when expanded) via the shared hud.js
+// formatters, so this cockpit's HUD matches Go2's.
+function startHudTick() {
+    stopHudTick();
+    let last = performance.now();
+    state.armHudTimer = setInterval(() => {
+        const now = performance.now();
+        sampleCmdHz((now - last) / 1000);
+        last = now;
+        const summary = document.getElementById('hud-summary');
+        if (!summary) return;
+        summary.textContent = hudSummaryLine();
+        const health = statsHealth();
+        const pill = document.getElementById('hud-health');
+        if (pill) pill.className = `pill pill-${health}`;
+        const tl = document.getElementById('hud-transport');
+        if (tl) tl.textContent = transportLabel();
+        renderTelemetryGrid();
+    }, 1000);
+}
+
+function stopHudTick() {
+    if (state.armHudTimer) { clearInterval(state.armHudTimer); state.armHudTimer = null; }
 }
 
 function selectCam(which) {
@@ -169,6 +234,7 @@ export function startArmLoop() {
     window.addEventListener('keydown', onKeyDown);
     window.addEventListener('keyup', onKeyUp);
     window.addEventListener('blur', clearHeld);
+    startHudTick();  // inline telemetry panel (summary + expand)
 
     const stallGate = createStallGate();
     state.videoStall = { stalled: false, blocked: false, armed: false };
@@ -222,5 +288,6 @@ export function stopArmLoop() {
     window.removeEventListener('keyup', onKeyUp);
     window.removeEventListener('blur', clearHeld);
     if (state.kbInterval) { clearInterval(state.kbInterval); state.kbInterval = null; }
+    stopHudTick();
     _held.clear();
 }

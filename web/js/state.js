@@ -69,7 +69,8 @@ export const state = {
     // blocked suppresses twist sends (stall OR post-stall neutral gate).
     videoStall: { stalled: false, blocked: false, armed: false },
     cmdSendCount: 0,        // rolling counter; sampled into cmdHz once/sec
-    hudTimer: null,
+    hudTimer: null,         // floating-HUD interval (keyboard/VR views)
+    armHudTimer: null,      // arm cockpit inline-telemetry interval
 
     // (VR rendering state lives in vr.js — three.js renderer/scene singletons.)
     xrSupported: false,
