@@ -62,7 +62,7 @@ def _marker_detection_array(ts: float) -> Detection3DArray:
 
 def test_marker_tf_consumes_detection_array_over_lcm() -> None:
     ts = time.time()
-    module = MarkerTfModule(marker_namespace_prefix="marker_tf")
+    module = MarkerTfModule(marker_namespace_prefix="marker_tf", tf_transport=LCMTF)
     detections_transport = LCMTransport(
         f"/mtf/{uuid.uuid4().hex[:8]}",
         Detection3DArray,
