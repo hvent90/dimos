@@ -45,7 +45,27 @@ shows per-channel Hz / KB/frame / lost / out-of-order, datagram RTT
 | Multi-viewer isolation | works: slow viewer (headless sw-render Chrome) shed 18/~4900 frames via the latest-wins policy; Firefox next to it lost 0 |
 | Sustained run | 140 s, 2 viewers, ~3.2 MB/s: no session drops, no relay errors |
 | In-browser render rate | video decoded+drawn at full 14.3/s (decode 3 ms, cycle 70 ms); arrival-gap max 82 ms after the FIN fix below |
-| Safari | untested (no macOS box); MDN BCD says Safari 26.4+ |
+| Safari | WebTransport only in Safari >= 26.4, and WebKit does NOT implement serverCertificateHashes - Safari needs the relay to run an OS-trusted cert (see mkcert flow below) |
+
+### Safari (macOS)
+
+WebTransport shipped in Safari 26.4 (26.0-26.3: API absent, or behind
+Develop -> Feature Flags). WebKit stated they don't intend to implement
+`serverCertificateHashes`, so the ephemeral-cert flow can never work there.
+Instead give the relay a locally-trusted cert:
+
+```bash
+brew install mkcert
+mkcert -install                      # trusts the local CA in the system keychain
+mkcert localhost 127.0.0.1 ::1       # writes ./localhost+2.pem / -key.pem
+deno run -A --unstable-net relay/main.ts --cert localhost+2.pem --key localhost+2-key.pem
+# bridge without the full dimos env (synthetic data):
+uv run --no-project --with aioquic,numpy python bridge.py --synthetic
+```
+
+With `--cert/--key` the relay advertises no cert hash and every browser
+(Safari included) verifies via the OS trust store. Chrome/Firefox keep working
+in this mode too (mkcert -install also covers their stores).
 
 ## Findings (the actual deliverable)
 
@@ -112,6 +132,12 @@ Numbered by severity for the real T1-T3 implementation:
 9. Interop handshake detail: Deno (web-transport-proto 0.2.7) accepts
    aioquic's draft-02 `ENABLE_WEBTRANSPORT` settings; response carries
    `sec-webtransport-http3-draft: draft02`. No settings fight.
+
+10. **Safari**: WebTransport exists only from Safari 26.4, and WebKit does not
+    implement `serverCertificateHashes` (stated no intent to). Local dev in
+    Safari therefore requires a trusted cert (relay `--cert/--key` + mkcert);
+    the cloud relay (T12, real TLS) is unaffected. The cockpit auto-falls back
+    to a plain connect when the browser lacks cert-hash support.
 
 ## Implications for the real T1
 

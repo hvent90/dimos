@@ -239,26 +239,33 @@ function drawLidar(pts) {
 }
 async function main() {
   if (!("WebTransport" in globalThis)) {
-    die("No WebTransport API in this browser. Chrome >= 97 or Firefox >= 114 required.");
+    die(`No WebTransport API in this browser. Chrome >= 97, Firefox >= 114, or Safari >= 26.4 required. (${navigator.userAgent})`);
   }
   setStatus("", "fetching /api/info\u2026");
   const info = await (await fetch("/api/info")).json();
-  const hash = Uint8Array.from(atob(info.certHash), (ch) => ch.charCodeAt(0));
+  const WT_ = globalThis.WebTransport;
   let wt;
-  try {
-    wt = new globalThis.WebTransport(info.wtUrl, {
-      serverCertificateHashes: [
-        {
-          algorithm: "sha-256",
-          value: hash
-        }
-      ]
-    });
-  } catch (e) {
-    if (e instanceof DOMException && e.name === "NotSupportedError") {
-      die(`serverCertificateHashes unsupported here (Firefox < 125?): ${e.message}`);
+  if (!info.certHash) {
+    wt = new WT_(info.wtUrl);
+  } else {
+    const hash = Uint8Array.from(atob(info.certHash), (ch) => ch.charCodeAt(0));
+    try {
+      wt = new WT_(info.wtUrl, {
+        serverCertificateHashes: [
+          {
+            algorithm: "sha-256",
+            value: hash
+          }
+        ]
+      });
+    } catch (e) {
+      if (e instanceof DOMException && e.name === "NotSupportedError") {
+        setStatus("", "serverCertificateHashes unsupported; retrying via OS trust store\u2026");
+        wt = new WT_(info.wtUrl);
+      } else {
+        throw e;
+      }
     }
-    throw e;
   }
   wt.closed.then((info2) => die("session closed: " + JSON.stringify(info2)), (e) => die("session died: " + e));
   setStatus("", `connecting WebTransport to ${info.wtUrl}\u2026`);

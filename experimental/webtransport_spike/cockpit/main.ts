@@ -286,22 +286,36 @@ function drawLidar(pts: Float32Array) {
 
 async function main() {
   if (!("WebTransport" in globalThis)) {
-    die("No WebTransport API in this browser. Chrome >= 97 or Firefox >= 114 required.");
+    die(
+      "No WebTransport API in this browser. Chrome >= 97, Firefox >= 114, or Safari >= 26.4 " +
+        `required. (${navigator.userAgent})`,
+    );
   }
   setStatus("", "fetching /api/info…");
   const info = await (await fetch("/api/info")).json();
-  const hash = Uint8Array.from(atob(info.certHash), (ch) => ch.charCodeAt(0));
+  // deno-lint-ignore no-explicit-any
+  const WT_ = (globalThis as any).WebTransport;
   let wt: WT;
-  try {
-    // deno-lint-ignore no-explicit-any
-    wt = new (globalThis as any).WebTransport(info.wtUrl, {
-      serverCertificateHashes: [{ algorithm: "sha-256", value: hash }],
-    });
-  } catch (e) {
-    if (e instanceof DOMException && e.name === "NotSupportedError") {
-      die(`serverCertificateHashes unsupported here (Firefox < 125?): ${e.message}`);
+  if (!info.certHash) {
+    // relay runs an OS-trusted cert (--cert/--key): plain connect
+    wt = new WT_(info.wtUrl);
+  } else {
+    const hash = Uint8Array.from(atob(info.certHash), (ch) => ch.charCodeAt(0));
+    try {
+      wt = new WT_(info.wtUrl, {
+        serverCertificateHashes: [{ algorithm: "sha-256", value: hash }],
+      });
+    } catch (e) {
+      if (e instanceof DOMException && e.name === "NotSupportedError") {
+        // Safari: WebKit doesn't implement serverCertificateHashes. A plain
+        // connect only succeeds if the relay's cert is OS-trusted (run the
+        // relay with --cert/--key from mkcert); otherwise ready will reject.
+        setStatus("", "serverCertificateHashes unsupported; retrying via OS trust store…");
+        wt = new WT_(info.wtUrl);
+      } else {
+        throw e;
+      }
     }
-    throw e;
   }
   wt.closed.then(
     (info) => die("session closed: " + JSON.stringify(info)),

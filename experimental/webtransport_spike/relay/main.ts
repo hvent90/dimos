@@ -290,7 +290,28 @@ function handleViewer(wt: WebTransport) {
 
 // ---------- QUIC listener ----------
 
-const cert = await makeEphemeralCert();
+// --cert/--key: serve an OS-trusted certificate (e.g. from mkcert) instead of
+// the ephemeral one. Needed for Safari, which has no serverCertificateHashes
+// (WebKit stated they don't intend to implement it). In this mode /api/info
+// advertises no hash: every browser verifies via the OS trust store instead
+// (Chrome's hash pinning would reject long-lived certs anyway - 14-day cap).
+function argVal(name: string): string | null {
+  const i = Deno.args.indexOf(name);
+  return i >= 0 ? (Deno.args[i + 1] ?? null) : null;
+}
+const certFile = argVal("--cert");
+const keyFile = argVal("--key");
+let cert: { certPem: string; keyPem: string; certHashB64: string | null };
+if (certFile && keyFile) {
+  cert = {
+    certPem: await Deno.readTextFile(certFile),
+    keyPem: await Deno.readTextFile(keyFile),
+    certHashB64: null,
+  };
+  console.log(`[relay] using cert from ${certFile} (OS trust store mode, no hash pinning)`);
+} else {
+  cert = await makeEphemeralCert();
+}
 const endpoint = new Deno.QuicEndpoint({ hostname: "127.0.0.1", port: QUIC_PORT });
 const listener = endpoint.listen({
   cert: cert.certPem,
