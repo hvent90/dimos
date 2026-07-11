@@ -1,0 +1,4 @@
+.venv/
+.pixi/
+uv.lock
+pixi.lock

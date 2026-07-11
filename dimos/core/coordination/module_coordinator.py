@@ -26,7 +26,9 @@ from typing import TYPE_CHECKING, Any, NamedTuple, cast
 from dimos.core.coordination.blueprints import TransportSpec, transport_config_name
 from dimos.core.coordination.coordinator_rpc import CoordinatorRPC
 from dimos.core.coordination.worker_manager import WorkerManager
+from dimos.core.coordination.worker_manager_external import WorkerManagerExternal
 from dimos.core.coordination.worker_manager_python import WorkerManagerPython
+from dimos.core.deployment.models import DeploymentSpec
 from dimos.core.global_config import GlobalConfig, global_config
 from dimos.core.module import ModuleBase, ModuleSpec
 from dimos.core.resource import Resource
@@ -69,7 +71,7 @@ class ModuleCoordinator(Resource):
         g: GlobalConfig = global_config,
     ) -> None:
         self._global_config = g
-        manager_types: list[type[WorkerManager]] = [WorkerManagerPython]
+        manager_types: list[type[WorkerManager]] = [WorkerManagerPython, WorkerManagerExternal]
         self._managers = {cls.deployment_identifier: cls(g=g) for cls in manager_types}
         self._deployed_modules = {}
         self._deployed_atoms: dict[type[ModuleBase], BlueprintAtom] = {}
@@ -291,6 +293,14 @@ class ModuleCoordinator(Resource):
                     module=module.__name__,
                     transport=transport.__class__.__name__,
                 )
+
+    @classmethod
+    def build_deployment(
+        cls,
+        deployment_spec: DeploymentSpec,
+        blueprint_args: MutableMapping[str, Any] | None = None,
+    ) -> ModuleCoordinator:
+        return cls.build(deployment_spec.blueprint, blueprint_args)
 
     @classmethod
     def build(

@@ -1,0 +1,11 @@
+[project]
+name = "example-external-python-module"
+version = "0.1.0"
+requires-python = ">=3.10,<3.13"
+dependencies = ["dimos", "humanize>=4.9,<5"]
+
+[tool.uv]
+package = false
+
+[tool.uv.sources]
+dimos = { path = "../../..", editable = true }

@@ -99,7 +99,7 @@ def get_loop() -> tuple[asyncio.AbstractEventLoop, threading.Thread | None]:
         return loop, thr
 
 
-Deployment = Literal["python", "docker"]
+Deployment = Literal["python", "docker", "external-python"]
 
 
 class ModuleConfig(BaseConfig):
@@ -816,7 +816,7 @@ ModuleSpec = tuple[type[ModuleBase], GlobalConfig, dict[str, Any]]
 
 def is_module_type(value: Any) -> bool:
     try:
-        return inspect.isclass(value) and issubclass(value, Module)
+        return inspect.isclass(value) and issubclass(value, ModuleBase)
     except Exception:
         return False
 
