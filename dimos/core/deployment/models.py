@@ -13,10 +13,12 @@
 # limitations under the License.
 from __future__ import annotations
 
-from collections.abc import Mapping
 from dataclasses import dataclass, field
 from pathlib import Path
-from typing import ClassVar, NewType, TypeAlias, cast
+from typing import TYPE_CHECKING, ClassVar, NewType, TypeAlias, cast
+
+from pydantic import BaseModel, ConfigDict, Field, TypeAdapter
+from typing_extensions import TypeAliasType
 
 from dimos.core.coordination.blueprints import Blueprint
 from dimos.core.core import rpc
@@ -24,8 +26,17 @@ from dimos.core.module import Deployment, ModuleBase
 from dimos.core.stream import In, Out, Transport
 
 RuntimeSessionId = NewType("RuntimeSessionId", str)
-JsonValue: TypeAlias = str | int | float | bool | None | list["JsonValue"] | dict[str, "JsonValue"]
+if TYPE_CHECKING:
+    JsonValue: TypeAlias = (
+        str | int | float | bool | None | list["JsonValue"] | dict[str, "JsonValue"]
+    )
+else:
+    JsonValue = TypeAliasType(
+        "JsonValue",
+        str | int | float | bool | None | list["JsonValue"] | dict[str, "JsonValue"],
+    )
 JsonObject: TypeAlias = dict[str, JsonValue]
+_JSON_OBJECT_ADAPTER = TypeAdapter(JsonObject)
 
 
 class ExternalModule(ModuleBase):
@@ -64,8 +75,9 @@ class ExternalModule(ModuleBase):
         return True
 
 
-@dataclass(frozen=True)
-class ModuleDeployment:
+class ModuleDeployment(BaseModel):
+    model_config = ConfigDict(frozen=True, arbitrary_types_allowed=True)
+
     execution_target: str = "local"
     build_target: str | None = None
     preparation: str | None = None
@@ -73,8 +85,9 @@ class ModuleDeployment:
     readiness_timeout_s: float = 10.0
 
 
-@dataclass(frozen=True)
-class LocalPythonPackage:
+class LocalPythonPackage(BaseModel):
+    model_config = ConfigDict(frozen=True, arbitrary_types_allowed=True)
+
     package_root: Path
     declaration: type[ExternalModule]
     declaration_ref: str
@@ -87,8 +100,9 @@ class LocalPythonPackage:
         return self.package_root / "python"
 
 
-@dataclass(frozen=True)
-class ModuleLaunchEnvelope:
+class ModuleLaunchEnvelope(BaseModel):
+    model_config = ConfigDict(frozen=True)
+
     module_id: str
     module_name: str
     rpc_name: str
@@ -96,47 +110,17 @@ class ModuleLaunchEnvelope:
     implementation_ref: str
     package_root: str
     runtime_workdir: str
-    config: JsonObject = field(default_factory=dict)
-    streams: JsonObject = field(default_factory=dict)
+    config: JsonObject = Field(default_factory=dict)
+    streams: JsonObject = Field(default_factory=dict)
     readiness_method: str = "dimos_ready"
     readiness_timeout_s: float = 10.0
 
     def to_json(self) -> JsonObject:
-        return {
-            "module_id": self.module_id,
-            "module_name": self.module_name,
-            "rpc_name": self.rpc_name,
-            "declaration_ref": self.declaration_ref,
-            "implementation_ref": self.implementation_ref,
-            "package_root": self.package_root,
-            "runtime_workdir": self.runtime_workdir,
-            "config": self.config,
-            "streams": self.streams,
-            "readiness_method": self.readiness_method,
-            "readiness_timeout_s": self.readiness_timeout_s,
-        }
+        return cast("JsonObject", self.model_dump(mode="json"))
 
     @classmethod
-    def from_json(cls, data: Mapping[str, JsonValue]) -> ModuleLaunchEnvelope:
-        config = data.get("config", {})
-        streams = data.get("streams", {})
-        if not isinstance(config, dict):
-            raise TypeError("ModuleLaunchEnvelope config must be a JSON object")
-        if not isinstance(streams, dict):
-            raise TypeError("ModuleLaunchEnvelope streams must be a JSON object")
-        return cls(
-            module_id=_required_str(data, "module_id"),
-            module_name=_required_str(data, "module_name"),
-            rpc_name=_required_str(data, "rpc_name"),
-            declaration_ref=_required_str(data, "declaration_ref"),
-            implementation_ref=_required_str(data, "implementation_ref"),
-            package_root=_required_str(data, "package_root"),
-            runtime_workdir=_required_str(data, "runtime_workdir"),
-            config=config,
-            streams=streams,
-            readiness_method=_required_str(data, "readiness_method"),
-            readiness_timeout_s=_required_float(data, "readiness_timeout_s"),
-        )
+    def from_json(cls, data: JsonObject) -> ModuleLaunchEnvelope:
+        return cls.model_validate(data)
 
 
 @dataclass(frozen=True)
@@ -173,8 +157,9 @@ class DeploymentPlan:
         return {module.module_class: module for module in self.external_modules}
 
 
-@dataclass(frozen=True)
-class PrepareResult:
+class PrepareResult(BaseModel):
+    model_config = ConfigDict(frozen=True, arbitrary_types_allowed=True)
+
     module: ExternalModulePlan
     command_prefix: tuple[str, ...]
 
@@ -185,45 +170,5 @@ class DeploymentSpec:
     modules: dict[type[ModuleBase], ModuleDeployment] = field(default_factory=dict)
 
 
-def _required_str(data: Mapping[str, JsonValue], key: str) -> str:
-    value = data.get(key)
-    if not isinstance(value, str):
-        raise TypeError(f"ModuleLaunchEnvelope {key} must be a string")
-    return value
-
-
-def _required_float(data: Mapping[str, JsonValue], key: str) -> float:
-    value = data.get(key)
-    if not isinstance(value, int | float):
-        raise TypeError(f"ModuleLaunchEnvelope {key} must be a number")
-    return float(value)
-
-
-def _json_object_from_kwargs(kwargs: Mapping[str, object]) -> JsonObject:
-    result: JsonObject = {}
-    for key, value in kwargs.items():
-        try:
-            result[key] = _coerce_json_value(value)
-        except TypeError as exc:
-            raise TypeError(
-                f"ModuleLaunchEnvelope config value for {key!r} is not JSON-compatible"
-            ) from exc
-    return result
-
-
-def _coerce_json_value(value: object) -> JsonValue:
-    if value is None or isinstance(value, str | int | float | bool):
-        return cast("JsonValue", value)
-    if isinstance(value, list):
-        result: list[JsonValue] = []
-        for item in value:
-            result.append(_coerce_json_value(item))
-        return result
-    if isinstance(value, dict):
-        result_dict: dict[str, JsonValue] = {}
-        for key, item in value.items():
-            if not isinstance(key, str):
-                raise TypeError("JSON object keys must be strings")
-            result_dict[key] = _coerce_json_value(item)
-        return result_dict
-    raise TypeError(f"{type(value).__name__} is not JSON-compatible")
+def _json_object_from_kwargs(kwargs: dict[str, object]) -> JsonObject:
+    return _JSON_OBJECT_ADAPTER.validate_python(kwargs)

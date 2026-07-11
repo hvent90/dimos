@@ -17,6 +17,7 @@ import contextlib
 from dataclasses import dataclass, field
 import json
 from multiprocessing.connection import Connection
+from multiprocessing.process import BaseProcess
 import os
 from pathlib import Path
 import signal
@@ -26,7 +27,6 @@ import tempfile
 import threading
 import time
 import traceback
-from typing import Any
 
 from dimos.core.coordination.python_worker import get_forkserver_context
 from dimos.core.deployment.models import ExternalModule, JsonValue, ModuleLaunchEnvelope
@@ -92,7 +92,7 @@ class ExternalWorkerClient:
         self._worker_id = _external_worker_ids.next()
         self._lock = threading.Lock()
         self._conn: Connection | None = None
-        self._process: Any = None
+        self._process: BaseProcess | None = None
 
     def start_process(self) -> None:
         ctx = get_forkserver_context()
@@ -108,13 +108,16 @@ class ExternalWorkerClient:
 
     def launch_runtime(
         self,
-        envelope: ModuleLaunchEnvelope,
+        envelope: ModuleLaunchEnvelope | dict[str, JsonValue],
         command_prefix: tuple[str, ...],
         environment: dict[str, str],
     ) -> None:
+        envelope_data = (
+            envelope.to_json() if isinstance(envelope, ModuleLaunchEnvelope) else envelope
+        )
         self._send(
             LaunchRuntimeRequest(
-                envelope=envelope.to_json(),
+                envelope=envelope_data,
                 command_prefix=command_prefix,
                 environment=environment,
             )
@@ -221,7 +224,7 @@ def _handle_external_request(
         case LaunchRuntimeRequest(
             envelope=envelope_data, command_prefix=command_prefix, environment=env
         ):
-            envelope = ModuleLaunchEnvelope.from_json(envelope_data)
+            envelope = ModuleLaunchEnvelope.model_validate(envelope_data)
             _launch_runtime(state, envelope, command_prefix, env)
             return ExternalWorkerResponse(result=True)
         case StopRuntimeRequest(module_id=module_id):
@@ -346,7 +349,7 @@ def _write_envelope(envelope: ModuleLaunchEnvelope) -> Path:
         "w", prefix="dimos-external-launch-", suffix=".json", delete=False
     )
     with tmp:
-        json.dump(envelope.to_json(), tmp)
+        json.dump(envelope.model_dump(mode="json"), tmp)
     return Path(tmp.name)
 
 

@@ -38,7 +38,7 @@ def _load_envelope(path: Path) -> ModuleLaunchEnvelope:
         data: JsonValue = json.load(f)
     if not isinstance(data, dict):
         raise TypeError("Launch envelope file did not contain a JSON object")
-    return ModuleLaunchEnvelope.from_json(data)
+    return ModuleLaunchEnvelope.model_validate(data)
 
 
 def main() -> None:

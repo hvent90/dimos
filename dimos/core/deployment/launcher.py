@@ -13,16 +13,19 @@
 # limitations under the License.
 from __future__ import annotations
 
-import argparse
 import json
 import signal
 import time
+
+import typer
 
 from dimos.core.coordination.module_coordinator import ModuleCoordinator
 from dimos.core.coordination.worker_manager_external import prepare_deployment
 from dimos.core.deployment.planner import plan_deployment
 from dimos.core.deployment.ref import resolve_deployment_ref
 from dimos.core.global_config import global_config
+
+app = typer.Typer(help="Temporary local deployment integration launcher")
 
 
 def _plan_dict(ref: str) -> dict[str, list[str]]:
@@ -35,20 +38,22 @@ def _plan_dict(ref: str) -> dict[str, list[str]]:
     }
 
 
-def main() -> None:
-    parser = argparse.ArgumentParser(description="Temporary local deployment integration launcher")
-    parser.add_argument("command", choices=("plan", "prepare", "run"))
-    parser.add_argument("reference")
-    args = parser.parse_args()
-    spec = resolve_deployment_ref(args.reference)
-    plan = plan_deployment(spec)
-    if args.command == "plan":
-        print(json.dumps(_plan_dict(args.reference), indent=2))
-        return
-    if args.command == "prepare":
-        prepared = prepare_deployment(plan, global_config)
-        print(json.dumps({"prepared_external_modules": prepared}, indent=2))
-        return
+@app.command()
+def plan(reference: str) -> None:
+    print(json.dumps(_plan_dict(reference), indent=2))
+
+
+@app.command()
+def prepare(reference: str) -> None:
+    spec = resolve_deployment_ref(reference)
+    deployment_plan = plan_deployment(spec)
+    prepared = prepare_deployment(deployment_plan, global_config)
+    print(json.dumps({"prepared_external_modules": prepared}, indent=2))
+
+
+@app.command()
+def run(reference: str) -> None:
+    spec = resolve_deployment_ref(reference)
     coordinator = ModuleCoordinator.build_deployment(spec)
     stop_requested = False
 
@@ -59,13 +64,17 @@ def main() -> None:
     previous_sigterm = signal.signal(signal.SIGTERM, _request_stop)
     previous_sigint = signal.signal(signal.SIGINT, _request_stop)
     try:
-        print(json.dumps(_plan_dict(args.reference), indent=2))
+        print(json.dumps(_plan_dict(reference), indent=2))
         while not stop_requested:
             time.sleep(0.2)
     finally:
         signal.signal(signal.SIGTERM, previous_sigterm)
         signal.signal(signal.SIGINT, previous_sigint)
         coordinator.stop()
+
+
+def main() -> None:
+    app()
 
 
 if __name__ == "__main__":

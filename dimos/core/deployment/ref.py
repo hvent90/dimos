@@ -35,6 +35,7 @@ def resolve_deployment_ref(ref: str) -> DeploymentSpec:
     obj = getattr(module, variable_name)
     if not isinstance(obj, DeploymentSpec):
         raise ValueError(
-            "Deployment reference must point to a module-level DeploymentSpec variable"
+            "Deployment reference must point to a module-level DeploymentSpec variable; "
+            f"got {type(obj).__name__}"
         )
     return obj
