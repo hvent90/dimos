@@ -45,13 +45,16 @@ shows per-channel Hz / KB/frame / lost / out-of-order, datagram RTT
 | Multi-viewer isolation | works: slow viewer (headless sw-render Chrome) shed 18/~4900 frames via the latest-wins policy; Firefox next to it lost 0 |
 | Sustained run | 140 s, 2 viewers, ~3.2 MB/s: no session drops, no relay errors |
 | In-browser render rate | video decoded+drawn at full 14.3/s (decode 3 ms, cycle 70 ms); arrival-gap max 82 ms after the FIN fix below |
-| Safari | WebTransport only in Safari >= 26.4, and WebKit does NOT implement serverCertificateHashes - Safari needs the relay to run an OS-trusted cert (see mkcert flow below) |
+| Safari | **blocked by Deno, not Safari**: with Safari 26.5.2 (flag on) + trusted cert + https page, the QUIC/TLS handshake succeeds but Deno rejects the session ("Peer does not support WebTransport") - web-transport-proto 0.2.7 predates the draft-13+ `SETTINGS_WT_ENABLED` negotiation Safari speaks. Fixed in web-transport-proto >= 0.3 (Jan 2026); Deno main still pins 0.2.7. Upstream-reportable. |
 
 ### Safari (macOS)
 
 Three Safari-only hurdles, all handled by the trusted-cert flow below:
 
-1. WebTransport shipped in Safari 26.4 (26.0-26.3: API absent).
+1. WebTransport shipped in Safari 26.4 (26.0-26.3: API absent). Even on
+   26.4+ it may still be off depending on macOS version: check Develop ->
+   Feature Flags -> "WebTransport" (enable + relaunch). Verify with
+   `typeof WebTransport` in the console on any https page.
 2. WebKit does not treat `http://localhost` as a secure context (unlike
    Chrome/Firefox), so WebTransport is hidden even on 26.4+ - the page must
    be served over HTTPS. With `--cert/--key` the relay also serves
@@ -140,13 +143,25 @@ Numbered by severity for the real T1-T3 implementation:
    aioquic's draft-02 `ENABLE_WEBTRANSPORT` settings; response carries
    `sec-webtransport-http3-draft: draft02`. No settings fight.
 
-10. **Safari**: WebTransport exists only from Safari 26.4; WebKit doesn't
-    treat http://localhost as a secure context (API hidden on the plain-HTTP
-    page); and WebKit does not implement `serverCertificateHashes` (stated no
-    intent to). Local Safari dev therefore needs the relay's `--cert/--key`
-    mode (mkcert) + the HTTPS page at :8443; the cloud relay (T12, real TLS)
-    is unaffected. The cockpit auto-falls back to a plain connect when the
-    browser lacks cert-hash support.
+10. **Safari** (verdict from live testing on Safari 26.5.2, macOS): four
+    stacked hurdles -
+    - WebTransport exists only from Safari 26.4, and even there it was OFF
+      until the "WebTransport" feature flag was enabled (Develop -> Feature
+      Flags). End users won't have it on; Safari is not a launch target.
+    - WebKit doesn't treat http://localhost as a secure context: the API is
+      hidden on the plain-HTTP page -> relay serves https://localhost:8443
+      in --cert mode.
+    - WebKit does not implement `serverCertificateHashes` (stated no intent
+      to) -> OS-trusted cert required (mkcert); cockpit auto-falls back to a
+      plain connect.
+    - FINAL BLOCKER: Safari negotiates WT with the current IETF draft's
+      per-version `SETTINGS_WT_ENABLED` code points; Deno's web-transport-
+      proto 0.2.7 only accepts draft-02 `ENABLE_WEBTRANSPORT` or
+      `WEBTRANSPORT_MAX_SESSIONS` (0xc671706a) -> `webtransportAccept` fails
+      with "Peer does not support WebTransport". Chrome/Firefox still work
+      because they advertise the legacy code points alongside the new ones.
+      web-transport-proto >= 0.3 (2026-01) supports the new scheme; Deno
+      (incl. main) still pins 0.2.7 -> report upstream / retest after a bump.
 
 ## Implications for the real T1
 
