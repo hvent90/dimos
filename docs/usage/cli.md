@@ -6,7 +6,7 @@ The `dimos` CLI manages the full lifecycle of a DimOS robot stack — start, sto
 
 ## Global Options
 
-Every [`GlobalConfig`](/usage/configuration) field is available as a CLI flag. Flags override environment variables, `.env`, and blueprint defaults.
+Every [`GlobalConfig`](/docs/usage/configuration.md) field is available as a CLI flag. Flags override environment variables, `.env`, and blueprint defaults.
 
 ```bash
 dimos [GLOBAL OPTIONS] COMMAND [ARGS]
@@ -201,6 +201,16 @@ Print resolved GlobalConfig values and their sources.
 dimos show-config
 ```
 
+### `dimos spy`
+
+Universal transport spy: a live table of every topic on every pubsub transport (LCM, Zenoh, or both), with per-topic message rate, bandwidth, size, and liveness.
+
+```bash
+dimos spy                     # everything, all transports
+dimos spy --transport zenoh   # filter to one transport (repeatable flag)
+dimos lcmspy                  # deprecated alias for: dimos spy --transport lcm
+```
+
 ---
 
 ## Agent & MCP Commands
@@ -297,7 +307,7 @@ humancli
 
 ### `lcmspy`
 
-Monitor LCM messages in real time.
+Deprecated alias for `dimos spy --transport lcm` (the LCM-only view of the spy). Prefer [`dimos spy`](#dimos-spy).
 
 ```bash
 lcmspy
