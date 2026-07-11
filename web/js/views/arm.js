@@ -12,7 +12,7 @@
 // vrarm.js/xarmcmd.js against the same ArmHostedConnection.
 
 import { disconnect } from '../disconnect.js';
-import { hudDetailRows, hudSummaryLine, sampleCmdHz, statsHealth, transportLabel } from '../hud.js';
+import { applyStampCrop, hudDetailRows, hudSummaryLine, sampleCmdHz, statsHealth, transportLabel } from '../hud.js';
 import { createStallGate, videoMediaTime } from '../stall.js';
 import { escHtml, sendInterval, state } from '../state.js';
 import {
@@ -264,6 +264,8 @@ export function renderArm(c) {
 
     document.getElementById('disconnectBtn').onclick = disconnect;
     document.getElementById('arm-estop-btn').onclick = triggerEstop;
+    // Recompute the latency-strip crop when the video box/frame size changes.
+    document.getElementById('robot-cam').addEventListener('resize', applyStampCrop);
     // Camera tabs (go2-style): render + wire toggles.
     const tabs = document.getElementById('arm-cam-tabs');
     tabs.innerHTML = CAMS.map((c) =>
@@ -317,6 +319,7 @@ function startHudTick() {
         const tl = document.getElementById('hud-transport');
         if (tl) tl.textContent = transportLabel();
         renderTelemetryGrid();
+        applyStampCrop();  // hide the benchmark latency strip (display-only)
     }, 1000);
 }
 
