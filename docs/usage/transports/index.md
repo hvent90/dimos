@@ -33,8 +33,8 @@ So: treat the API as uniform, but pick a backend whose semantics match the task.
 
 For most users, the important choice is between `lcm`, `zenoh`, and shared memory overrides:
 
-* `lcm`: current legacy default on most platforms. Fast and simple, but UDP multicast is best-effort.
-* `zenoh`: network transport with reliable delivery semantics and the same typed message model through `LCMEncoderMixin`.
+* `lcm`: legacy default. Fast and simple, but UDP multicast is best-effort.
+* `zenoh`: the default. Network transport with reliable delivery semantics and the same typed message model through `LCMEncoderMixin`.
 * shared memory (`pSHMTransport`, etc.): best for large local streams on a single machine.
 
 At the CLI level, you can select the stream transport globally with:
@@ -44,34 +44,23 @@ dimos --transport=lcm run unitree-go2
 dimos --transport=zenoh run unitree-go2
 ```
 
-On macOS, large replay workloads can be unreliable over LCM UDP, so DimOS defaults the global stream transport to `zenoh` there. Other platforms default to `lcm`.
+DimOS defaults the global stream transport to `zenoh` on all platforms.
 
 ## Zenoh quickstart
 
 Zenoh ships with DimOS by default (`eclipse-zenoh` is a base dependency), so there is nothing extra to install.
 
-**Default global stream transport** (only applies when you do not pass `--transport` or set `DIMOS_TRANSPORT`):
-
-| Situation | Default |
-|-----------|---------|
-| macOS | `zenoh` |
-| Any other platform | `lcm` |
+The default global stream transport is `zenoh` (applies when you do not pass `--transport` or set `DIMOS_TRANSPORT`).
 
 **Two ways to override for one run or for your shell:**
 
 1. **CLI:** `dimos --transport=zenoh ...` or `dimos --transport=lcm ...` (see [CLI](/docs/usage/cli.md) for precedence with `.env` and blueprints).
 2. **Environment:** `DIMOS_TRANSPORT=zenoh` or `DIMOS_TRANSPORT=lcm`.
 
-Typical **replay on macOS** (default is already Zenoh, so no transport flag is required):
+Typical **replay** (default is already Zenoh, so no transport flag is required):
 
 ```bash
 dimos --dtop --replay --replay-db=go2_bigoffice run unitree-go2
-```
-
-The same workload on **Linux** (default remains `lcm` until you opt in):
-
-```bash
-dimos --transport=zenoh --dtop --replay --replay-db=go2_bigoffice run unitree-go2
 ```
 
 Architecture notes (Rerun bridge, TF still on LCM) live under [Zenoh](#zenoh) in PubSub transports below.

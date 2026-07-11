@@ -38,6 +38,7 @@ from dimos.core.core import rpc
 from dimos.core.global_config import GlobalConfig
 from dimos.core.module import Module
 from dimos.core.stream import In, Out
+from dimos.core.transport_factory import transport_topic
 from dimos.msgs.sensor_msgs.Image import Image
 from dimos.spec.utils import Spec
 
@@ -312,8 +313,8 @@ def test_remapping() -> None:
             == target_instance.remapped_data.transport.topic
         )
 
-        # The topic should be /remapped_data since that's the remapped name
-        assert target_instance.remapped_data.transport.topic == "/remapped_data"
+        # The topic should be the remapped name (in the active backend's form)
+        assert target_instance.remapped_data.transport.topic == transport_topic("remapped_data")
 
     finally:
         coordinator.stop()

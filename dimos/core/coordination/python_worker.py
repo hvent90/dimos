@@ -429,6 +429,12 @@ def _worker_loop(conn: Connection, state: _WorkerState) -> None:
             conn.send(response)
         except (BrokenPipeError, EOFError):
             break
+        except Exception as e:
+            # E.g. an unpicklable result. Report instead of dying, which would
+            # leave the parent blocked forever on its recv().
+            conn.send(
+                WorkerResponse(error=f"{e.__class__.__name__}: {e}\n{traceback.format_exc()}")
+            )
 
         if state.should_stop:
             break

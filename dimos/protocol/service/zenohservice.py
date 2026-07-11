@@ -15,6 +15,7 @@
 from __future__ import annotations
 
 import json
+import os
 import threading
 from typing import Any
 
@@ -50,6 +51,12 @@ class ZenohSessionPool:
             if key not in self._sessions:
                 zconfig = zenoh.Config()
                 zconfig.insert_json5("mode", json.dumps(config.mode))
+                # Zenoh's analog of LCM_DEFAULT_URL: sessions only discover peers
+                # scouting on the same multicast address, so a per-process address
+                # isolates a group of processes (pytest-xdist workers, most notably).
+                scout_addr = os.environ.get("DIMOS_ZENOH_SCOUT_ADDR")
+                if scout_addr:
+                    zconfig.insert_json5("scouting/multicast/address", json.dumps(scout_addr))
                 if config.connect:
                     zconfig.insert_json5("connect/endpoints", json.dumps(config.connect))
                 if config.listen:
@@ -79,6 +86,18 @@ class ZenohService(Service):
         super().__init__(**kwargs)
         self._session_pool = session_pool or default_session_pool
         self._session: zenoh.Session | None = None
+
+    def __getstate__(self):  # type: ignore[no-untyped-def]
+        """Exclude the live zenoh session (unpicklable pyo3 object) and its pool."""
+        state = self.__dict__.copy()
+        state.pop("_session", None)
+        state.pop("_session_pool", None)
+        return state
+
+    def __setstate__(self, state) -> None:  # type: ignore[no-untyped-def]
+        self.__dict__.update(state)
+        self._session_pool = default_session_pool
+        self._session = None
 
     def start(self) -> None:
         self._session = self._session_pool.acquire(self.config)

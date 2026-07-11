@@ -284,10 +284,13 @@ def test_transport_overrides_coerce_string_values() -> None:
 def test_raw_transport_pins_still_work() -> None:
     """Backwards compat: plain transport instances in .transports() (the pre-spec
     style used across existing blueprints) must survive config() and materialize
-    unchanged — only spec-declared transports opt into the override flow."""
-    from dimos.core.transport import LCMTransport
+    unchanged — only spec-declared transports opt into the override flow.
 
-    raw = LCMTransport("/raw_topic", FakeLCMMsg)
+    The pin is built for the active backend; a pin on the non-default lcm/zenoh
+    backend would instead be rebuilt by _coerce_transport_to_backend."""
+    from dimos.core.transport_factory import make_transport
+
+    raw = make_transport("/raw_topic", FakeLCMMsg)
     bp = Blueprint(blueprints=()).transports(
         {
             ("raw", FakeLCMMsg): raw,

@@ -179,8 +179,8 @@ def test_autoconnect(args_file: str) -> None:
         assert native.imu.transport.topic == consumer.imu.transport.topic
         assert producer.cmd_vel.transport.topic == native.cmd_vel.transport.topic
 
-        # Custom transport was applied
-        assert native.pointcloud.transport.topic.topic == "/my/custom/lidar"
+        # Custom transport was applied (rebuilt for the active backend)
+        assert native.pointcloud.transport.topic.topic == "dimos/my/custom/lidar"
 
         # Wait for the native subprocess to write the output file
         for _ in range(50):
@@ -191,9 +191,9 @@ def test_autoconnect(args_file: str) -> None:
         coordinator.stop()
 
     assert read_json_file(args_file) == {
-        "cmd_vel": "/cmd_vel#geometry_msgs.Twist",
-        "pointcloud": "/my/custom/lidar#sensor_msgs.PointCloud2",
-        "imu": "/imu#sensor_msgs.Imu",
+        "cmd_vel": "dimos/cmd_vel/geometry_msgs.Twist",
+        "pointcloud": "dimos/my/custom/lidar/sensor_msgs.PointCloud2",
+        "imu": "dimos/imu/sensor_msgs.Imu",
         "output_file": args_file,
         "some_param": "2.5",
     }

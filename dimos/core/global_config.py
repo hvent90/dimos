@@ -12,7 +12,6 @@
 # See the License for the specific language governing permissions and
 # limitations under the License.
 
-import platform
 import re
 from typing import Literal, TypeAlias
 
@@ -33,12 +32,6 @@ TransportBackend: TypeAlias = Literal["lcm", "zenoh"]
 
 def _get_all_numbers(s: str) -> list[float]:
     return [float(x) for x in re.findall(r"-?\d+\.?\d*", s)]
-
-
-def _default_transport() -> TransportBackend:
-    if platform.system() == "Darwin":
-        return "zenoh"
-    return "lcm"
 
 
 class GlobalConfig(BaseSettings):
@@ -80,7 +73,7 @@ class GlobalConfig(BaseSettings):
     # (dimos, humancli, agentspy, dtop). The `transport` alias keeps the bare
     # env name and the `--transport` CLI flag (which sets the field by name) working.
     transport: TransportBackend = Field(
-        default_factory=_default_transport,
+        default="zenoh",
         validation_alias=AliasChoices("DIMOS_TRANSPORT", "transport"),
     )
     build_native: bool = DEFAULT_BUILD_NATIVE

@@ -23,7 +23,7 @@ import uuid
 
 # With pytest-xdist, pick a per-worker bucket and pin env vars *before*
 # any dimos module is imported, so parallel workers don't share LCM bus,
-# MCP port, or state directory. ``LCMConfig`` captures ``LCM_DEFAULT_URL``
+# zenoh scouting address, MCP port, or state directory. ``LCMConfig`` captures ``LCM_DEFAULT_URL``
 # at import time; ``GlobalConfig`` captures ``MCP_PORT``; ``run_registry``
 # captures ``XDG_STATE_HOME``. ``LCM_DEFAULT_URL`` in particular has to be
 # an env var (not just a fixture) because subprocess workers spawned by
@@ -40,6 +40,7 @@ if _worker:
         int.from_bytes(hashlib.blake2b(_worker.encode(), digest_size=2).digest(), "big") % 5000
     )
     os.environ["LCM_DEFAULT_URL"] = f"udpm://239.255.76.67:{7700 + _BUCKET}?ttl=0"
+    os.environ["DIMOS_ZENOH_SCOUT_ADDR"] = f"224.0.0.224:{13000 + _BUCKET}"
     os.environ["MCP_PORT"] = str(20000 + _BUCKET)
     os.environ["XDG_STATE_HOME"] = tempfile.mkdtemp(prefix=f"dimos-test-state-{_worker}-")
 
