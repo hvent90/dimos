@@ -10,7 +10,7 @@
 
 import * as THREE from 'three';
 
-import { transportLabel } from './hud.js';
+import { hudDetailRows, healthColor, transportLabel } from './hud.js';
 import { state } from './state.js';
 import { sendEstop, sendEstopClear } from './xarmcmd.js';
 
@@ -20,6 +20,9 @@ const C = {
     good: '#34d399', warn: '#ffcc00', bad: '#ff5252',
     estopBorder: '#d97777',
 };
+
+// Per-row health tint for the stats grid (mirrors go2's vrui.js HEALTH map).
+const HEALTH = { good: C.cyan, warn: C.warn, bad: C.bad };
 
 // Cockpit UI state — reconciled from robot_telemetry (authoritative on connect).
 export const aui = {
@@ -148,6 +151,34 @@ function renderConsole(p) {
     x.fillText(`cmd ${lat} · ${hz} · ${tl}`, 600, 96);
 }
 
+// Stats panel — transport header + the shared hudDetailRows() grid (cmd
+// latency / rate, video codec / fps / jitter, transport). Mirrors go2's
+// renderStats (vrui.js); no SoC/battery row (the arm has no battery telemetry).
+function renderStats(p) {
+    p.bg();
+    const x = p.ctx;
+    x.fillStyle = healthColor();
+    x.beginPath(); x.arc(30, 34, 9, 0, Math.PI * 2); x.fill();
+    x.fillStyle = C.text; x.font = '600 20px ui-monospace,monospace';
+    x.fillText(transportLabel(), 48, 40);
+
+    let y = 78;
+    for (const g of hudDetailRows()) {
+        x.fillStyle = C.dim; x.font = '600 15px ui-monospace,monospace';
+        x.fillText(g.group.toUpperCase(), 24, y); y += 24;
+        for (const r of g.rows) {
+            x.fillStyle = C.dim; x.font = '15px ui-monospace,monospace';
+            x.textAlign = 'left'; x.fillText(r.label, 30, y);
+            x.fillStyle = HEALTH[r.health] || C.text;
+            x.textAlign = 'right'; x.font = '600 15px ui-monospace,monospace';
+            x.fillText(String(r.value), p.cw - 24, y);
+            x.textAlign = 'left';
+            y += 24;
+        }
+        y += 10;
+    }
+}
+
 function handleClick(id) {
     if (id === 'estop') {
         aui.estopped = true;  // optimistic; robot_telemetry reconciles
@@ -188,25 +219,37 @@ export function buildArmCockpit(scene, _headPos) {
     console_.mesh.renderOrder = 3;
     scene.add(console_.mesh);
     _panel = console_;
-    let lastStatsMs = 0;  // repaint stats (cmd latency) at 1Hz, not per frame
+
+    // Stats panel — floats to the right of the console, toed-in toward the
+    // operator, showing the same telemetry grid as the go2 VR cockpit.
+    const stats = new Panel({ wM: 0.5, hM: 0.62, cw: 400, ch: 500, opacity: 0.96 });
+    stats.placeFlat(new THREE.Vector3(1.02, 1.02, -1.25), -0.5);
+    stats.mesh.rotation.y = -0.55;  // toe-in toward centre
+    stats.mesh.renderOrder = 3;
+    scene.add(stats.mesh);
+
+    let lastStatsMs = 0;  // repaint the 1Hz panels (cmd latency etc.), not per frame
 
     return {
-        panels: [console_],
-        meshes: [console_.mesh],
+        panels: [console_, stats],
+        meshes: [console_.mesh, stats.mesh],
         onClick(panel, uv) {
             const id = panel.hitTest(uv);
             if (id) handleClick(id);
         },
         tick(nowMs) {
-            if (nowMs - lastStatsMs >= 1000) { console_.markDirty(); lastStatsMs = nowMs; }
-            if (!console_.dirty) return;
-            renderConsole(console_);
-            console_.tex.needsUpdate = true;
-            console_.dirty = false;
+            if (nowMs - lastStatsMs >= 1000) {
+                console_.markDirty(); stats.markDirty(); lastStatsMs = nowMs;
+            }
+            if (console_.dirty) {
+                renderConsole(console_); console_.tex.needsUpdate = true; console_.dirty = false;
+            }
+            if (stats.dirty) {
+                renderStats(stats); stats.tex.needsUpdate = true; stats.dirty = false;
+            }
         },
         dispose() {
-            scene.remove(console_.mesh);
-            console_.dispose();
+            for (const p of [console_, stats]) { scene.remove(p.mesh); p.dispose(); }
             _panel = null;
         },
     };
