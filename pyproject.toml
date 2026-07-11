@@ -358,7 +358,7 @@ scene = [
 ]
 
 all = [
-    "dimos[agents,apriltag,base,cpu,cuda,drone,manipulation,misc,perception,scene,sim,unitree,visualization,web,webrtc]",
+    "dimos[agents,apriltag,base,booster,cpu,cuda,drone,manipulation,misc,perception,scene,sim,unitree,visualization,web,webrtc]",
 ]
 
 [dependency-groups]

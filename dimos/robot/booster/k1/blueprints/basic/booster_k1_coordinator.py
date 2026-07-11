@@ -37,7 +37,6 @@ from dimos.control.coordinator import ControlCoordinator, TaskConfig
 from dimos.core.coordination.blueprints import autoconnect
 from dimos.core.transport import LCMTransport
 from dimos.msgs.geometry_msgs.Twist import Twist
-from dimos.msgs.sensor_msgs.JointState import JointState
 from dimos.robot.booster.k1.blueprints.basic.booster_k1_basic import booster_k1_basic
 from dimos.robot.booster.k1.connection import K1Connection
 from dimos.visualization.rerun.websocket_server import RerunWebSocketServer
@@ -83,7 +82,6 @@ booster_k1_coordinator = (
             ("cmd_vel", Twist): LCMTransport("/cmd_vel", Twist),
             ("twist_command", Twist): LCMTransport("/cmd_vel", Twist),
             ("k1_cmd_vel", Twist): LCMTransport("/booster_k1/cmd_vel", Twist),
-            ("joint_state", JointState): LCMTransport("/coordinator/joint_state", JointState),
         }
     )
     .global_config(n_workers=6, robot_model="booster_k1")
