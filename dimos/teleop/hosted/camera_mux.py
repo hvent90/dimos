@@ -26,6 +26,7 @@ Not StreamModule (that is one-In-one-Out); this has N image Ins.
 
 from __future__ import annotations
 
+from collections.abc import Callable
 import json
 import threading
 import time
@@ -77,12 +78,14 @@ class CameraMuxModule(Module):
     @rpc
     def start(self) -> None:
         """Subscribe each camera In to the frame cache + camera_select."""
+
+        def _sink(cam: str) -> Callable[[Image], None]:
+            return lambda img: self._on_cam(cam, img)
+
         for cam, port in (("cam1", self.cam1), ("cam2", self.cam2)):
             if cam not in self._cam_order or port is None:
                 continue  # only wire cameras that exist as ports and in config
-            self.register_disposable(
-                Disposable(port.subscribe(lambda img, cam=cam: self._on_cam(cam, img)))
-            )
+            self.register_disposable(Disposable(port.subscribe(_sink(cam))))
         self.register_disposable(Disposable(self.camera_select.subscribe(self._set_cam_selection)))
 
     @rpc
@@ -208,12 +211,14 @@ class CameraMuxModule(Module):
         "cams":[...]}`` and silently ignore the rest (other modules own them),
         then republish at once so the view flips without waiting for a frame."""
         if isinstance(data, (bytes, bytearray)):
-            data = bytes(data)
-            if not data.startswith(b"{"):
+            raw = bytes(data)
+            if not raw.startswith(b"{"):
                 return  # non-JSON frame on the shared plane — not ours
-            data = data.decode()
+            text = raw.decode()
+        else:
+            text = data
         try:
-            msg = json.loads(data)
+            msg = json.loads(text)
         except (ValueError, TypeError):
             return
         if not isinstance(msg, dict) or msg.get("type") != "camera_select":
