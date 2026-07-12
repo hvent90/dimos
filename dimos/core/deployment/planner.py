@@ -15,6 +15,7 @@ from __future__ import annotations
 
 import inspect
 from pathlib import Path
+from typing import TYPE_CHECKING
 
 from dimos.core.deployment.models import (
     DeploymentPlan,
@@ -25,6 +26,9 @@ from dimos.core.deployment.models import (
     ModuleDeployment,
 )
 from dimos.core.module import ModuleBase
+
+if TYPE_CHECKING:
+    from dimos.core.coordination.blueprints import Blueprint
 
 
 def import_ref_for(obj: type[object]) -> str:
@@ -63,16 +67,24 @@ def plan_deployment(spec: DeploymentSpec) -> DeploymentPlan:
     return DeploymentPlan(tuple(python_modules), tuple(external_modules))
 
 
-def reject_external_modules_without_deployment_spec(
-    blueprint_name: str, modules: list[str]
-) -> None:
+def reject_external_modules_without_deployment_spec(blueprint: Blueprint) -> None:
+    modules = _external_module_names(blueprint)
     if not modules:
         return
     joined = ", ".join(modules)
     raise ValueError(
-        f"Blueprint {blueprint_name} contains ExternalModule declarations ({joined}). "
+        f"Blueprint {getattr(blueprint, 'name', 'blueprint')} contains "
+        f"ExternalModule declarations ({joined}). "
         "External modules require ModuleCoordinator.build_deployment(DeploymentSpec(...))."
     )
+
+
+def _external_module_names(blueprint: Blueprint) -> list[str]:
+    return [
+        atom.module.__name__
+        for atom in blueprint.active_blueprints
+        if issubclass(atom.module, ExternalModule)
+    ]
 
 
 def discover_local_python_package(
