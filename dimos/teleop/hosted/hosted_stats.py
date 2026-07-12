@@ -65,6 +65,7 @@ class HostedStatsModule(Module):
     robot_state: In[bytes]  # robot-authoritative UI state from the command module
     telemetry_out: Out[bytes]  # → CloudflareTransport("state_reliable_back")
     video_stats: Out[VideoStats]
+    cmd_vel_stamped: Out[TwistStamped]  # decoded operator cmd → recorder (LCM)
 
     def __init__(self, **kwargs: Any) -> None:
         """Init cmd-stats accumulator, telemetry thread handle, latest state."""
@@ -122,7 +123,10 @@ class HostedStatsModule(Module):
             )
 
     def _on_cmd_raw(self, data: Any) -> None:
-        """Tap cmd_vel for command-link latency/rate stats."""
+        """Tap raw cmd_vel for latency/rate stats and re-publish it as
+        TwistStamped over LCM for the recorder (no 2nd CF session). This is the
+        full unguarded operator stream — the complete drive trace, unlike the
+        E-STOP/stale-filtered subset Go2CommandModule forwards to the driver."""
         if isinstance(data, str):
             data = data.encode()
         try:
@@ -130,6 +134,7 @@ class HostedStatsModule(Module):
         except Exception:
             return  # foreign / undecodable frame — skip
         self._cmd_stats.record(cmd.ts, nbytes=len(data))
+        self.cmd_vel_stamped.publish(cmd)
 
     def _on_robot_state(self, data: Any) -> None:
         """Cache the robot-authoritative UI state pushed by the command module."""

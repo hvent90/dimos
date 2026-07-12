@@ -42,7 +42,6 @@ from dimos.core.module import Module, ModuleConfig
 from dimos.core.stream import In, Out
 from dimos.msgs.geometry_msgs.PoseStamped import PoseStamped
 from dimos.msgs.geometry_msgs.Twist import Twist
-from dimos.msgs.geometry_msgs.TwistStamped import TwistStamped
 from dimos.robot.unitree.go2.connection import GO2Connection
 from dimos.teleop.hosted.command_executor import SerializedCommandMixin
 from dimos.utils.logging_config import setup_logger
@@ -102,7 +101,6 @@ class Go2CommandModule(Module, SerializedCommandMixin):
     cmd_vel_in: In[Twist]  # raw operator drive (broker cmd_unreliable)
     tele_cmd_vel: Out[Twist]  # guarded manual drive → MovementManager
 
-    cmd_vel_stamped: Out[TwistStamped]  # decoded operator cmd for the recorder
     goal_request: Out[PoseStamped]  # click-to-nav goal → planner
     robot_state: Out[bytes]  # posture/rage/battery → stats module telemetry
     stop_movement: Out[Bool]  # cancel the planner (on E-STOP / operator-lost)
