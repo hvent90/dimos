@@ -16,8 +16,8 @@
 
 .. deprecated::
     DO NOT USE for new work — these subclass the deprecated
-    ``HostedTeleopModule`` (see its docstring). Use the transport-swap
-    module instead: ``go2_hosted_connection.py``. Kept only for the legacy
+    ``HostedTeleopModule`` (see its docstring). Use the module-based hosted
+    teleop instead: ``dimos/teleop/hosted/``. Kept only for the legacy
     ``teleop-hosted-go2`` blueprint.
 """
 
