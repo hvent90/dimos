@@ -122,10 +122,18 @@ def _read_all(store: SqliteStore) -> dict[str, list[Any]]:
             out[name] = []
             continue
         stream: Any = store.stream(name, msg_type)
-        # Stream.__iter__ yields Observation[T]; we want (ts, payload) so the
-        # stats math (which reads .ts on the payload) matches what the
-        # benchmark module did with in-memory msgs.
-        out[name] = [obs.data for obs in stream]
+        # Stream.__iter__ yields Observation[T]; we want the payload for the
+        # stats math, but also carry the recorder's ingress wall-clock
+        # (tags["reception_ts"]) onto it so latency (recv minus sender .ts) is
+        # available. Best-effort: unset on older recordings.
+        msgs = []
+        for obs in stream:
+            msg = obs.data
+            recv = obs.tags.get("reception_ts") if obs.tags else None
+            if recv is not None:
+                msg._recv_ts = float(recv)
+            msgs.append(msg)
+        out[name] = msgs
     return out
 
 
@@ -142,11 +150,9 @@ def _run_duration(records: dict[str, list[Any]]) -> float:
 def _summary(records: list[Any], stall_factor: float = 3.0) -> dict[str, Any]:
     """Stats for one twist/pose/buttons stream.
 
-    Computed from each message's ``.ts`` (sender stamp, clock-sync calibrated).
-    We treat .ts as the arrival time too because the recorder doesn't persist a
-    separate wall-arrival stamp — for these streams in practice the recorder
-    writes within microseconds of arrival, so inter-stamp deltas track
-    inter-arrival deltas closely.
+    Rate/jitter come from each message's ``.ts`` (sender stamp, clock-sync
+    calibrated). ``latency_ms`` (recv minus send) is included when the recording has
+    the ingress wall-clock (``_recv_ts`` from tags["reception_ts"]).
 
     Buttons lacks ``.ts``, so rate/jitter are ``None``.
     """
@@ -161,10 +167,20 @@ def _summary(records: list[Any], stall_factor: float = 3.0) -> dict[str, Any]:
         stall_thresh = stall_factor * float(np.median(intervals_ms))
         stalls = [iv for iv in intervals_ms if iv > stall_thresh]
 
+    # Command-link latency: robot ingress minus operator send-stamp. Only >0
+    # values (a negative means clock skew, not a real measurement).
+    lat_ms = [
+        (m._recv_ts - float(m.ts)) * 1000.0
+        for m in records
+        if getattr(m, "_recv_ts", None) is not None and getattr(m, "ts", None) is not None
+    ]
+    lat_ms = [v for v in lat_ms if v > 0]
+
     return {
         "count": count,
         "rate_hz": (len(tss) - 1) / span if span > 0 else None,
         "jitter_ms": pcts(intervals_ms),
+        "latency_ms": pcts(lat_ms),
         "stall_count": len(stalls),
         "stall_total_s": sum(stalls) / 1000.0,
     }
