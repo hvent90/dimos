@@ -178,6 +178,9 @@ class PointCloud2(Timestamped):
         frame_id: str = "world",
         timestamp: float | None = None,
         intensities: np.ndarray | None = None,
+        offset_times: np.ndarray | None = None,
+        tags: np.ndarray | None = None,
+        lines: np.ndarray | None = None,
     ) -> PointCloud2:
         """Create PointCloud2 from numpy array of shape (N, 3).
 
@@ -186,6 +189,10 @@ class PointCloud2(Timestamped):
             frame_id: Frame ID for the point cloud
             timestamp: Timestamp for the point cloud (defaults to current time)
             intensities: Optional Nx1 or (N,) float array of per-point intensity values
+            offset_times: Optional (N,) uint32 array of per-point time offsets in
+                nanoseconds relative to the header stamp (Livox CustomPoint semantic)
+            tags: Optional (N,) uint8 array of per-point Livox tags
+            lines: Optional (N,) uint8 array of per-point laser line numbers
 
         Returns:
             PointCloud2 instance
@@ -197,6 +204,16 @@ class PointCloud2(Timestamped):
             if arr.ndim == 1:
                 arr = arr.reshape(-1, 1)
             pcd_t.point["intensities"] = o3c.Tensor(arr, dtype=o3c.float32)
+        if offset_times is not None:
+            pcd_t.point["offset_times"] = o3c.Tensor(
+                offset_times.astype(np.uint32).reshape(-1, 1), dtype=o3c.uint32
+            )
+        if tags is not None:
+            pcd_t.point["tags"] = o3c.Tensor(tags.astype(np.uint8).reshape(-1, 1), dtype=o3c.uint8)
+        if lines is not None:
+            pcd_t.point["lines"] = o3c.Tensor(
+                lines.astype(np.uint8).reshape(-1, 1), dtype=o3c.uint8
+            )
         return cls(pointcloud=pcd_t, ts=timestamp, frame_id=frame_id)
 
     @classmethod
@@ -422,6 +439,30 @@ class PointCloud2(Timestamped):
             return arr.astype(np.float32) if arr.dtype != np.float32 else arr  # type: ignore[no-any-return]
         return None
 
+    def offset_times_u32(self) -> np.ndarray | None:
+        """Per-point time offsets (ns relative to header stamp) as flat uint32, or None."""
+        self._ensure_tensor_initialized()
+        if "offset_times" in self._pcd_tensor.point:
+            arr = self._pcd_tensor.point["offset_times"].numpy().flatten()
+            return arr.astype(np.uint32) if arr.dtype != np.uint32 else arr  # type: ignore[no-any-return]
+        return None
+
+    def tags_u8(self) -> np.ndarray | None:
+        """Per-point Livox tag bytes as flat uint8, or None if absent."""
+        self._ensure_tensor_initialized()
+        if "tags" in self._pcd_tensor.point:
+            arr = self._pcd_tensor.point["tags"].numpy().flatten()
+            return arr.astype(np.uint8) if arr.dtype != np.uint8 else arr  # type: ignore[no-any-return]
+        return None
+
+    def lines_u8(self) -> np.ndarray | None:
+        """Per-point laser line numbers as flat uint8, or None if absent."""
+        self._ensure_tensor_initialized()
+        if "lines" in self._pcd_tensor.point:
+            arr = self._pcd_tensor.point["lines"].numpy().flatten()
+            return arr.astype(np.uint8) if arr.dtype != np.uint8 else arr  # type: ignore[no-any-return]
+        return None
+
     @functools.cached_property
     def axis_aligned_bounding_box(self) -> o3d.geometry.AxisAlignedBoundingBox:
         """Get axis-aligned bounding box of the point cloud."""
@@ -531,8 +572,45 @@ class PointCloud2(Timestamped):
 
             point_data = np.column_stack([points, intensities]).astype(np.float32)
 
+        # Optional Livox per-point attributes (offset_time/tag/line) extend the
+        # base 16-byte layout with packed extra fields, emitted only when present.
+        extras: list[tuple[str, np.dtype, int, np.ndarray]] = []
+        offset_times = self.offset_times_u32()
+        if offset_times is not None:
+            extras.append(("offset_time", np.dtype("<u4"), PointField.UINT32, offset_times))
+        tags = self.tags_u8()
+        if tags is not None:
+            extras.append(("tag", np.dtype("u1"), PointField.UINT8, tags))
+        lines = self.lines_u8()
+        if lines is not None:
+            extras.append(("line", np.dtype("u1"), PointField.UINT8, lines))
+
+        wire_array: np.ndarray = point_data
+        if extras:
+            base_names = ["x", "y", "z", "rgb" if has_colors else "intensity"]
+            packed_dtype = np.dtype(
+                [(name, "<f4") for name in base_names]
+                + [(name, dt.str) for name, dt, _, _ in extras]
+            )
+            packed = np.zeros(len(points), dtype=packed_dtype)
+            for column, name in enumerate(base_names):
+                packed[name] = point_data[:, column]
+            byte_offset = msg.point_step
+            for name, dt, pf_datatype, values in extras:
+                packed[name] = values
+                extra_field = PointField()
+                extra_field.name = name
+                extra_field.offset = byte_offset
+                extra_field.datatype = pf_datatype
+                extra_field.count = 1
+                msg.fields.append(extra_field)
+                byte_offset += dt.itemsize
+            msg.fields_length = len(msg.fields)
+            msg.point_step = byte_offset
+            wire_array = packed
+
         msg.row_step = msg.point_step * msg.width
-        data_bytes = point_data.tobytes()
+        data_bytes = wire_array.tobytes()
         msg.data_length = len(data_bytes)
         msg.data = data_bytes
 
@@ -557,6 +635,7 @@ class PointCloud2(Timestamped):
 
         # Parse field offsets
         x_offset = y_offset = z_offset = rgb_offset = intensity_offset = None
+        offset_time_offset = tag_offset = line_offset = None
         for msgfield in msg.fields:
             if msgfield.name == "x":
                 x_offset = msgfield.offset
@@ -568,6 +647,12 @@ class PointCloud2(Timestamped):
                 rgb_offset = msgfield.offset
             elif msgfield.name == "intensity":
                 intensity_offset = msgfield.offset
+            elif msgfield.name == "offset_time":
+                offset_time_offset = msgfield.offset
+            elif msgfield.name == "tag":
+                tag_offset = msgfield.offset
+            elif msgfield.name == "line":
+                line_offset = msgfield.offset
 
         if any(offset is None for offset in [x_offset, y_offset, z_offset]):
             raise ValueError("PointCloud2 message missing X, Y, or Z msgfields")
@@ -619,6 +704,35 @@ class PointCloud2(Timestamped):
                 pcd_t.point["intensities"] = o3c.Tensor(
                     intensities.reshape(-1, 1), dtype=o3c.float32
                 )
+
+        # Extract Livox per-point attributes if present. Unlike intensity, zero is
+        # a meaningful value (first point's offset_time is 0), so presence of the
+        # field alone decides — no nonzero check.
+        def _extract_scalar_field(field_offset: int, np_dtype: str) -> np.ndarray:
+            item_size = np.dtype(np_dtype).itemsize
+            dt_s = np.dtype(
+                [
+                    ("_pre", f"V{field_offset}"),
+                    ("value", np_dtype),
+                    ("_post", f"V{point_step - field_offset - item_size}"),
+                ]
+            )
+            structured_s = np.frombuffer(raw_data, dtype=dt_s, count=num_points)
+            return np.ascontiguousarray(structured_s["value"])
+
+        if offset_time_offset is not None:
+            pcd_t.point["offset_times"] = o3c.Tensor(
+                _extract_scalar_field(offset_time_offset, "<u4").reshape(-1, 1),
+                dtype=o3c.uint32,
+            )
+        if tag_offset is not None:
+            pcd_t.point["tags"] = o3c.Tensor(
+                _extract_scalar_field(tag_offset, "u1").reshape(-1, 1), dtype=o3c.uint8
+            )
+        if line_offset is not None:
+            pcd_t.point["lines"] = o3c.Tensor(
+                _extract_scalar_field(line_offset, "u1").reshape(-1, 1), dtype=o3c.uint8
+            )
 
         # Extract RGB colors if present
         if rgb_offset is not None:
