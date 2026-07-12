@@ -115,7 +115,7 @@ Section 5 defines each manager and worker in operational terms. This diagram est
 
 ### 3.1 Module contract shape
 
-`ExternalModule` is a declarative `Module` subclass. It adds an implementation reference but no build, process, watchdog, or transport behavior.
+`ExternalModule` is a declarative `Module` subclass. It adds an implementation reference but no build, process, watchdog, or transport behavior. It's similar to current `NativeModule` but more "contract only".
 
 Packaged Python uses a class import reference:
 
