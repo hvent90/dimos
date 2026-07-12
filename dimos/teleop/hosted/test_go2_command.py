@@ -57,6 +57,8 @@ def _bare() -> Go2CommandModule:
         damp_on_operator_lost=False,
         max_nav_goal_m=100.0,
         allow_acrobatics=False,
+        max_linear_mps=1.5,
+        max_angular_rps=2.0,
     )
     m._estopped = False
     m._rage_active = False
@@ -212,6 +214,35 @@ def test_estopped_drive_is_dropped() -> None:
     m.tele_cmd_vel.publish.assert_not_called()
 
 
+def test_drive_drops_nan_timestamp() -> None:
+    # A NaN ts passes every comparison and would poison _last_cmd_ts (ts <= NaN
+    # is False forever → reorder guard permanently disabled). Must be rejected.
+    m = _bare()
+    m._on_cmd_vel_in(_twist(float("nan")))
+    m.tele_cmd_vel.publish.assert_not_called()
+    assert m._last_cmd_ts == 0.0  # guard not poisoned
+
+
+def test_drive_drops_non_finite_velocity() -> None:
+    m = _bare()
+    t = _twist(time.time())
+    t.linear.x = float("inf")
+    m._on_cmd_vel_in(t)
+    m.tele_cmd_vel.publish.assert_not_called()
+
+
+def test_drive_clamps_excessive_velocity() -> None:
+    # An untrusted operator sending huge velocities is clamped to the envelope.
+    m = _bare()
+    t = _twist(time.time())
+    t.linear.x = 99.0  # way over max_linear_mps=1.5
+    t.angular.z = -50.0  # way under -max_angular_rps=2.0
+    m._on_cmd_vel_in(t)
+    published = m.tele_cmd_vel.publish.call_args[0][0]
+    assert published.linear.x == 1.5
+    assert published.angular.z == -2.0
+
+
 # ─── E-STOP + fence ──────────────────────────────────────────────────
 
 
@@ -224,8 +255,23 @@ def test_estop_latches_and_damps(monkeypatch: pytest.MonkeyPatch) -> None:
     m._on_state_json(b'{"type": "estop", "nonce": 1}')
     assert m._estopped is True
     m.stop_movement.publish.assert_called_once()  # nav cancelled
+    # robot_state published immediately on latch (not only inside the Damp task),
+    # so the UI shows estopped:true even if Damp is slow/fails.
+    m.robot_state.publish.assert_called()
     _wait_for(lambda: (1, True) in acks)
     m.go2.sport_command.assert_called_with(ALLOWED_SPORT_CMDS["Damp"])
+
+
+def test_estop_clear_publishes_state(monkeypatch: pytest.MonkeyPatch) -> None:
+    # Clearing E-STOP must publish robot_state immediately so the UI drops
+    # estopped:true without waiting for an unrelated update.
+    m = _bare()
+    m._estopped = True
+    monkeypatch.setattr(m, "_send_ack", lambda nonce, ok: None)
+    m.robot_state.publish.reset_mock()
+    m._on_state_json(b'{"type": "estop_clear", "nonce": 2}')
+    assert m._estopped is False
+    m.robot_state.publish.assert_called_once()
 
 
 def test_repeated_estop_reissues_damp(monkeypatch: pytest.MonkeyPatch) -> None:

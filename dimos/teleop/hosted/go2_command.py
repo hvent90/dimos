@@ -75,11 +75,28 @@ def _is_zero_twist(t: Twist) -> bool:
     )
 
 
+def _all_finite(t: Twist) -> bool:
+    """True when every linear/angular component is finite (no NaN/inf)."""
+    return all(
+        math.isfinite(v)
+        for v in (t.linear.x, t.linear.y, t.linear.z, t.angular.x, t.angular.y, t.angular.z)
+    )
+
+
+def _clamp(v: float, lo: float, hi: float) -> float:
+    return lo if v < lo else hi if v > hi else v
+
+
 class Go2CommandConfig(ModuleConfig):
     cmd_stale_after_sec: float = 0.5
     damp_on_operator_lost: bool = False
     max_nav_goal_m: float = 100.0
     allow_acrobatics: bool = False
+    # Robot-side drive clamps — the operator client is untrusted over the
+    # internet, so browser-side scaling is NOT a safety boundary. Conservative
+    # Go2 envelope; the rage mode's ~2.5 m/s is handled firmware-side.
+    max_linear_mps: float = 1.5
+    max_angular_rps: float = 2.0
 
 
 class Go2CommandModule(Module, SerializedCommandMixin):
@@ -182,6 +199,9 @@ class Go2CommandModule(Module, SerializedCommandMixin):
         self._bump_safety_epoch()
         logger.warning("E-STOP latched by operator")
         self._cancel_nav()
+        # Publish the latch NOW, not inside the Damp task — the UI must show
+        # estopped:true even if Damp is slow or fails.
+        self._publish_robot_state()
 
         def task(_ep: int) -> bool:
             ok = bool(self.go2.sport_command(ALLOWED_SPORT_CMDS["Damp"]))
@@ -197,6 +217,7 @@ class Go2CommandModule(Module, SerializedCommandMixin):
         self._cancel_nav()
         self._estopped = False
         logger.warning("E-STOP cleared by operator")
+        self._publish_robot_state()  # clear estopped:true in the UI immediately
         self._send_ack(nonce, True)
 
     def _on_operator_lost(self) -> None:
@@ -296,9 +317,18 @@ class Go2CommandModule(Module, SerializedCommandMixin):
         def task(epoch: int) -> bool:
             if want_rage == self._rage_active:
                 return True
+            # set_rage_mode is a ~2.3 s blocking firmware sequence (BalanceStand,
+            # sleeps, SwitchJoystick(True)) that runs driver-side past any E-STOP.
+            # We can't fence inside it over RPC, so if a safety event fired during
+            # the call, actively re-Damp — the driver's trailing SwitchJoystick /
+            # BalanceStand may have re-enabled motion after the E-STOP's Damp.
             ok = bool(self.go2.set_rage_mode(want_rage))
             if not self._safety_ok(epoch):
-                logger.warning("set_mode aborted: E-STOP / operator-lost mid-toggle")
+                logger.warning("set_mode aborted: E-STOP / operator-lost mid-toggle — re-Damping")
+                try:
+                    self.go2.sport_command(ALLOWED_SPORT_CMDS["Damp"])
+                except Exception:
+                    logger.exception("re-Damp after aborted rage toggle failed")
                 return False
             if ok:
                 self._rage_active = want_rage
@@ -407,6 +437,12 @@ class Go2CommandModule(Module, SerializedCommandMixin):
         if self._estopped:
             return  # latched: no motion until estop_clear
         ts = float(twist.ts)
+        if not math.isfinite(ts):
+            # A NaN ts passes every comparison below (NaN > x, NaN < 0, NaN <= x
+            # are all False), so it would be forwarded AND poison _last_cmd_ts —
+            # after which ts <= NaN is False forever, disabling the reorder guard.
+            logger.debug("dropping non-finite cmd_vel ts: %r", twist.ts)
+            return
         age = time.time() - ts
         if age > self.config.cmd_stale_after_sec:
             logger.debug("dropping stale cmd_vel: age=%.3fs", age)
@@ -428,6 +464,19 @@ class Go2CommandModule(Module, SerializedCommandMixin):
         # arrival. Forward moving frames always; forward a zero ONLY as the
         # release edge (previous frame was moving) so a manual stop still
         # propagates, then stay silent until the operator moves again.
+        # The operator client is untrusted (internet): reject non-finite and
+        # clamp to the Go2 envelope robot-side. Browser scaling is not a safety
+        # boundary — a buggy/malicious client can send inf/NaN/huge velocities.
+        # The driver only reads linear.x/linear.y/angular.z; clamp those in place.
+        if not _all_finite(twist):
+            logger.warning("dropping non-finite cmd_vel")
+            return
+        lin_max = self.config.max_linear_mps
+        ang_max = self.config.max_angular_rps
+        twist.linear.x = _clamp(twist.linear.x, -lin_max, lin_max)
+        twist.linear.y = _clamp(twist.linear.y, -lin_max, lin_max)
+        twist.angular.z = _clamp(twist.angular.z, -ang_max, ang_max)
+
         moving = not _is_zero_twist(twist)
         if not moving and not self._last_cmd_nonzero:
             return  # idle joystick — don't preempt nav
