@@ -30,6 +30,7 @@ from dataclasses import dataclass, field, replace
 from typing import TYPE_CHECKING, Any, Literal, cast
 
 import numpy as np
+from numpy.typing import NDArray
 
 from dimos.control.benchmarking.velocity_profile import (
     PathSpeedCap,
@@ -189,8 +190,8 @@ class PathFollowerTask(BaseControlTask):
         # (e.g. Benchmarker handing in RG-derived speeds across RPC). When
         # set, takes precedence over self._profile_cap in compute(). See
         # start_path() for how it's installed.
-        self._velocity_profile: np.ndarray | None = None
-        self._velocity_profile_pts: np.ndarray | None = None
+        self._velocity_profile: NDArray[np.float64] | None = None
+        self._velocity_profile_pts: NDArray[np.float64] | None = None
 
     # ControlTask protocol
 
@@ -326,7 +327,7 @@ class PathFollowerTask(BaseControlTask):
         twist = self._controller.rotate(yaw_err)
         return float(twist.linear.x), float(twist.linear.y), float(twist.angular.z)
 
-    def _windowed_closest(self, pos: np.ndarray, window: int = 20) -> int:
+    def _windowed_closest(self, pos: NDArray[np.float64], window: int = 20) -> int:
         """Closest path index searched only in a forward window from
         ``_max_progress_idx``. Prevents wrap-around matches on closed paths
         (e.g. circle where path[0] == path[-1] would otherwise let argmin
