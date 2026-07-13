@@ -166,10 +166,13 @@ class BoosterRPCConnection:
         """Request `target` and wait until the robot reports it."""
         with self._lock:
             self._conn.change_mode(target)
-        deadline = time.monotonic() + self.mode_transition_timeout
+        start = time.monotonic()
+        deadline = start + self.mode_transition_timeout
         while time.monotonic() < deadline:
             if self._get_mode() == target:
-                logger.info("Booster mode -> %s", target)
+                logger.info(
+                    "Booster mode -> %s (confirmed in %.2fs)", target, time.monotonic() - start
+                )
                 return True
             time.sleep(MODE_POLL_S)
         logger.warning(
