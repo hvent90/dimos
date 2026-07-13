@@ -23,7 +23,7 @@ python = ["dep:pyo3", "dep:numpy", "dep:serde"]
 wasm = ["dep:wasm-bindgen", "dep:serde", "dep:serde-wasm-bindgen"]
 
 [dependencies]
-dimos-module = { path = "../../../../../../../native/rust/dimos-module", optional = true }
+dimos-module = { path = "../../../../../native/rust/dimos-module", optional = true }
 lcm-msgs = { git = "https://github.com/dimensionalOS/dimos-lcm.git", rev = "3555e97704ec4c727d96a7ac0769d5735bb44feb", optional = true }
 tokio = { version = "1", features = ["rt-multi-thread", "macros", "signal"], optional = true }
 serde = { version = "1", features = ["derive"], optional = true }
