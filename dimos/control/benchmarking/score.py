@@ -61,7 +61,7 @@ def _executed_from_recording(rec: RunRecording) -> ExecutedTrajectory:
     return ExecutedTrajectory(ticks=ticks, arrived=rec.arrived)
 
 
-def _looks_like_recording(data: object) -> bool:
+def _looks_like_recording(data: Any) -> bool:
     """A run recording has a trace + a reference + the schema tag. Other JSONs in
     the directory (old operating-point maps, this scorer's own output, etc.) lack
     these and are skipped silently."""
