@@ -44,6 +44,20 @@ from dimos.utils.data import LfsPath
 
 A1Z_DOF = 6
 
+# Collision-mesh overlaps at the home pose (q=0). Six are joint-adjacent links
+# whose meshes meet at the joint (normal, must be excluded); ``arm_link2`` ↔
+# ``arm_link5`` is a coarse-mesh overlap in the compact folded home pose. Found
+# with hpp-fcl at q=0; without these, planning reports COLLISION_AT_START.
+A1Z_COLLISION_EXCLUSIONS: list[tuple[str, str]] = [
+    ("base_link", "arm_link1"),
+    ("arm_link1", "arm_link2"),
+    ("arm_link2", "arm_link3"),
+    ("arm_link2", "arm_link5"),
+    ("arm_link3", "arm_link4"),
+    ("arm_link4", "arm_link5"),
+    ("arm_link5", "arm_link6"),
+]
+
 # The URDF references meshes as ``package://A1Z_Flange/...``.
 A1Z_MODEL_PATH = LfsPath("a1z_description") / "urdf/A1Z_Flange.urdf"
 A1Z_FK_MODEL = A1Z_MODEL_PATH  # already gripper-free (nq=6)
@@ -123,7 +137,7 @@ def make_a1z_model_config(
         base_link="base_link",
         package_paths=A1Z_PACKAGE_PATHS,
         auto_convert_meshes=True,
-        collision_exclusion_pairs=[],
+        collision_exclusion_pairs=A1Z_COLLISION_EXCLUSIONS,
         joint_name_mapping=coordinator_joint_mapping(
             name,
             A1Z_DOF,
