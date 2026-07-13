@@ -65,6 +65,7 @@ _axis_len = 0.5
 # Arrow radius as a fraction of the triad length.
 _AXIS_RADIUS_RATIO = 25
 _PURPLE = (170, 0, 255)
+base_link_from_mid360_tf = base_link_from_mid360()
 
 
 class Go2Mid360Recorder(PointlioRecorder):
@@ -242,11 +243,11 @@ unitree_go2_mls_htc_mid360 = autoconnect(
     # Re-express odometry at the body center (lidar is on the head): shifts the
     # local planner's footprint back to the body, and gives the follower the body pose.
     OdomBodyFrame.blueprint(
-        mount_rotation=list(base_link_from_mid360().rotation.to_tuple()),
+        mount_rotation=list(base_link_from_mid360_tf.rotation.to_tuple()),
         mount_translation=[
-            base_link_from_mid360().inverse().translation.x,
-            base_link_from_mid360().inverse().translation.y,
-            base_link_from_mid360().inverse().translation.z,
+            base_link_from_mid360_tf.inverse().translation.x,
+            base_link_from_mid360_tf.inverse().translation.y,
+            base_link_from_mid360_tf.inverse().translation.z,
         ],
         # Fine-trim: the measured mount offset over-compensated slightly; nudge the
         # body center (footprint + viz box) 0.1 m forward toward the head.
@@ -256,13 +257,8 @@ unitree_go2_mls_htc_mid360 = autoconnect(
     RepulsiveFieldNative.blueprint(
         world_frame="odom",
         output_base_frame=False,
-        # Keep the internal costmap at the module's validated 0.1 m, NOT the
-        # 0.08 m map voxel. A costmap finer than the input gets hole-filled and
-        # edge-smoothed (costmap.rs), which ramps sharp obstacle edges into
-        # gentle slopes and drops their height-gradient cost below the lethal
-        # threshold — low obstacles then stop repelling. Coarser-than-input is
-        # the safe direction.
-        resolution=0.1,
+        vehicle_width=0.4,  # meters
+        resolution=0.1,  # voxel size
     ).remappings(
         [
             (RepulsiveFieldNative, "terrain_map", "local_map"),

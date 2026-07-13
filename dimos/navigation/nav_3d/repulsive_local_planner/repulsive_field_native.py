@@ -12,16 +12,7 @@
 # See the License for the specific language governing permissions and
 # limitations under the License.
 
-"""Rust repulsive-field local planner (native module).
-
-GENUINE high-rate solves: the Python module (kept as the reference
-implementation in ``local_planner.py``) re-anchored a cached plan at 60 Hz but
-re-SOLVED at only ~2-4 Hz, and grew stability machinery to survive that
-latency. The Rust port solves fresh every tick and owns its costmap internally
-(consumes ``terrain_map`` directly — no CostMapper module needed) at higher
-resolution. Config field names mirror the Python configs; the measured
-rationale for each value lives in the reference implementation's comments.
-"""
+"""Rust repulsive-field local planner (native module)."""
 
 from __future__ import annotations
 
