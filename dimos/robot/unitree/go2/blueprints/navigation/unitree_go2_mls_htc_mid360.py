@@ -244,14 +244,15 @@ unitree_go2_mls_htc_mid360 = autoconnect(
     # local planner's footprint back to the body, and gives the follower the body pose.
     OdomBodyFrame.blueprint(
         mount_rotation=list(base_link_from_mid360_tf.rotation.to_tuple()),
-        mount_translation=[
-            base_link_from_mid360_tf.inverse().translation.x,
-            base_link_from_mid360_tf.inverse().translation.y,
-            base_link_from_mid360_tf.inverse().translation.z,
+        # base_link relative to the sensor, in the leveled body frame. The measured
+        # mount put the sensor ~0.29 m ahead of / 0.16 m above the body center, so
+        # the body sits that far back/down -- less 0.1 m (the raw offset
+        # over-compensated back). One value; make it less negative to move forward.
+        body_offset=[
+            -base_link_from_mid360_tf.translation.x + 0.1,
+            -base_link_from_mid360_tf.translation.y,
+            -base_link_from_mid360_tf.translation.z,
         ],
-        # Fine-trim: the measured mount offset over-compensated slightly; nudge the
-        # body center (footprint + viz box) 0.1 m forward toward the head.
-        forward_trim=0.1,
     ),
     GoalRelay.blueprint().remappings([(GoalRelay, "odometry", "body_odometry")]),
     RepulsiveFieldNative.blueprint(

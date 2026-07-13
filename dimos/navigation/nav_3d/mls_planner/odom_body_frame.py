@@ -33,17 +33,15 @@ from dimos.msgs.nav_msgs.Odometry import Odometry
 
 
 class OdomBodyFrameConfig(ModuleConfig):
-    # base_link from sensor mount rotation, xyzw.
+    # Sensor mount rotation (base_link -> sensor), xyzw. Composed out of the
+    # orientation to level the reported pose.
     mount_rotation: list[float] = Field(default_factory=lambda: [0.0, 0.0, 0.0, 1.0])
-    # base_link position in the sensor frame (xyz). Shifts the reported pose from the
-    # sensor mount (e.g. lidar on the head) back to the robot body center, so the local
-    # planner's footprint is centered on the body instead of the sensor.
-    mount_translation: list[float] = Field(default_factory=lambda: [0.0, 0.0, 0.0])
-    # Extra fine-trim along the leveled body forward axis (m), applied on top of
-    # mount_translation. Positive nudges the body center (and thus the footprint +
-    # viz box) forward toward the head; negative moves it back. Use to dial in the
-    # footprint without recomputing the mount geometry.
-    forward_trim: float = 0.0
+    # Offset from the sensor to the reported body center, in the LEVELED body frame
+    # (x forward, y left, z up). Shifts the reported pose from the sensor mount (e.g.
+    # the lidar on the head) back to the robot body center, so the local planner's
+    # footprint is centered on the body instead of the sensor. One value: negative x
+    # = back. Tune this alone to dial the footprint fore/aft.
+    body_offset: list[float] = Field(default_factory=lambda: [0.0, 0.0, 0.0])
     body_frame_id: str = "base_link"
     # Also broadcast a gravity-leveled (yaw-only) tf at the body center under this
     # name. Anchor the footprint viz box to it so the box is always horizontal --
@@ -69,19 +67,17 @@ class OdomBodyFrame(Module):
     def start(self) -> None:
         super().start()
         self._mount_inv = Quaternion(*self.config.mount_rotation).inverse()
-        self._mount_t = Vector3(*self.config.mount_translation)
+        self._body_offset = Vector3(*self.config.body_offset)
         self.register_disposable(Disposable(self.odometry.subscribe(self._on_odometry)))
 
     def _on_odometry(self, msg: Odometry) -> None:
         leveled = msg.orientation * self._mount_inv
-        off = msg.orientation.rotate_vector(self._mount_t)
-        # Leveled forward axis (used for both the forward trim and the yaw-only tf).
-        fwd = leveled.rotate_vector(Vector3(1.0, 0.0, 0.0))
-        trim = self.config.forward_trim
+        # Apply the body offset in the leveled body frame, then to the world.
+        off = leveled.rotate_vector(self._body_offset)
         body_pos = Vector3(
-            msg.position.x + off.x + trim * fwd.x,
-            msg.position.y + off.y + trim * fwd.y,
-            msg.position.z + off.z + trim * fwd.z,
+            msg.position.x + off.x,
+            msg.position.y + off.y,
+            msg.position.z + off.z,
         )
         self.body_odometry.publish(
             Odometry(
@@ -95,6 +91,7 @@ class OdomBodyFrame(Module):
         # Gravity-leveled (yaw-only) frame at the body center for the footprint
         # viz box. Yaw comes from the leveled forward vector, so the frame -- and
         # thus the box -- stays horizontal no matter how the robot body pitches.
+        fwd = leveled.rotate_vector(Vector3(1.0, 0.0, 0.0))
         yaw = math.atan2(fwd.y, fwd.x)
         self.tf.publish(
             Transform(
