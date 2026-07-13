@@ -40,7 +40,7 @@ odom automatically::
 
     dimos run unitree-go2-rpp-benchmark
     # afterwards, score offline:
-    python -m dimos.control.benchmarking.score data/benchmark/go2
+    python -m dimos.control.benchmarking.score ~/.local/state/dimos/benchmark/go2
 
 To drive paths from some OTHER source instead of the benchmark, launch the
 controller alone: ``dimos run unitree-go2-rpp-controller``.
