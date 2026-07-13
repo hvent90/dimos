@@ -380,7 +380,6 @@ class Recorder(MemoryModule):
         """
 
         async def on_msg(msg: Any) -> None:
-            recv_ts = time.time()  # wall-clock at ingress
             ts = self._resolve_ts(name, msg)
             pose = await self._resolve_pose(name, msg, ts)
             if not pose:
@@ -390,7 +389,7 @@ class Recorder(MemoryModule):
                     ts,
                     getattr(msg, "ts", None),
                 )
-            stream.append(msg, ts=ts, pose=pose, tags={"reception_ts": recv_ts})
+            stream.append(msg, ts=ts, pose=pose)
 
         self.process_observable(input_topic.pure_observable(), on_msg)
 
