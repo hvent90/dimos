@@ -18,7 +18,7 @@ Robot-agnostic. This is the contract the two tuning tools share:
 
 * :func:`derive_config` is the **pure** DERIVE step — a fitted FOPDT
   plant model in, a fully-populated controller config out. No file or
-  robot I/O, so it is unit-tested in isolation (``test_tuning.py``).
+  robot I/O, so it is unit-tested in isolation.
 * :class:`TuningConfig` is the versioned artifact. It owns the JSON
   (de)serialization (``to_json`` / ``from_json``) and the
   runtime-config converters the benchmark tool consumes.
@@ -26,7 +26,7 @@ Robot-agnostic. This is the contract the two tuning tools share:
   inversion the benchmark tool fills section 5 with (also unit-tested).
 
 Why these numbers (the settled characterization findings, not re-derived
-here — see ``reports/tuning_README.md``): a velocity-commanded base is
+here): a velocity-commanded base is
 FOPDT per axis; at a given speed the tracking error is the plant floor
 ``(tau + L) * v``; reactive controllers have ~zero headroom over that
 floor; the dominant lever is speed vs path curvature; the simple
@@ -85,7 +85,7 @@ RECOMMENDED_CONTROLLER_EVIDENCE = (
     "v, which no reactive control law can beat (~zero headroom over the "
     "floor — validated controller bake-off). The only effective lever is "
     "speed vs path curvature, which the derived velocity profile + "
-    "feedforward already apply. See reports/tuning_README.md and the "
+    "feedforward already apply. See the "
     "characterization findings (this evidence string cites the Go2 "
     "result; a different robot's headroom is TBD until characterized)."
 )
