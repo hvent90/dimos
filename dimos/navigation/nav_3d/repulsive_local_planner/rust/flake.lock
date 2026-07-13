@@ -1,5 +1,22 @@
 {
   "nodes": {
+    "dimos-repo": {
+      "flake": false,
+      "locked": {
+        "lastModified": 1783925959,
+        "narHash": "sha256-P2Xy0TKUNtoH47Jhvy1At5INIfpjlgZ7toU7lwIiNdc=",
+        "ref": "jeff/feat/local_plan",
+        "rev": "471352bcdddff2a64ba3824fde8f313545b412d7",
+        "revCount": 852,
+        "type": "git",
+        "url": "file:../../../../.."
+      },
+      "original": {
+        "ref": "jeff/feat/local_plan",
+        "type": "git",
+        "url": "file:../../../../.."
+      }
+    },
     "flake-utils": {
       "inputs": {
         "systems": "systems"
@@ -15,28 +32,28 @@
       "original": {
         "owner": "numtide",
         "repo": "flake-utils",
-        "rev": "11707dc2f618dd54ca8739b309ec4fc024de578b",
         "type": "github"
       }
     },
     "nixpkgs": {
       "locked": {
-        "lastModified": 1777954456,
-        "narHash": "sha256-hGdgeU2Nk87RAuZyYjyDjFL6LK7dAZN5RE9+hrDTkDU=",
+        "lastModified": 1783776592,
+        "narHash": "sha256-UgCQzxeWI75XM8G+hPrPh+MKzEPjG3SpAj7dtqSbksA=",
         "owner": "NixOS",
         "repo": "nixpkgs",
-        "rev": "549bd84d6279f9852cae6225e372cc67fb91a4c1",
+        "rev": "e7a3ca8092b61ff85b6a45bf863ea2b2d6a661b3",
         "type": "github"
       },
       "original": {
         "owner": "NixOS",
+        "ref": "nixos-unstable",
         "repo": "nixpkgs",
-        "rev": "549bd84d6279f9852cae6225e372cc67fb91a4c1",
         "type": "github"
       }
     },
     "root": {
       "inputs": {
+        "dimos-repo": "dimos-repo",
         "flake-utils": "flake-utils",
         "nixpkgs": "nixpkgs"
       }

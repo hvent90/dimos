@@ -1,36 +1,56 @@
 {
-  # This crate lives inside a larger git repo and depends on the in-repo
-  # `dimos-module` crate by path, so `nix build` of the crate alone can't
-  # resolve it. Build via the dev shell (what module.py's build_command runs):
-  #
-  #   cd dimos/navigation/jnav/modules/local_planner/repulsive_field/rust
-  #   nix develop path:. --command cargo build --release
   description = "dimos-repulsive-field: native Rust repulsive-field local planner";
 
-  # Pin mirrors the sibling gsc_pgo_rs flake (nixpkgs 549bd84) so the rust
-  # toolchain is shared in the nix store — no extra download.
   inputs = {
-    nixpkgs.url = "github:NixOS/nixpkgs/549bd84d6279f9852cae6225e372cc67fb91a4c1";
-    flake-utils.url = "github:numtide/flake-utils/11707dc2f618dd54ca8739b309ec4fc024de578b";
+    nixpkgs.url = "github:NixOS/nixpkgs/nixos-unstable";
+    flake-utils.url = "github:numtide/flake-utils";
+    # Relative git+file: will be deprecated (nix#12281) but there's no
+    # viable alternative for reaching local path deps outside the flake dir currently
+    # presumably an alternative will be added before this is removed.
+    # This crate is 5 dirs below repo root
+    # (dimos/navigation/nav_3d/repulsive_local_planner/rust), so go up 5.
+    # Track this feature branch: its dimos-module differs from main and is the
+    # version this crate compiles against.
+    dimos-repo = { url = "git+file:../../../../..?ref=jeff/feat/local_plan"; flake = false; };
   };
 
-  outputs = { self, nixpkgs, flake-utils, ... }:
+  outputs = { self, nixpkgs, flake-utils, dimos-repo }:
     flake-utils.lib.eachDefaultSystem (system:
       let
         pkgs = import nixpkgs { inherit system; };
+
+        src = pkgs.runCommand "dimos-repulsive-field-src" {} ''
+          mkdir -p $out/dimos/navigation/nav_3d/repulsive_local_planner/rust
+          cp -r ${./src} $out/dimos/navigation/nav_3d/repulsive_local_planner/rust/src
+          cp ${./Cargo.toml} $out/dimos/navigation/nav_3d/repulsive_local_planner/rust/Cargo.toml
+          cp ${./Cargo.lock} $out/dimos/navigation/nav_3d/repulsive_local_planner/rust/Cargo.lock
+
+          mkdir -p $out/native/rust
+          cp -r ${dimos-repo}/native/rust/dimos-module $out/native/rust/dimos-module
+          cp -r ${dimos-repo}/native/rust/dimos-module-macros $out/native/rust/dimos-module-macros
+        '';
       in {
-        # Toolchain only — cargo resolves crates from ~/.cargo + git as usual.
-        # openssl/git/cacert cover the git-sourced lcm-msgs dependency.
-        devShells.default = pkgs.mkShell {
-          packages = [
-            pkgs.cargo
-            pkgs.rustc
-            pkgs.pkg-config
-            pkgs.openssl
-            pkgs.git
-            pkgs.cacert
-          ];
-          env.SSL_CERT_FILE = "${pkgs.cacert}/etc/ssl/certs/ca-bundle.crt";
+        packages.default = pkgs.rustPlatform.buildRustPackage {
+          pname = "dimos-repulsive-field";
+          version = "0.1.0";
+
+          inherit src;
+          cargoRoot = "dimos/navigation/nav_3d/repulsive_local_planner/rust";
+          buildAndTestSubdir = "dimos/navigation/nav_3d/repulsive_local_planner/rust";
+
+          # Binary-only build: just the repulsive_field bin (native feature is
+          # the default, and the bin requires it). No lib/wasm/web, no tests.
+          cargoBuildFlags = [ "--bin" "repulsive_field" ];
+          doCheck = false;
+
+          cargoHash = "sha256-2g1oWdr4RyMFoujGo+QPd52661oNt6hAsuHBwzGNOdQ=";
+
+          # Keep the output light: only $out/bin/repulsive_field.
+          postInstall = ''
+            rm -rf $out/lib
+          '';
+
+          meta.mainProgram = "repulsive_field";
         };
       });
 }

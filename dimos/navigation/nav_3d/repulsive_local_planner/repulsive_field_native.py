@@ -34,8 +34,8 @@ from dimos.msgs.sensor_msgs.PointCloud2 import PointCloud2
 
 class RepulsiveFieldNativeConfig(NativeModuleConfig):
     cwd: str | None = "rust"
-    executable: str = "target/release/repulsive_field"
-    build_command: str | None = "nix develop path:. --command cargo build --release"
+    executable: str = "result/bin/repulsive_field"
+    build_command: str | None = "nix build path:."
     stdin_config: bool = True
 
     world_frame: str = "map"
