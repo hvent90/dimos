@@ -10,9 +10,13 @@
 //! sub-millisecond, so every published path IS a fresh solve against the live
 //! costmap. Kept from the measured Python semantics: the internal level-aware
 //! costmap (higher resolution), temporal commitment (previous-path bias), the
-//! carrot tail with reversal trim, the same-goal alternative-route debounce
-//! (the global planner flip-flops in 2-8 s phases), and odometry
-//! dead-reckoning between samples.
+//! same-goal alternative-route debounce (the global planner flip-flops in 2-8 s
+//! phases), and odometry dead-reckoning between samples.
+//!
+//! The global_path IS the plan target: its last pose is the goal, and the
+//! planner steers toward a carrot chosen along it. There is no route/tail
+//! continuation here — a route of several waypoints is driven one goal at a
+//! time by whoever sets goals upstream.
 
 use std::sync::{Arc, Mutex};
 use std::time::{Duration, Instant, SystemTime, UNIX_EPOCH};
@@ -60,7 +64,17 @@ pub struct Config {
     // Costmap knobs (see costmap.rs; names mirror the Python HeightCostConfig).
     pub resolution: f32,
     pub can_pass_under: f32,
-    pub can_climb: f32,
+    /// Traversable grade (rise/run) scaling the Sobel gradient cost —
+    /// internally rise-per-cell = max_grade x resolution (costmap.rs
+    /// CostmapConfig::can_climb). Cell quantization inflates measured
+    /// gradients vs physical slopes; see the module config comment.
+    pub max_grade: f32,
+    /// Body-band occupancy gate (see costmap.rs CostmapConfig::body_step).
+    pub body_step: f32,
+    pub body_min_points: u32,
+    pub body_min_extent: f32,
+    /// Plateau-step gate (see costmap.rs CostmapConfig::max_step; 0 disables).
+    pub max_step: f32,
     pub max_safe_fall: f32,
     pub void_depth_lethal: f32,
     pub slice_below: f32,
@@ -84,7 +98,14 @@ pub struct Config {
     pub goal_tolerance: f32,
     pub smoothing_iterations: u32,
     pub face_forward_weight: f32,
-    pub tail_reversal_trim_deg: f32,
+
+    /// Stop publishing local_path once the robot is within this distance of the
+    /// final goal AND the solve can no longer make forward progress toward it
+    /// (arrived, or as close as the repulsion field allows). Solves continue at
+    /// solve_hz so publishing resumes the instant the goal moves or a path opens
+    /// up — this only silences the steady stream of near-zero-length paths that
+    /// otherwise churns the trajectory follower at the goal.
+    pub arrival_stop_radius_m: f32,
 }
 
 impl Config {
@@ -92,7 +113,11 @@ impl Config {
         CostmapConfig {
             resolution: self.resolution,
             can_pass_under: self.can_pass_under,
-            can_climb: self.can_climb,
+            can_climb: self.max_grade * self.resolution,
+            body_step: self.body_step,
+            body_min_points: self.body_min_points as u16,
+            body_min_extent: self.body_min_extent,
+            max_step: self.max_step,
             ignore_noise: 0.05,
             max_safe_fall: self.max_safe_fall,
             void_depth_lethal: self.void_depth_lethal,
@@ -119,7 +144,6 @@ impl Config {
             goal_tolerance: self.goal_tolerance,
             smoothing_iterations: self.smoothing_iterations as usize,
             face_forward_weight: self.face_forward_weight,
-            tail_reversal_trim_deg: self.tail_reversal_trim_deg,
         }
     }
 }
@@ -146,7 +170,6 @@ struct SharedState {
     /// The committed global route + the pending same-goal alternative.
     route: Vec<(f32, f32)>,
     pending_route: Option<(Vec<(f32, f32)>, Instant)>,
-    tail: Vec<(f32, f32)>,
 }
 
 #[derive(Module)]
@@ -161,10 +184,6 @@ struct RepulsiveField {
 
     #[input(decode = Odometry::decode, handler = on_odometry)]
     odometry: Input<Odometry>,
-
-    // Route markers beyond the current leg goal (MapMemManager.route_tail).
-    #[input(decode = Path::decode, handler = on_route_tail)]
-    route_tail: Input<Path>,
 
     #[output(encode = Path::encode)]
     local_path: Output<Path>,
@@ -281,15 +300,6 @@ impl RepulsiveField {
         }
         state.robot = Some((next, now));
     }
-
-    async fn on_route_tail(&mut self, msg: Path) {
-        let tail: Vec<(f32, f32)> = msg
-            .poses
-            .iter()
-            .map(|p| (p.pose.position.x as f32, p.pose.position.y as f32))
-            .collect();
-        self.state.lock().expect("state").tail = tail;
-    }
 }
 
 struct Worker {
@@ -322,13 +332,12 @@ impl Worker {
             ticker.tick().await;
 
             // Snapshot inputs (cheap; heavy work happens outside the lock).
-            let (robot_opt, terrain, route, tail) = {
+            let (robot_opt, terrain, route) = {
                 let mut state = self.state.lock().expect("state");
                 (
                     state.robot,
                     state.terrain.take(),
                     state.route.clone(),
-                    state.tail.clone(),
                 )
             };
             let Some((robot, robot_at)) = robot_opt else {
@@ -346,11 +355,6 @@ impl Worker {
                 );
                 continue;
             }
-            if route.len() < 2 {
-                dimos_module::warn_throttled!(Duration::from_secs(5), "no global route yet");
-                continue;
-            }
-
             // Dead-reckon the pose forward (first-order unicycle).
             let pose = (
                 robot.x + robot.vx * age,
@@ -404,22 +408,10 @@ impl Worker {
                 );
             }
 
-            let extension = solver::carrot_extension(&route, &tail, &solver_cfg);
-            let plan = solver::plan(
-                map_ref,
-                &route,
-                &extension,
-                pose,
-                speed,
-                prev_path.as_deref(),
-                &solver_cfg,
-            );
-            if plan.poses.len() >= 2 {
-                prev_path = Some(plan.poses.iter().map(|p| (p.0, p.1)).collect());
-            }
-
-            // Viewer overlay: the internal costmap's lethal cells, so the
-            // viewer shows the map the planner ACTUALLY plans on.
+            // Viewer overlay: the internal costmap's lethal cells, so the viewer shows
+            // the map the planner ACTUALLY plans on. Published every tick the costmap is
+            // fresh — BEFORE the route gate below — so the local costmap is always visible,
+            // even while the robot idles without a goal.
             if let Some(period) = cloud_period {
                 if last_cloud.is_none_or(|at: Instant| at.elapsed() >= period.mul_f32(0.95)) {
                     last_cloud = Some(Instant::now());
@@ -434,10 +426,72 @@ impl Worker {
                 }
             }
 
+            // The solve + local_path need a global route; the costmap above does not.
+            if route.len() < 2 {
+                dimos_module::warn_throttled!(Duration::from_secs(5), "no global route yet");
+                continue;
+            }
+
+            let mut plan = solver::plan(
+                map_ref,
+                &route,
+                pose,
+                speed,
+                prev_path.as_deref(),
+                &solver_cfg,
+            );
+            // Degenerate-stub recovery: a sub-0.3 m plan while the route goal is
+            // still far means the descent died at the robot (blocked start cell,
+            // commitment local-minimum, ...). hl77: 2 minutes of silent 2-pose
+            // (0,0)->(0.1,0) holds at a doorway with a healthy 6.8 m route. Drop
+            // the commitment chain and re-solve; if still degenerate, say so
+            // LOUDLY instead of hold-spamming the follower.
+            let goal_xy = *route.last().unwrap();
+            let goal_dist = (pose.0 - goal_xy.0).hypot(pose.1 - goal_xy.1);
+            let plan_reach = |p: &solver::Plan| {
+                p.poses
+                    .last()
+                    .map(|e| (e.0 - pose.0).hypot(e.1 - pose.1))
+                    .unwrap_or(0.0)
+            };
+            if goal_dist > 1.0 && plan_reach(&plan) < 0.3 {
+                let retry =
+                    solver::plan(map_ref, &route, pose, speed, None, &solver_cfg);
+                if plan_reach(&retry) >= 0.3 {
+                    dimos_module::warn_throttled!(
+                        Duration::from_secs(5),
+                        goal_dist_m = goal_dist,
+                        "degenerate plan recovered by dropping the commitment chain"
+                    );
+                    prev_path = None;
+                    plan = retry;
+                } else {
+                    dimos_module::warn_throttled!(
+                        Duration::from_secs(5),
+                        goal_dist_m = goal_dist,
+                        plan_len = plan.poses.len(),
+                        "degenerate plan: descent dead at the robot (start blocked?)"
+                    );
+                }
+            }
+            if plan.poses.len() >= 2 {
+                prev_path = Some(plan.poses.iter().map(|p| (p.0, p.1)).collect());
+            }
+
+            // Arrival: once within arrival_stop_radius of the goal AND the solve
+            // can no longer advance toward it (arrived, or pinned as close as the
+            // repulsion field allows), stop publishing local_path. Solves keep
+            // running at solve_hz, so publishing resumes the instant the goal
+            // moves or a path opens up — this only silences the stream of
+            // near-zero-length paths that otherwise churns the trajectory
+            // follower once the robot is at rest on its goal.
+            let arrived =
+                goal_dist <= self.config.arrival_stop_radius_m && plan_reach(&plan) < 0.1;
+
             // Small epsilon so 60 Hz ticks don't alias a 30 Hz target to 20 Hz.
             let due = last_publish
                 .is_none_or(|at| at.elapsed() >= publish_period.mul_f32(0.95));
-            if due {
+            if due && !arrived {
                 last_publish = Some(Instant::now());
                 let msg = self.build_path_msg(&plan.poses, pose);
                 if let Err(e) = self.local_path.publish(&msg).await {

@@ -66,7 +66,6 @@ impl DemoPlanner {
         let plan = solver::plan(
             map,
             &route,
-            &[],
             (robot_x, robot_y, robot_yaw),
             speed,
             self.prev.as_deref(),

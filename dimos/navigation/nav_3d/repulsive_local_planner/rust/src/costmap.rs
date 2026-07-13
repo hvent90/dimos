@@ -24,7 +24,44 @@
 pub struct CostmapConfig {
     pub resolution: f32,
     pub can_pass_under: f32,
+    /// Sobel cost scale as rise-per-cell (metres per `resolution` of run) —
+    /// i.e. traversable grade x resolution. The module config exposes this as
+    /// `max_grade` (rise/run) and multiplies by the resolution; note that
+    /// sub-cell riser quantization inflates measured cell gradients well above
+    /// the physical grade (0.17 m warehouse risers measure ~2-3x their true
+    /// 31 degree slope), so values here are NOT literal robot grades.
     pub can_climb: f32,
+    /// Body-band occupancy gate: a cell with >= `body_min_points` returns
+    /// between `body_step` and `can_pass_under` above its own floor, spanning
+    /// >= `body_min_extent` of vertical extent, is LETHAL outright. The
+    /// gradient cost alone only trips lethal for ~storey-scale steps (the
+    /// Sobel spreads a step across its kernel, so with can_climb 1.2 a wall
+    /// must rise >1.2 m in one cell) — real-world clutter at 0.4-1.5 m
+    /// (pallets, machine bases, the warehouse cherry picker) read as FREE on
+    /// the 2026-07-09 go2 recording. The extent requirement is what spares
+    /// stairs: a cell straddling a steep tread boundary collects a thin
+    /// sliver of returns just past body_step (one voxel layer — measured on
+    /// the dim_city staircase, where a count-only gate shaved enough free
+    /// cells to stall the climb), while a real obstacle face fills the band.
+    /// True overhangs have nothing in the band at all.
+    pub body_step: f32,
+    pub body_min_points: u16,
+    pub body_min_extent: f32,
+    /// Plateau-step gate (0 disables): a cell whose surface sits more than
+    /// `max_step` above the local reference floor AND whose rise neither
+    /// continues above it nor grades away below it is LETHAL — an isolated
+    /// plateau top (box/pallet/suitcase), not a mid-slope tread. This is what
+    /// catches sub-`can_climb` obstacles: on the 2026-07-09 go2 warehouse
+    /// recording the deliberately-placed suitcases are 0.35-0.7 m tall — below
+    /// can_climb entirely — and the Sobel dilutes their sparse cleared-map
+    /// columns to cost 13-31. The reference floor is the 30th percentile of
+    /// the STRICTLY LOWER 5x5 neighbors, NOT the minimum: the dim_city test
+    /// staircase is open-riser, so its terrain map interleaves tread tops with
+    /// through-hole views of surfaces far below — a min reference reads every
+    /// tread as an isolated tower (measured: 88% of the free approach cone
+    /// went lethal), while the percentile dodges sparse holes yet still finds
+    /// the floor plane around a box.
+    pub max_step: f32,
     pub ignore_noise: f32,
     pub max_safe_fall: f32,
     pub void_depth_lethal: f32,
@@ -48,7 +85,15 @@ impl Default for CostmapConfig {
             // mapper's voxel size when pursuing Jeff's higher-res goal.
             resolution: 0.1,
             can_pass_under: 0.6,
-            can_climb: 1.2,
+            // Robot-physical (go2): max_grade 3.0 x 0.1 m cells (Jeff,
+            // 2026-07-11). The dim_city sim staircase is built at the wrong
+            // scale for this robot — its blueprint overrides to 0.6.
+            can_climb: 0.3,
+            body_step: 0.35,
+            body_min_points: 0,
+            body_min_extent: 0.1,
+            // Robot-physical single-step limit (Jeff: 0.3 m for this robot).
+            max_step: 0.3,
             ignore_noise: 0.05,
             max_safe_fall: 0.5,
             void_depth_lethal: 2.5,
@@ -112,7 +157,19 @@ pub struct LevelTracker {
 impl LevelTracker {
     pub fn update(&mut self, z: f32, hysteresis: f32) -> f32 {
         match self.reference {
-            Some(reference) if (z - reference).abs() <= hysteresis => reference,
+            Some(reference) if (z - reference).abs() <= hysteresis => {
+                // Converge toward z instead of holding: a reference latched near
+                // the hysteresis edge otherwise persists FOREVER on flat ground
+                // (hl78: ref ~0.6 from the stairs base vs z 0.4 raised the slice
+                // band to 2.1 m, pulled a doorway lintel into the costmap, and
+                // start-blocked the robot at the door for the whole leg — plan
+                // collapses to a 2-pose stub at reference >= 0.55, healthy at
+                // 0.40, on the same recorded slice). The blend still suppresses
+                // per-slice flicker; a storey jump (> hysteresis) resets outright.
+                let blended = reference + 0.25 * (z - reference);
+                self.reference = Some(blended);
+                blended
+            }
             _ => {
                 self.reference = Some(z);
                 z
@@ -140,6 +197,9 @@ pub fn build(points: &[[f32; 3]], robot: (f32, f32, f32), reference_z: f32, cfg:
     let mut min_h = vec![f32::NAN; n];
     let mut max_h = vec![f32::NAN; n];
     let mut mid_count = vec![0u16; n];
+    let mut body_count = vec![0u16; n];
+    let mut body_lo = vec![f32::INFINITY; n];
+    let mut body_hi = vec![f32::NEG_INFINITY; n];
     let mut below_h = vec![f32::NEG_INFINITY; n];
     let mut above = vec![false; n];
 
@@ -182,6 +242,11 @@ pub fn build(points: &[[f32; 3]], robot: (f32, f32, f32), reference_z: f32, cfg:
         let floor = min_h[i];
         if z > floor + 0.15 && z < floor + cfg.can_pass_under {
             mid_count[i] += 1;
+        }
+        if z > floor + cfg.body_step && z < floor + cfg.can_pass_under {
+            body_count[i] += 1;
+            body_lo[i] = body_lo[i].min(z);
+            body_hi[i] = body_hi[i].max(z);
         }
     }
 
@@ -286,6 +351,23 @@ pub fn build(points: &[[f32; 3]], robot: (f32, f32, f32), reference_z: f32, cfg:
         }
     }
 
+    // Body-band occupancy gate (see CostmapConfig::body_step): measured returns
+    // at body height above this cell's own floor, filling >= body_min_extent of
+    // the band vertically, block the cell outright.
+    if cfg.body_min_points > 0 {
+        for i in 0..n {
+            if body_count[i] >= cfg.body_min_points
+                && (body_hi[i] - body_lo[i]) >= cfg.body_min_extent
+            {
+                cost[i] = LETHAL;
+            }
+        }
+    }
+
+    if cfg.max_step > 0.0 {
+        plateau_step_gate(&mut cost, &surface, &observed, cfg, width, height);
+    }
+
     dropoff_layers(&mut cost, &surface, &observed, &mut below_h, &above, z_lo, cfg, width, height);
 
     let distance = chamfer_distance(&cost, width, height, res);
@@ -297,6 +379,152 @@ pub fn build(points: &[[f32; 3]], robot: (f32, f32, f32), reference_z: f32, cfg:
         origin: (min_x, min_y),
         cost,
         distance,
+    }
+}
+
+/// Plateau-step gate (see CostmapConfig::max_step). Constants below were fit
+/// on two datasets at once: the 2026-07-09 go2 warehouse recording (suitcase
+/// blobs must go lethal) and the dim_city cross-wall run's own terrain frames
+/// (free space near the robot on the open-riser staircase must not shrink).
+fn plateau_step_gate(
+    cost: &mut [i8],
+    surface: &[f32],
+    observed: &[bool],
+    cfg: &CostmapConfig,
+    width: usize,
+    height: usize,
+) {
+    /// A neighbor counts as "lower" only when it sits at least this far below
+    /// the cell — same-surface noise must not become its own floor reference.
+    const LOWER_MARGIN: f32 = 0.05;
+    /// Percentile of the lower-neighbor set used as the reference floor.
+    const REF_PCT: f32 = 0.30;
+    /// Fewer lower neighbors than this = no coherent reference, skip the cell
+    /// (deck/landing interiors far from any edge stay untouched).
+    const MIN_LOWER: usize = 2;
+    /// Rise continuing above the cell by >= this fraction of its own step
+    /// marks a mid-slope tread (stairs keep rising; a box top does not).
+    const RISE_FRAC: f32 = 0.8;
+    /// Descent continuing below the reference by >= this fraction of the step
+    /// marks a graded rim (stairs descend riser-by-riser past it; a box drops
+    /// once to the floor and stops).
+    const DESC_FRAC: f32 = 1.7;
+    /// Dilation spreads only to neighbors at/above the source surface minus
+    /// this tolerance — into the object's footprint, never down onto the
+    /// floor or the treads below a railing.
+    const DIL_TOL: f32 = 0.1;
+    /// Dilation targets must sit at least this fraction of max_step above
+    /// their own reference floor.
+    const ELEV_FRAC: f32 = 0.6;
+    /// Above this multiple of max_step, a rise is lethal no matter what the
+    /// continuation looks like — nothing stair-shaped excuses a 2x step.
+    const HARD_MULT: f32 = 2.0;
+    /// The stairs-continuation protections only apply when the nearest rise
+    /// onto the cell is a climbable riser. A staircase-shaped thing with
+    /// risers beyond the robot's single-step ability (Jeff's example:
+    /// 1 cm-deep treads rising 0.4 m each) is NOT traversable just because
+    /// it keeps rising.
+    const RISER_CAP_MULT: f32 = 1.2;
+
+    let n = width * height;
+    let mut gate = vec![false; n];
+    let mut elevated = vec![false; n];
+    let mut lower: Vec<f32> = Vec::with_capacity(24);
+    for row in 0..height as isize {
+        for col in 0..width as isize {
+            let i = row as usize * width + col as usize;
+            if !observed[i] {
+                continue;
+            }
+            let s = surface[i];
+            lower.clear();
+            let mut nb_max = f32::NEG_INFINITY;
+            let mut nb_min = f32::INFINITY;
+            for dr in -2..=2_isize {
+                for dc in -2..=2_isize {
+                    if dr == 0 && dc == 0 {
+                        continue;
+                    }
+                    let (r, c) = (row + dr, col + dc);
+                    if r < 0 || c < 0 || r as usize >= height || c as usize >= width {
+                        continue;
+                    }
+                    let j = r as usize * width + c as usize;
+                    if !observed[j] {
+                        continue;
+                    }
+                    let v = surface[j];
+                    nb_max = nb_max.max(v);
+                    nb_min = nb_min.min(v);
+                    if v < s - LOWER_MARGIN {
+                        lower.push(v);
+                    }
+                }
+            }
+            if lower.len() < MIN_LOWER {
+                continue;
+            }
+            lower.sort_by(|a, b| a.partial_cmp(b).unwrap());
+            // Linear-interpolated percentile (matches numpy for the offline
+            // tuning harness).
+            let pos = REF_PCT * (lower.len() - 1) as f32;
+            let lo = pos.floor() as usize;
+            let frac = pos - lo as f32;
+            let reference = if lo + 1 < lower.len() {
+                lower[lo] * (1.0 - frac) + lower[lo + 1] * frac
+            } else {
+                lower[lo]
+            };
+            let step = s - reference;
+            elevated[i] = step > ELEV_FRAC * cfg.max_step;
+            if step <= cfg.max_step {
+                continue;
+            }
+            if step > HARD_MULT * cfg.max_step {
+                gate[i] = true;
+                continue;
+            }
+            let plateau = (nb_max - s) < RISE_FRAC * step && (s - nb_min) < DESC_FRAC * step;
+            // Nearest surface below = the riser the robot would actually take
+            // onto this cell; continuation only excuses climbable risers.
+            let riser = s - lower[lower.len() - 1];
+            if plateau || riser > RISER_CAP_MULT * cfg.max_step {
+                gate[i] = true;
+            }
+        }
+    }
+    // One uphill-only dilation pass: rims caught by the gate spread across the
+    // object's own footprint (similar-or-higher neighbors), closing the
+    // interior cells the sparse cleared map never sampled.
+    let mut dilated = gate.clone();
+    for row in 0..height as isize {
+        for col in 0..width as isize {
+            let i = row as usize * width + col as usize;
+            if gate[i] || !elevated[i] {
+                continue;
+            }
+            'src: for dr in -1..=1_isize {
+                for dc in -1..=1_isize {
+                    if dr == 0 && dc == 0 {
+                        continue;
+                    }
+                    let (r, c) = (row + dr, col + dc);
+                    if r < 0 || c < 0 || r as usize >= height || c as usize >= width {
+                        continue;
+                    }
+                    let j = r as usize * width + c as usize;
+                    if gate[j] && surface[i] >= surface[j] - DIL_TOL {
+                        dilated[i] = true;
+                        break 'src;
+                    }
+                }
+            }
+        }
+    }
+    for i in 0..n {
+        if dilated[i] {
+            cost[i] = LETHAL;
+        }
     }
 }
 

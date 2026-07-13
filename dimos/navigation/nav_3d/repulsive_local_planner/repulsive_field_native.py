@@ -35,7 +35,7 @@ from dimos.msgs.sensor_msgs.PointCloud2 import PointCloud2
 class RepulsiveFieldNativeConfig(NativeModuleConfig):
     cwd: str | None = "rust"
     executable: str = "target/release/repulsive_field"
-    build_command: str | None = "cargo build --release"
+    build_command: str | None = "nix develop path:. --command cargo build --release"
     stdin_config: bool = True
 
     world_frame: str = "map"
@@ -66,7 +66,46 @@ class RepulsiveFieldNativeConfig(NativeModuleConfig):
     # failure); raise together with the mapper voxel size.
     resolution: float = 0.1
     can_pass_under: float = 0.6
-    can_climb: float = 1.2
+    # Traversable grade (rise/run) scaling the Sobel gradient cost; a cell's
+    # cost = measured_gradient / max_grade * 100 (lethal at half of it). This
+    # replaces `can_climb` (rise-per-cell): can_climb == max_grade x resolution.
+    # CAVEAT — cell values are NOT physical robot grades: sub-cell risers
+    # quantize onto the 0.1 m grid, so the 31-degree warehouse staircase
+    # (0.17 m risers) measures 2-3x its true slope. 3.0 is the go2-physical
+    # setting (Jeff, 2026-07-11: "0.3 m per cell for this robot"): it keeps
+    # real-scale stairs open (climb corridor 95% free on the warehouse
+    # recording) while sub-storey clutter finally scores lethal. History of
+    # the old knob: 1.2 -> 0.6 caught cherry-picker-class clutter (recall
+    # 5% -> 26%); 0.6 -> 0.3 catches the 0.35-0.7 m suitcase class. The
+    # dim_city sim staircase is steeper than this robot could physically
+    # climb (its terrain map reads ~0.3 m rise per cell) — the sim blueprint
+    # overrides max_grade back to 6.0.
+    max_grade: float = 3.0
+    # Body-band occupancy gate (OPT-IN, body_min_points=0 disables): >=
+    # body_min_points returns between body_step and can_pass_under above a
+    # cell's own floor, spanning >= body_min_extent vertically, make it lethal
+    # outright. Catches thin sparse-return clutter the gradient still misses —
+    # worth enabling on real robots (gentle 0.17 m stair risers stay below
+    # body_step), but left off by default: steep-staircase cells straddle tread
+    # boundaries with band slivers, and the gate measurably stalled the
+    # dim_city staircase climb (start-region free cells 52-76 of 81).
+    body_step: float = 0.35
+    body_min_points: int = 0
+    body_min_extent: float = 0.1
+    # Plateau-step gate (0 disables): a cell rising > max_step above the local
+    # reference floor (30th percentile of strictly-lower 5x5 neighbors — a
+    # min reference misreads open-riser staircases) is lethal unless a
+    # staircase continuation excuses it (rise keeps going above / grades away
+    # below, AND the nearest riser onto the cell is itself climbable —
+    # 1 cm-deep 0.4 m risers are stair-shaped but not traversable). One
+    # uphill-only dilation spreads rim hits across the object footprint.
+    # This is the robot's single-step ability (0.3 m for the go2 — Jeff,
+    # 2026-07-11) and is what marks sub-gradient obstacles: the 0.35-0.7 m
+    # suitcases on the 2026-07-09 warehouse recording are unclimbable but
+    # were invisible to the gradient cost (obstacle recall 34% -> 75% with
+    # the gate + max_grade 3.0). The dim_city sim staircase is steeper than
+    # the robot's physical ability — the sim blueprint disables the gate.
+    max_step: float = 0.3
     max_safe_fall: float = 0.5
     void_depth_lethal: float = 2.5
     slice_below: float = 1.1
@@ -90,7 +129,12 @@ class RepulsiveFieldNativeConfig(NativeModuleConfig):
     goal_tolerance: float = 0.15
     smoothing_iterations: int = 12
     face_forward_weight: float = 0.8
-    tail_reversal_trim_deg: float = 100.0
+    # Stop publishing local_path once within this distance of the final goal and
+    # the solve can no longer advance (arrived, or pinned as close as the
+    # repulsion field allows). Solves keep running at solve_hz so publishing
+    # resumes the instant the goal moves — this only silences the near-zero paths
+    # that would otherwise churn the trajectory follower at rest on the goal.
+    arrival_stop_radius_m: float = 0.6
 
 
 class RepulsiveFieldNative(NativeModule):
@@ -101,7 +145,6 @@ class RepulsiveFieldNative(NativeModule):
     terrain_map: In[PointCloud2]
     global_path: In[Path]
     odometry: In[Odometry]
-    route_tail: In[Path]
 
     local_path: Out[Path]
     costmap_cloud: Out[PointCloud2]

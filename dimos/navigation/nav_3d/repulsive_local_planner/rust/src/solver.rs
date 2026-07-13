@@ -32,11 +32,6 @@ pub struct SolverConfig {
     pub goal_tolerance: f32,
     pub smoothing_iterations: usize,
     pub face_forward_weight: f32,
-    /// Carrot-tail trim at sharp route reversals (deg): a shortest-path solver
-    /// cuts any hairpin below the waypoint's advance radius, so the path pins
-    /// at true reversals (measured: forced hairpins scored 52-57 deg/m churn
-    /// and missed the top-of-stairs marker).
-    pub tail_reversal_trim_deg: f32,
 }
 
 impl Default for SolverConfig {
@@ -57,7 +52,6 @@ impl Default for SolverConfig {
             goal_tolerance: 0.15,
             smoothing_iterations: 12,
             face_forward_weight: 0.8,
-            tail_reversal_trim_deg: 100.0,
         }
     }
 }
@@ -143,90 +137,16 @@ fn polyline_distance_field(map: &Costmap, polyline: &[(f32, f32)]) -> Vec<f32> {
     crate::costmap::chamfer_distance(&seed, map.width, map.height, map.resolution)
 }
 
-/// Trim the route tail at the first sharp reversal from the approach heading
-/// and densify it (port of _carrot_extension).
-pub fn carrot_extension(
-    global_path: &[(f32, f32)],
-    tail: &[(f32, f32)],
-    cfg: &SolverConfig,
-) -> Vec<(f32, f32)> {
-    if global_path.is_empty() || tail.is_empty() {
-        return Vec::new();
-    }
-    let trim_cos = (cfg.tail_reversal_trim_deg.to_radians()).cos();
-    // Route-end heading over the last >=0.5 m of ARC, not the final raw
-    // segment: MLS routes can end with a centimeter-scale doubled-back vertex
-    // (the goal snap point sitting slightly behind the previous vertex), and
-    // hl62/63 that flipped the heading south so a genuinely-reversing tail
-    // (wp3 -> wp4) read as "straight ahead" (dot 0.99), survived the trim,
-    // doubled back past the robot, and captured the carrot into a 0.22 m stub
-    // — parking the course 1.84 m short of wp3.
-    let mut heading: Option<(f32, f32)> = None;
-    {
-        let end = *global_path.last().unwrap();
-        let mut arc = 0.0;
-        let mut anchor = None;
-        for w in global_path.windows(2).rev() {
-            arc += (w[1].0 - w[0].0).hypot(w[1].1 - w[0].1);
-            anchor = Some(w[0]);
-            if arc >= 0.5 {
-                break;
-            }
-        }
-        if let Some(a) = anchor {
-            let norm = (end.0 - a.0).hypot(end.1 - a.1);
-            if norm > 1e-6 {
-                heading = Some(((end.0 - a.0) / norm, (end.1 - a.1) / norm));
-            }
-        }
-    }
-    let mut budget = cfg.carrot_lookahead_max + 2.0;
-    let mut pts: Vec<(f32, f32)> = vec![*global_path.last().unwrap()];
-    for &p in tail {
-        if budget <= 0.0 {
-            break;
-        }
-        let last = *pts.last().unwrap();
-        let (dx, dy) = (p.0 - last.0, p.1 - last.1);
-        let norm = dx.hypot(dy);
-        if norm <= 1e-6 {
-            continue;
-        }
-        if let Some(h) = heading {
-            if (dx * h.0 + dy * h.1) / norm < trim_cos {
-                break; // sharp reversal: pin the path at this waypoint
-            }
-        }
-        heading = Some((dx / norm, dy / norm));
-        budget -= norm;
-        pts.push(p);
-    }
-    // Densify at 0.25 m (sparse marker segments would leap the carrot's arc
-    // budget in one stride), dropping the duplicated global end point.
-    let mut out = Vec::new();
-    for pair in pts.windows(2) {
-        let (a, b) = (pair[0], pair[1]);
-        let steps = ((b.0 - a.0).hypot(b.1 - a.1) / 0.25).ceil().max(1.0) as usize;
-        for k in 1..=steps {
-            let f = k as f32 / steps as f32;
-            out.push((a.0 + (b.0 - a.0) * f, a.1 + (b.1 - a.1) * f));
-        }
-    }
-    out
-}
-
 pub struct Plan {
     /// World-frame (x, y, yaw).
     pub poses: Vec<(f32, f32, f32)>,
 }
 
-/// One full solve (port of plan_path). `scan_extension` extends the carrot and
-/// the goal past the global path's end but is EXCLUDED from the adherence
-/// field (its straight segments only approximate the future route).
+/// One full solve (port of plan_path). The global path's last point is the
+/// goal; the planner steers toward a carrot chosen along the densified path.
 pub fn plan(
     map: &Costmap,
     global_path: &[(f32, f32)],
-    scan_extension: &[(f32, f32)],
     robot: (f32, f32, f32),
     speed: f32,
     previous_path: Option<&[(f32, f32)]>,
@@ -237,23 +157,17 @@ pub fn plan(
     }
     let (carrot_budget, radius, horizon) = cfg.scaled(speed);
 
-    // Densify the scan path (0.25 m): the carrot scan and the gap-hop walk
-    // path POINTS, so sparse vertices (a 2-point straight route) would blow the
-    // arc budget in one stride and collapse the carrot to the robot cell.
-    let mut sparse: Vec<(f32, f32)> = global_path.to_vec();
-    sparse.extend_from_slice(scan_extension);
-    let mut scan_path: Vec<(f32, f32)> = vec![sparse[0]];
-    let mut route_scan_len = 1; // scan_path prefix that belongs to the ROUTE
-    for (si, pair) in sparse.windows(2).enumerate() {
+    // Densify the path (0.25 m): the carrot scan and the gap-hop walk path
+    // POINTS, so sparse vertices (a 2-point straight route) would blow the arc
+    // budget in one stride and collapse the carrot to the robot cell.
+    let mut scan_path: Vec<(f32, f32)> = vec![global_path[0]];
+    for pair in global_path.windows(2) {
         let (a, b) = (pair[0], pair[1]);
         let d = (b.0 - a.0).hypot(b.1 - a.1);
         let steps = (d / 0.25).ceil().max(1.0) as usize;
         for k in 1..=steps {
             let f = k as f32 / steps as f32;
             scan_path.push((a.0 + (b.0 - a.0) * f, a.1 + (b.1 - a.1) * f));
-        }
-        if si + 2 <= global_path.len() {
-            route_scan_len = scan_path.len();
         }
     }
     let goal = *scan_path.last().unwrap();
@@ -345,11 +259,9 @@ pub fn plan(
     // Carrot: furthest reachable scan-path point within the arc budget,
     // hopping unreachable runs up to carrot_gap_max (single-cell flicker must
     // not collapse the plan; real walls span far more arc and still stop it).
-    // The nearest-point anchor searches the ROUTE prefix only: an extension
-    // that doubles back past the robot (wp3 -> wp4 hairpin, hl62/63) would
-    // otherwise capture the scan onto the tail branch and skip the entire
-    // unfinished leg.
-    let start_idx = scan_path[..route_scan_len.min(scan_path.len())]
+    // The nearest-point anchor pins the scan to the point on the path closest
+    // to the robot, so progress is measured forward from there.
+    let start_idx = scan_path
         .iter()
         .enumerate()
         .min_by(|(_, a), (_, b)| {
