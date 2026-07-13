@@ -365,6 +365,7 @@ class BrokerProvider(AsyncProviderBase):
                         terminal_streak,
                         status,
                     )
+                    self._notify_operator_lost()
                     return
             else:
                 terminal_streak = 0

@@ -452,6 +452,29 @@ def test_broker_failed_channel_open_retries_next_heartbeat() -> None:
     assert provider._dc_ids["cmd_unreliable"] == 5
 
 
+def test_broker_heartbeat_terminal_notifies_operator_lost() -> None:
+    """A revoked session (401/404 streak) may leave the WebRTC room up, so the
+    planner would keep driving. The terminal branch must inject operator_lost
+    before abandoning the heartbeat loop."""
+    if not WEBRTC_AVAILABLE:
+        pytest.skip("aiortc not installed")
+    import asyncio
+
+    provider = BrokerConfig(api_key="key")._create()
+    provider._config = provider._config.model_copy(update={"heartbeat_hz": 1000.0})  # fast ticks
+
+    got: list[bytes] = []
+    provider._callbacks["state_reliable"] = [lambda data, topic: got.append(data)]
+
+    async def _always_401() -> int:
+        return 401
+
+    provider._heartbeat_once = _always_401  # type: ignore[method-assign]
+    asyncio.run(asyncio.wait_for(provider._heartbeat_loop(), timeout=2.0))
+
+    assert got and b'"operator_lost"' in got[0], "terminal streak must inject operator_lost"
+
+
 def test_broker_disconnect_clears_channel_ids() -> None:
     """Stale _dc_ids after stop() would make the reconnect heartbeat skip
     _open_channel when the broker hands out the same SCTP ids."""
