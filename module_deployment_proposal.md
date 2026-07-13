@@ -205,11 +205,13 @@ A class-keyed `ModuleDeployment` applies to every active Blueprint instance of t
 The following shapes describe the intended extension boundary rather than a committed compatibility contract. Resolved planning and worker protocol types remain internal so their representation can change without expanding the public API.
 
 ```python
+# Blueprint-facing contract whose implementation runs through the external deployment path.
 class ExternalModule(Module):
     implementation: ClassVar[str | FsPath]
 ```
 
 ```python
+# User-authored deployment intent tying one Blueprint to targets and per-module policy.
 @dataclass(frozen=True)
 class DeploymentSpec:
     blueprint: Blueprint
@@ -218,6 +220,7 @@ class DeploymentSpec:
 ```
 
 ```python
+# Per-module policy describing where to build, where to run, and which overrides to use.
 @dataclass(frozen=True)
 class ModuleDeployment:
     execution_target: str = "local"
@@ -227,6 +230,7 @@ class ModuleDeployment:
 ```
 
 ```python
+# Serializable reference to target-side runtime-environment setup logic and config.
 @dataclass(frozen=True)
 class RuntimeEnvironmentSpec:
     implementation: str
@@ -234,6 +238,7 @@ class RuntimeEnvironmentSpec:
 ```
 
 ```python
+# Named remote machine where DimOS can prepare artifacts and run an ExternalWorker.
 @dataclass(frozen=True)
 class SshTarget(ExecutionTarget):
     host: str
@@ -244,12 +249,14 @@ class SshTarget(ExecutionTarget):
 `Preparation` stages source and produces deployable artifacts before `ExternalWorker` starts. `RuntimeEnvironment` turns those staged inputs into a runnable environment on the execution target:
 
 ```python
+# Build/sync step that stages source or artifacts before any ExternalWorker starts.
 class Preparation(ABC):
     async def prepare(self, context: PreparationContext) -> None: ...
     async def cleanup(self, context: PreparationContext) -> None: ...
 ```
 
 ```python
+# Target-side setup step that turns prepared inputs into a launchable runtime handle.
 class RuntimeEnvironment(ABC):
     async def setup(self, context: RuntimeEnvironmentContext) -> RuntimeLaunch: ...
     async def teardown(self, context: RuntimeEnvironmentContext) -> None: ...
