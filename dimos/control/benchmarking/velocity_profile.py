@@ -41,6 +41,7 @@ from dataclasses import dataclass
 from typing import Protocol
 
 import numpy as np
+from numpy.typing import NDArray
 
 from dimos.control.tasks.velocity_profiler import VelocityProfiler
 from dimos.msgs.nav_msgs.Path import Path
@@ -102,8 +103,8 @@ class PathSpeedCap:
             max_centripetal_accel=self.cfg.max_centripetal_accel,
             min_speed=self.cfg.min_speed,
         )
-        self._pts: np.ndarray | None = None
-        self._profile: np.ndarray | None = None
+        self._pts: NDArray[np.float64] | None = None
+        self._profile: NDArray[np.float64] | None = None
 
     def for_path(self, path: Path) -> None:
         """(Re)compute the speed profile for ``path``. Call on path start."""
