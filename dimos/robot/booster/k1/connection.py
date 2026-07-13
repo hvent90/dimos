@@ -20,7 +20,8 @@ lidar, so this connection implements only the `Camera` spec: no `odom`/`lidar`/
 `pointcloud` ports, and therefore no mapping/navigation tier.
 """
 
-from threading import Event, Thread
+import asyncio
+from concurrent.futures import Future
 import time
 from typing import Any
 
@@ -29,7 +30,6 @@ from reactivex.disposable import Disposable
 import rerun.blueprint as rrb
 
 from dimos.agents.annotation import skill
-from dimos.constants import DEFAULT_THREAD_JOIN_TIMEOUT
 from dimos.core.core import rpc
 from dimos.core.global_config import GlobalConfig
 from dimos.core.module import Module, ModuleConfig
@@ -95,7 +95,9 @@ class K1Connection(Module, Camera):
 
     camera_info_static: CameraInfo = _camera_info_static()
     _latest_frame: Image | None = None
-    _camera_info_thread: Thread | None = None
+    _camera_future: Future[None] | None = None
+    _sender_future: Future[None] | None = None
+    _camera_info_future: Future[None] | None = None
 
     @classmethod
     def rerun_views(cls):  # type: ignore[no-untyped-def]
@@ -106,27 +108,27 @@ class K1Connection(Module, Camera):
 
     def __init__(self, **kwargs: Any) -> None:
         super().__init__(**kwargs)
-        self._stop_event = Event()
-        self.hw = make_connection(self.config.ip, self.config.g)
+        self._connection = make_connection(self.config.ip, self.config.g)
 
     @rpc
     def start(self) -> None:
         super().start()
-        self.hw.start()
 
         def on_image(image: Image) -> None:  # publish AND cache for observe()
             self.color_image.publish(image)
             self._latest_frame = image
 
-        self.register_disposable(self.hw.camera_stream().subscribe(on_image))
+        self.register_disposable(self._connection.camera_stream().subscribe(on_image))
         self.register_disposable(Disposable(self.cmd_vel.subscribe(self.move)))
+
+        self._camera_future = self.spawn(self._connection.run_camera())
+        self._sender_future = self.spawn(self._connection.run_sender())
+        self._camera_info_future = self.spawn(self._publish_camera_info())
 
         logger.warning(
             "K1 camera intrinsics are placeholders; 3D projection/perception will be "
             "inaccurate until replaced with a measured calibration."
         )
-        self._camera_info_thread = Thread(target=self._publish_camera_info, daemon=True)
-        self._camera_info_thread.start()
 
         # Arm the robot so it accepts velocity commands. On failure keep the module
         # (and camera) running for diagnosis, but say loudly that moves will be dropped.
@@ -139,31 +141,31 @@ class K1Connection(Module, Camera):
 
     @rpc
     def stop(self) -> None:
-        self._stop_event.set()
-        if self._camera_info_thread and self._camera_info_thread.is_alive():
-            self._camera_info_thread.join(timeout=DEFAULT_THREAD_JOIN_TIMEOUT)
-        self.hw.stop()
+        for future in (self._camera_future, self._camera_info_future):
+            if future is not None:
+                future.cancel()
+        self._connection.stop()
         super().stop()
 
-    def _publish_camera_info(self) -> None:
-        while not self._stop_event.is_set():
+    async def _publish_camera_info(self) -> None:
+        while True:
             self.camera_info.publish(self.camera_info_static)
-            self._stop_event.wait(CAMERA_INFO_REPUBLISH_S)
+            await asyncio.sleep(CAMERA_INFO_REPUBLISH_S)
 
     @rpc
     def move(self, twist: Twist) -> bool:
         """Send a base velocity command to the robot."""
-        return self.hw.move(twist)
+        return self._connection.move(twist)
 
     @rpc
     def standup(self) -> bool:
         """Arm the robot for walking (DAMPING -> PREPARE -> WALKING)."""
-        return self.hw.standup()
+        return self._connection.standup()
 
     @rpc
     def sit(self) -> bool:
         """Make the robot lie down."""
-        return self.hw.sit()
+        return self._connection.sit()
 
     @skill
     def walk(self, x: float, y: float = 0.0, yaw: float = 0.0, duration: float = 0.0) -> str:
@@ -182,10 +184,11 @@ class K1Connection(Module, Camera):
         twist = Twist(linear=Vector3(x, y, 0.0), angular=Vector3(0.0, 0.0, yaw))
         deadline = time.monotonic() + duration
         while time.monotonic() < deadline:
-            if not self.move(twist):
-                return "Failed to move."
+            self.move(twist)
             time.sleep(CMD_REFRESH_S)
         self.move(Twist(linear=Vector3(0.0, 0.0, 0.0), angular=Vector3(0.0, 0.0, 0.0)))
+        if self._connection.send_failed:
+            return "The robot rejected the move commands; check that it is armed (mode WALKING)."
         return f"Moved at velocity=({x}, {y}, {yaw}) for {duration}s then stopped."
 
     @skill
