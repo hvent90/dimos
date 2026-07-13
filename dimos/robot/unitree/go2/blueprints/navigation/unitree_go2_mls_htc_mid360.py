@@ -45,16 +45,19 @@ from dimos.memory2.module import pose_setter_for
 from dimos.msgs.geometry_msgs.PoseStamped import PoseStamped
 from dimos.msgs.sensor_msgs.PointCloud2 import PointCloud2
 from dimos.navigation.dannav.holonomic_tc.module import DanHolonomicTC
-from dimos.navigation.lidar_shield.module import LidarShield
 from dimos.navigation.movement_manager.movement_manager import MovementManager
 from dimos.navigation.nav_3d.mls_planner.goal_relay import GoalRelay
 from dimos.navigation.nav_3d.mls_planner.mls_planner_native import MLSPlannerNative
+from dimos.navigation.nav_3d.mls_planner.odom_body_frame import OdomBodyFrame
 from dimos.navigation.nav_3d.repulsive_local_planner.repulsive_field_native import (
     RepulsiveFieldNative,
 )
 from dimos.robot.unitree.go2.blueprints.basic.unitree_go2_basic import rerun_config
 from dimos.robot.unitree.go2.connection import GO2Connection
-from dimos.robot.unitree.go2.go2_mid360_static_transforms import MID360_PITCH_DOWN
+from dimos.robot.unitree.go2.go2_mid360_static_transforms import (
+    MID360_PITCH_DOWN,
+    base_link_from_mid360,
+)
 from dimos.visualization.vis_module import vis_module
 
 voxel_size = 0.08
@@ -232,7 +235,17 @@ unitree_go2_mls_htc_mid360 = autoconnect(
             (MLSPlannerNative, "path", "planner_path"),
         ]
     ),
-    GoalRelay.blueprint(),
+    # Re-express odometry at the body center (lidar is on the head): shifts the
+    # local planner's footprint back to the body, and gives the follower the body pose.
+    OdomBodyFrame.blueprint(
+        mount_rotation=list(base_link_from_mid360().rotation.to_tuple()),
+        mount_translation=[
+            base_link_from_mid360().inverse().translation.x,
+            base_link_from_mid360().inverse().translation.y,
+            base_link_from_mid360().inverse().translation.z,
+        ],
+    ),
+    GoalRelay.blueprint().remappings([(GoalRelay, "odometry", "body_odometry")]),
     RepulsiveFieldNative.blueprint(
         world_frame="odom",
         output_base_frame=False,
@@ -251,6 +264,7 @@ unitree_go2_mls_htc_mid360 = autoconnect(
             # so it lands on the same resolved topic, planner_path.
             (RepulsiveFieldNative, "route_tail", "planner_path"),
             (RepulsiveFieldNative, "local_path", "path"),
+            (RepulsiveFieldNative, "odometry", "body_odometry"),
         ]
     ),
     # DanHolonomicTC tracks on a PoseStamped `odom`; GoalRelay's `start_pose` is the
@@ -260,29 +274,7 @@ unitree_go2_mls_htc_mid360 = autoconnect(
     ),
     # MovementManager's cmd_vel is diverted through the shield: it publishes to
     # cmd_vel_raw, the shield gates it, and the shield drives the robot's cmd_vel.
-    MovementManager.blueprint().remappings([(MovementManager, "cmd_vel", "cmd_vel_raw")]),
-    # danvi's LidarShield (from danvi/feat/go2-oav): a last-line velocity gate that
-    # brakes/blocks cmd_vel when an obstacle is inside shield_radius_m, and injects
-    # the obstacle back into the map so the planner reroutes. It needs a
-    # WORLD/odom-frame obstacle cloud + pose; PointLio's raw `lidar` is in the
-    # sensor frame (mid360_link), so — unlike the oav_draft which fed raw lidar —
-    # we feed the odom-frame `local_map` instead, and inject reinforcement back
-    # into `local_map` (which is also RepulsiveFieldNative's costmap source, so
-    # detected obstacles directly stiffen the planner's field). The shield skips
-    # its own injected frames via their `intensities` tag, so sharing the topic is
-    # safe.
-    LidarShield.blueprint(
-        shield_radius_m=0.45,
-        inject_voxel_m=voxel_size,
-    ).remappings(
-        [
-            (LidarShield, "lidar", "local_map"),
-            (LidarShield, "odom", "start_pose"),
-            (LidarShield, "cmd_vel_in", "cmd_vel_raw"),
-            (LidarShield, "cmd_vel_out", "cmd_vel"),
-            (LidarShield, "map_out", "local_map"),
-        ]
-    ),
+    MovementManager.blueprint(),
 ).global_config(n_workers=11, robot_model="unitree_go2", obstacle_avoidance=False)
 
 # The nav blueprint leaves PointLio on its default lidar / odometry topics, so

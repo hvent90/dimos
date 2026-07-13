@@ -12,8 +12,16 @@
 # See the License for the specific language governing permissions and
 # limitations under the License.
 
+# Copyright 2026 Dimensional Inc.
+#
+# Licensed under the Apache License, Version 2.0 (the "License").
+# limitations under the License.
+
 from __future__ import annotations
 
+import math
+
+from dimos_lcm.std_msgs import Bool
 from reactivex.disposable import Disposable
 
 from dimos.core.core import rpc
@@ -25,28 +33,64 @@ from dimos.msgs.nav_msgs.Odometry import Odometry
 
 
 class GoalRelayConfig(ModuleConfig):
-    pass
+    # Distance (m) within which the robot is considered "arrived" at its goal.
+    arrival_tolerance: float = 0.3
 
 
 class GoalRelay(Module):
-    """Adapt odometry and goal points to the planner's PoseStamped inputs."""
+    """Adapt odometry + goal points to the planner's PoseStamped inputs, and hold.
+
+    While pursuing a clicked goal it forwards that goal. On teleop cancel
+    (``stop_movement``) OR once the robot arrives at the goal, it enters a HOLD
+    mode where it continuously republishes ``goal_pose = current pose`` on every
+    odometry update. That keeps the global planner "at goal" (empty path) so the
+    robot stays put -- and tracks the robot if it is physically moved -- until a
+    new goal is clicked.
+    """
 
     config: GoalRelayConfig
 
     odometry: In[Odometry]
     goal: In[PointStamped]
+    stop_movement: In[Bool]
 
     start_pose: Out[PoseStamped]
     goal_pose: Out[PoseStamped]
+
+    def __init__(self, **kwargs: object) -> None:
+        super().__init__(**kwargs)
+        self._latest_pose: PoseStamped | None = None
+        self._active_goal: PoseStamped | None = None
+        self._holding: bool = True  # no goal yet -> hold at current pose
 
     @rpc
     def start(self) -> None:
         super().start()
         self.register_disposable(Disposable(self.odometry.subscribe(self._on_odometry)))
         self.register_disposable(Disposable(self.goal.subscribe(self._on_goal)))
+        self.register_disposable(Disposable(self.stop_movement.subscribe(self._on_stop_movement)))
 
     def _on_odometry(self, msg: Odometry) -> None:
-        self.start_pose.publish(msg.to_pose_stamped())
+        pose = msg.to_pose_stamped()
+        self._latest_pose = pose
+        self.start_pose.publish(pose)
+        # Arrival: once we reach the active goal, switch to hold.
+        if not self._holding and self._active_goal is not None:
+            if self._dist(pose, self._active_goal) < self.config.arrival_tolerance:
+                self._holding = True
+        # Hold mode: keep the goal pinned to the current pose (tracks physical moves).
+        if self._holding:
+            self.goal_pose.publish(pose)
 
     def _on_goal(self, point: PointStamped) -> None:
-        self.goal_pose.publish(point.to_pose_stamped())
+        goal = point.to_pose_stamped()
+        self._active_goal = goal
+        self._holding = False
+        self.goal_pose.publish(goal)
+
+    def _on_stop_movement(self, msg: Bool) -> None:
+        self._holding = True
+
+    @staticmethod
+    def _dist(a: PoseStamped, b: PoseStamped) -> float:
+        return math.hypot(a.position.x - b.position.x, a.position.y - b.position.y)
