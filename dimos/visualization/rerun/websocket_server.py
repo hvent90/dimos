@@ -150,7 +150,6 @@ class RerunWebSocketServer(Module):
             return
 
         msg_type = msg.get("type")
-        logger.warning("[CANCELDBG] RerunWebSocketServer RX msg type=%r", msg_type)
 
         if msg_type == "click":
             self.clicked_point.publish(
@@ -164,11 +163,6 @@ class RerunWebSocketServer(Module):
             )
 
         elif msg_type == "twist":
-            logger.warning(
-                "[CANCELDBG] RerunWebSocketServer got TWIST -> publish tele_cmd_vel lx=%s az=%s",
-                msg.get("linear_x", 0),
-                msg.get("angular_z", 0),
-            )
             self.tele_cmd_vel.publish(
                 Twist(
                     linear=Vector3(
@@ -185,5 +179,4 @@ class RerunWebSocketServer(Module):
             )
 
         elif msg_type == "stop":
-            logger.warning("[CANCELDBG] RerunWebSocketServer got STOP -> publish tele_cmd_vel zero")
             self.tele_cmd_vel.publish(Twist.zero())
