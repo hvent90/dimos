@@ -83,12 +83,22 @@ class GoalRelay(Module):
             self.goal_pose.publish(pose)
 
     def _on_goal(self, point: PointStamped) -> None:
+        # MovementManager cancels navigation by publishing a NaN goal (see its
+        # _cancel_goal). Treat that as "hold here", NOT a fresh destination --
+        # otherwise it immediately un-does the stop_movement hold and shoves NaN
+        # at the planner, which then falls back to its last real goal and the
+        # robot walks back to it. Only a finite goal resumes pursuit.
+        if not all(math.isfinite(v) for v in (point.x, point.y, point.z)):
+            self._active_goal = None
+            self._holding = True
+            return
         goal = point.to_pose_stamped()
         self._active_goal = goal
         self._holding = False
         self.goal_pose.publish(goal)
 
     def _on_stop_movement(self, msg: Bool) -> None:
+        self._active_goal = None
         self._holding = True
 
     @staticmethod

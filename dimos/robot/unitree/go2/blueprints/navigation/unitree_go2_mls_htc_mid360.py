@@ -28,7 +28,6 @@ motion control — its own lidar/camera are disabled.
 """
 
 from datetime import datetime
-import math
 import os
 from pathlib import Path
 from typing import Any
@@ -55,7 +54,6 @@ from dimos.navigation.nav_3d.repulsive_local_planner.repulsive_field_native impo
 from dimos.robot.unitree.go2.blueprints.basic.unitree_go2_basic import rerun_config
 from dimos.robot.unitree.go2.connection import GO2Connection
 from dimos.robot.unitree.go2.go2_mid360_static_transforms import (
-    MID360_PITCH_DOWN,
     base_link_from_mid360,
 )
 from dimos.visualization.vis_module import vis_module
@@ -124,14 +122,20 @@ def _render_shield_points(msg: Any) -> Any:
     return msg.to_rerun(colors=[255, 140, 0], mode="spheres", voxel_size=0.1)
 
 
+# Go2 body box half-extents (m): ~0.7 long, ~0.31 wide, ~0.4 tall.
+_BODY_HALF = [0.35, 0.155, 0.2]
+
+
 def _static_robot_body(rr: Any) -> list[Any]:
-    """Go2-shaped box on pointlio's sensor frame, counter-rotated for the lidar pitch."""
+    """Go2-shaped box on the gravity-leveled body frame.
+
+    base_footprint (published by OdomBodyFrame) is already horizontal and sits at
+    the body center -- exactly where the local planner's footprint is -- so the box
+    needs no counter-rotation and honestly shows the footprint, not the head sensor.
+    """
     return [
-        rr.Boxes3D(half_sizes=[0.35, 0.155, 0.2], colors=[(0, 255, 127)]),
-        rr.Transform3D(
-            parent_frame="tf#/mid360_link",
-            rotation=rr.RotationAxisAngle(axis=(0, 1, 0), degrees=-math.degrees(MID360_PITCH_DOWN)),
-        ),
+        rr.Boxes3D(half_sizes=_BODY_HALF, colors=[(0, 255, 127)]),
+        rr.Transform3D(parent_frame="tf#/base_footprint"),
     ]
 
 
@@ -149,9 +153,9 @@ def _axis_triad(rr: Any) -> Any:
     )
 
 
-def _static_body_axes(rr: Any) -> Any:
-    """XYZ triad on the leveled robot body (child of the counter-rotated box)."""
-    return _axis_triad(rr)
+def _static_body_axes(rr: Any) -> list[Any]:
+    """XYZ triad at the FRONT face of the leveled body box (the robot's front)."""
+    return [_axis_triad(rr), rr.Transform3D(translation=[_BODY_HALF[0], 0.0, 0.0])]
 
 
 def _static_sensor_axes(rr: Any) -> list[Any]:
