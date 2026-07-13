@@ -76,6 +76,10 @@ class G1CollectionRecorder(CollectionRecorder):
     actions.
     """
 
+    # Own process: sqlite/eMMC writes and the torch import must not share
+    # a GIL with control modules.
+    dedicated_worker = True
+
     coordinator_cartesian_command: In[PoseStamped]
 
 
@@ -83,14 +87,22 @@ def _session_db() -> str:
     return str(STATE_DIR / "recordings" / f"session_g1_{datetime.now():%Y%m%d_%H%M%S}.db")
 
 
+if not global_config.simulation:
+    from dimos.hardware.sensors.camera.realsense.camera import RealSenseCamera
+
+    class DedicatedRealSenseCamera(RealSenseCamera):
+        """Own process: 15 fps frame copies must not share a GIL with the
+        coordinator's tick loop (measured arm latency when colocated)."""
+
+        dedicated_worker = True
+
+
 def _camera_if_real() -> tuple[Blueprint, ...]:
     """Real RealSense only off-sim: the groot MuJoCo sim exposes no color
     camera, and instantiating the module with no device would fail."""
     if global_config.simulation:
         return ()
-    from dimos.hardware.sensors.camera.realsense.camera import RealSenseCamera
-
-    return (RealSenseCamera.blueprint(enable_pointcloud=False),)
+    return (DedicatedRealSenseCamera.blueprint(enable_pointcloud=False),)
 
 
 unitree_g1_teleop = (

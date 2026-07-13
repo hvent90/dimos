@@ -105,6 +105,10 @@ class G1QuestTeleopConfig(QuestTeleopConfig):
 class G1QuestTeleopModule(QuestTeleopModule):
     """Quest WebXR retargeting for G1 locomotion and bimanual arms."""
 
+    # Own process: per-frame JPEG encodes must not share a GIL with control
+    # modules (measured arm latency when placed with G1WholeBodyConnection).
+    dedicated_worker = True
+
     config: G1QuestTeleopConfig
 
     color_image: In[Image]
