@@ -14,18 +14,11 @@
 
 """Galaxea A1Z planning model + hardware configuration helpers.
 
-The A1Z is Galaxea's standalone 6-DOF arm. Unlike the A1X (which talks to an
-onboard ACU over a proprietary CAN-FD protocol), the A1Z exposes its six
-motors directly on a classic CAN bus (1 Mbps, MIT force-position protocol,
-motor IDs 0x01-0x06) and ships a fully open-source Python SDK
-(github.com/userguide-galaxea/GALAXEA-A1Z). That SDK is wrapped directly by
-the ``a1z`` ManipulatorAdapter, the same way the Piper adapter wraps its CAN
-SDK.
-
-Model source: the official Galaxea URDF repo, ``A1Z/A1Z_Flange`` package
-(flange end-effector, no gripper), vendored as the ``a1z_description`` LFS
-asset. The URDF is already gripper-free (nq=6), so it serves directly as the
-FK/IK model — no derived no-gripper variant is needed.
+The A1Z is Galaxea's standalone 6-DOF arm, driven over classic CAN via the
+open-source SDK (github.com/userguide-galaxea/GALAXEA-A1Z) wrapped by the
+``a1z`` ManipulatorAdapter. Model = the ``A1Z_Flange`` package (no gripper,
+nq=6), vendored as the ``a1z_description`` LFS asset and used directly as the
+FK/IK model.
 """
 
 from __future__ import annotations
@@ -44,10 +37,8 @@ from dimos.utils.data import LfsPath
 
 A1Z_DOF = 6
 
-# Collision-mesh overlaps at the home pose (q=0). Six are joint-adjacent links
-# whose meshes meet at the joint (normal, must be excluded); ``arm_link2`` ↔
-# ``arm_link5`` is a coarse-mesh overlap in the compact folded home pose. Found
-# with hpp-fcl at q=0; without these, planning reports COLLISION_AT_START.
+# Link pairs Drake flags as overlapping at the home pose (q=0); without these,
+# planning reports COLLISION_AT_START. Enumerated via ComputePointPairPenetration.
 A1Z_COLLISION_EXCLUSIONS: list[tuple[str, str]] = [
     ("base_link", "arm_link1"),
     ("arm_link1", "arm_link2"),
@@ -55,6 +46,7 @@ A1Z_COLLISION_EXCLUSIONS: list[tuple[str, str]] = [
     ("arm_link2", "arm_link5"),
     ("arm_link3", "arm_link4"),
     ("arm_link4", "arm_link5"),
+    ("arm_link4", "arm_link6"),
     ("arm_link5", "arm_link6"),
 ]
 
