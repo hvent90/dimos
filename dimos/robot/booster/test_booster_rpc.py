@@ -12,15 +12,13 @@
 # See the License for the specific language governing permissions and
 # limitations under the License.
 
-"""Unit tests for BoosterRPCConnection's non-blocking command sender.
+"""Unit tests for BoosterRPCConnection's command sender and mode transitions.
 
-Mirrors the intent of unitree/b1/test_connection.py: exercise the fixed-rate
-sender + dead-man timer (the logic that lets the 100 Hz ControlCoordinator drive
-booster-rpc's blocking ~58/sec gRPC `move` without backing up) with the SDK
-mocked out, so no robot or `booster_rpc` runtime behavior is needed.
+Drives the production `run_sender()` coroutine and `stop()` with the SDK mocked
+out, so no robot or `booster_rpc` runtime behavior is needed.
 """
 
-import threading
+import asyncio
 import time
 from unittest.mock import patch
 
@@ -40,33 +38,32 @@ def _twist(vx: float = 0.0, vy: float = 0.0, vyaw: float = 0.0) -> Twist:
     return Twist(linear=Vector3(vx, vy, 0.0), angular=Vector3(0.0, 0.0, vyaw))
 
 
+def _sent(c: BoosterRPCConnection) -> list[tuple[float, float, float]]:
+    """The (vx, vy, vyaw) tuples handed to the underlying gRPC move()."""
+    return [tuple(call.args) for call in c._conn.move.call_args_list]
+
+
 @pytest.fixture
 def conn():
     """A BoosterRPCConnection with the gRPC SDK patched out (`_conn` is a mock)."""
     with patch("dimos.robot.booster.booster_rpc.BoosterConnection"):
-        c = BoosterRPCConnection(ip="mock")
-    yield c
-    c._sender_stop.set()
-    if c._sender_thread is not None:
-        c._sender_thread.join(timeout=1.0)
+        yield BoosterRPCConnection(ip="mock")
 
 
-def _run_sender(c: BoosterRPCConnection) -> None:
-    """Start only the fixed-rate sender thread (skip the asyncio video loop)."""
-    c._sender_stop.clear()
-    c._sender_thread = threading.Thread(target=c._sender_loop, daemon=True)
-    c._sender_thread.start()
+@pytest.fixture
+async def start_sender(conn):
+    """Runs the production `run_sender()`; always torn down via the production `stop()`."""
+    tasks: list[asyncio.Task] = []
 
+    def start() -> None:
+        tasks.append(asyncio.create_task(conn.run_sender()))
 
-def _stop_sender(c: BoosterRPCConnection) -> None:
-    c._sender_stop.set()
-    if c._sender_thread is not None:
-        c._sender_thread.join(timeout=1.0)
-
-
-def _sent(c: BoosterRPCConnection) -> list[tuple[float, float, float]]:
-    """The (vx, vy, vyaw) tuples handed to the underlying gRPC move()."""
-    return [tuple(call.args) for call in c._conn.move.call_args_list]
+    try:
+        yield start
+    finally:
+        # stop() blocks until the sender exits, so call it off the loop (as the Module does).
+        await asyncio.to_thread(conn.stop)
+        await asyncio.gather(*tasks, return_exceptions=True)
 
 
 class TestMoveIsNonBlocking:
@@ -84,34 +81,31 @@ class TestMoveIsNonBlocking:
 
 
 class TestSenderLoop:
-    def test_sends_latest_while_active(self, conn):
+    async def test_sends_latest_while_active(self, conn, start_sender):
         conn.cmd_vel_timeout = 0.5
         conn.send_hz = 200.0
         conn.move(_twist(vx=0.5, vyaw=-0.2))
-        _run_sender(conn)
-        time.sleep(0.1)  # < cmd_vel_timeout, still active
-        _stop_sender(conn)
+        start_sender()
+        await asyncio.sleep(0.1)  # < cmd_vel_timeout, still active
         sent = _sent(conn)
         assert (0.5, 0.0, -0.2) in sent  # the latest command reaches the robot
         assert all(s == (0.5, 0.0, -0.2) for s in sent)  # only the latest, never stale
 
-    def test_deadman_sends_one_zero_then_goes_quiet(self, conn):
+    async def test_deadman_sends_one_zero_then_goes_quiet(self, conn, start_sender):
         conn.cmd_vel_timeout = 0.05
         conn.send_hz = 200.0
         conn.move(_twist(vx=0.5))
-        _run_sender(conn)
-        time.sleep(0.25)  # well past cmd_vel_timeout -> idle
-        _stop_sender(conn)
+        start_sender()
+        await asyncio.sleep(0.25)  # well past cmd_vel_timeout -> idle
         sent = _sent(conn)
         assert (0.5, 0.0, 0.0) in sent  # sent while active
         assert sent[-1] == (0.0, 0.0, 0.0)  # one dead-man stop on active->idle
         assert sent.count((0.0, 0.0, 0.0)) == 1  # then quiet, not a flood of zeros
 
-    def test_idle_sender_sends_nothing(self, conn):
+    async def test_idle_sender_sends_nothing(self, conn, start_sender):
         conn.send_hz = 200.0
-        _run_sender(conn)  # never issue a command
-        time.sleep(0.1)
-        _stop_sender(conn)
+        start_sender()  # never issue a command
+        await asyncio.sleep(0.1)
         assert _sent(conn) == []  # no command -> never active -> nothing sent
 
 
@@ -125,3 +119,19 @@ class TestStandup:
         conn._conn.get_mode.return_value = RobotMode.CUSTOM
         assert conn.standup() is False
         conn._conn.change_mode.assert_not_called()  # refuses rather than forcing WALKING
+
+    def test_arms_from_damping_once_each_mode_is_confirmed(self, conn):
+        conn._conn.get_mode.side_effect = [
+            RobotMode.DAMPING,  # standup() reads the starting mode
+            RobotMode.PREPARE,  # PREPARE confirmed
+            RobotMode.WALKING,  # WALKING confirmed
+        ]
+        assert conn.standup() is True
+        requested = [call.args[0] for call in conn._conn.change_mode.call_args_list]
+        assert requested == [RobotMode.PREPARE, RobotMode.WALKING]
+
+    def test_fails_when_mode_is_never_confirmed(self, conn):
+        conn.mode_transition_timeout = 0.2
+        conn._conn.get_mode.return_value = RobotMode.PREPARE  # never reaches WALKING
+        assert conn.standup() is False
+        conn._conn.change_mode.assert_called_once_with(RobotMode.WALKING)
