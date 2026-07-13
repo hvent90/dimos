@@ -977,6 +977,11 @@ async def renegotiate_answer(
             status_code=502,
             detail=f"Cloudflare renegotiate failed: {e.detail}",
         )
+    except Exception as e:  # httpx network/timeout etc — 502 like the other CF handlers
+        raise HTTPException(
+            status_code=502,
+            detail=f"Cloudflare renegotiate failed ({type(e).__name__}): {e}",
+        )
     return {"ok": True}
 
 
@@ -1002,6 +1007,11 @@ async def renegotiate_robot(
         raise HTTPException(
             status_code=502,
             detail=f"Cloudflare renegotiate failed: {e.detail}",
+        )
+    except Exception as e:  # httpx network/timeout etc — 502 like the other CF handlers
+        raise HTTPException(
+            status_code=502,
+            detail=f"Cloudflare renegotiate failed ({type(e).__name__}): {e}",
         )
     return {"ok": True}
 
@@ -1053,6 +1063,7 @@ async def leave_session(
             session.operator_audio_track_name = None
             session.state = "idle"
             _robot_channel_ids.pop(session_id, None)
+            _pending_video_renegotiations.discard(session_id)
             _pending_robot_renegotiations.pop(session_id, None)
             await db.commit()
 
@@ -1139,7 +1150,17 @@ async def _reap_stale_robots() -> None:
         )).scalars().all()
         for s in stale:
             async with _session_lock(s.id):
-                idle = (datetime.now(timezone.utc) - _utc(s.last_heartbeat)).total_seconds()
+                # Re-read under the lock: a heartbeat can land between the SELECT
+                # above and here, refreshing last_heartbeat on a different db
+                # session. Without this we'd commit the stale row and disconnect
+                # a live robot — and since heartbeat never resets state, it would
+                # stay 'disconnected' (invisible in list_sessions) forever while
+                # still heartbeating 200. Mirrors _reap_stale_operators.
+                await db.refresh(s)
+                last_hb = _utc(s.last_heartbeat)
+                if s.state == "disconnected" or last_hb is None or last_hb >= threshold:
+                    continue  # reconnected or already reaped
+                idle = (datetime.now(timezone.utc) - last_hb).total_seconds()
                 log.warning(
                     "reaping stale robot session=%s robot=%s idle_for=%.1fs",
                     s.id, s.robot_id, idle,
