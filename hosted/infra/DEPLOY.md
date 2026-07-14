@@ -5,7 +5,7 @@
 - AWS CLI configured with full access (EC2, VPC, EIP, Route53)
 - Terraform installed
 - `daneel-local.pem` SSH key (must match AWS key pair `daneel-local` in us-east-2)
-- GitHub repo access to `dimensionalOS/dimensional-teleop`
+- GitHub repo access to `dimensionalOS/dimos` (the teleop code lives under `hosted/`)
 
 ## Secrets
 
@@ -21,11 +21,28 @@ Set these as GitHub repository secrets (Settings → Secrets → Actions) for CI
 
 Find CF credentials in the Cloudflare dashboard: [Realtime SFU](https://dash.cloudflare.com/?to=/:account/realtime/sfu) → `hosted-teleop-dev-0` app.
 
-## Step 1: Terraform — Provision EC2
+## Step 1: Get the code + provision EC2
+
+You deploy from a local checkout — the EC2 box gets code by rsync (Step 3), it
+never clones the repo, and it needs nothing else from the monorepo. If you
+already have `dimos` checked out, skip the clone. Otherwise clone it, either in
+full or as a minimal checkout of just `hosted/` (no LFS models, no other
+subsystems):
 
 ```bash
-git clone https://github.com/dimensionalOS/dimensional-teleop.git
-cd dimensional-teleop/terraform
+# Full clone (if you work in dimos anyway):
+git clone https://github.com/dimensionalOS/dimos.git
+
+# — or — sparse checkout of only the teleop code:
+git clone --filter=blob:none --no-checkout https://github.com/dimensionalOS/dimos.git
+cd dimos && git sparse-checkout set hosted && git checkout main
+```
+
+Then provision. The box is created *here* — Terraform runs `user_data` to
+bootstrap it, so a hand-launched EC2 from the console won't work:
+
+```bash
+cd dimos/hosted/infra/terraform          # already inside dimos: cd hosted/infra/terraform
 cp terraform.tfvars.example terraform.tfvars
 ```
 
@@ -63,7 +80,7 @@ Create an A record pointing `teleop.dimensionalos.com` to the Elastic IP.
 
 **Option B: Terraform (automated)**
 1. Find your Route53 hosted zone ID for `dimensionalos.com`
-2. Uncomment the block in `terraform/route53.tf`
+2. Uncomment the block in `infra/terraform/route53.tf`
 3. Set `route53_zone_id` in your tfvars
 4. `terraform apply`
 
@@ -76,33 +93,34 @@ private, so we don't `git clone` on the box. Instead, rsync the local clone
 in via the deploy script:
 
 ```bash
-# From this repo's root, on your laptop:
-SSH_KEY=/path/to/daneel-local.pem ./scripts/deploy.sh <elastic_ip>
+# From the dimos repo root, on your laptop (deploy.sh self-locates):
+SSH_KEY=/path/to/daneel-local.pem hosted/infra/scripts/deploy.sh <elastic_ip>
 ```
 
-`scripts/deploy.sh`:
-1. Rsyncs `app/` to `/opt/dimos-teleop/app/` (excludes `.venv`, `.env`, `*.db`).
+`infra/scripts/deploy.sh`:
+1. Rsyncs `broker/` to `/opt/dimos-teleop/app/` (excludes `.venv`, `.env`, `*.db`).
 2. Rsyncs `web/` (the SPA Caddy serves) and the repo `Caddyfile`
    (reloads Caddy only if it changed).
 3. Reinstalls `requirements.txt` (cheap if nothing changed).
 4. Restarts the `dimos-teleop` systemd unit.
 5. Health-checks `http://127.0.0.1:8450/health` from inside the box.
 
-Until the first run of `scripts/deploy.sh`, the systemd unit fails-and-retries
-because `app/main.py` doesn't exist. That's expected and harmless.
+Until the first run of `infra/scripts/deploy.sh`, the systemd unit fails-and-
+retries because `/opt/dimos-teleop/app/main.py` doesn't exist yet. That's
+expected and harmless.
 
 The same script works for subsequent code updates — just push to `main` (or your
 working branch), pull locally, and re-run.
 
 ## Step 4: Configure HTTPS (Caddy)
 
-The repo `Caddyfile` is the single source of truth — it splits `/api`, `/health`
-and docs to uvicorn and serves the static SPA from `/opt/dimos-teleop/web`
-(a bare `reverse_proxy` would break the frontend). `scripts/deploy.sh` ships
+The repo `infra/Caddyfile` is the single source of truth — it splits `/api`,
+`/health` and docs to uvicorn and serves the static SPA from `/opt/dimos-teleop/web`
+(a bare `reverse_proxy` would break the frontend). `infra/scripts/deploy.sh` ships
 it and reloads Caddy automatically; to do it by hand:
 
 ```bash
-scp -i daneel-local.pem Caddyfile ubuntu@<elastic_ip>:/tmp/
+scp -i daneel-local.pem infra/Caddyfile ubuntu@<elastic_ip>:/tmp/
 ssh -i daneel-local.pem ubuntu@<elastic_ip> \
   'sudo cp /tmp/Caddyfile /etc/caddy/Caddyfile && sudo systemctl reload caddy'
 ```
@@ -141,9 +159,10 @@ Real-time data (video, pose commands) flows DIRECTLY:
 
 ## Updating
 
-Push to `main`, then:
+Push to `main`, pull locally, then re-run the deploy from the dimos repo root:
 ```bash
-./scripts/deploy.sh <elastic_ip>
+hosted/infra/scripts/deploy.sh <elastic_ip>
 ```
 
-Or SSH in and `git pull` + `sudo systemctl restart dimos-teleop`.
+The box has no clone of the repo, so always deploy from your laptop — there is
+nothing to `git pull` on the instance.

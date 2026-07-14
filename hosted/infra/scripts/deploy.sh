@@ -1,13 +1,15 @@
 #!/bin/bash
 # Deploy code to an existing dimos-teleop EC2 instance.
-# Usage: ./scripts/deploy.sh <ip-address>
+# Usage: ./infra/scripts/deploy.sh <ip-address>   (self-locates; any CWD)
 #
-# Run from the repo root. rsyncs app/ + web/ into /opt/dimos-teleop/ and the
-# repo Caddyfile (single source of truth — do NOT hand-edit on the box) into
-# /etc/caddy/, then restarts the units. Assumes user_data has already
-# bootstrapped Python/Caddy/systemd and chowned /opt/dimos-teleop to ubuntu.
+# rsyncs broker/ + web/ + infra/Caddyfile into /opt/dimos-teleop/ and /etc/caddy/,
+# then restarts the units. Source broker/ -> remote app/ (kept for the running
+# systemd unit + teleop.db). Assumes user_data already bootstrapped the box.
 
 set -euo pipefail
+
+# cd to hosted/ so the relative source paths below work from any CWD.
+cd "$(dirname "${BASH_SOURCE[0]}")/../.."
 
 IP="${1:?Usage: deploy.sh <ip-address>}"
 KEY="${SSH_KEY:-daneel-local.pem}"
@@ -18,13 +20,13 @@ echo "Deploying to $IP..."
 rsync -avz --delete \
   --exclude __pycache__ --exclude '*.pyc' --exclude .venv --exclude '*.db' --exclude '*.db-wal' --exclude '*.db-shm' --exclude '.*-litestream' --exclude .env \
   -e "ssh $SSH_OPTS" \
-  app/ ubuntu@$IP:/opt/dimos-teleop/app/
+  broker/ ubuntu@$IP:/opt/dimos-teleop/app/
 
 # Static SPA — Caddy serves /opt/dimos-teleop/web directly.
 rsync -avz --delete -e "ssh $SSH_OPTS" web/ ubuntu@$IP:/opt/dimos-teleop/web/
 
 # Caddyfile from the repo; reload (not restart) keeps TLS conns alive.
-rsync -avz -e "ssh $SSH_OPTS" Caddyfile ubuntu@$IP:/tmp/Caddyfile.deploy
+rsync -avz -e "ssh $SSH_OPTS" infra/Caddyfile ubuntu@$IP:/tmp/Caddyfile.deploy
 ssh $SSH_OPTS ubuntu@$IP '
   if ! sudo cmp -s /tmp/Caddyfile.deploy /etc/caddy/Caddyfile; then
     sudo cp /tmp/Caddyfile.deploy /etc/caddy/Caddyfile

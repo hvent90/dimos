@@ -17,7 +17,7 @@ The microservice is only in the path for session setup (create, join, leave); op
 ## Quick Start (Local Dev)
 
 ```bash
-cd app
+cd broker
 python3 -m venv .venv && source .venv/bin/activate
 pip install -r requirements.txt
 cp .env.example .env  # Edit with your CF credentials
@@ -36,7 +36,7 @@ API docs at `http://localhost:8450/docs`
 ### Deploy
 
 ```bash
-cd terraform
+cd infra/terraform
 cp terraform.tfvars.example terraform.tfvars  # Edit variables
 terraform init
 terraform apply
@@ -55,7 +55,7 @@ After `terraform apply` outputs the Elastic IP:
 1. Go to Route53 → dimensionalos.com hosted zone
 2. Create A record: `teleop.dimensionalos.com` → `<elastic_ip>`
 
-Or use the Terraform Route53 resource (see `terraform/route53.tf`).
+Or use the Terraform Route53 resource (see `infra/terraform/route53.tf`).
 
 ## API
 

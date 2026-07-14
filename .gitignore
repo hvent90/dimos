@@ -109,3 +109,12 @@ recording*.db
 
 # codegraph
 .codegraph/
+
+# hosted teleop (subtree) — terraform state/secrets, SSH keys, sqlite db.
+hosted/**/*.pem
+hosted/**/*.db
+hosted/infra/terraform/.terraform/
+hosted/infra/terraform/*.tfstate
+hosted/infra/terraform/*.tfstate.backup
+hosted/infra/terraform/.terraform.lock.hcl
+hosted/infra/terraform/terraform.tfvars

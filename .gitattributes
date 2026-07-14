@@ -22,3 +22,9 @@ docs/capabilities/mapping/assets/** filter=lfs diff=lfs merge=lfs -text
 # Mintlify deploy does not fetch Git LFS; keep site branding as normal blobs.
 docs/assets/dimensional-logo-master-transparent.png -filter -diff -merge
 docs/assets/favicon.png -filter -diff -merge
+
+# hosted teleop web branding — keep as normal blobs (deploy rsyncs, no lfs pull).
+hosted/web/**/*.png  -filter -diff -merge
+hosted/web/**/*.jpg  -filter -diff -merge
+hosted/web/**/*.jpeg -filter -diff -merge
+hosted/web/**/*.gif  -filter -diff -merge
