@@ -59,7 +59,7 @@ adapter_registry.available()                              # list registered name
 adapter_registry.create("xarm", address="192.168.1.185", dof=6)
 ```
 
-Discovery is lazy. The registry loads each `_registry.py` manifest (stdlib imports only) to learn the names, and imports the adapter module itself only on `create()`. A missing vendor SDK therefore fails loudly at `create()` rather than silently dropping the arm.
+Discovery is lazy. The registry loads each `_registry.py` manifest (stdlib imports only) to learn the names, and imports the adapter module itself only on `create()`. A missing vendor SDK therefore fails loudly at `create()`.
 
 ## ManipulatorAdapter Protocol
 
