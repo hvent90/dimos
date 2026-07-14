@@ -40,6 +40,7 @@ splits, one trajectory per scene, clean/noisy-01/noisy-02 variants, and roughly
 regenerated immutable release.
 
 Use the read-only Viser loader to inspect representative predicate/variant
-instances. Known deferred work: real-source pilot import/map generation in this
-worktree, agent-facing inputs, answer protocol, scoring, and public distribution
-terms for Structured3D-derived artifacts.
+instances. The agent-evaluation proposal is documented in
+`static_spatial_benchmark_agent_evaluation.md`. Remaining work includes the
+agent-facing input boundary, answer protocol, scoring harness, and public
+distribution terms for Structured3D-derived artifacts.

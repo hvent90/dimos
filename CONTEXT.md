@@ -56,6 +56,30 @@ _Avoid_: observed 3-D wall model, reconstructed public map
 A deterministic, collision-validated path generated from private scene geometry to simulate the lidar observations used to produce one scene's voxel-map snapshots; it is not a recorded robot run.
 _Avoid_: collected trajectory, demonstration trajectory, source-data trajectory
 
+**Public evaluation case**:
+One immutable, agent-visible map-question instance together with its declared public input contract and allowed evaluation capabilities.
+_Avoid_: oracle case, scene-wide corpus access, mutable episode
+
+**Native MCP evaluation track**:
+An evaluation track that measures a configured DimOS agent through its normal MCP skill interface and explicitly permitted public capabilities.
+_Avoid_: model-only evaluation, benchmark wrapper result, code-as-action result
+
+**Code-as-action evaluation track**:
+An experimental evaluation track in which an agent composes bounded public spatial operations as program text under a separate execution boundary.
+_Avoid_: unrestricted module execution, native MCP evaluation track, hardware-control code
+
+**Capability broker**:
+A mediator that exposes only declared, validated public operations to an otherwise isolated evaluation environment.
+_Avoid_: module registry, general RPC gateway, service locator
+
+**Evaluation trust domains**:
+The separation of public scheduling, agent execution, and private scoring so an evaluated system cannot access answer-bearing benchmark material.
+_Avoid_: worker-only separation, permission flag, hidden oracle module
+
+**Prediction ledger**:
+An immutable record of canonical per-case agent submissions and their run provenance, maintained separately from private score records.
+_Avoid_: chat log, live score feed, mutable result cache
+
 **Planning group**:
 A named subset of a robot model's joints and frames that can be selected as a planning unit.
 _Avoid_: move group, joint group
