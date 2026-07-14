@@ -132,7 +132,7 @@ class ObjectTracker2D(Module):
             return {"status": "invalid_bbox"}
 
         self.tracking_bbox = (x1, y1, w, h)
-        self.tracker = cv2.TrackerCSRT_create()  # type: ignore[attr-defined]
+        self.tracker = cv2.TrackerCSRT.create()  # type: ignore[attr-defined]
         self.tracking_initialized = False
         logger.info(f"Tracking target set with bbox: {self.tracking_bbox}")
 

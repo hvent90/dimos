@@ -206,7 +206,7 @@ class ObjectTracking(Module):
 
         # Set tracking parameters
         self.tracking_bbox = (x1, y1, w, h)  # Store in (x, y, w, h) format
-        self.tracker = cv2.TrackerCSRT_create()  # type: ignore[attr-defined]
+        self.tracker = cv2.TrackerCSRT.create()  # type: ignore[attr-defined]
         self.tracking_initialized = False
         self.original_des = None
         self.reid_fail_count = 0

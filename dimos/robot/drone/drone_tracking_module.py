@@ -172,7 +172,7 @@ class DroneTrackingModule(Module):
             logger.info(f"Object detected at bbox: {bbox}")
 
             # Initialize CSRT tracker
-            tracker = cv2.TrackerCSRT_create()  # type: ignore[attr-defined]
+            tracker = cv2.TrackerCSRT.create()  # type: ignore[attr-defined]
 
             # Convert bbox format from [x1, y1, x2, y2] to [x, y, w, h]
             x1, y1, x2, y2 = bbox
