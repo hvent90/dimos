@@ -1,3 +1,17 @@
+# Copyright 2026 Dimensional Inc.
+#
+# Licensed under the Apache License, Version 2.0 (the "License");
+# you may not use this file except in compliance with the License.
+# You may obtain a copy of the License at
+#
+#     http://www.apache.org/licenses/LICENSE-2.0
+#
+# Unless required by applicable law or agreed to in writing, software
+# distributed under the License is distributed on an "AS IS" BASIS,
+# WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
+# See the License for the specific language governing permissions and
+# limitations under the License.
+
 """Passive-first rate limiting (HARDENING_PLAN C2).
 
 Token buckets keyed by (caller, route class), applied as ASGI middleware.
@@ -12,6 +26,7 @@ No external deps (repo stays requirements-light); pure logic lives in
 TokenBucket so tests can drive it with a fake clock.
 """
 
+import hashlib
 import logging
 import time
 
@@ -98,19 +113,21 @@ class RateLimiter:
             del self.buckets[k]
 
 
-def caller_id(request: Request) -> str:
-    """Caller identity for bucketing, cheapest-first.
+def _fp(secret: str) -> str:
+    # Non-reversible 16-hex fingerprint: stable per caller, safe to log.
+    return hashlib.sha256(secret.encode("utf-8")).hexdigest()[:16]
 
-    Auth runs later (route dependencies), so the middleware can't key on the
-    verified subject. Robot key / bearer prefixes are still per-caller stable
-    tokens; the X-Forwarded-For hop (set by Caddy) covers anonymous probing.
+
+def caller_id(request: Request) -> str:
+    """Caller identity for bucketing (auth runs later, so no verified subject).
+    Keys/tokens are fingerprinted — never logged raw; XFF (Caddy) covers probing.
     """
     robot_key = request.headers.get("x-robot-api-key")
     if robot_key:
-        return f"key:{robot_key[:20]}"
+        return f"key:{_fp(robot_key)}"
     auth = request.headers.get("authorization", "")
-    if auth.startswith("Bearer ") and len(auth) > 27:
-        return f"tok:{auth[7:27]}"
+    if auth.startswith("Bearer ") and len(auth) > 7:
+        return f"tok:{_fp(auth[7:])}"
     fwd = request.headers.get("x-forwarded-for", "")
     ip = fwd.split(",")[0].strip() if fwd else (request.client.host if request.client else "?")
     return f"ip:{ip}"

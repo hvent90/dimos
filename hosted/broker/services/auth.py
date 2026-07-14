@@ -1,3 +1,17 @@
+# Copyright 2026 Dimensional Inc.
+#
+# Licensed under the Apache License, Version 2.0 (the "License");
+# you may not use this file except in compliance with the License.
+# You may obtain a copy of the License at
+#
+#     http://www.apache.org/licenses/LICENSE-2.0
+#
+# Unless required by applicable law or agreed to in writing, software
+# distributed under the License is distributed on an "AS IS" BASIS,
+# WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
+# See the License for the specific language governing permissions and
+# limitations under the License.
+
 """Cognito JWT auth for operators and API key auth for robots.
 
 Operators sign in against the Cognito user pool from the SPA; this module
@@ -121,8 +135,8 @@ async def get_robot_id(api_key: str | None = Security(api_key_header)) -> str:
                 if not key_record.robot_id:
                     # Multiple such keys share owner_id as identity; ops should fix.
                     log.warning(
-                        "API key %s... has no robot_id; using owner_id as identity",
-                        api_key[:12],
+                        "API key for owner_id=%s has no robot_id; using owner_id as identity",
+                        key_record.owner_id,
                     )
                 return key_record.robot_id or key_record.owner_id
 
