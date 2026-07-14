@@ -1,0 +1,159 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>DIMENSIONAL // TELEOP</title>
+    <link rel="preconnect" href="https://fonts.googleapis.com">
+    <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+    <link href="https://fonts.googleapis.com/css2?family=JetBrains+Mono:wght@400;500;700&display=swap" rel="stylesheet">
+    <script src="https://cdn.tailwindcss.com"></script>
+    <script>
+        // DIMENSIONAL terminal palette (dimensionalos.com/prototype):
+        // bg #0d0e0e/#151515, faint grid, fg #fff, accent #b0e1f0 (pale cyan).
+        tailwind.config = {
+            theme: { extend: { colors: {
+                // Pale cyan accent — same hue across the scale so hover/active
+                // stay on-brand instead of veering to a generic Tailwind blue.
+                dim: { 50:'#eaf6fb', 100:'#d4ecf5', 400:'#c4e7f3', 500:'#b0e1f0',
+                       600:'#8fcfe2', 700:'#6db8cf', 900:'#3d6a7a' },
+                // Dark backgrounds matching the site (replaces Tailwind grays).
+                bg: { 900:'#0d0e0e', 950:'#121313' },
+            }}}
+        }
+    </script>
+    <style>
+        body {
+            font-family: 'JetBrains Mono', ui-monospace, 'Cascadia Mono', monospace;
+            /* faint terminal grid, matching dimensionalos.com/prototype */
+            background-color: #0d0e0e;
+            background-image:
+                linear-gradient(rgba(176, 225, 240, 0.035) 1px, transparent 1px),
+                linear-gradient(90deg, rgba(176, 225, 240, 0.035) 1px, transparent 1px);
+            background-size: 28px 28px;
+        }
+        .fade-in { animation: fadeIn 0.3s ease-in; }
+        @keyframes fadeIn { from { opacity: 0; transform: translateY(8px); } to { opacity: 1; transform: translateY(0); } }
+        .key-reveal { word-break: break-all; }
+        #canvas { display: none; position: absolute; inset: 0; width: 100%; height: 100%; }
+        /* Camera/map swap: the .is-main element fills the stage; .is-pip floats
+           in the top-right corner. Applied by go2.js setMainView().
+           object-contain on BOTH so a wide dual-cam frame is never cropped —
+           it letterboxes instead. */
+        #stage .is-main { position: absolute; inset: 0; width: 100%; height: 100%; z-index: 1; object-fit: contain; }
+        #stage .is-pip {
+            position: absolute; top: 12px; right: 12px; z-index: 3;
+            width: 12rem; height: 7.5rem;   /* resizable — see the drag handle */
+            background: #000; border: 1px solid #2a2a2a; border-radius: 0.5rem;
+            overflow: hidden; box-shadow: 0 4px 14px rgba(0,0,0,.5);
+            cursor: pointer; object-fit: contain;
+        }
+        /* PiP resize handle (bottom-left, since PiP sits top-right). One small
+           diagonal line; aspect ratio locks on drag. */
+        #pip-resize {
+            position: absolute; z-index: 4; width: 11px; height: 11px;
+            cursor: nesw-resize; display: none;
+            background:
+              linear-gradient(45deg, transparent 4px, #b0e1f0 4px, #b0e1f0 6px, transparent 6px);
+            opacity: .55;
+        }
+        #pip-resize:hover { opacity: 1; }
+        /* CRT glow for the wordmark */
+        .crt-glow { filter: drop-shadow(0 0 6px rgba(176, 225, 240, 0.45)) drop-shadow(0 0 22px rgba(176, 225, 240, 0.18)); }
+        .term-caps { text-transform: uppercase; letter-spacing: 0.12em; }
+        .kb-key {
+            width: 56px; height: 56px;
+            display: flex; align-items: center; justify-content: center;
+            background: #121313; border: 1px solid #2a2a2a;
+            border-radius: 4px; font-weight: 600;
+            color: #d1d5db;
+            user-select: none;
+            /* Tappable on touch: no scroll/zoom hijack, no tap-highlight flash. */
+            cursor: pointer;
+            touch-action: none;
+            -webkit-tap-highlight-color: transparent;
+        }
+        .kb-key.wide { width: 96px; font-size: 0.85rem; }
+        /* Secondary keys (Q/E strafe): dimmer than primary WASD, same press glow. */
+        .kb-key-secondary { color: #6b7280; border-color: #1f1f1f; background: #0e0f0f; }
+        .kb-key.pressed {
+            background: #b0e1f0; border-color: #8fcfe2;
+            color: #121313;  /* dark text on pale cyan (white is unreadable) */
+        }
+
+        /* ── Go2 cockpit (views/go2.js) ─────────────────────────────── */
+        .cmd-btn {
+            display:flex; flex-direction:column; align-items:flex-start; gap:2px;
+            width:100%; padding:10px 12px; border-radius:4px;
+            background:#121313; border:1px solid #2a2a2a; color:#d1d5db;
+            font-size:.875rem; text-align:left; cursor:pointer;
+            transition: background .12s, border-color .12s, opacity .12s, transform .06s;
+            -webkit-tap-highlight-color: transparent;
+        }
+        .cmd-btn:hover:not(:disabled):not([data-status="pending"]) { border-color:#6db8cf; background:#171a1a; }
+        .cmd-btn:active:not(:disabled) { transform: translateY(1px); }
+        .cmd-btn[data-status="pending"] { opacity:.6; cursor:wait; border-color:#3d6a7a; }
+        .cmd-btn[data-status="done"]    { background:#b0e1f0; border-color:#8fcfe2; color:#0d0e0e; }
+        .cmd-btn[data-status="error"]   { background:#4a1d1d; border-color:#d97777; color:#f3b4b4; }
+        .cmd-btn:disabled { opacity:.3; cursor:not-allowed; }
+        .cmd-btn.is-active { border-color:#b0e1f0; box-shadow: inset 0 0 0 1px #3d6a7a; }
+
+        /* Compact chip for the video control strip (cmd-btn is width:100%,
+           built for the right-column stack — it stretches inside a flex row). */
+        .strip-btn {
+            display:inline-flex; align-items:center; width:auto;
+            padding:5px 8px; border-radius:4px;
+            background:#121313; border:1px solid #2a2a2a; color:#d1d5db;
+            font-size:10px; line-height:1; cursor:pointer;
+            transition: background .12s, border-color .12s, opacity .12s;
+            -webkit-tap-highlight-color: transparent;
+        }
+        .strip-btn:hover:not(:disabled) { border-color:#6db8cf; background:#171a1a; }
+        .strip-btn:disabled { opacity:.3; cursor:not-allowed; }
+        .strip-btn.is-active { border-color:#b0e1f0; box-shadow: inset 0 0 0 1px #3d6a7a; color:#b0e1f0; }
+
+        .estop {
+            width:100%; padding:16px; border-radius:5px; cursor:pointer;
+            background:#7a1f1f; border:2px solid #d97777; color:#fff;
+            font-weight:700; letter-spacing:.15em; font-size:1rem;
+            transition: background .1s, transform .06s;
+        }
+        .estop:hover { background:#992626; }
+        .estop:active { transform: translateY(1px); }
+        .estop.latched { background:#d97777; color:#0d0e0e; border-color:#fff; animation: estopPulse 1s infinite; }
+        @keyframes estopPulse { 0%,100%{ box-shadow:0 0 0 0 rgba(217,119,119,.6);} 50%{ box-shadow:0 0 0 8px rgba(217,119,119,0);} }
+
+        .pill { display:inline-flex; align-items:center; gap:6px; padding:3px 10px; border-radius:999px; font-size:.7rem; }
+        .pill .dot { width:8px; height:8px; border-radius:999px; }
+        .pill-good { background:rgba(176,225,240,.1); color:#b0e1f0; }   .pill-good .dot{ background:#b0e1f0; }
+        .pill-warn { background:rgba(234,179,8,.12); color:#eab308; }    .pill-warn .dot{ background:#eab308; }
+        .pill-bad  { background:rgba(217,119,119,.14); color:#f3b4b4; }  .pill-bad  .dot{ background:#d97777; }
+        .blocked-banner { background:rgba(217,119,119,.12); border:1px solid #7a1f1f; color:#f3b4b4; }
+        /* body-height slider command feedback */
+        input[type="range"].cmd-sending { opacity:.6; }
+        input[type="range"].cmd-ok  { accent-color:#b0e1f0; }
+        input[type="range"].cmd-err { accent-color:#d97777; }
+    </style>
+</head>
+<body class="bg-bg-900 text-white min-h-screen">
+    <div id="app"></div>
+    <canvas id="canvas"></canvas>
+
+    <!-- LiveKit client SDK (UMD global `LivekitClient`) for livekit-transport
+         robots; the cloudflare path uses the browser's native WebRTC and
+         doesn't need it. Pinned + SRI so a CDN compromise or a surprise
+         2.x release can't ship arbitrary script into a robot-control page.
+         To bump: change the version, recompute
+         `curl -s <url> | openssl dgst -sha384 -binary | openssl base64 -A`. -->
+    <script src="https://cdn.jsdelivr.net/npm/livekit-client@2.20.0/dist/livekit-client.umd.min.js"
+        integrity="sha384-s/eoT8qpr81c6c9MG5V7GA5xi5IzfEUQLyk3liFfzu9seBzZ3beFVjsD3pXTRmUc"
+        crossorigin="anonymous"></script>
+    <!-- Three.js for the VR scene (vr.js). Pinned exact version; import maps
+         don't support SRI everywhere yet, so the pin + CSP host allowlist is
+         the supply-chain control here. -->
+    <script type="importmap">
+    { "imports": { "three": "https://cdn.jsdelivr.net/npm/three@0.185.1/build/three.module.min.js" } }
+    </script>
+    <script type="module" src="js/main.js"></script>
+</body>
+</html>

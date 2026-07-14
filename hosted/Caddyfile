@@ -1,0 +1,41 @@
+teleop.dimensionalos.com {
+    # API routes → uvicorn backend (checked first due to handle ordering)
+    handle /api/* {
+        reverse_proxy 127.0.0.1:8450
+    }
+    handle /health {
+        reverse_proxy 127.0.0.1:8450
+    }
+    handle /docs* {
+        reverse_proxy 127.0.0.1:8450
+    }
+    handle /openapi.json {
+        reverse_proxy 127.0.0.1:8450
+    }
+    handle /redoc* {
+        reverse_proxy 127.0.0.1:8450
+    }
+
+    # Everything else → static frontend (SPA fallback).
+    # no-cache = always revalidate via etag (304 when unchanged), so a deploy
+    # takes effect on next load instead of browsers (esp. iOS Safari) serving
+    # stale cached JS modules.
+    handle {
+        root * /opt/dimos-teleop/web
+        header Cache-Control "no-cache"
+        # Enforced, low-risk headers. X-Frame-Options: a robot-control UI must
+        # never be frameable (clickjacking → operator clicks into a hidden
+        # cockpit). nosniff + referrer are free wins.
+        header X-Frame-Options "DENY"
+        header X-Content-Type-Options "nosniff"
+        header Referrer-Policy "strict-origin-when-cross-origin"
+        # CSP in Report-Only while we validate against real sessions (BUG_AUDIT
+        # N2: shipping enforcement blind would silently break unknown bits).
+        # Watch the browser console / devtools for violations for a week, then
+        # move to Content-Security-Policy. 'unsafe-inline' is required by the
+        # inline tailwind.config script and Tailwind's injected <style>.
+        header Content-Security-Policy-Report-Only "default-src 'self'; script-src 'self' 'unsafe-inline' https://cdn.tailwindcss.com https://cdn.jsdelivr.net https://esm.sh; style-src 'self' 'unsafe-inline' https://fonts.googleapis.com; font-src https://fonts.gstatic.com; img-src 'self' data: blob:; media-src 'self' blob:; connect-src 'self' https://esm.sh https://*.amazonaws.com wss:; worker-src 'self' blob:; frame-ancestors 'none'; base-uri 'self'"
+        try_files {path} /index.html
+        file_server
+    }
+}
