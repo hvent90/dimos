@@ -17,12 +17,12 @@
 from __future__ import annotations
 
 from pathlib import Path
-import threading
 from unittest.mock import MagicMock
 
 import pytest
 from pytest_mock import MockerFixture
 
+from dimos.manipulation._test_manipulation_helpers import make_module as _make_module
 from dimos.manipulation.manipulation_module import (
     ManipulationModule,
     ManipulationModuleConfig,
@@ -38,9 +38,7 @@ from dimos.manipulation.planning.spec.models import (
     GeneratedPlan,
     IKResult,
     PlanningResult,
-    PlanningSceneInfo,
 )
-from dimos.manipulation.planning.spec.protocols import VisualizationSpec
 from dimos.msgs.geometry_msgs.Pose import Pose
 from dimos.msgs.geometry_msgs.PoseStamped import PoseStamped
 from dimos.msgs.geometry_msgs.Quaternion import Quaternion
@@ -115,26 +113,6 @@ def simple_trajectory():
     )
 
 
-class _ManipulationModuleHarness(ManipulationModule):
-    def __init__(self) -> None:
-        self._state = ManipulationState.IDLE
-        self._lock = threading.Lock()
-        self._error_message = ""
-        self._planning_epoch = 0
-        self._robots = {}
-        self._last_plan = None
-        self._world_monitor = None
-        self._planner = None
-        self._kinematics = None
-        self._coordinator_client = None
-        self.config = MagicMock(planning_timeout=10.0)
-
-
-def _make_module() -> ManipulationModule:
-    """Create a lightweight ManipulationModule harness for behavior tests."""
-    return _ManipulationModuleHarness()
-
-
 def _one_joint_config(name: str = "arm") -> RobotModelConfig:
     return RobotModelConfig(
         name=name,
@@ -158,6 +136,7 @@ def _install_generated_plan(
     *points: list[float],
 ) -> None:
     """Install a generated plan and enough monitor state to derive robot paths."""
+    global_joint_names = [f"{config.name}/{joint}" for joint in config.joint_names]
     module._robots = {config.name: ("robot_id", config, traj_gen)}
     module._world_monitor = MagicMock()
     module._world_monitor.planning_groups = PlanningGroupRegistry([config])
@@ -165,15 +144,55 @@ def _install_generated_plan(
         name=config.joint_names,
         position=[0.0 for _ in config.joint_names],
     )
+    module._world_monitor.current_global_joint_state.return_value = JointState(
+        name=global_joint_names,
+        position=[0.0 for _ in config.joint_names],
+    )
     module._last_plan = GeneratedPlan(
+        trajectory=JointTrajectory(
+            joint_names=global_joint_names,
+            points=[
+                TrajectoryPoint(
+                    time_from_start=float(index),
+                    positions=list(point),
+                    velocities=[0.0 for _ in config.joint_names],
+                )
+                for index, point in enumerate(points)
+            ],
+        ),
         group_ids=(f"{config.name}/manipulator",),
         status=PlanningStatus.SUCCESS,
         path=[
             JointState(
-                name=[f"{config.name}/{joint}" for joint in config.joint_names],
+                name=global_joint_names,
                 position=list(point),
             )
             for point in points
+        ],
+    )
+
+
+def _generated_plan_trajectory(joint_names: list[str], *points: list[float]) -> JointTrajectory:
+    return JointTrajectory(
+        joint_names=joint_names,
+        points=[
+            TrajectoryPoint(
+                time_from_start=float(index),
+                positions=list(point),
+                velocities=[0.0 for _ in joint_names],
+            )
+            for index, point in enumerate(points)
+        ],
+    )
+
+
+def _make_trajectory(*points: tuple[float, list[float]]) -> JointTrajectory:
+    joint_names = [f"j{i}" for i in range(len(points[0][1]))] if points else []
+    return JointTrajectory(
+        joint_names=joint_names,
+        points=[
+            TrajectoryPoint(time_from_start=time_from_start, positions=positions)
+            for time_from_start, positions in points
         ],
     )
 
@@ -196,6 +215,18 @@ class TestStateMachine:
         module._state = ManipulationState.EXECUTING
         assert module.cancel() is True
         assert module._state == ManipulationState.IDLE
+
+    def test_cancel_hides_active_plan_preview(self):
+        module = _make_module()
+        module._state = ManipulationState.EXECUTING
+        module._last_plan = GeneratedPlan(
+            trajectory=JointTrajectory(), group_ids=("arm/manipulator",), path=[]
+        )
+        module._world_monitor = MagicMock()
+
+        assert module.cancel() is True
+
+        module._world_monitor.cancel_preview_animation.assert_called_once_with()
 
     def test_reset_not_during_execution(self):
         """Reset works in any state except EXECUTING."""
@@ -485,6 +516,14 @@ class TestPlanningGroupApis:
             name=robot_config.joint_names,
             position=[0.0, 0.0, 0.0],
         )
+        module._world_monitor.current_global_joint_state.return_value = JointState(
+            name=["test_arm/joint1", "test_arm/joint2", "test_arm/joint3"],
+            position=[0.0, 0.0, 0.0],
+        )
+        module._world_monitor.current_global_joint_state.return_value = JointState(
+            name=["test_arm/joint1", "test_arm/joint2", "test_arm/joint3"],
+            position=[0.0, 0.0, 0.0],
+        )
         result_path = [
             JointState(
                 name=["test_arm/joint1", "test_arm/joint2", "test_arm/joint3"],
@@ -518,10 +557,9 @@ class TestPlanningGroupApis:
         assert module._last_plan is not None
         assert module._last_plan.group_ids == ("test_arm/manipulator",)
         assert module._last_plan.path == result_path
-        projected = module._project_plan_to_robot_paths(module._last_plan)
-        assert projected is not None
-        assert projected["test_arm"][1].position == [0.1, 0.2, 0.3]
-        assert module._trajectory_from_robot_path("test_arm", projected["test_arm"]) is not None
+        trajectories = module._split_plan_trajectory_by_robot(module._last_plan)
+        assert trajectories is not None
+        assert trajectories["test_arm"].points[-1].positions == [0.1, 0.2, 0.3]
         module._planner.plan_selected_joint_path.assert_called_once()
         _, kwargs = module._planner.plan_selected_joint_path.call_args
         assert kwargs["selection"].group_ids == ("test_arm/manipulator",)
@@ -530,6 +568,18 @@ class TestPlanningGroupApis:
             "test_arm/joint2",
             "test_arm/joint3",
         ]
+
+        success = module.plan_to_joint_targets(
+            {
+                "test_arm/manipulator": JointState(
+                    name=robot_config.joint_names,
+                    position=[0.1, 0.2, 0.3],
+                )
+            }
+        )
+
+        assert success is True
+        assert module._planner.plan_selected_joint_path.call_count == 2
 
     def test_plan_to_pose_targets_uses_group_ik_and_selected_path(self, robot_config):
         module = _make_module()
@@ -548,6 +598,10 @@ class TestPlanningGroupApis:
         )
         module._world_monitor.get_current_joint_state.return_value = JointState(
             name=robot_config.joint_names,
+            position=[0.0, 0.0, 0.0],
+        )
+        module._world_monitor.current_global_joint_state.return_value = JointState(
+            name=["test_arm/joint1", "test_arm/joint2", "test_arm/joint3"],
             position=[0.0, 0.0, 0.0],
         )
         ik_goal = JointState(
@@ -589,7 +643,9 @@ class TestPlanningGroupApis:
         _, planner_kwargs = module._planner.plan_selected_joint_path.call_args
         assert planner_kwargs["goal"] is ik_goal
 
-    def test_failed_plan_projection_clears_generated_plan(self, robot_config, simple_trajectory):
+    def test_failed_plan_materialization_clears_generated_plan(
+        self, robot_config, simple_trajectory
+    ):
         module = _make_module()
         registry = PlanningGroupRegistry([robot_config])
         module._robots = {"test_arm": ("robot_id", robot_config, MagicMock())}
@@ -602,6 +658,11 @@ class TestPlanningGroupApis:
         )
         module._world_monitor.get_current_joint_state.return_value = None
         module._last_plan = GeneratedPlan(
+            trajectory=_generated_plan_trajectory(
+                ["test_arm/joint1", "test_arm/joint2", "test_arm/joint3"],
+                [0.0, 0.0, 0.0],
+                [0.1, 0.2, 0.3],
+            ),
             group_ids=("test_arm/manipulator",),
             status=PlanningStatus.SUCCESS,
             path=[
@@ -647,7 +708,16 @@ class TestPlanningGroupApis:
             name=robot_config.joint_names,
             position=[0.0, 0.0, 0.0],
         )
+        module._world_monitor.current_global_joint_state.return_value = JointState(
+            name=["test_arm/joint1", "test_arm/joint2", "test_arm/joint3"],
+            position=[0.0, 0.0, 0.0],
+        )
         module._last_plan = GeneratedPlan(
+            trajectory=_generated_plan_trajectory(
+                ["test_arm/joint1", "test_arm/joint2", "test_arm/joint3"],
+                [0.0, 0.0, 0.0],
+                [0.1, 0.2, 0.3],
+            ),
             group_ids=("test_arm/manipulator",),
             status=PlanningStatus.SUCCESS,
             path=[
@@ -673,8 +743,165 @@ class TestPlanningGroupApis:
         assert method_name == "execute"
         trajectory = payload["trajectory"]
         assert trajectory.joint_names == simple_trajectory.joint_names
-        assert trajectory.points == simple_trajectory.points
+        assert [point.positions for point in trajectory.points] == [
+            [0.0, 0.0, 0.0],
+            [0.1, 0.2, 0.3],
+        ]
+        traj_gen.generate.assert_not_called()
         assert module._state == ManipulationState.COMPLETED
+
+    def test_execute_plan_rejects_stale_planned_robot_without_consuming_plan(self):
+        module = _make_module()
+        config = _one_joint_config()
+        traj_gen = MagicMock()
+        _install_generated_plan(module, config, traj_gen, [0.0], [1.0])
+        module._state = ManipulationState.COMPLETED
+        module._world_monitor.current_global_joint_state.return_value = JointState(
+            name=[], position=[]
+        )
+        module._world_monitor.is_state_stale.return_value = True
+        mock_client = MagicMock()
+        module._coordinator_client = mock_client
+
+        assert module.execute_plan() is False
+
+        assert module._last_plan is not None
+        assert module._state == ManipulationState.COMPLETED
+        mock_client.task_invoke.assert_not_called()
+
+    def test_execute_plan_rejects_duplicate_current_global_joints_without_consuming_plan(self):
+        module = _make_module()
+        config = _one_joint_config()
+        traj_gen = MagicMock()
+        _install_generated_plan(module, config, traj_gen, [0.0], [1.0])
+        module._state = ManipulationState.COMPLETED
+        module._world_monitor.current_global_joint_state.return_value = JointState(
+            name=["arm/j0", "arm/j0"], position=[0.0, 0.0]
+        )
+        mock_client = MagicMock()
+        module._coordinator_client = mock_client
+
+        assert module.execute_plan() is False
+
+        assert module._last_plan is not None
+        assert module._state == ManipulationState.COMPLETED
+        mock_client.task_invoke.assert_not_called()
+
+    def test_execute_plan_rejects_reordered_current_global_joints_without_consuming_plan(self):
+        module = _make_module()
+        config = RobotModelConfig(
+            name="arm",
+            model_path=Path("/path"),
+            base_pose=PoseStamped(position=Vector3(), orientation=Quaternion()),
+            joint_names=["j0", "j1"],
+            base_link="base_link",
+            planning_groups=[
+                PlanningGroupDefinition(
+                    name="manipulator",
+                    joint_names=("j0", "j1"),
+                    base_link="base_link",
+                    tip_link="ee",
+                )
+            ],
+            coordinator_task_name="traj_arm",
+        )
+        traj_gen = MagicMock()
+        _install_generated_plan(module, config, traj_gen, [0.0, 1.0], [0.5, 1.5])
+        module._state = ManipulationState.COMPLETED
+        module._world_monitor.current_global_joint_state.return_value = JointState(
+            name=["arm/j1", "arm/j0"], position=[1.0, 0.0]
+        )
+        mock_client = MagicMock()
+        module._coordinator_client = mock_client
+
+        assert module.execute_plan() is False
+
+        assert module._last_plan is not None
+        assert module._state == ManipulationState.COMPLETED
+        mock_client.task_invoke.assert_not_called()
+
+    def test_execute_plan_dispatches_selected_subsets_with_shared_clock_and_mapping(self):
+        left = RobotModelConfig(
+            name="left",
+            model_path=Path("/path"),
+            base_pose=PoseStamped(position=Vector3(), orientation=Quaternion()),
+            joint_names=["j0", "j1"],
+            planning_groups=[
+                PlanningGroupDefinition(
+                    name="wrist", joint_names=("j1",), base_link="base", tip_link="ee"
+                )
+            ],
+            joint_name_mapping={"left_coord_j1": "j1"},
+            coordinator_task_name="traj_left",
+        )
+        right = RobotModelConfig(
+            name="right",
+            model_path=Path("/path"),
+            base_pose=PoseStamped(position=Vector3(), orientation=Quaternion()),
+            joint_names=["k0", "k1"],
+            planning_groups=[
+                PlanningGroupDefinition(
+                    name="elbow", joint_names=("k0",), base_link="base", tip_link="ee"
+                )
+            ],
+            coordinator_task_name="traj_right",
+        )
+        module = _make_module()
+        module._robots = {
+            "left": ("left_id", left, MagicMock()),
+            "right": ("right_id", right, MagicMock()),
+        }
+        module._world_monitor = MagicMock()
+        module._world_monitor.planning_groups = PlanningGroupRegistry([left, right])
+        module._last_plan = GeneratedPlan(
+            group_ids=("left/wrist", "right/elbow"),
+            status=PlanningStatus.SUCCESS,
+            path=[
+                JointState(name=["left/j1", "right/k0"], position=[0.0, 1.0]),
+                JointState(name=["left/j1", "right/k0"], position=[0.5, 1.5]),
+            ],
+            trajectory=JointTrajectory(
+                joint_names=["left/j1", "right/k0"],
+                points=[
+                    TrajectoryPoint(
+                        time_from_start=0.0,
+                        positions=[0.0, 1.0],
+                        velocities=[0.0, 0.0],
+                    ),
+                    TrajectoryPoint(
+                        time_from_start=2.5,
+                        positions=[0.5, 1.5],
+                        velocities=[0.2, 0.4],
+                    ),
+                ],
+            ),
+        )
+        mock_client = MagicMock()
+        mock_client.task_invoke.return_value = True
+        module._coordinator_client = mock_client
+        module._world_monitor.get_current_joint_state.side_effect = lambda robot_id: {
+            "left_id": JointState(name=["j0", "j1"], position=[9.0, 0.0]),
+            "right_id": JointState(name=["k0", "k1"], position=[1.0, 9.0]),
+        }[robot_id]
+        module._world_monitor.current_global_joint_state.return_value = JointState(
+            name=["left/j1", "right/k0"], position=[0.0, 1.0]
+        )
+
+        assert module.execute_plan() is True
+
+        calls = mock_client.task_invoke.call_args_list
+        left_payload = calls[0].args[2]["trajectory"]
+        right_payload = calls[1].args[2]["trajectory"]
+        assert calls[0].args[0] == "traj_left"
+        assert left_payload.joint_names == ["left_coord_j1"]
+        assert [point.time_from_start for point in left_payload.points] == [0.0, 2.5]
+        assert [point.positions for point in left_payload.points] == [[0.0], [0.5]]
+        assert [point.velocities for point in left_payload.points] == [[0.0], [0.2]]
+        assert calls[1].args[0] == "traj_right"
+        assert right_payload.joint_names == ["k0"]
+        assert [point.time_from_start for point in right_payload.points] == [0.0, 2.5]
+        assert [point.positions for point in right_payload.points] == [[1.0], [1.5]]
+        assert [point.velocities for point in right_payload.points] == [[0.0], [0.4]]
 
     def test_pose_wrappers_fail_safely_without_unique_pose_group(self, robot_config):
         no_pose_config = RobotModelConfig(
@@ -819,8 +1046,17 @@ class TestExecute:
             name=robot_config.joint_names,
             position=[0.0, 0.0, 0.0],
         )
+        module._world_monitor.current_global_joint_state.return_value = JointState(
+            name=["test_arm/joint1", "test_arm/joint2", "test_arm/joint3"],
+            position=[0.0, 0.0, 0.0],
+        )
         module._coordinator_client = MagicMock()
         module._last_plan = GeneratedPlan(
+            trajectory=_generated_plan_trajectory(
+                ["test_arm/joint1", "test_arm/joint2", "test_arm/joint3"],
+                [0.0, 0.0, 0.0],
+                [0.1, 0.2, 0.3],
+            ),
             group_ids=("test_arm/manipulator",),
             status=PlanningStatus.SUCCESS,
             path=[
@@ -836,7 +1072,7 @@ class TestExecute:
         )
 
         assert module.execute_plan() is False
-        assert module._state == ManipulationState.FAULT
+        assert module._state == ManipulationState.IDLE
 
     def test_execute_success(self, robot_config, simple_trajectory):
         """Successful execute calls coordinator via task_invoke."""
@@ -857,7 +1093,11 @@ class TestExecute:
         assert method_name == "execute"
         trajectory = payload["trajectory"]
         assert trajectory.joint_names == simple_trajectory.joint_names
-        assert trajectory.points == simple_trajectory.points
+        assert [point.positions for point in trajectory.points] == [
+            [0.0, 0.0, 0.0],
+            [0.1, 0.2, 0.3],
+        ]
+        traj_gen.generate.assert_not_called()
 
     def test_execute_rejected(self, robot_config, simple_trajectory):
         """Rejected execution sets FAULT state."""
@@ -888,321 +1128,3 @@ class TestRobotModelConfigMapping:
         # URDF -> Coordinator
         assert config.get_coordinator_joint_name("joint1") == "left/joint1"
         assert config.get_coordinator_joint_name("unknown") == "unknown"
-
-
-def _make_module_with_monitor(*configs: RobotModelConfig) -> ManipulationModule:
-    """Create a ManipulationModule with a mocked world monitor and robots configured."""
-    module = _make_module()
-    module._world_monitor = MagicMock()
-    module._init_joints = {}
-    for config in configs:
-        robot_id = f"robot_{config.name}"
-        module._robots[config.name] = (robot_id, config, MagicMock())
-    return module
-
-
-def _make_joint_state(positions: list[float], name: list[str] | None = None) -> JointState:
-    return JointState(name=name or [f"j{i}" for i in range(len(positions))], position=positions)
-
-
-def _make_path(*points: list[float]) -> list[JointState]:
-    return [_make_joint_state(list(point)) for point in points]
-
-
-def _make_trajectory(*points: tuple[float, list[float]]) -> JointTrajectory:
-    joint_names = [f"j{i}" for i in range(len(points[0][1]))] if points else []
-    return JointTrajectory(
-        joint_names=joint_names,
-        points=[
-            TrajectoryPoint(time_from_start=time_from_start, positions=positions)
-            for time_from_start, positions in points
-        ],
-    )
-
-
-def _make_world_monitor_with_viz(viz: VisualizationSpec | None) -> WorldMonitor:
-    world = MagicMock()
-    return WorldMonitor(
-        world=world,
-        visualization=viz,
-    )
-
-
-class FakeVisualization:
-    def __init__(self) -> None:
-        self.close_count = 0
-        self.published = False
-        self.preview_shown: list[str] = []
-        self.preview_hidden: list[str] = []
-        self.animations: list[tuple[str, list[JointState], float]] = []
-
-    def initialize_scene(self, scene: PlanningSceneInfo) -> None:
-        pass
-
-    def get_visualization_url(self) -> str | None:
-        return "123"
-
-    def publish_visualization(self, ctx: object | None = None) -> None:
-        self.published = True
-
-    def show_preview(self, robot_id: str) -> None:
-        self.preview_shown.append(robot_id)
-
-    def hide_preview(self, robot_id: str) -> None:
-        self.preview_hidden.append(robot_id)
-
-    def animate_path(self, robot_id: str, path: list[JointState], duration: float = 3.0) -> None:
-        self.animations.append((robot_id, path, duration))
-
-    def close(self) -> None:
-        self.close_count += 1
-
-
-class TestOnJointState:
-    """Test _on_joint_state routing, splitting, and init capture."""
-
-    def test_routes_positions_to_monitor(self, robot_config_with_mapping):
-        """Joint positions from aggregated message are routed to the correct monitor."""
-        module = _make_module_with_monitor(robot_config_with_mapping)
-
-        msg = JointState(
-            name=["left/joint1", "left/joint2", "left/joint3"],
-            position=[0.1, 0.2, 0.3],
-            velocity=[1.0, 2.0, 3.0],
-        )
-        module._on_joint_state(msg)
-
-        # Verify world_monitor received the sub-message
-        module._world_monitor.on_joint_state.assert_called_once()
-        call_args = module._world_monitor.on_joint_state.call_args
-        sub_msg = call_args[0][0]
-        assert sub_msg.position == [0.1, 0.2, 0.3]
-        assert sub_msg.velocity == [1.0, 2.0, 3.0]
-        assert call_args[1]["robot_id"] == "robot_left_arm"
-
-    def test_skips_robot_with_missing_joints(self, robot_config_with_mapping):
-        """Robots whose joints are absent from the message are skipped."""
-        module = _make_module_with_monitor(robot_config_with_mapping)
-
-        # Message has none of left_arm's joints
-        msg = JointState(
-            name=["right/joint1", "right/joint2"],
-            position=[0.5, 0.6],
-        )
-        module._on_joint_state(msg)
-
-        module._world_monitor.on_joint_state.assert_not_called()
-
-    def test_captures_init_joints_on_first_call(self, robot_config_with_mapping):
-        """First joint state is stored as init joints; subsequent calls don't overwrite."""
-        module = _make_module_with_monitor(robot_config_with_mapping)
-
-        first_msg = JointState(
-            name=["left/joint1", "left/joint2", "left/joint3"],
-            position=[0.1, 0.2, 0.3],
-        )
-        module._on_joint_state(first_msg)
-        assert "left_arm" in module._init_joints
-        assert module._init_joints["left_arm"].position == [0.1, 0.2, 0.3]
-
-        # Second call should NOT overwrite
-        second_msg = JointState(
-            name=["left/joint1", "left/joint2", "left/joint3"],
-            position=[0.9, 0.8, 0.7],
-        )
-        module._on_joint_state(second_msg)
-        assert module._init_joints["left_arm"].position == [0.1, 0.2, 0.3]
-
-    def test_multi_robot_splits_correctly(self):
-        """With two robots, each gets only its own joints from the aggregated message."""
-        left_config = RobotModelConfig(
-            name="left",
-            model_path=Path("/path/to/robot.urdf"),
-            base_pose=PoseStamped(position=Vector3(), orientation=Quaternion()),
-            joint_names=["j1", "j2"],
-            base_link="base",
-            planning_groups=[
-                PlanningGroupDefinition(
-                    name="manipulator", joint_names=("j1", "j2"), base_link="base", tip_link="ee"
-                )
-            ],
-            joint_name_mapping={"left/j1": "j1", "left/j2": "j2"},
-            coordinator_task_name="traj_left",
-        )
-        right_config = RobotModelConfig(
-            name="right",
-            model_path=Path("/path/to/robot.urdf"),
-            base_pose=PoseStamped(position=Vector3(), orientation=Quaternion()),
-            joint_names=["j1", "j2"],
-            base_link="base",
-            planning_groups=[
-                PlanningGroupDefinition(
-                    name="manipulator", joint_names=("j1", "j2"), base_link="base", tip_link="ee"
-                )
-            ],
-            joint_name_mapping={"right/j1": "j1", "right/j2": "j2"},
-            coordinator_task_name="traj_right",
-        )
-        module = _make_module_with_monitor(left_config, right_config)
-
-        msg = JointState(
-            name=["left/j1", "left/j2", "right/j1", "right/j2"],
-            position=[1.0, 2.0, 3.0, 4.0],
-            velocity=[0.1, 0.2, 0.3, 0.4],
-        )
-        module._on_joint_state(msg)
-
-        assert module._world_monitor.on_joint_state.call_count == 2
-
-        # Collect calls by robot_id
-        calls = {
-            call[1]["robot_id"]: call[0][0]
-            for call in module._world_monitor.on_joint_state.call_args_list
-        }
-        assert calls["robot_left"].position == [1.0, 2.0]
-        assert calls["robot_right"].position == [3.0, 4.0]
-        assert calls["robot_left"].velocity == [0.1, 0.2]
-        assert calls["robot_right"].velocity == [0.3, 0.4]
-
-    def test_no_monitor_returns_early(self, robot_config_with_mapping):
-        """When world_monitor is None, _on_joint_state returns without error."""
-        module = _make_module()
-        module._robots = {"left_arm": ("id", robot_config_with_mapping, MagicMock())}
-        module._world_monitor = None
-
-        # Should not raise
-        msg = JointState(
-            name=["left/joint1", "left/joint2", "left/joint3"],
-            position=[0.1, 0.2, 0.3],
-        )
-        module._on_joint_state(msg)
-
-
-class TestWorldMonitorVisualization:
-    def test_visualization_routing_and_stop_all_monitors(self):
-        viz = FakeVisualization()
-        monitor = _make_world_monitor_with_viz(viz)
-        state_monitor = MagicMock()
-        obstacle_monitor = MagicMock()
-        monitor._state_monitors = {"robot": state_monitor}
-        monitor._obstacle_monitor = obstacle_monitor
-        monitor._viz_thread = MagicMock()
-        monitor._viz_thread.is_alive.return_value = False
-
-        assert monitor.get_visualization_url() == "123"
-        monitor.publish_visualization()
-        monitor.show_preview("robot")
-        monitor.hide_preview("robot")
-        path = _make_path([1.0], [2.0], [3.0])
-        monitor.animate_path("robot", path, 4.5)
-        assert monitor.visualization is viz
-        assert viz.published is True
-        assert viz.preview_shown == ["robot"]
-        assert viz.preview_hidden == ["robot"]
-        assert viz.animations == [("robot", path, 4.5)]
-
-        monitor.stop_all_monitors()
-
-        assert viz.close_count == 1
-        state_monitor.stop.assert_called_once()
-        obstacle_monitor.stop.assert_called_once()
-
-    def test_visualization_none_is_noop(self):
-        monitor = _make_world_monitor_with_viz(None)
-
-        assert monitor.get_visualization_url() is None
-        monitor.publish_visualization()
-        monitor.show_preview("robot")
-        monitor.hide_preview("robot")
-        monitor.animate_path("robot", [1], 1.0)
-        monitor.start_visualization_thread()
-        assert monitor._viz_thread is None
-
-
-class TestManipulationPreview:
-    def test_dismiss_preview_noop_without_monitor(self):
-        module = _make_module()
-
-        module._dismiss_preview("robot_id")
-
-    def test_dismiss_preview_routes_to_monitor(self):
-        module = _make_module()
-        module._world_monitor = MagicMock()
-
-        module._dismiss_preview("robot_id")
-
-        module._world_monitor.hide_preview.assert_called_once_with("robot_id")
-        module._world_monitor.publish_visualization.assert_called_once_with()
-
-    def test_preview_path_uses_trajectory_duration_and_interpolates(self):
-        module = _make_module()
-        config = _one_joint_config()
-        traj_gen = MagicMock()
-        traj_gen.generate.return_value = _make_trajectory((0.0, [0.0]), (2.0, [2.0]))
-        _install_generated_plan(module, config, traj_gen, [0.0], [2.0])
-
-        assert module.preview_path(robot_name="arm", target_fps=2.0) is True
-
-        module._world_monitor.animate_path.assert_called_once()
-        robot_id, preview_path, duration = module._world_monitor.animate_path.call_args.args
-        assert robot_id == "robot_id"
-        assert duration == 2.0
-        assert [state.position for state in preview_path] == [[0.0], [0.5], [1.0], [1.5], [2.0]]
-
-    def test_preview_path_explicit_duration_overrides_and_fps_densifies(self):
-        module = _make_module()
-        config = _one_joint_config()
-        traj_gen = MagicMock()
-        traj_gen.generate.return_value = _make_trajectory((0.0, [0.0]), (9.0, [9.0]))
-        _install_generated_plan(module, config, traj_gen, [0.0], [9.0])
-
-        assert module.preview_path(duration=1.5, robot_name="arm", target_fps=2.0) is True
-
-        module._world_monitor.animate_path.assert_called_once()
-        robot_id, preview_path, duration = module._world_monitor.animate_path.call_args.args
-        assert robot_id == "robot_id"
-        assert duration == 1.5
-        assert [state.position for state in preview_path] == [[0.0], [3.0], [6.0], [9.0]]
-
-    def test_preview_path_returns_false_when_trajectory_cannot_be_derived(self):
-        module = _make_module()
-        config = _one_joint_config()
-        traj_gen = MagicMock()
-        _install_generated_plan(module, config, traj_gen, [0.0])
-
-        assert module.preview_path(robot_name="arm", target_fps=10.0) is False
-        module._world_monitor.animate_path.assert_not_called()
-
-    def test_preview_path_skips_interpolation_for_nonpositive_fps_or_duration(self):
-        module = _make_module()
-        config = _one_joint_config()
-        traj_gen = MagicMock()
-        traj_gen.generate.return_value = _make_trajectory((0.0, [0.0]), (2.0, [1.0]))
-        _install_generated_plan(module, config, traj_gen, [0.0], [1.0])
-
-        assert module.preview_path(robot_name="arm", target_fps=0.0) is True
-        assert module.preview_path(duration=0.0, robot_name="arm", target_fps=20.0) is True
-
-        assert [
-            state.position for state in module._world_monitor.animate_path.call_args_list[0].args[1]
-        ] == [[0.0], [1.0]]
-        assert [
-            state.position for state in module._world_monitor.animate_path.call_args_list[1].args[1]
-        ] == [[0.0], [1.0]]
-
-    def test_preview_path_returns_false_for_missing_inputs(self):
-        module = _make_module()
-        config = _one_joint_config()
-        traj_gen = MagicMock()
-        traj_gen.generate.return_value = _make_trajectory((0.0, [0.0]), (1.0, [1.0]))
-        _install_generated_plan(module, config, traj_gen, [0.0], [1.0])
-        module._world_monitor = None
-
-        assert module.preview_path(robot_name="arm") is False
-
-        module._world_monitor = MagicMock()
-        module._robots = {}
-        assert module.preview_path(robot_name="arm") is False
-
-        _install_generated_plan(module, config, traj_gen)
-        assert module.preview_path(robot_name="arm") is False

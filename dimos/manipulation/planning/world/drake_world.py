@@ -16,6 +16,7 @@
 
 from __future__ import annotations
 
+from collections.abc import Sequence
 from concurrent.futures import ThreadPoolExecutor
 from contextlib import contextmanager
 from dataclasses import dataclass, field
@@ -34,13 +35,7 @@ from dimos.manipulation.planning.groups.models import PlanningGroup
 from dimos.manipulation.planning.groups.utils import joint_state_to_ordered_positions
 from dimos.manipulation.planning.spec.config import RobotModelConfig
 from dimos.manipulation.planning.spec.enums import ObstacleType
-from dimos.manipulation.planning.spec.models import (
-    JointPath,
-    Obstacle,
-    PlanningGroupID,
-    PlanningSceneInfo,
-    WorldRobotID,
-)
+from dimos.manipulation.planning.spec.models import Obstacle, PlanningGroupID, WorldRobotID
 from dimos.manipulation.planning.spec.protocols import VisualizationSpec, WorldSpec
 from dimos.manipulation.planning.utils.mesh_utils import prepare_urdf_for_drake
 from dimos.utils.logging_config import setup_logger
@@ -53,6 +48,13 @@ if TYPE_CHECKING:
 from dimos.msgs.geometry_msgs.PoseStamped import PoseStamped
 from dimos.msgs.geometry_msgs.Transform import Transform
 from dimos.msgs.sensor_msgs.JointState import JointState
+from dimos.msgs.trajectory_msgs.JointTrajectory import JointTrajectory
+
+if TYPE_CHECKING:
+    from dimos.manipulation.planning.spec.models import (
+        VisualizationSession,
+        VisualizationStateFrame,
+    )
 
 try:
     from pydrake.geometry import (
@@ -202,6 +204,8 @@ class DrakeWorld(WorldSpec, VisualizationSpec):
         self._plant_context: Context | None = None
         self._scene_graph_context: Context | None = None
         self._finalized = False
+        self._preview_animation_generation = 0
+        self._preview_animation_generations: dict[WorldRobotID, int] = {}
 
         # Obstacle source for dynamic obstacles
         self._obstacle_source_id: Any = None
@@ -786,10 +790,10 @@ class DrakeWorld(WorldSpec, VisualizationSpec):
 
             # Initial visualization publish (routed to Meshcat thread)
             if self._meshcat_visualizer is not None:
-                self.publish_visualization()
+                self._publish_visualization()
                 # Hide all preview robots initially
                 for robot_id in self._robots:
-                    self.hide_preview(robot_id)
+                    self._set_preview_visibility(robot_id, False)
 
     @property
     def is_finalized(self) -> bool:
@@ -1151,8 +1155,9 @@ class DrakeWorld(WorldSpec, VisualizationSpec):
 
     # Visualization
 
-    def initialize_scene(self, scene: PlanningSceneInfo) -> None:
+    def initialize(self, session: VisualizationSession) -> None:
         """Embedded Meshcat observes the Drake world directly; no extra sync needed."""
+        _ = session
         return None
 
     def get_visualization_url(self) -> str | None:
@@ -1161,7 +1166,7 @@ class DrakeWorld(WorldSpec, VisualizationSpec):
             return self._meshcat.web_url()
         return None
 
-    def publish_visualization(self, ctx: Context | None = None) -> None:
+    def _publish_visualization(self, ctx: Context | None = None) -> None:
         """Publish current state to visualization."""
         if self._meshcat_visualizer is None or self._meshcat is None:
             return
@@ -1170,6 +1175,11 @@ class DrakeWorld(WorldSpec, VisualizationSpec):
         if ctx is not None:
             viz_ctx = self._diagram.GetSubsystemContext(self._meshcat_visualizer, ctx)
             self._meshcat.forced_publish(self._meshcat_visualizer, viz_ctx)
+
+    def update_state(self, frame: VisualizationStateFrame) -> None:
+        """Receive pushed state frame; embedded Meshcat uses Drake live context."""
+        _ = frame
+        self._publish_visualization()
 
     def _set_preview_positions(
         self, plant_ctx: Context, robot_id: WorldRobotID, positions: NDArray[np.float64]
@@ -1184,57 +1194,127 @@ class DrakeWorld(WorldSpec, VisualizationSpec):
             full_positions[idx] = positions[i]
         self._plant.SetPositions(plant_ctx, full_positions)
 
-    def show_preview(self, robot_id: WorldRobotID) -> None:
-        """Show the preview (yellow ghost) robot in Meshcat."""
+    def _set_preview_visibility(self, robot_id: WorldRobotID, visible: bool) -> None:
+        """Set one preview robot's Meshcat visibility."""
         if self._meshcat is None:
             return
         robot_data = self._robots.get(robot_id)
         if robot_data is None or robot_data.preview_model_instance is None:
             return
         model_name = self._plant.GetModelInstanceName(robot_data.preview_model_instance)
-        self._meshcat.SetProperty(f"visualizer/{model_name}", "visible", True)
+        self._meshcat.SetProperty(f"visualizer/{model_name}", "visible", visible)
 
-    def hide_preview(self, robot_id: WorldRobotID) -> None:
-        """Hide the preview (yellow ghost) robot in Meshcat."""
-        if self._meshcat is None:
-            return
-        robot_data = self._robots.get(robot_id)
-        if robot_data is None or robot_data.preview_model_instance is None:
-            return
-        model_name = self._plant.GetModelInstanceName(robot_data.preview_model_instance)
-        self._meshcat.SetProperty(f"visualizer/{model_name}", "visible", False)
+    def cancel_preview_animation(self, robot_ids: Sequence[WorldRobotID] | None = None) -> None:
+        """Invalidate active preview frames and hide preview ghosts immediately."""
+        with self._lock:
+            self._preview_animation_generation += 1
+            affected = set(robot_ids) if robot_ids is not None else set(self._robots)
+            for robot_id in affected:
+                self._preview_animation_generations[robot_id] = (
+                    self._preview_animation_generations.get(robot_id, 0) + 1
+                )
+                if robot_id not in self._robots:
+                    continue
+                self._set_preview_visibility(robot_id, False)
 
-    def animate_path(
-        self,
-        robot_id: WorldRobotID,
-        path: JointPath,
-        duration: float = 3.0,
+    def _robot_trajectory_indices(
+        self, trajectory: JointTrajectory
+    ) -> dict[WorldRobotID, list[tuple[int, str]]]:
+        robot_ids_by_name = {
+            robot.config.name: robot_id for robot_id, robot in self._robots.items()
+        }
+        indices: dict[WorldRobotID, list[tuple[int, str]]] = {}
+        for index, global_name in enumerate(trajectory.joint_names):
+            if "/" not in global_name:
+                raise ValueError(f"trajectory joint '{global_name}' is not globally named")
+            robot_name, local_name = global_name.split("/", 1)
+            robot_id = robot_ids_by_name.get(robot_name)
+            if robot_id is None:
+                raise ValueError(f"trajectory references unknown robot '{robot_name}'")
+            if local_name not in self._robots[robot_id].config.joint_names:
+                raise ValueError(f"trajectory references unknown joint '{global_name}'")
+            indices.setdefault(robot_id, []).append((index, local_name))
+        return indices
+
+    def animate_trajectory(
+        self, trajectory: JointTrajectory, duration: float | None = None
     ) -> None:
-        """Animate a path using the preview (yellow ghost) robot.
-
-        The preview stays visible after animation completes.
-        """
-        if self._meshcat is None or len(path) < 2:
-            return
-
-        robot_data = self._robots.get(robot_id)
-        if robot_data is None or robot_data.preview_model_instance is None:
+        """Render raw globally named trajectory on its stored shared clock."""
+        if self._meshcat is None or len(trajectory.points) < 2:
             return
 
         import time
 
-        self.show_preview(robot_id)
-        dt = duration / (len(path) - 1)
-        for joint_state in path:
-            positions = np.array(joint_state.position, dtype=np.float64)
+        robot_indices = self._robot_trajectory_indices(trajectory)
+        robot_ids = list(robot_indices)
+        playback_scale = 1.0
+        if duration is not None:
+            if duration <= 0.0 or trajectory.duration <= 0.0:
+                raise ValueError("preview duration must be positive")
+            playback_scale = duration / trajectory.duration
+        baselines: dict[WorldRobotID, NDArray[np.float64]] = {}
+        joint_positions_by_name: dict[WorldRobotID, dict[str, int]] = {}
+        with self._lock:
+            assert self._plant_context is not None
+            assert self._live_context is not None
+            self._preview_animation_generation += 1
+            animation_generations: dict[WorldRobotID, int] = {}
+            for robot_id in robot_ids:
+                self._preview_animation_generations[robot_id] = (
+                    self._preview_animation_generations.get(robot_id, 0) + 1
+                )
+                animation_generations[robot_id] = self._preview_animation_generations[robot_id]
+                robot_data = self._robots[robot_id]
+                self._set_preview_visibility(robot_id, True)
+                baselines[robot_id] = np.array(
+                    self.get_joint_state(self._live_context, robot_id).position,
+                    dtype=np.float64,
+                )
+                joint_positions_by_name[robot_id] = dict(
+                    zip(
+                        robot_data.config.joint_names,
+                        range(len(robot_data.config.joint_names)),
+                        strict=True,
+                    )
+                )
+
+        try:
+            previous_time = trajectory.points[0].time_from_start
+            for frame_index, point in enumerate(trajectory.points):
+                with self._lock:
+                    active_robot_ids = [
+                        robot_id
+                        for robot_id in robot_ids
+                        if self._preview_animation_generations.get(robot_id)
+                        == animation_generations[robot_id]
+                    ]
+                    if not active_robot_ids:
+                        return
+                    assert self._plant_context is not None
+                    for robot_id in active_robot_ids:
+                        indexed_names = robot_indices[robot_id]
+                        positions = baselines[robot_id].copy()
+                        local_index = joint_positions_by_name[robot_id]
+                        for trajectory_index, local_name in indexed_names:
+                            positions[local_index[local_name]] = point.positions[trajectory_index]
+                        self._set_preview_positions(self._plant_context, robot_id, positions)
+                    self._publish_visualization()
+                if frame_index < len(trajectory.points) - 1:
+                    next_time = trajectory.points[frame_index + 1].time_from_start
+                    time.sleep((next_time - previous_time) * playback_scale)
+                    previous_time = next_time
+        finally:
             with self._lock:
-                assert self._plant_context is not None
-                self._set_preview_positions(self._plant_context, robot_id, positions)
-            self.publish_visualization()
-            time.sleep(dt)
+                for robot_id in robot_ids:
+                    if (
+                        self._preview_animation_generations.get(robot_id)
+                        == animation_generations[robot_id]
+                    ):
+                        self._set_preview_visibility(robot_id, False)
 
     def close(self) -> None:
         """Shut down the viz thread."""
+        self.cancel_preview_animation()
         if self._meshcat is not None:
             self._meshcat.close()
 

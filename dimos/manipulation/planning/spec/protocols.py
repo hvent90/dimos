@@ -33,15 +33,16 @@ if TYPE_CHECKING:
     from dimos.manipulation.planning.spec.config import RobotModelConfig
     from dimos.manipulation.planning.spec.models import (
         IKResult,
-        JointPath,
         Obstacle,
         PlanningGroupID,
         PlanningResult,
-        PlanningSceneInfo,
+        VisualizationSession,
+        VisualizationStateFrame,
         WorldRobotID,
     )
     from dimos.msgs.geometry_msgs.PoseStamped import PoseStamped
     from dimos.msgs.sensor_msgs.JointState import JointState
+    from dimos.msgs.trajectory_msgs.JointTrajectory import JointTrajectory
 
 
 @runtime_checkable
@@ -193,28 +194,26 @@ class VisualizationSpec(Protocol):
     visualization affordances.
     """
 
-    def initialize_scene(self, scene: PlanningSceneInfo) -> None:
-        """Receive stable planning-scene metadata after world startup."""
+    def initialize(self, session: VisualizationSession) -> None:
+        """Receive one-shot visualization session metadata after world startup."""
         ...
 
     def get_visualization_url(self) -> str | None:
         """Get visualization URL if enabled."""
         ...
 
-    def publish_visualization(self, ctx: Any | None = None) -> None:
-        """Publish current state to visualization."""
+    def update_state(self, frame: VisualizationStateFrame) -> None:
+        """Receive current joint states keyed by initialized world robot ID."""
         ...
 
-    def show_preview(self, robot_id: WorldRobotID) -> None:
-        """Show the preview representation for a robot."""
+    def animate_trajectory(
+        self, trajectory: JointTrajectory, duration: float | None = None
+    ) -> None:
+        """Animate a raw globally named trajectory."""
         ...
 
-    def hide_preview(self, robot_id: WorldRobotID) -> None:
-        """Hide the preview representation for a robot."""
-        ...
-
-    def animate_path(self, robot_id: WorldRobotID, path: JointPath, duration: float = 3.0) -> None:
-        """Animate a path in visualization."""
+    def cancel_preview_animation(self, robot_ids: Sequence[WorldRobotID] | None = None) -> None:
+        """Cancel an active preview animation without waiting for its renderer to finish."""
         ...
 
     def close(self) -> None:

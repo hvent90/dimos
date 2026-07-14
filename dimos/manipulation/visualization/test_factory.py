@@ -27,9 +27,9 @@ from dimos.manipulation.manipulation_module import ManipulationModuleConfig
 from dimos.manipulation.planning.groups.models import PlanningGroupDefinition
 from dimos.manipulation.planning.spec.config import RobotModelConfig
 from dimos.manipulation.planning.spec.models import (
-    JointPath,
     Obstacle,
-    PlanningSceneInfo,
+    VisualizationSession,
+    VisualizationStateFrame,
     WorldRobotID,
 )
 from dimos.manipulation.planning.spec.protocols import VisualizationSpec
@@ -41,25 +41,25 @@ from dimos.manipulation.visualization.factory import create_manipulation_visuali
 from dimos.manipulation.visualization.viser.config import ViserVisualizationConfig
 from dimos.msgs.geometry_msgs.PoseStamped import PoseStamped
 from dimos.msgs.sensor_msgs.JointState import JointState
+from dimos.msgs.trajectory_msgs.JointTrajectory import JointTrajectory
 
 
 class FakeVisualization:
-    def initialize_scene(self, scene: PlanningSceneInfo) -> None:
+    def initialize(self, session: VisualizationSession) -> None:
         return None
 
     def get_visualization_url(self) -> str | None:
         return None
 
-    def publish_visualization(self, ctx: object | None = None) -> None:
+    def update_state(self, frame: VisualizationStateFrame) -> None:
         return None
 
-    def show_preview(self, robot_id: WorldRobotID) -> None:
+    def animate_trajectory(
+        self, trajectory: JointTrajectory, duration: float | None = None
+    ) -> None:
         return None
 
-    def hide_preview(self, robot_id: WorldRobotID) -> None:
-        return None
-
-    def animate_path(self, robot_id: WorldRobotID, path: JointPath, duration: float = 3.0) -> None:
+    def cancel_preview_animation(self) -> None:
         return None
 
     def close(self) -> None:
@@ -157,6 +157,12 @@ class FakeWorld:
     def get_jacobian(self, ctx: object, robot_id: WorldRobotID) -> NDArray[np.float64]:
         return np.zeros((6, 0), dtype=np.float64)
 
+    def get_group_ee_pose(self, ctx: object, group_id: str) -> PoseStamped:
+        return PoseStamped()
+
+    def get_group_jacobian(self, ctx: object, group_id: str) -> NDArray[np.float64]:
+        return np.zeros((6, 0), dtype=np.float64)
+
 
 class FakeVisualizationWorld(FakeWorld, FakeVisualization):
     pass
@@ -171,16 +177,18 @@ def test_config_defaults_to_no_visualization() -> None:
 
 def test_config_rejects_unknown_visualization_backend() -> None:
     with pytest.raises(ValidationError, match="visualization"):
-        ManipulationModuleConfig(visualization={"backend": "bad"})
+        ManipulationModuleConfig.model_validate({"visualization": {"backend": "bad"}})
 
 
 def test_config_validates_viser_visualization() -> None:
-    config = ManipulationModuleConfig(
-        visualization={
-            "backend": "viser",
-            "visualization_host": "0.0.0.0",
-            "visualization_port": "8096",
-            "viser_panel_enabled": "false",
+    config = ManipulationModuleConfig.model_validate(
+        {
+            "visualization": {
+                "backend": "viser",
+                "visualization_host": "0.0.0.0",
+                "visualization_port": "8096",
+                "viser_panel_enabled": "false",
+            }
         },
     )
 
@@ -191,7 +199,7 @@ def test_config_validates_viser_visualization() -> None:
 
 
 def test_config_meshcat_requires_world_visualization() -> None:
-    config = ManipulationModuleConfig(visualization={"backend": "meshcat"})
+    config = ManipulationModuleConfig.model_validate({"visualization": {"backend": "meshcat"}})
 
     assert isinstance(config.visualization, MeshcatVisualizationConfig)
     assert config.visualization.requires_world_visualization is True
@@ -235,3 +243,18 @@ def test_create_visualization_meshcat_rejects_non_visualization_world() -> None:
             world_monitor=world_monitor,
             manipulation_module=MagicMock(),
         )
+
+
+def test_create_viser_visualization_has_group_preview_protocol_without_legacy_path_api() -> None:
+    pytest.importorskip("viser")
+
+    visualization = create_manipulation_visualization(
+        ViserVisualizationConfig(),
+        world=FakeWorld(),
+        world_monitor=MagicMock(),
+        manipulation_module=MagicMock(),
+    )
+
+    assert isinstance(visualization, VisualizationSpec)
+    assert isinstance(FakeVisualization(), VisualizationSpec)
+    assert not hasattr(visualization, "animate_path")
