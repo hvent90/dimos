@@ -193,6 +193,7 @@ class ObjectTracking(Module):
         """
         if self._latest_rgb_frame is None:
             logger.warning("No RGB frame available for tracking")
+            self.stop_track()
             return {"status": "no_frame"}
 
         # Initialize tracking
@@ -200,6 +201,7 @@ class ObjectTracking(Module):
         w, h = x2 - x1, y2 - y1
         if w <= 0 or h <= 0:
             logger.warning(f"Invalid initial bbox provided: {bbox}. Tracking not started.")
+            self.stop_track()
             return {"status": "invalid_bbox"}
 
         # Set tracking parameters
