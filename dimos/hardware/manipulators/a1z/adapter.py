@@ -205,12 +205,15 @@ class A1ZAdapter:
         return 0, ""
 
     def write_joint_positions(self, positions: list[float], velocity: float = 1.0) -> bool:
-        if self._robot is None or not self._enabled:
+        # ``velocity`` is accepted for Protocol parity but not applied: the SDK's
+        # command_joint_pos is a fixed-gain position servo with no per-command
+        # speed. Speed is governed by the streamed target rate and the PD gains.
+        if self._robot is None or not self._enabled or len(positions) != self._dof:
             return False
         try:
             import numpy as np
 
-            self._robot.command_joint_pos(np.asarray(positions[: self._dof], dtype=float))
+            self._robot.command_joint_pos(np.asarray(positions, dtype=float))
             return True
         except Exception as e:
             logger.error(f"A1Z write_joint_positions failed: {e}")
@@ -275,6 +278,3 @@ class A1ZAdapter:
 
     def read_force_torque(self) -> list[float] | None:
         return None
-
-
-__all__ = ["A1ZAdapter"]
