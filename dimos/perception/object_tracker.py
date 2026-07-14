@@ -227,6 +227,7 @@ class ObjectTracking(Module):
             except cv2.error:
                 logger.error("Tracker initialization failed.")
                 self.stop_track()
+                return {"status": "init_failed"}
             else:
                 self.tracking_initialized = True
                 self.tracking_frame_count = 0  # Reset frame counter
