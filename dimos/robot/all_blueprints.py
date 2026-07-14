@@ -26,6 +26,7 @@ all_blueprints = {
     "coordinator-flowbase": "dimos.control.blueprints.mobile:coordinator_flowbase",
     "coordinator-flowbase-keyboard-teleop": "dimos.control.blueprints.mobile:coordinator_flowbase_keyboard_teleop",
     "coordinator-flowbase-nav": "dimos.control.blueprints.mobile:coordinator_flowbase_nav",
+    "coordinator-galaxea-a1z": "dimos.robot.manipulators.galaxea_a1z.blueprints.basic:coordinator_galaxea_a1z",
     "coordinator-mobile-manip-mock": "dimos.control.blueprints.mobile:coordinator_mobile_manip_mock",
     "coordinator-mock": "dimos.robot.manipulators.common.mock:coordinator_mock",
     "coordinator-mock-twist-base": "dimos.control.blueprints.mobile:coordinator_mock_twist_base",
