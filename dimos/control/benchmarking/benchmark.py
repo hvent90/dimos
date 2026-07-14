@@ -105,6 +105,10 @@ BATTERIES: dict[str, Any] = {
     "hardware": path_set,
     # Decoupled-heading battery for the holonomic full-pose tracker.
     "fullpose": fullpose_path_set,
+    # Both: the holonomic tracker also runs the tangent-heading geometry
+    # (commanded yaw == tangent there), giving an apples-to-apples comparison
+    # against RPP on the same paths plus the decoupled-yaw cases.
+    "all": lambda: {**path_set(), **fullpose_path_set()},
 }
 
 
@@ -363,7 +367,7 @@ class BenchmarkerConfig(ModuleConfig):
     """
 
     robot: str = "go2"
-    battery: Literal["hardware", "fullpose"] = "hardware"
+    battery: Literal["hardware", "fullpose", "all"] = "hardware"
     speeds: str = "0.3,0.5,0.7,0.9,1.0"
     tolerances: str = "5,10,15"  # cm — carried through to the offline scorer
     goal_tolerance: float = 0.25  # m — arrival radius around the last pose

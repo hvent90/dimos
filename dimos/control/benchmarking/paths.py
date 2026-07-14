@@ -230,12 +230,29 @@ def circle_offset_heading(
     return Path(poses=poses)
 
 
+def hold_heading(path: Path, yaw: float = 0.0) -> Path:
+    """Restamp every pose of ``path`` with one fixed commanded yaw.
+
+    Turns any position battery path into its crab-walk variant: same
+    geometry, but the robot must hold ``yaw`` through every corner instead
+    of facing the travel direction.
+    """
+    return Path(
+        ts=path.ts,
+        frame_id=path.frame_id,
+        poses=[_pose(p.position.x, p.position.y, yaw) for p in path.poses],
+    )
+
+
 def fullpose_path_set() -> dict[str, Path]:
     """Battery for the holonomic full-pose tracker benchmark."""
     return {
         "straight_rotate_90": straight_rotate(length=3.0, yaw_end=math.pi / 2.0),
         "strafe_left_2m": strafe_line(length=2.0),
         "circle_offset_45": circle_offset_heading(radius=1.0, offset=math.pi / 4.0),
+        # Square geometry, nose held at the starting heading through all four
+        # corners — the crab-walk stress case only a full-pose tracker can run.
+        "square_crab": hold_heading(square(side=2.0), yaw=0.0),
     }
 
 

@@ -102,13 +102,24 @@ def test_path_set_is_the_full_battery():
 
 
 def test_battery_registry_selects_fullpose_paths():
-    assert set(BATTERIES) == {"hardware", "fullpose"}
+    assert set(BATTERIES) == {"hardware", "fullpose", "all"}
     fullpose = BATTERIES["fullpose"]()
-    assert set(fullpose) == {"straight_rotate_90", "strafe_left_2m", "circle_offset_45"}
+    assert set(fullpose) == {
+        "straight_rotate_90",
+        "strafe_left_2m",
+        "circle_offset_45",
+        "square_crab",
+    }
     # The point of the battery: commanded yaw decoupled from the tangent.
     strafe = fullpose["strafe_left_2m"]
     assert all(abs(p.orientation.euler[2]) < 1e-9 for p in strafe.poses)
     assert strafe.poses[-1].position.y > 1.0  # travel is +y while yaw is 0
+    # square_crab: square geometry, one held heading through all corners.
+    crab = fullpose["square_crab"]
+    assert all(abs(p.orientation.euler[2]) < 1e-9 for p in crab.poses)
+    assert max(p.position.y for p in crab.poses) > 1.0
+    # "all" = tangent-heading battery + full-pose battery.
+    assert set(BATTERIES["all"]()) == set(path_set()) | set(fullpose)
 
 
 def test_anchor_shifts_path_to_pose():

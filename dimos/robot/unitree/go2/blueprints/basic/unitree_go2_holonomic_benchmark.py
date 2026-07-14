@@ -60,7 +60,10 @@ _BENCHMARK_TRANSPORTS: dict[tuple[str, type], TransportSpec | Transport[Any]] = 
 unitree_go2_holonomic_benchmark = (
     autoconnect(
         unitree_go2_holonomic_controller,
-        Benchmarker.blueprint(robot="go2", battery="fullpose", gate_source="stream"),
+        # "all" = the tangent-heading geometry (square, rounded_square, circle,
+        # ...) PLUS the decoupled-yaw full-pose cases. Use K (skip) at the gate
+        # to trim a session; battery="fullpose" runs just the decoupled cases.
+        Benchmarker.blueprint(robot="go2", battery="all", gate_source="stream"),
     )
     .transports(_BENCHMARK_TRANSPORTS)
     .global_config(obstacle_avoidance=False, n_workers=6)

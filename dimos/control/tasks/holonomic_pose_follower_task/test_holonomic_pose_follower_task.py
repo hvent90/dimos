@@ -25,6 +25,8 @@ import pytest
 
 from dimos.control.benchmarking.paths import (
     circle_offset_heading,
+    hold_heading,
+    square,
     strafe_line,
     straight_rotate,
 )
@@ -196,6 +198,19 @@ def test_strafes_holding_commanded_yaw():
     # The motion was carried by the lateral channel.
     assert max(abs(t.cmd_twist.linear.y) for t in executed.ticks) > 0.3
     assert max(abs(t.cmd_twist.linear.x) for t in executed.ticks) < 0.1
+
+
+def test_crab_walks_square_holding_heading():
+    """Square geometry with the commanded yaw held at 0: the robot must round
+    all four corners by swapping body-frame velocity channels, never turning."""
+    path = hold_heading(square(side=2.0), yaw=0.0)
+    task = _task()
+    plant, executed = _run_closed_loop(task, path)
+    assert executed.arrived
+    max_yaw = max(abs(t.pose.orientation.euler[2]) for t in executed.ticks)
+    assert max_yaw < 0.1, "robot turned instead of crab-walking the square"
+    score = score_run(path, executed)
+    assert score.cte_rms < 0.15
 
 
 def test_holds_fixed_tangent_offset_around_circle():
