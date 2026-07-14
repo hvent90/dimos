@@ -73,8 +73,11 @@ class VirtualMid360Config(NativeModuleConfig):
     lidar_ip: str = Field(
         default_factory=lambda: os.environ.get("DIMOS_MID360_LIDAR_IP", "192.168.1.155")
     )
-    # Host IP the data is delivered to (where the SDK listens).
-    host_ip: str = Field(default_factory=lambda: os.environ.get("DIMOS_MID360_HOST_IP", ""))
+    # Host IP the data is delivered to (where the SDK listens). Shares lidar_ip's
+    # /24 since both are synthetic IPs aliased onto the dummy interface.
+    host_ip: str = Field(
+        default_factory=lambda: os.environ.get("DIMOS_MID360_HOST_IP", "192.168.1.5")
+    )
     lidar_netns: str = Field(default_factory=lambda: os.environ.get("DIMOS_MID360_NETNS", ""))
     # Multicast group for point/IMU. 224.1.1.5 is the Livox default the SDK joins.
     mcast_data: str = "224.1.1.5"

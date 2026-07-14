@@ -1,9 +1,5 @@
 // Copyright 2026 Dimensional Inc.
 // SPDX-License-Identifier: Apache-2.0
-//
-// Pong: echoes every Twist received on data back on confirm, stamping the
-// echo's angular.z with the configured sample_config. C++ mirror of
-// examples/native-modules/rust/src/pong.rs.
 
 #include <cstdint>
 #include <stdexcept>
