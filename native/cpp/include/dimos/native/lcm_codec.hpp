@@ -2,10 +2,8 @@
 // SPDX-License-Identifier: Apache-2.0
 //
 // Generic adapters from dimos-lcm generated message types to the SDK's port
-// encode/decode signatures. Every lcm-gen C++ type exposes the same surface
-// (getEncodedSize / encode / decode), so one template covers all of them and no
-// module needs to hand-write per-type glue. This mirrors the Rust SDK, where the
-// generated Twist::encode / Twist::decode already match the port signatures.
+// encode/decode signatures. Every lcm-gen C++ type exposes getEncodedSize /
+// encode / decode, so one template covers all of them.
 
 #pragma once
 

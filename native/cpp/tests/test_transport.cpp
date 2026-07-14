@@ -15,7 +15,7 @@ using namespace dimos::native;
 namespace {
 
 // Records every interaction so tests can assert on the transport seam without
-// a real wire. The runtime tests in later commits reuse this shape.
+// a real wire.
 struct MockTransport : Transport {
     std::vector<std::pair<std::string, std::vector<uint8_t>>> published;
     std::vector<std::pair<std::string, Dispatch>> subscriptions;

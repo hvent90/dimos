@@ -4,6 +4,7 @@
 #include <doctest/doctest.h>
 
 #include <atomic>
+#include <limits>
 #include <string>
 
 #include "dimos/native/log.hpp"
@@ -30,6 +31,15 @@ TEST_CASE("structured fields render with correct JSON types") {
          log::Field("ratio", 0.5), log::Field("full", true)});
     CHECK(line ==
           R"({"level":"warn","message":"dropped","topic":"/data","count":7,"ratio":0.5,"full":true})");
+}
+
+TEST_CASE("non-finite double fields render as null, not invalid JSON") {
+    const double inf = std::numeric_limits<double>::infinity();
+    const double nan = std::numeric_limits<double>::quiet_NaN();
+    CHECK(log::format_line(log::Level::Info, "m", {log::Field("x", inf)}) ==
+          R"({"level":"info","message":"m","x":null})");
+    CHECK(log::format_line(log::Level::Info, "m", {log::Field("y", nan)}) ==
+          R"({"level":"info","message":"m","y":null})");
 }
 
 TEST_CASE("message and string fields are escaped") {

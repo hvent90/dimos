@@ -119,6 +119,15 @@ void stop_workers(Builder& builder, std::vector<std::thread>& workers) {
     }
 }
 
+// RAII worker lifetime so a failing REQUIRE/CHECK cannot strand a spinning
+// worker touching soon-destroyed state in the shared doctest binary.
+struct WorkerGuard {
+    Builder& builder;
+    std::vector<std::thread> workers;
+    WorkerGuard(Builder& b, Transport& t) : builder(b), workers(start_workers(b, t)) {}
+    ~WorkerGuard() { stop_workers(builder, workers); }
+};
+
 }  // namespace
 
 TEST_CASE("an inbound message routes through a handler to an output") {
@@ -136,7 +145,7 @@ TEST_CASE("an inbound message routes through a handler to an output") {
     for (const auto& route : builder.routes()) {
         transport.subscribe(route.first, route.second);
     }
-    auto workers = start_workers(builder, transport);
+    WorkerGuard workers(builder, transport);
 
     transport.deliver("/data", {1, 2, 3});
     for (InputPort* port : builder.input_ports()) {
@@ -145,8 +154,6 @@ TEST_CASE("an inbound message routes through a handler to an output") {
 
     CHECK(received == Bytes{1, 2, 3});
     CHECK(wait_until([&] { return transport.has_published("/out"); }));
-
-    stop_workers(builder, workers);
 }
 
 TEST_CASE("member-function handler and default codecs route a message") {
@@ -161,7 +168,7 @@ TEST_CASE("member-function handler and default codecs route a message") {
     for (const auto& route : builder.routes()) {
         transport.subscribe(route.first, route.second);
     }
-    auto workers = start_workers(builder, transport);
+    WorkerGuard workers(builder, transport);
 
     Pod m;
     m.v = 9;
@@ -174,8 +181,6 @@ TEST_CASE("member-function handler and default codecs route a message") {
 
     out.publish(m);
     CHECK(wait_until([&] { return transport.has_published("/out"); }));
-
-    stop_workers(builder, workers);
 }
 
 TEST_CASE("topic_for maps declared ports and falls back to /port") {
@@ -188,26 +193,30 @@ TEST_CASE("topic_for maps declared ports and falls back to /port") {
 TEST_CASE("a full input queue drops newest and caps at capacity") {
     Notifier notifier;
     Builder builder({}, &notifier);
-    builder.input<Bytes>("data", identity_decode, [](Bytes) {});
+    std::vector<uint8_t> seen;
+    builder.input<Bytes>("data", identity_decode, [&](Bytes b) { seen.push_back(b[0]); });
 
     Dispatch dispatch = builder.routes()[0].second;
+    // Distinct values so the surviving set proves which end was dropped.
     for (std::size_t i = 0; i < kInputQueueCapacity + 10; ++i) {
-        uint8_t byte = 1;
+        uint8_t byte = static_cast<uint8_t>(i);
         dispatch(&byte, 1);
     }
 
     InputPort* port = builder.input_ports()[0];
-    std::size_t drained = 0;
     while (port->drain_one()) {
-        ++drained;
     }
-    CHECK(drained == kInputQueueCapacity);
+    REQUIRE(seen.size() == kInputQueueCapacity);
+    // Drop-newest: the first `capacity` messages are kept, later ones dropped.
+    for (std::size_t i = 0; i < kInputQueueCapacity; ++i) {
+        CHECK(seen[i] == static_cast<uint8_t>(i));
+    }
 }
 
 TEST_CASE("Notifier does not lose a notification delivered before the wait") {
     // The race the counter closes: a notify that lands after the loop snapshots
-    // seq but before it starts waiting. Old design (bare wait_for) would block
-    // the full timeout; the predicate now sees the count moved and returns at once.
+    // seq but before it starts waiting. A bare wait_for would block the full
+    // timeout. The predicate sees the count moved and returns at once.
     Notifier notifier;
     std::uint64_t seq = notifier.seq();
     notifier.notify();
@@ -286,17 +295,22 @@ TEST_CASE("a decode error drops the message and never reaches the handler") {
 
 TEST_CASE("a full publish queue drops newest and caps at capacity") {
     PublishQueue queue("/out");
+    // Distinct first-bytes so the surviving set proves which end was dropped.
     for (std::size_t i = 0; i < kPublishQueueCapacity + 5; ++i) {
         queue.push({static_cast<uint8_t>(i)});
     }
     queue.stop();
 
-    std::size_t drained = 0;
+    std::vector<uint8_t> seen;
     Bytes out;
     while (queue.pop(out)) {
-        ++drained;
+        seen.push_back(out[0]);
     }
-    CHECK(drained == kPublishQueueCapacity);
+    REQUIRE(seen.size() == kPublishQueueCapacity);
+    // Drop-newest: the first `capacity` pushes are kept, later ones dropped.
+    for (std::size_t i = 0; i < kPublishQueueCapacity; ++i) {
+        CHECK(seen[i] == static_cast<uint8_t>(i));
+    }
 }
 
 TEST_CASE("a blocked publish channel does not stall a sibling channel") {
@@ -309,16 +323,23 @@ TEST_CASE("a blocked publish channel does not stall a sibling channel") {
     Output<Bytes> block_out = builder.output<Bytes>("block_out", identity_encode);
     Output<Bytes> fast_out = builder.output<Bytes>("fast_out", identity_encode);
 
-    auto workers = start_workers(builder, transport);
+    WorkerGuard workers(builder, transport);
+    // Release the wedge before the workers join, even if an assertion aborts.
+    struct ReleaseGuard {
+        MockTransport& t;
+        ~ReleaseGuard() { t.release.store(true); }
+    } release_guard{transport};
 
     block_out.publish({1});  // wedges the /block worker inside transport.publish
     fast_out.publish({2});
 
     CHECK(wait_until([&] { return transport.has_published("/fast"); }));
     CHECK_FALSE(transport.has_published("/block"));
+}
 
-    transport.release.store(true);
-    stop_workers(builder, workers);
+TEST_CASE("publishing on a default-constructed Output throws") {
+    Output<Bytes> out;
+    CHECK_THROWS_AS(out.publish({1}), std::runtime_error);
 }
 
 TEST_CASE("parse_stdin_config extracts topics, config, and qos") {

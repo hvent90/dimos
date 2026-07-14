@@ -10,6 +10,7 @@
 
 #include <atomic>
 #include <chrono>
+#include <cmath>
 #include <cstdint>
 #include <cstdio>
 #include <initializer_list>
@@ -49,9 +50,13 @@ public:
     }
     Field(std::string key, std::int64_t value)
         : key_(std::move(key)), value_(std::to_string(value)) {}
-    Field(std::string key, int value)
-        : key_(std::move(key)), value_(std::to_string(value)) {}
     Field(std::string key, double value) : key_(std::move(key)) {
+        // JSON has no inf/nan literals, so a non-finite value would produce a
+        // line the Python log reader cannot parse. Emit null instead.
+        if (!std::isfinite(value)) {
+            value_ = "null";
+            return;
+        }
         std::ostringstream ss;
         ss.imbue(std::locale::classic());
         ss << value;
@@ -124,12 +129,6 @@ inline void emit(Level level, const std::string& message,
     std::cerr.flush();
 }
 
-inline void trace(const std::string& message, std::initializer_list<Field> fields = {}) {
-    emit(Level::Trace, message, fields);
-}
-inline void debug(const std::string& message, std::initializer_list<Field> fields = {}) {
-    emit(Level::Debug, message, fields);
-}
 inline void info(const std::string& message, std::initializer_list<Field> fields = {}) {
     emit(Level::Info, message, fields);
 }
@@ -176,9 +175,6 @@ inline bool check_and_record(std::atomic<std::uint64_t>& last_ns, std::uint64_t 
             ::dimos::native::log::emit((level), (message), {__VA_ARGS__});          \
         }                                                                           \
     } while (0)
-
-#define DIMOS_WARN_THROTTLED(interval_ns, message, ...) \
-    DIMOS_LOG_THROTTLED(::dimos::native::log::Level::Warn, (interval_ns), (message), ##__VA_ARGS__)
 
 #define DIMOS_ERROR_THROTTLED(interval_ns, message, ...) \
     DIMOS_LOG_THROTTLED(::dimos::native::log::Level::Error, (interval_ns), (message), ##__VA_ARGS__)

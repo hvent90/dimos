@@ -1,18 +1,14 @@
 // Copyright 2026 Dimensional Inc.
 // SPDX-License-Identifier: Apache-2.0
 //
-// Module runtime for dimos C++ native modules. Mirrors the Rust SDK's design:
+// Module runtime for dimos C++ native modules, mirroring the Rust SDK. The
+// transport receive thread decodes onto per-input bounded queues (drop-newest).
+// Handlers run serialized on the handle() thread, a lock-free &mut self. One
+// worker per output drains publishes so a slow channel blocks only itself.
 //
-//   ingestion   the transport receive thread decodes each message onto that
-//               input's bounded queue (drop-newest + throttled warn)
-//   handlers    run serialized on the handle() thread, so a module mutates its
-//               own state without locks, like Rust's &mut self
-//   publishing  Output::publish enqueues encoded bytes. One worker per output
-//               drains to the transport, so a slow channel blocks only itself
-//
-// A module subclasses Module, declares Output<T> members, and in build() reads
-// its config, wires outputs, and registers input handlers. The default handle()
-// dispatches inputs until shutdown. A driver with its own loop overrides it.
+// A module subclasses Module, declares Output<T> members, and wires config,
+// outputs, and input handlers in build(). The default handle() dispatches inputs
+// until shutdown. A driver with its own loop overrides it.
 
 #pragma once
 
@@ -69,12 +65,10 @@ inline void install_signal_handlers() {
     std::signal(SIGTERM, dimos_native_handle_signal);
 }
 
-// Wakes the handle() dispatch loop when any input receives a message. A
-// monotonic counter, bumped under the lock on every notify, lets the loop
-// snapshot the count before a drain round and detect a message that arrived
-// mid-round. The wait predicate sees the count move and skips the sleep, so a
-// notification delivered in the gap between "found the queues empty" and "start
-// waiting" is never lost. There is a single waiter, the dispatch loop.
+// Wakes the handle() dispatch loop when an input receives a message. The
+// counter, bumped under the lock, lets the loop snapshot before draining and
+// still see a notify that lands mid-round, so the wakeup is never lost.
+// Single waiter, the dispatch loop.
 class Notifier {
 public:
     void notify() {
@@ -440,10 +434,8 @@ void run_fallible(std::unique_ptr<Transport> transport) {
     install_signal_handlers();
     module.bind_runtime(&builder.input_ports(), &notifier);
 
-    // Tear down on every exit path, including a throw from setup/handle/teardown.
-    // The publish workers reference the transport, and the transport receive
-    // thread dispatches into builder's input channels and notifier, so both must
-    // be joined before those locals are destroyed. Declared last, destroyed first.
+    // Stop the workers and transport before builder and notifier are destroyed,
+    // on every exit path. Declared last, destroyed first.
     struct Shutdown {
         Builder& builder;
         std::vector<std::thread>& workers;
@@ -461,8 +453,18 @@ void run_fallible(std::unique_ptr<Transport> transport) {
         }
     } shutdown{builder, workers, transport};
 
-    module.setup();
-    module.handle();
+    // Run teardown on the throw path too, so the module's threads join before it
+    // is destroyed. A leftover joinable std::thread would call std::terminate.
+    try {
+        module.setup();
+        module.handle();
+    } catch (...) {
+        try {
+            module.teardown();
+        } catch (...) {
+        }
+        throw;
+    }
     module.teardown();
 }
 

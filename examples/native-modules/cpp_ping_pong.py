@@ -26,7 +26,7 @@ from __future__ import annotations
 import argparse
 from pathlib import Path
 
-from dimos.core.coordination.blueprints import autoconnect
+from dimos.core.coordination.blueprints import Blueprint, autoconnect
 from dimos.core.coordination.module_coordinator import ModuleCoordinator
 from dimos.core.native_module import NativeModule, NativeModuleConfig
 from dimos.core.stream import In, Out
@@ -67,7 +67,7 @@ class PongModule(NativeModule):
     confirm: Out[Twist]
 
 
-def blueprint():
+def blueprint() -> Blueprint:
     return autoconnect(PingModule.blueprint(), PongModule.blueprint())
 
 

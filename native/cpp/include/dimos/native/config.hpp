@@ -62,11 +62,9 @@ public:
         }
     }
 
-    /// Deserialize the whole config into a struct declared with
-    /// DIMOS_NATIVE_CONFIG. Enforces the one-to-one key check (every field
-    /// present, no unknown fields) and runs the struct's optional validate()
-    /// method. Python owns all defaults, so a missing field is an error, never a
-    /// fallback.
+    /// Deserialize the whole config into a struct declared with DIMOS_NATIVE_CONFIG,
+    /// enforcing the one-to-one key check (every field present, no unknowns) and the
+    /// struct's optional validate(). Python owns defaults, so a missing field errors.
     template <class T>
     T parse() {
         T out;
