@@ -1,7 +1,7 @@
 """API key model for developer robot authentication."""
 
-import uuid
 from datetime import datetime, timezone
+import uuid
 
 from sqlalchemy import Boolean, Column, DateTime, String
 from sqlalchemy.orm import Mapped

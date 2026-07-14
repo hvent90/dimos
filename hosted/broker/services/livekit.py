@@ -6,12 +6,11 @@ the robot and operator both join. The API key/secret stay server-side; only the
 signed JWT (and the public server URL) reach clients.
 """
 
-import logging
 from datetime import timedelta
-
-from livekit import api
+import logging
 
 from config import settings
+from livekit import api
 
 log = logging.getLogger(__name__)
 
@@ -23,8 +22,7 @@ class LiveKitError(Exception):
 def _require_configured() -> None:
     if not settings.livekit_configured:
         raise LiveKitError(
-            "LiveKit not configured (set LIVEKIT_URL / LIVEKIT_API_KEY / "
-            "LIVEKIT_API_SECRET)"
+            "LiveKit not configured (set LIVEKIT_URL / LIVEKIT_API_KEY / LIVEKIT_API_SECRET)"
         )
 
 

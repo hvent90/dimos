@@ -1,13 +1,12 @@
 """API key generation, validation, and management."""
 
+from datetime import datetime, timezone
 import hashlib
 import secrets
-from datetime import datetime, timezone
-
-from sqlalchemy import select, update
-from sqlalchemy.ext.asyncio import AsyncSession
 
 from models.api_key import APIKey
+from sqlalchemy import select, update
+from sqlalchemy.ext.asyncio import AsyncSession
 
 # Key format: dtk_live_<40 random hex chars> = 49 chars total
 KEY_PREFIX_LIVE = "dtk_live_"
@@ -84,14 +83,9 @@ async def validate_api_key(db: AsyncSession, plaintext_key: str) -> APIKey | Non
         last_used = key_record.last_used_at
         if last_used is not None and last_used.tzinfo is None:
             last_used = last_used.replace(tzinfo=timezone.utc)
-        if (
-            last_used is None
-            or (now - last_used).total_seconds() > LAST_USED_THROTTLE_SECONDS
-        ):
+        if last_used is None or (now - last_used).total_seconds() > LAST_USED_THROTTLE_SECONDS:
             await db.execute(
-                update(APIKey)
-                .where(APIKey.id == key_record.id)
-                .values(last_used_at=now)
+                update(APIKey).where(APIKey.id == key_record.id).values(last_used_at=now)
             )
             await db.commit()
     return key_record

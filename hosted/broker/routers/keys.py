@@ -1,12 +1,11 @@
 """API key management endpoints for developers."""
 
 from fastapi import APIRouter, Depends, HTTPException
-from pydantic import BaseModel
-from sqlalchemy.ext.asyncio import AsyncSession
-
 from models.database import get_db
+from pydantic import BaseModel
 from services.auth import get_current_user
 from services.keys import create_api_key, list_api_keys, revoke_api_key
+from sqlalchemy.ext.asyncio import AsyncSession
 
 router = APIRouter(prefix="/keys", tags=["keys"])
 

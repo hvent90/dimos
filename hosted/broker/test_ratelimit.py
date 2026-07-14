@@ -12,13 +12,12 @@ os.environ["ENVIRONMENT"] = "dev"
 _db = tempfile.NamedTemporaryFile(suffix=".db", delete=False).name
 os.environ["DATABASE_URL"] = f"sqlite+aiosqlite:///{_db}"
 
-from fastapi import Header, HTTPException  # noqa: E402
-from fastapi.testclient import TestClient  # noqa: E402
-
-import main  # noqa: E402
-from ratelimit import LIMITS, RateLimiter, TokenBucket, classify  # noqa: E402
-from services.auth import get_current_user, get_robot_owner  # noqa: E402
-from services.cloudflare import cf_client  # noqa: E402
+from fastapi import Header, HTTPException
+from fastapi.testclient import TestClient
+import main
+from ratelimit import LIMITS, RateLimiter, TokenBucket, classify
+from services.auth import get_current_user, get_robot_owner
+from services.cloudflare import cf_client
 
 PASS = [0]
 
@@ -35,7 +34,10 @@ check("burst up to capacity", all(b.allow(0.0) for _ in range(3)))
 check("empty bucket denies", b.allow(0.0) is False)
 check("retry-after positive when dry", b.retry_after_sec() >= 1)
 check("refills over time", b.allow(1.1) is True)
-check("does not overfill past capacity", [b.allow(100.0) for _ in range(4)] == [True, True, True, False])
+check(
+    "does not overfill past capacity",
+    [b.allow(100.0) for _ in range(4)] == [True, True, True, False],
+)
 
 # ─── route classification ────────────────────────────────────────────
 
@@ -89,6 +91,7 @@ cf_client.create_session = _fake_cf  # type: ignore[assignment]
 BURST = int(LIMITS["session_join"][0])
 
 with TestClient(app=main.app) as c:
+
     def create(n: int) -> list[int]:
         return [
             c.post(

@@ -1,25 +1,24 @@
 """Session lifecycle endpoints."""
 
 import asyncio
-import logging
-import uuid
 from datetime import datetime, timedelta, timezone
+import logging
 from typing import Literal
-
-from fastapi import APIRouter, Depends, HTTPException
-from pydantic import BaseModel
-from sqlalchemy import func, or_, select, update
-from sqlalchemy.ext.asyncio import AsyncSession
+import uuid
 
 from config import settings
+from fastapi import APIRouter, Depends, HTTPException
 from metrics import OPERATOR_EVICTIONS, ROBOT_EVICTIONS, SESSIONS_BY_STATE
 from models.database import async_session, get_db
 from models.session import TeleopSession
+from pydantic import BaseModel
 from services import livekit
 from services.auth import get_current_user, get_operator_or_robot, get_robot_owner
 from services.cloudflare import CloudflareRealtimeError, CloudflareSessionGoneError, cf_client
 from services.livekit import LiveKitError
 from services.sdp_utils import extract_audio_track, extract_video_track
+from sqlalchemy import func, or_, select, update
+from sqlalchemy.ext.asyncio import AsyncSession
 
 log = logging.getLogger(__name__)
 
@@ -325,7 +324,9 @@ async def create_session(
         # CF has no delete-session; log the leak (auto-reaped when tracks GC).
         log.exception(
             "DB commit failed; leaking cf_session=%s robot=%s owner=%s",
-            cf_result["cf_session_id"], robot_id, owner_id,
+            cf_result["cf_session_id"],
+            robot_id,
+            owner_id,
         )
         raise HTTPException(status_code=502, detail="Session persist failed")
 
@@ -392,16 +393,15 @@ async def delete_session(
         # reconnect hits repeated_local_track) and log the orphans for ops.
         if session.transport == "cloudflare":
             back_ids = [
-                i
-                for i in (session.state_back_channel_id, session.map_channel_id)
-                if i is not None
+                i for i in (session.state_back_channel_id, session.map_channel_id) if i is not None
             ]
             if back_ids and session.cf_session_id:
                 await cf_client.close_datachannels(session.cf_session_id, back_ids)
             if session.cf_session_id or session.operator_cf_session_id:
                 log.info(
                     "delete_session: orphaning CF sessions robot_cf=%s operator_cf=%s",
-                    session.cf_session_id, session.operator_cf_session_id,
+                    session.cf_session_id,
+                    session.operator_cf_session_id,
                 )
         session.state = "disconnected"
         session.operator_id = None
@@ -611,7 +611,9 @@ async def join_session(
         except Exception:
             log.exception(
                 "DB commit failed; leaking operator cf_session=%s session=%s operator=%s",
-                operator_cf_id, session_id, user_id,
+                operator_cf_id,
+                session_id,
+                user_id,
             )
             await _release_operator_slot(db, session_id, user_id)
             raise HTTPException(status_code=502, detail="Join persist failed")
@@ -649,11 +651,13 @@ async def _pull_robot_video(session: TeleopSession) -> tuple[str | None, str]:
     try:
         await cf_client.add_tracks(
             session.cf_session_id,
-            [{
-                "location": "local",
-                "mid": session.published_video_mid,
-                "trackName": session.published_video_track_name,
-            }],
+            [
+                {
+                    "location": "local",
+                    "mid": session.published_video_mid,
+                    "trackName": session.published_video_track_name,
+                }
+            ],
         )
     except Exception as e:
         log.error("video: publish robot track failed session=%s: %r", session.id, e)
@@ -663,11 +667,13 @@ async def _pull_robot_video(session: TeleopSession) -> tuple[str | None, str]:
         try:
             pull = await cf_client.add_tracks(
                 session.operator_cf_session_id,
-                [{
-                    "location": "remote",
-                    "sessionId": session.cf_session_id,
-                    "trackName": session.published_video_track_name,
-                }],
+                [
+                    {
+                        "location": "remote",
+                        "sessionId": session.cf_session_id,
+                        "trackName": session.published_video_track_name,
+                    }
+                ],
             )
         except Exception as e:
             log.error("video: pull failed session=%s: %r", session.id, e)
@@ -703,11 +709,13 @@ async def _pull_operator_audio(session: TeleopSession) -> str | None:
     try:
         await cf_client.add_tracks(
             session.operator_cf_session_id,
-            [{
-                "location": "local",
-                "mid": session.operator_audio_mid,
-                "trackName": session.operator_audio_track_name,
-            }],
+            [
+                {
+                    "location": "local",
+                    "mid": session.operator_audio_mid,
+                    "trackName": session.operator_audio_track_name,
+                }
+            ],
         )
     except Exception as e:
         log.error("audio: publish operator track failed session=%s: %r", session.id, e)
@@ -717,11 +725,13 @@ async def _pull_operator_audio(session: TeleopSession) -> str | None:
         try:
             pull = await cf_client.add_tracks(
                 session.cf_session_id,
-                [{
-                    "location": "remote",
-                    "sessionId": session.operator_cf_session_id,
-                    "trackName": session.operator_audio_track_name,
-                }],
+                [
+                    {
+                        "location": "remote",
+                        "sessionId": session.operator_cf_session_id,
+                        "trackName": session.operator_audio_track_name,
+                    }
+                ],
             )
         except Exception as e:
             log.error("audio: pull onto robot failed session=%s: %r", session.id, e)
@@ -866,7 +876,9 @@ async def _bridge_datachannel_locked(
         # of treating it as a backend outage (was an opaque 502; DM-6).
         log.warning(
             "bridge: unmatched CF session gone (cf=%s) session=%s: %s",
-            e.session_id, session.id, e.detail[:200],
+            e.session_id,
+            session.id,
+            e.detail[:200],
         )
         raise HTTPException(
             status_code=409,
@@ -876,7 +888,9 @@ async def _bridge_datachannel_locked(
         await _rollback_pushes()
         # Log server-side too — the detail otherwise only reaches the browser
         # console, which made the 2026-07-01 bridge 502 hard to attribute.
-        log.warning("bridge: CF datachannel bridge failed session=%s: %s", session.id, e.detail[:200])
+        log.warning(
+            "bridge: CF datachannel bridge failed session=%s: %s", session.id, e.detail[:200]
+        )
         raise HTTPException(
             status_code=502,
             detail=f"Cloudflare datachannel bridge failed: {e.detail}",
@@ -1053,7 +1067,9 @@ async def leave_session(
         # which is exactly what the 2026-07-01 demo churn hunt needed.
         log.info(
             "operator leave: session=%s operator=%s reason=%s",
-            session_id, user_id, body.reason,
+            session_id,
+            user_id,
+            body.reason,
         )
         # Same rationale as delete_session: serialize with bridges.
         async with _session_lock(session_id):
@@ -1096,17 +1112,24 @@ async def session_status(
 
 # ─── Operator liveness reaper ────────────────────────────────────
 
+
 async def _reap_stale_operators() -> None:
     """Evict operators whose last heartbeat is older than the timeout."""
     threshold = datetime.now(timezone.utc) - timedelta(seconds=OP_HEARTBEAT_TIMEOUT_SEC)
     async with async_session() as db:
-        stale = (await db.execute(
-            select(TeleopSession).where(
-                TeleopSession.state == "active",
-                TeleopSession.last_operator_heartbeat.is_not(None),
-                TeleopSession.last_operator_heartbeat < threshold,
+        stale = (
+            (
+                await db.execute(
+                    select(TeleopSession).where(
+                        TeleopSession.state == "active",
+                        TeleopSession.last_operator_heartbeat.is_not(None),
+                        TeleopSession.last_operator_heartbeat < threshold,
+                    )
+                )
             )
-        )).scalars().all()
+            .scalars()
+            .all()
+        )
         for s in stale:
             async with _session_lock(s.id):
                 # Re-read under the lock: an op-heartbeat can land between the
@@ -1120,7 +1143,9 @@ async def _reap_stale_operators() -> None:
                 idle = (datetime.now(timezone.utc) - last_hb).total_seconds()
                 log.warning(
                     "reaping stale operator session=%s operator=%s idle_for=%.1fs",
-                    s.id, s.operator_id, idle,
+                    s.id,
+                    s.operator_id,
+                    idle,
                 )
                 s.operator_id = None
                 s.operator_cf_session_id = None
@@ -1141,13 +1166,19 @@ async def _reap_stale_robots() -> None:
     idle/active forever otherwise."""
     threshold = datetime.now(timezone.utc) - timedelta(seconds=ROBOT_HEARTBEAT_TIMEOUT_SEC)
     async with async_session() as db:
-        stale = (await db.execute(
-            select(TeleopSession).where(
-                TeleopSession.state != "disconnected",
-                TeleopSession.last_heartbeat.is_not(None),
-                TeleopSession.last_heartbeat < threshold,
+        stale = (
+            (
+                await db.execute(
+                    select(TeleopSession).where(
+                        TeleopSession.state != "disconnected",
+                        TeleopSession.last_heartbeat.is_not(None),
+                        TeleopSession.last_heartbeat < threshold,
+                    )
+                )
             )
-        )).scalars().all()
+            .scalars()
+            .all()
+        )
         for s in stale:
             async with _session_lock(s.id):
                 # Re-read under the lock: a heartbeat can land between the SELECT
@@ -1163,11 +1194,11 @@ async def _reap_stale_robots() -> None:
                 idle = (datetime.now(timezone.utc) - last_hb).total_seconds()
                 log.warning(
                     "reaping stale robot session=%s robot=%s idle_for=%.1fs",
-                    s.id, s.robot_id, idle,
+                    s.id,
+                    s.robot_id,
+                    idle,
                 )
-                reap_ids = [
-                    i for i in (s.state_back_channel_id, s.map_channel_id) if i is not None
-                ]
+                reap_ids = [i for i in (s.state_back_channel_id, s.map_channel_id) if i is not None]
                 if s.transport == "cloudflare" and reap_ids and s.cf_session_id:
                     await cf_client.close_datachannels(s.cf_session_id, reap_ids)
                 s.state = "disconnected"
@@ -1188,9 +1219,11 @@ async def _reap_stale_robots() -> None:
 async def _refresh_session_gauge() -> None:
     """teleop_sessions{state=…} for /metrics, piggybacked on the reaper tick."""
     async with async_session() as db:
-        rows = (await db.execute(
-            select(TeleopSession.state, func.count()).group_by(TeleopSession.state)
-        )).all()
+        rows = (
+            await db.execute(
+                select(TeleopSession.state, func.count()).group_by(TeleopSession.state)
+            )
+        ).all()
     counts = dict(rows)
     for state_name in ("idle", "active", "disconnected"):
         SESSIONS_BY_STATE.labels(state_name).set(counts.get(state_name, 0))

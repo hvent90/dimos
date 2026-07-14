@@ -3,9 +3,8 @@
 import asyncio
 import logging
 
-import httpx
-
 from config import settings
+import httpx
 
 log = logging.getLogger(__name__)
 
@@ -16,10 +15,7 @@ _ADD_DC_RETRY_DELAYS_SEC = (0.25, 0.5, 1.0, 2.0)
 
 
 def _is_session_not_ready(error_code: str, error_description: str) -> bool:
-    return (
-        error_code == "session_error"
-        and "not ready" in (error_description or "").lower()
-    )
+    return error_code == "session_error" and "not ready" in (error_description or "").lower()
 
 
 def _is_session_gone(status_code: int, error_code: str = "", error_description: str = "") -> bool:
@@ -28,10 +24,7 @@ def _is_session_gone(status_code: int, error_code: str = "", error_description: 
     Signals: HTTP 410 Gone, or session_error with 'disconnected' in body."""
     if status_code == 410:
         return True
-    return (
-        error_code == "session_error"
-        and "disconnected" in (error_description or "").lower()
-    )
+    return error_code == "session_error" and "disconnected" in (error_description or "").lower()
 
 
 class CloudflareRealtimeError(Exception):
@@ -189,9 +182,7 @@ class CloudflareRealtime:
                 raise CloudflareSessionGoneError(
                     resp.status_code, f"{error_code}: {description}", session_id
                 )
-            last_err = CloudflareRealtimeError(
-                resp.status_code, f"{error_code}: {description}"
-            )
+            last_err = CloudflareRealtimeError(resp.status_code, f"{error_code}: {description}")
             if not _is_session_not_ready(error_code, description):
                 raise last_err
             if attempt >= attempts:
@@ -199,7 +190,8 @@ class CloudflareRealtime:
             delay = _ADD_DC_RETRY_DELAYS_SEC[attempt - 1]
             log.warning(
                 "CF add_datachannels attempt=%d session-not-ready, retrying in %.2fs",
-                attempt, delay,
+                attempt,
+                delay,
             )
             await asyncio.sleep(delay)
 

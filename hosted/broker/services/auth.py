@@ -10,12 +10,11 @@ import asyncio
 import logging
 import time
 
-import httpx
+from config import settings
 from fastapi import HTTPException, Security
 from fastapi.security import APIKeyHeader, HTTPAuthorizationCredentials, HTTPBearer
+import httpx
 from jose import JWTError, jwt
-
-from config import settings
 
 log = logging.getLogger(__name__)
 
@@ -113,6 +112,7 @@ async def get_robot_id(api_key: str | None = Security(api_key_header)) -> str:
 
         # DB-backed API keys (dtk_live_... / dtk_dev_...)
         from models.database import async_session
+
         from services.keys import validate_api_key
 
         async with async_session() as db:
@@ -135,6 +135,7 @@ async def get_robot_owner(api_key: str | None = Security(api_key_header)) -> str
         if api_key in ROBOT_API_KEYS:
             return ROBOT_API_KEYS[api_key]  # dev bootstrap: value doubles as owner
         from models.database import async_session
+
         from services.keys import validate_api_key
 
         async with async_session() as db:

@@ -17,7 +17,6 @@ import time
 
 from fastapi import Request
 from fastapi.responses import JSONResponse
-
 from metrics import RATE_LIMIT_HITS
 
 log = logging.getLogger(__name__)
@@ -138,7 +137,10 @@ def install(app, enforce: bool) -> RateLimiter:
                 )
             log.warning(
                 "rate-limit (passive, would 429): caller=%s class=%s %s %s",
-                caller, route_class, request.method, request.url.path,
+                caller,
+                route_class,
+                request.method,
+                request.url.path,
             )
         return await call_next(request)
 

@@ -4,9 +4,8 @@ Login/signup happen directly between the SPA and Cognito — the broker only
 verifies tokens. The SPA reads pool/client IDs from /auth/config at boot.
 """
 
-from fastapi import APIRouter, Depends
-
 from config import settings
+from fastapi import APIRouter, Depends
 from services.auth import get_current_user
 
 router = APIRouter(prefix="/auth", tags=["auth"])

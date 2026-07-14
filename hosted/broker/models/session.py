@@ -1,5 +1,5 @@
-import uuid
 from datetime import datetime, timezone
+import uuid
 
 from sqlalchemy import Column, DateTime, Float, Integer, String
 from sqlalchemy.orm import Mapped
@@ -61,4 +61,6 @@ class TeleopSession(Base):
     created_at: Mapped[datetime] = Column(DateTime(timezone=True), default=_utcnow)
     last_heartbeat: Mapped[datetime | None] = Column(DateTime(timezone=True), nullable=True)
     # Refreshed by /op-heartbeat; a reaper evicts silent-drop operators.
-    last_operator_heartbeat: Mapped[datetime | None] = Column(DateTime(timezone=True), nullable=True)
+    last_operator_heartbeat: Mapped[datetime | None] = Column(
+        DateTime(timezone=True), nullable=True
+    )

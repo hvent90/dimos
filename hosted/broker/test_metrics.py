@@ -13,13 +13,12 @@ os.environ["ENVIRONMENT"] = "dev"
 _db = tempfile.NamedTemporaryFile(suffix=".db", delete=False).name
 os.environ["DATABASE_URL"] = f"sqlite+aiosqlite:///{_db}"
 
-from fastapi import Header, HTTPException  # noqa: E402
-from fastapi.testclient import TestClient  # noqa: E402
-
-import main  # noqa: E402
-from routers.sessions import _refresh_session_gauge  # noqa: E402
-from services.auth import get_robot_owner  # noqa: E402
-from services.cloudflare import cf_client  # noqa: E402
+from fastapi import Header, HTTPException
+from fastapi.testclient import TestClient
+import main
+from routers.sessions import _refresh_session_gauge
+from services.auth import get_robot_owner
+from services.cloudflare import cf_client
 
 PASS = [0]
 
@@ -46,8 +45,10 @@ with TestClient(app=main.app) as c:
     r = c.get("/metrics")
     check("metrics endpoint serves", r.status_code == 200)
     check("prometheus content type", "text/plain" in r.headers["content-type"])
-    check("metric families present", "teleop_http_requests_total" in r.text
-          and "teleop_sessions" in r.text)
+    check(
+        "metric families present",
+        "teleop_http_requests_total" in r.text and "teleop_sessions" in r.text,
+    )
 
     # Generate traffic, confirm it lands under the route TEMPLATE label.
     c.get("/health")
@@ -66,8 +67,7 @@ with TestClient(app=main.app) as c:
     # Reaper gauge refresh reads the real DB.
     asyncio.run(_refresh_session_gauge())
     body = c.get("/metrics").text
-    check("session gauge reflects created session",
-          'teleop_sessions{state="idle"} 1.0' in body)
+    check("session gauge reflects created session", 'teleop_sessions{state="idle"} 1.0' in body)
 
 print(f"\n{'ALL PASS' if PASS[0] == 0 else str(PASS[0]) + ' FAILED'}")
 os.unlink(_db)

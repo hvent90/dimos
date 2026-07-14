@@ -1,10 +1,9 @@
 import logging
 
+from config import settings
 from sqlalchemy import inspect
 from sqlalchemy.ext.asyncio import AsyncSession, async_sessionmaker, create_async_engine
 from sqlalchemy.orm import DeclarativeBase
-
-from config import settings
 
 log = logging.getLogger(__name__)
 
@@ -47,9 +46,7 @@ def _apply_additive_columns(sync_conn) -> None:
         existing = {c["name"] for c in insp.get_columns(table)}
         if column in existing:
             continue
-        sync_conn.exec_driver_sql(
-            f"ALTER TABLE {table} ADD COLUMN {column} {sql_type}"
-        )
+        sync_conn.exec_driver_sql(f"ALTER TABLE {table} ADD COLUMN {column} {sql_type}")
         log.info("Added column %s.%s (%s)", table, column, sql_type)
 
 

@@ -11,12 +11,12 @@ os.environ["ENVIRONMENT"] = "dev"  # relax prod config validators
 _db = tempfile.NamedTemporaryFile(suffix=".db", delete=False).name
 os.environ["DATABASE_URL"] = f"sqlite+aiosqlite:///{_db}"
 
-from fastapi import Header, HTTPException  # noqa: E402
-from fastapi.testclient import TestClient  # noqa: E402
+from fastapi import Header, HTTPException
+from fastapi.testclient import TestClient
+from main import app
+from services.auth import get_current_user, get_robot_owner
+from services.cloudflare import cf_client
 
-from main import app  # noqa: E402
-from services.auth import get_current_user, get_robot_owner  # noqa: E402
-from services.cloudflare import cf_client  # noqa: E402
 
 # Robot identity = the X-Robot-API-Key header value (stands in for key owner).
 async def _owner(x_robot_api_key: str = Header(None)) -> str:
@@ -52,9 +52,13 @@ def check(name: str, cond: bool) -> None:
 
 B = "/api/v1/sessions"
 with TestClient(app) as c:
+
     def create(owner: str, robot_id: str) -> str:
-        r = c.post(B, json={"robot_id": robot_id, "robot_name": robot_id, "sdp_offer": "v=0"},
-                   headers={"X-Robot-API-Key": owner})
+        r = c.post(
+            B,
+            json={"robot_id": robot_id, "robot_name": robot_id, "sdp_offer": "v=0"},
+            headers={"X-Robot-API-Key": owner},
+        )
         assert r.status_code == 201, r.text
         return r.json()["session_id"]
 
@@ -69,12 +73,17 @@ with TestClient(app) as c:
 
     check("alice sees only her two robots", names("alice") == {"r1", "r2"})
     check("bob sees only his robot", names("bob") == {"r3"})
-    check("one key, multiple robots both visible", "r1" in names("alice") and "r2" in names("alice"))
+    check(
+        "one key, multiple robots both visible", "r1" in names("alice") and "r2" in names("alice")
+    )
 
     rs = c.get(f"{B}/{s_bob}/status", headers={"Authorization": "Bearer alice"})
     check("alice cannot status bob's session (404)", rs.status_code == 404)
-    rj = c.post(f"{B}/{s_bob}/join", json={"role": "operator", "sdp_offer": "v=0"},
-                headers={"Authorization": "Bearer alice"})
+    rj = c.post(
+        f"{B}/{s_bob}/join",
+        json={"role": "operator", "sdp_offer": "v=0"},
+        headers={"Authorization": "Bearer alice"},
+    )
     check("alice cannot join bob's session (404)", rj.status_code == 404)
 
     check("admin sees all robots", names("admin@x:admin") == {"r1", "r2", "r3"})

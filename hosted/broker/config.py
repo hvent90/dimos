@@ -71,8 +71,7 @@ class Settings(BaseSettings):
     @property
     def cognito_issuer(self) -> str:
         return (
-            f"https://cognito-idp.{self.cognito_region}.amazonaws.com/"
-            f"{self.cognito_user_pool_id}"
+            f"https://cognito-idp.{self.cognito_region}.amazonaws.com/{self.cognito_user_pool_id}"
         )
 
     model_config = {"env_file": ".env", "extra": "ignore"}
