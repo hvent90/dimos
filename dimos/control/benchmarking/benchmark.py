@@ -407,7 +407,15 @@ class Benchmarker(Module):
         self.register_disposable(Disposable(self.odom.subscribe(self._recorder.on_odom)))
         if self.cmd_vel.transport is not None:
             self.register_disposable(Disposable(self.cmd_vel.subscribe(self._recorder.on_cmd_vel)))
-        if self.config.gate_source == "stream" and self.gate.transport is not None:
+        if self.config.gate_source == "stream":
+            # Fail fast: with no gate transport the run loop would block forever
+            # in _wait_gate() for an ENTER that can never arrive. Use
+            # gate_source="auto" for headless/ungated runs.
+            if self.gate.transport is None:
+                raise RuntimeError(
+                    "gate_source='stream' requires a gate transport; "
+                    "wire one or use gate_source='auto'"
+                )
             self.register_disposable(Disposable(self.gate.subscribe(self._on_gate_event)))
         # Run on a background thread so start() returns immediately (the session
         # is operator-paced and easily outlives the start RPC's timeout).
