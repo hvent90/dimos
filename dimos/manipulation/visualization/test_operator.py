@@ -172,12 +172,9 @@ class FakeModule:
     def preview_plan(
         self, plan: GeneratedPlan | None = None, duration: float | None = None
     ) -> bool:
-        _ = plan
-        _ = duration
         return self.preview_success
 
     def execute_plan(self, plan: GeneratedPlan | None = None) -> bool:
-        _ = plan
         return self.execute_success
 
     def cancel(self) -> bool:
@@ -207,13 +204,11 @@ class FakeWorldMonitor:
         return self.current_states.get(robot_id)
 
     def is_state_valid(self, robot_id: str, joint_state: JointState) -> bool:
-        _ = robot_id, joint_state
         return self.valid
 
     def get_group_ee_pose(
         self, group_id: PlanningGroupID, joint_state: JointState | None = None
     ) -> PoseStamped:
-        _ = group_id, joint_state
         return PoseStamped(
             frame_id="world", position=Vector3(1.0, 2.0, 3.0), orientation=Quaternion()
         )

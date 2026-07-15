@@ -369,11 +369,9 @@ class Operator:
         return self.module.make_plan(tuple(request.pose_targets))  # type: ignore[attr-defined]
 
     def preview(self, plan: GeneratedPlan, duration: float | None = None) -> bool:
-        _ = plan, duration
         return self.module.preview_plan()
 
     def execute(self, plan: GeneratedPlan) -> bool:
-        _ = plan
         return self.module.execute()
 
     def cancel(self) -> bool:

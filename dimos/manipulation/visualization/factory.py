@@ -53,7 +53,6 @@ def create_manipulation_visualization(
             ViserManipulationVisualizer,
         )
 
-        _ = world_monitor, manipulation_module
         return ViserManipulationVisualizer(config=config)
 
     raise AssertionError(f"Unhandled manipulation visualization config: {config!r}")

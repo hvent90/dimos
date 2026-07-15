@@ -521,7 +521,6 @@ def test_group_fk_and_jacobian_use_group_tip_and_local_joint_order(
     def fake_fk(
         self: FakeScene, q: np.ndarray, frame_name: str, base_frame: str = ""
     ) -> np.ndarray:
-        _ = (self, base_frame)
         fk_frames.append(frame_name)
         mat = np.eye(4)
         mat[0, 3] = float(np.sum(q))
@@ -530,7 +529,6 @@ def test_group_fk_and_jacobian_use_group_tip_and_local_joint_order(
     def fake_jacobian(
         self: FakeScene, q: np.ndarray, frame_name: str, local: bool = True
     ) -> np.ndarray:
-        _ = (self, q)
         assert frame_name == "wrist_tip"
         assert local is True
         return np.arange(18, dtype=np.float64).reshape(6, 3)
@@ -635,7 +633,6 @@ def test_group_jacobian_falls_back_to_configured_joint_order_when_scene_order_is
     world.set_joint_state(ctx, robot_id, JointState(name=["joint1", "joint2"], position=[0.0, 0.0]))
 
     def missing_group_info(self: FakeScene, name: str) -> FakeJointGroupInfo:
-        _ = (self, name)
         raise AttributeError("no joint group info")
 
     monkeypatch.setattr(FakeScene, "getJointGroupInfo", missing_group_info)

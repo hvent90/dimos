@@ -61,7 +61,6 @@ class FakeOperator:
         return OperatorStatus(state="IDLE", error="", has_plan=False)
 
     def get_init_joints(self, robot_name: str) -> None:
-        _ = robot_name
         return None
 
     def cancel(self) -> bool:
@@ -135,7 +134,6 @@ class FakeOperationErrorWorker(OperationWorker):
         timeout_seconds: float | None = None,
         on_error: Callable[[str], None] | None = None,
     ) -> None:
-        _ = operation, timeout_seconds
         if on_error is not None:
             self.errors.append(on_error)
 

@@ -54,7 +54,6 @@ class _FakeStateMonitor:
         return None
 
     def is_state_stale(self, max_age: float) -> bool:
-        _ = max_age
         return self._stale
 
 

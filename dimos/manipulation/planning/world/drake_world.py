@@ -1157,7 +1157,6 @@ class DrakeWorld(WorldSpec, VisualizationSpec):
 
     def initialize(self, session: VisualizationSession) -> None:
         """Embedded Meshcat observes the Drake world directly; no extra sync needed."""
-        _ = session
         return None
 
     def get_visualization_url(self) -> str | None:
@@ -1178,7 +1177,6 @@ class DrakeWorld(WorldSpec, VisualizationSpec):
 
     def update_state(self, frame: VisualizationStateFrame) -> None:
         """Receive pushed state frame; embedded Meshcat uses Drake live context."""
-        _ = frame
         self._publish_visualization()
 
     def _set_preview_positions(

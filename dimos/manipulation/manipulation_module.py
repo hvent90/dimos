@@ -705,14 +705,14 @@ class ManipulationModule(Module):
             timeout=self.config.planning_timeout,
         )
         if not result.is_success():
-            _ = self._fail_planning_epoch(planning_epoch, f"Planning failed: {result.status.name}")
+            self._fail_planning_epoch(planning_epoch, f"Planning failed: {result.status.name}")
             return None
 
         logger.info("Path: %d waypoints, groups=%s", len(result.path), group_ids)
         try:
             path, trajectory = self._materialize_generated_plan(group_ids, result.path)
         except Exception as exc:
-            _ = self._fail_planning_epoch(planning_epoch, f"Failed to materialize plan: {exc}")
+            self._fail_planning_epoch(planning_epoch, f"Failed to materialize plan: {exc}")
             return None
         plan = GeneratedPlan(
             group_ids=group_ids,
@@ -967,7 +967,7 @@ class ManipulationModule(Module):
         if self._world_monitor is None or self._planner is None:
             return None
         if not joint_targets:
-            _ = self._fail("At least one joint target is required")
+            self._fail("At least one joint target is required")
             return None
 
         group_ids = tuple(
@@ -982,7 +982,7 @@ class ManipulationModule(Module):
             current = self._world_monitor.current_global_joint_state()
             start = filter_joint_state_to_selected_joints(current, selection.joint_names)
         except Exception as exc:
-            _ = self._fail_planning_epoch(
+            self._fail_planning_epoch(
                 planning_epoch, f"Failed to resolve planning groups: {exc}"
             )
             return None
@@ -996,7 +996,7 @@ class ManipulationModule(Module):
                 target_global = joint_target_to_global_names(target_group, target)
             except (KeyError, ValueError) as exc:
                 logger.error(str(exc))
-                _ = self._fail_planning_epoch(
+                self._fail_planning_epoch(
                     planning_epoch, f"Invalid joint target for '{group_id}'"
                 )
                 return None
@@ -1015,7 +1015,7 @@ class ManipulationModule(Module):
         if self._world_monitor is None or self._kinematics is None:
             return None
         if not pose_targets:
-            _ = self._fail("At least one pose target is required")
+            self._fail("At least one pose target is required")
             return None
         stamped_targets = {
             planning_group_id_from_selector(group): PoseStamped(
@@ -1035,7 +1035,7 @@ class ManipulationModule(Module):
             current = self._world_monitor.current_global_joint_state()
             start = filter_joint_state_to_selected_joints(current, selection.joint_names)
         except Exception as exc:
-            _ = self._fail_planning_epoch(
+            self._fail_planning_epoch(
                 planning_epoch, f"Failed to resolve planning groups: {exc}"
             )
             return None
@@ -1045,7 +1045,7 @@ class ManipulationModule(Module):
             seed=start,
         )
         if not ik.is_success() or ik.joint_state is None:
-            _ = self._fail_planning_epoch(planning_epoch, f"IK failed: {ik.status.name}")
+            self._fail_planning_epoch(planning_epoch, f"IK failed: {ik.status.name}")
             return None
         logger.info(f"IK solved, error: {ik.position_error:.4f}m")
         return self._plan_selected_path(group_ids, start, ik.joint_state, planning_epoch)
@@ -1091,7 +1091,6 @@ class ManipulationModule(Module):
                 return False
         if self._world_monitor is None:
             return False
-        _ = target_fps
         self._world_monitor.animate_trajectory(plan.trajectory, duration)
         return True
 

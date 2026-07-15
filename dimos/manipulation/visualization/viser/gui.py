@@ -226,7 +226,6 @@ class ViserPanelGui:
         }
 
     def is_state_stale(self, robot_name: RobotName, max_age: float = 1.0) -> bool:
-        _ = max_age
         return self.get_current_joint_state(robot_name) is None
 
     def get_module_state(self) -> str:
