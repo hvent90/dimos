@@ -16,7 +16,9 @@
 # Run `pytest dimos/robot/test_all_blueprints_generation.py` to regenerate.
 
 all_blueprints = {
+    "a1z-planner-coordinator": "dimos.robot.manipulators.a1z.blueprints.basic:a1z_planner_coordinator",
     "alfred-nav": "dimos.robot.diy.alfred.blueprints.alfred_nav:alfred_nav",
+    "coordinator-a1z": "dimos.robot.manipulators.a1z.blueprints.basic:coordinator_a1z",
     "coordinator-basic": "dimos.control.blueprints.basic:coordinator_basic",
     "coordinator-cartesian-ik-mock": "dimos.robot.manipulators.piper.blueprints.teleop:coordinator_cartesian_ik_mock",
     "coordinator-cartesian-ik-piper": "dimos.robot.manipulators.piper.blueprints.teleop:coordinator_cartesian_ik_piper",
@@ -62,6 +64,7 @@ all_blueprints = {
     "dual-xarm6-planner": "dimos.robot.manipulators.xarm.blueprints.basic:dual_xarm6_planner",
     "dual-xarm6-planner-coordinator": "dimos.robot.manipulators.xarm.blueprints.basic:dual_xarm6_planner_coordinator",
     "dual-xarm6-planner-coordinator-mock-meshcat": "dimos.robot.manipulators.xarm.blueprints.basic:dual_xarm6_planner_coordinator_mock_meshcat",
+    "keyboard-teleop-a1z": "dimos.robot.manipulators.a1z.blueprints.teleop:keyboard_teleop_a1z",
     "keyboard-teleop-a750": "dimos.robot.manipulators.a750.blueprints.teleop:keyboard_teleop_a750",
     "keyboard-teleop-openarm": "dimos.robot.manipulators.openarm.blueprints.teleop:keyboard_teleop_openarm",
     "keyboard-teleop-openarm-mock": "dimos.robot.manipulators.openarm.blueprints.teleop:keyboard_teleop_openarm_mock",
@@ -83,6 +86,7 @@ all_blueprints = {
     "openarm-planner-coordinator": "dimos.robot.manipulators.openarm.blueprints.planner:openarm_planner_coordinator",
     "path-planner-eval": "dimos.navigation.nav_3d.evaluator.blueprints:path_planner_eval",
     "teleop-hosted-go2": "dimos.teleop.quest_hosted.blueprints:teleop_hosted_go2",
+    "teleop-hosted-go2-transport": "dimos.teleop.quest_hosted.blueprints:teleop_hosted_go2_transport",
     "teleop-hosted-xarm7": "dimos.teleop.quest_hosted.blueprints:teleop_hosted_xarm7",
     "teleop-phone": "dimos.teleop.phone.blueprints:teleop_phone",
     "teleop-phone-go2": "dimos.teleop.phone.blueprints:teleop_phone_go2",
@@ -122,6 +126,7 @@ all_blueprints = {
     "unitree-go2-markers": "dimos.robot.unitree.go2.blueprints.smart.unitree_go2:unitree_go2_markers",
     "unitree-go2-memory": "dimos.robot.unitree.go2.blueprints.smart.unitree_go2:unitree_go2_memory",
     "unitree-go2-mid360-record": "dimos.robot.unitree.go2.blueprints.basic.unitree_go2_mid360_record:unitree_go2_mid360_record",
+    "unitree-go2-mls-htc": "dimos.robot.unitree.go2.blueprints.navigation.unitree_go2_mls_htc:unitree_go2_mls_htc",
     "unitree-go2-nav-3d": "dimos.robot.unitree.go2.blueprints.navigation.unitree_go2_nav_3d:unitree_go2_nav_3d",
     "unitree-go2-relocalization": "dimos.robot.unitree.go2.blueprints.smart.unitree_go2:unitree_go2_relocalization",
     "unitree-go2-ros": "dimos.robot.unitree.go2.blueprints.smart.unitree_go2_ros:unitree_go2_ros",
@@ -137,6 +142,7 @@ all_blueprints = {
     "xarm-perception-sim": "dimos.robot.manipulators.xarm.blueprints.simulation:xarm_perception_sim",
     "xarm-perception-sim-agent": "dimos.robot.manipulators.xarm.blueprints.agentic:xarm_perception_sim_agent",
     "xarm6-planner-only": "dimos.robot.manipulators.xarm.blueprints.basic:xarm6_planner_only",
+    "xarm6-worldbelief": "dimos.robot.manipulators.xarm.blueprints.worldbelief:xarm6_worldbelief",
     "xarm7-planner-coordinator": "dimos.robot.manipulators.xarm.blueprints.basic:xarm7_planner_coordinator",
     "xarm7-planner-coordinator-agent": "dimos.robot.manipulators.xarm.blueprints.agentic:xarm7_planner_coordinator_agent",
 }
@@ -154,6 +160,8 @@ all_modules = {
     "collection-recorder": "dimos.learning.collection.recorder.CollectionRecorder",
     "control-coordinator": "dimos.control.coordinator.ControlCoordinator",
     "cost-mapper": "dimos.mapping.costmapper.CostMapper",
+    "dan-holonomic-tc": "dimos.navigation.dannav.holonomic_tc.module.DanHolonomicTC",
+    "dan-local-planner": "dimos.navigation.dannav.local_planner.module.DanLocalPlanner",
     "demo-calculator-skill": "dimos.agents.skills.demo_calculator_skill.DemoCalculatorSkill",
     "demo-monitoring": "dimos.agents.demos.demo_capabilities.DemoMonitoring",
     "demo-robot": "dimos.agents.skills.demo_robot.DemoRobot",
@@ -220,6 +228,7 @@ all_modules = {
     "object-tracker2-d": "dimos.perception.object_tracker_2d.ObjectTracker2D",
     "object-tracker3-d": "dimos.perception.object_tracker_3d.ObjectTracker3D",
     "object-tracking": "dimos.perception.object_tracker.ObjectTracking",
+    "odom-body-frame": "dimos.navigation.nav_3d.mls_planner.odom_body_frame.OdomBodyFrame",
     "osm-skill": "dimos.agents.skills.osm.OsmSkill",
     "path-follower": "dimos.navigation.cmu_nav.modules.path_follower.path_follower.PathFollower",
     "patrolling-module": "dimos.navigation.patrolling.module.PatrollingModule",
@@ -265,5 +274,7 @@ all_modules = {
     "wavefront-frontier-explorer": "dimos.navigation.frontier_exploration.wavefront_frontier_goal_selector.WavefrontFrontierExplorer",
     "web-input": "dimos.agents.web_human_input.WebInput",
     "websocket-vis-module": "dimos.web.websocket_vis.websocket_vis_module.WebsocketVisModule",
+    "world-belief-module": "dimos.perception.worldbelief_module.WorldBeliefModule",
+    "world-belief-recorder": "dimos.perception.worldbelief_recorder.WorldBeliefRecorder",
     "zed-camera": "dimos.hardware.sensors.camera.zed.camera.ZEDCamera",
 }
