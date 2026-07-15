@@ -19,13 +19,13 @@ import time
 from typing import Any
 import uuid
 
-import httpx
 from langchain.agents import create_agent
 from langchain_core.messages import HumanMessage
 from langchain_core.messages.base import BaseMessage
 from langchain_core.tools import StructuredTool
 from langgraph.graph.state import CompiledStateGraph
 from reactivex.disposable import Disposable
+import requests
 
 from dimos.agents.mcp import tool_stream
 from dimos.agents.system_prompt import SYSTEM_PROMPT
@@ -61,7 +61,7 @@ class McpClient(Module):
     _history: list[BaseMessage]
     _thread: Thread
     _stop_event: Event
-    _http_client: httpx.Client
+    _http_client: requests.Session
     _seq_ids: SequentialIds
     _tool_stream_cleanup: Callable[[], None] | None
 
@@ -78,7 +78,7 @@ class McpClient(Module):
             daemon=True,
         )
         self._stop_event = Event()
-        self._http_client = httpx.Client(timeout=120.0)
+        self._http_client = requests.Session()
         self._seq_ids = SequentialIds()
         self._tool_stream_cleanup = None
 
@@ -94,7 +94,7 @@ class McpClient(Module):
         if params is not None:
             body["params"] = params
 
-        resp = self._http_client.post(self.config.mcp_server_url, json=body)
+        resp = self._http_client.post(self.config.mcp_server_url, json=body, timeout=120.0)
         resp.raise_for_status()
         data = resp.json()
 
@@ -156,7 +156,7 @@ class McpClient(Module):
             try:
                 self._mcp_request("initialize")
                 break
-            except (httpx.ConnectError, httpx.RemoteProtocolError):
+            except requests.ConnectionError:
                 if time.monotonic() >= deadline:
                     return None
                 time.sleep(interval)
