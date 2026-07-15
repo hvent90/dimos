@@ -12,11 +12,9 @@
 # See the License for the specific language governing permissions and
 # limitations under the License.
 
-"""Golden reference map: full-recording voxel map plus walked-corridor free space.
+"""Golden reference map built from every frame of a recording.
 
 The golden occupancy is what returned paths are collision-checked against.
-The walked corridor marks voxels the robot's body physically swept, which are
-free space regardless of what any mapper claims.
 """
 
 from __future__ import annotations
@@ -30,7 +28,7 @@ from typing import TYPE_CHECKING
 
 import numpy as np
 
-from dimos.navigation.nav_3d.evaluator.recording import iter_world_frames, load_trajectory
+from dimos.navigation.nav_3d.evaluator.recording import iter_world_frames
 from dimos.utils.logging_config import setup_logger
 
 if TYPE_CHECKING:
@@ -40,7 +38,6 @@ if TYPE_CHECKING:
 
     from dimos.navigation.nav_3d.evaluator.cases import Suite
     from dimos.navigation.nav_3d.evaluator.config import EvalConfig
-    from dimos.navigation.nav_3d.evaluator.recording import Trajectory
 
 logger = setup_logger()
 
@@ -103,40 +100,17 @@ def densify(points: NDArray[np.float32], step: float) -> NDArray[np.float32]:
     return np.concatenate(out).astype(np.float32)
 
 
-def walked_corridor_keys(
-    trajectory: Trajectory,
-    voxel_size: float,
-    radius: float,
-    z_lo: float,
-    z_hi: float,
-) -> NDArray[np.int64]:
-    """Voxels swept by the robot body cylinder along the trajectory, sorted.
-
-    z_lo and z_hi are relative to the odometry pose. The carved volume must
-    cover the collision gate's checked volume, or the walked path itself
-    fails the gate.
-    """
-    dense = densify(trajectory.positions, voxel_size / 2)
-    offsets = cylinder_offsets(radius, z_lo, z_hi, voxel_size)
-    return np.unique(offset_keys(dense, offsets, voxel_size))
-
-
 @dataclass
 class GoldenMap:
     voxel_size: float
     occupied: NDArray[np.float32]
     occupied_keys: NDArray[np.int64]
-    walked_keys: NDArray[np.int64]
     frames: int
     add_frame_ms: dict[str, float]
     build_ms: float
 
-    def obstacle_keys(self) -> NDArray[np.int64]:
-        """Occupied minus walked-free, the set paths must not intersect."""
-        return np.setdiff1d(self.occupied_keys, self.walked_keys, assume_unique=True)
 
-
-CACHE_VERSION = 2
+CACHE_VERSION = 3
 
 
 def _cache_path(db_path: Path, params: dict[str, float | int | str]) -> Path:
@@ -144,19 +118,9 @@ def _cache_path(db_path: Path, params: dict[str, float | int | str]) -> Path:
     return db_path.parent / ".golden" / f"{db_path.stem}.{digest}.npz"
 
 
-def load_or_build_golden(
-    db_path: Path,
-    suite: Suite,
-    cfg: EvalConfig,
-    corridor_radius: float,
-    corridor_z_lo: float,
-    corridor_z_hi: float,
-) -> GoldenMap:
+def load_or_build_golden(db_path: Path, suite: Suite, cfg: EvalConfig) -> GoldenMap:
     params: dict[str, float | int | str] = {
         **cfg.mapper_fingerprint(),
-        "corridor_radius": corridor_radius,
-        "corridor_z_lo": corridor_z_lo,
-        "corridor_z_hi": corridor_z_hi,
         "align_tol": cfg.align_tol,
         "lidar_stream": suite.lidar_stream,
         "odom_stream": suite.odom_stream,
@@ -170,7 +134,6 @@ def load_or_build_golden(
             voxel_size=voxel_size,
             occupied=data["occupied"],
             occupied_keys=data["occupied_keys"],
-            walked_keys=data["walked_keys"],
             frames=int(data["frames"]),
             add_frame_ms={
                 "p50": float(data["add_p50"]),
@@ -192,17 +155,12 @@ def load_or_build_golden(
     add_arr = np.asarray(add_ms) if add_ms else np.zeros(1)
     occupied = mapper.global_map()
     occupied_keys = np.unique(voxel_keys(occupied, voxel_size))
-    trajectory = load_trajectory(db_path, suite.odom_stream)
-    walked = walked_corridor_keys(
-        trajectory, voxel_size, corridor_radius, corridor_z_lo, corridor_z_hi
-    )
 
     cache.parent.mkdir(exist_ok=True)
     np.savez_compressed(
         cache,
         occupied=occupied,
         occupied_keys=occupied_keys,
-        walked_keys=walked,
         frames=len(add_ms),
         add_p50=np.percentile(add_arr, 50),
         add_p95=np.percentile(add_arr, 95),
@@ -213,7 +171,6 @@ def load_or_build_golden(
         voxel_size=voxel_size,
         occupied=occupied,
         occupied_keys=occupied_keys,
-        walked_keys=walked,
         frames=len(add_ms),
         add_frame_ms={
             "p50": float(np.percentile(add_arr, 50)),

@@ -33,9 +33,7 @@ import numpy as np
 from dimos.navigation.nav_3d.evaluator import metrics
 from dimos.navigation.nav_3d.evaluator.config import EvalConfig
 from dimos.navigation.nav_3d.evaluator.golden import (
-    keys_contain,
     load_or_build_golden,
-    voxel_keys,
 )
 from dimos.navigation.nav_3d.evaluator.recording import load_trajectory
 from dimos.utils.data import resolve_named_path
@@ -97,8 +95,6 @@ class PlannerArtifacts:
 class DatasetResult:
     dataset: str
     cases: list[CaseResult]
-    walked_path_valid: bool
-    false_obstacle_rate: float
     online_voxels: int
     golden_voxels: int
     map_build_ms: float
@@ -113,7 +109,6 @@ class Report:
     score: float
     score_soft: float
     planner_score: float
-    false_obstacle_rate: float
     n_cases: int
     n_success: int
     attribution_counts: dict[str, int]
@@ -177,43 +172,13 @@ def _attribution(online: PlanOutcome, golden: PlanOutcome) -> str:
 def run_suite(suite: Suite, cfg: EvalConfig) -> DatasetResult:
     db_path = resolve_named_path(suite.dataset, ".db")
     trajectory = load_trajectory(db_path, suite.odom_stream)
-    golden = load_or_build_golden(
-        db_path,
-        suite,
-        cfg,
-        corridor_radius=cfg.robot_radius + 0.1,
-        corridor_z_lo=-cfg.robot_height,
-        corridor_z_hi=-cfg.robot_height + cfg.body_clearance + cfg.voxel_size,
-    )
-    obstacle_keys = golden.obstacle_keys()
-
-    # Calibration invariant: the physically walked path must pass the gate.
-    # A failure here means the gate or corridor geometry is wrong, not the planner.
-    foot_path = trajectory.positions - np.array([0.0, 0.0, cfg.robot_height], dtype=np.float32)
-    walked_gate = metrics.check_path(
-        foot_path,
-        obstacle_keys,
-        cfg.voxel_size,
-        cfg.robot_radius,
-        cfg.ground_margin,
-        cfg.body_clearance,
-    )
-    if not walked_gate.valid:
-        logger.warning(
-            "%s: walked trajectory fails the collision gate at %d samples; "
-            "case validity is unreliable",
-            suite.dataset,
-            len(walked_gate.collision_points),
-        )
+    golden = load_or_build_golden(db_path, suite, cfg)
+    obstacle_keys = golden.occupied_keys
 
     # The online map equals the golden map while both use the same mapper
     # config, so reuse it instead of replaying the recording a second time.
     # Tier 2 replay and a separate golden mapper config will change this.
     online_points = golden.occupied
-    online_occupied = keys_contain(
-        np.sort(voxel_keys(online_points, cfg.voxel_size)), golden.walked_keys
-    )
-    false_obstacle_rate = float(online_occupied.mean()) if len(golden.walked_keys) else 0.0
 
     golden_planner = cfg.make_planner()
     golden_planner.update_global_map(golden.occupied)
@@ -265,8 +230,6 @@ def run_suite(suite: Suite, cfg: EvalConfig) -> DatasetResult:
     return DatasetResult(
         dataset=suite.dataset,
         cases=results,
-        walked_path_valid=walked_gate.valid,
-        false_obstacle_rate=false_obstacle_rate,
         online_voxels=len(online_points),
         golden_voxels=len(golden.occupied),
         map_build_ms=golden.build_ms,
@@ -296,12 +259,10 @@ def evaluate(suites: list[Suite], cfg: EvalConfig | None = None, workers: int = 
     for c in cases:
         attribution_counts[c.attribution] = attribution_counts.get(c.attribution, 0) + 1
 
-    rates = [d.false_obstacle_rate for d in datasets]
     return Report(
         score=float(np.average(online_spl, weights=weights)),
         score_soft=float(np.average(soft, weights=weights)),
         planner_score=float(np.average(golden_spl, weights=weights)),
-        false_obstacle_rate=float(np.mean(rates)) if rates else 0.0,
         n_cases=len(cases),
         n_success=sum(c.online.success for c in cases),
         attribution_counts=attribution_counts,

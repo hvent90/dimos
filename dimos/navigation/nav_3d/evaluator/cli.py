@@ -15,9 +15,11 @@
 """Nav-3d evaluation CLI.
 
 Run every suite:      python -m dimos.navigation.nav_3d.evaluator run
-One dataset:          python -m dimos.navigation.nav_3d.evaluator run --dataset stairs60_a
+One dataset:          python -m dimos.navigation.nav_3d.evaluator run --dataset mid360_athens_stairs
 Machine output:       python -m dimos.navigation.nav_3d.evaluator run --json report.json
 Override a knob:      python -m dimos.navigation.nav_3d.evaluator run --set wall_clearance_m=0.05
+New dataset:          python -m dimos.navigation.nav_3d.evaluator ingest recordings/.../mem2.db --name office_a
+Curate a case:        python -m dimos.navigation.nav_3d.evaluator add-case office_a --start x y z --goal x y z
 """
 
 from __future__ import annotations
@@ -25,12 +27,34 @@ from __future__ import annotations
 import dataclasses
 import json
 from pathlib import Path
+import sqlite3
+from typing import TYPE_CHECKING
 
+import numpy as np
 import typer
 
-from dimos.navigation.nav_3d.evaluator.cases import load_suites
+from dimos.navigation.nav_3d.evaluator.cases import (
+    CASES_DIR,
+    Case,
+    Suite,
+    load_suite,
+    load_suites,
+    save_suite,
+)
 from dimos.navigation.nav_3d.evaluator.config import EvalConfig
+from dimos.navigation.nav_3d.evaluator.generate import (
+    GenerationParams,
+    drift_stats,
+    generate_cases,
+    snap_to_surface,
+)
+from dimos.navigation.nav_3d.evaluator.golden import load_or_build_golden
+from dimos.navigation.nav_3d.evaluator.recording import load_trajectory
 from dimos.navigation.nav_3d.evaluator.runner import Report, evaluate
+from dimos.utils.data import get_data_dir, resolve_named_path
+
+if TYPE_CHECKING:
+    from numpy.typing import NDArray
 
 app = typer.Typer(no_args_is_help=True, add_completion=False)
 
@@ -64,7 +88,6 @@ def _print_report(report: Report) -> None:
         print(
             f"{d.dataset}: {d.frames} frames, online {d.online_voxels} / "
             f"golden {d.golden_voxels} voxels, "
-            f"false-obstacle rate {d.false_obstacle_rate:.3f}, "
             f"map build {d.map_build_ms / 1000:.1f}s"
         )
     print(
@@ -91,7 +114,12 @@ def run(
 ) -> None:
     suites = load_suites(manifests or None)
     if dataset is not None:
-        suites = [s for s in suites if s.dataset == dataset]
+        wanted = Path(dataset).stem
+        suites = [
+            s
+            for s in suites
+            if s.dataset == dataset or (s.path is not None and s.path.stem == wanted)
+        ]
         if not suites:
             raise typer.BadParameter(f"no suite for dataset {dataset!r}")
     cfg = _apply_overrides(EvalConfig(), set_ or [])
@@ -104,6 +132,126 @@ def run(
         from dimos.navigation.nav_3d.evaluator.viz import write_rrd
 
         write_rrd(report, suites, cfg, rrd_out)
+
+
+def _copy_recording(src: Path, dest: Path) -> None:
+    """Copy via the sqlite backup API so WAL sidecar content is never lost."""
+    with sqlite3.connect(src) as source, sqlite3.connect(dest) as target:
+        source.backup(target)
+
+
+def _snap_or_fail(
+    label: str,
+    point: tuple[float, float, float],
+    surface: NDArray[np.float32],
+    snap_max_m: float,
+) -> tuple[float, float, float]:
+    snapped = snap_to_surface(np.asarray(point, dtype=np.float32), surface, snap_max_m)
+    if snapped is None:
+        raise typer.BadParameter(
+            f"{label} {point} is more than {snap_max_m}m from any standable surface"
+        )
+    return (float(snapped[0]), float(snapped[1]), float(snapped[2]))
+
+
+@app.command()
+def ingest(
+    source: Path = typer.Argument(
+        ..., help="Recording to ingest: a mem2.db file or the directory holding one"
+    ),
+    name: str = typer.Option(..., "--name", help="Dataset name; becomes data/<name>.db"),
+    lidar_stream: str = typer.Option("pointlio_lidar", "--lidar-stream"),
+    odom_stream: str = typer.Option("pointlio_odometry", "--odom-stream"),
+    max_cases: int = typer.Option(
+        0, "--max-cases", help="Auto-generated case cap; 0 scales with recording length"
+    ),
+    force: bool = typer.Option(False, "--force", help="Overwrite dataset and manifest"),
+) -> None:
+    """Register a recording as a dataset: copy, drift-check, map, generate cases."""
+    src = source / "mem2.db" if source.is_dir() else source
+    if not src.exists():
+        raise typer.BadParameter(f"{src} does not exist")
+    manifest = CASES_DIR / f"{name}.yaml"
+    if manifest.exists() and not force:
+        raise typer.BadParameter(f"{manifest} already exists; pass --force to regenerate")
+    dest = get_data_dir() / f"{name}.db"
+    if src.resolve() != dest.resolve():
+        if dest.exists() and not force:
+            raise typer.BadParameter(f"{dest} already exists; pass --force to overwrite")
+        print(f"copying {src} -> {dest}")
+        _copy_recording(src, dest)
+
+    suite = Suite(dataset=name, cases=[], lidar_stream=lidar_stream, odom_stream=odom_stream)
+    trajectory = load_trajectory(dest, odom_stream)
+    arcs = trajectory.arc_lengths()
+    print(
+        f"trajectory: {len(trajectory.positions)} poses, "
+        f"{trajectory.ts[-1] - trajectory.ts[0]:.0f}s, {arcs[-1]:.1f}m walked, "
+        f"z [{trajectory.positions[:, 2].min():.2f}, {trajectory.positions[:, 2].max():.2f}]"
+    )
+    drift = drift_stats(trajectory)
+    closure = f"{drift.closure_m:.2f}m" if drift.closure_m is not None else "n/a"
+    print(
+        f"drift: {drift.revisit_count} same-floor revisits, "
+        f"z mismatch p95 {drift.revisit_dz_p95:.2f}m, loop closure {closure}"
+    )
+    for warning in drift.warnings:
+        print(f"WARNING: {warning}")
+
+    cfg = EvalConfig()
+    golden = load_or_build_golden(dest, suite, cfg)
+    planner = cfg.make_planner()
+    planner.update_global_map(golden.occupied)
+    gen = GenerationParams(max_cases=max_cases or None)
+    suite.cases = generate_cases(trajectory, golden, planner.surface_map(), cfg, gen)
+    if not suite.cases:
+        raise typer.Exit(code=1)
+    floor = min(gen.min_cases, gen.resolve_max_cases(float(arcs[-1])))
+    if len(suite.cases) < floor:
+        print(
+            f"WARNING: only {len(suite.cases)} cases generated; the recording "
+            "may be too short or too uniform for more"
+        )
+    path = save_suite(suite, manifest)
+    print(f"\n{len(suite.cases)} cases -> {path}")
+    for case in suite.cases:
+        print(f"  {case.id}: w={case.weight:g} [{', '.join(case.tags)}]")
+    print(f"\nrun with: python -m dimos.navigation.nav_3d.evaluator run --dataset {name}")
+
+
+@app.command("add-case")
+def add_case(
+    dataset: str = typer.Argument(..., help="Dataset whose manifest gets the case"),
+    start: tuple[float, float, float] = typer.Option(..., "--start", help="Foot-level xyz"),
+    goal: tuple[float, float, float] = typer.Option(..., "--goal", help="Foot-level xyz"),
+    case_id: str = typer.Option(None, "--id", help="Case id; default manual_<n>"),
+    tags: str = typer.Option("manual", "--tags", help="Comma-separated tags"),
+    weight: float = typer.Option(2.0, "--weight"),
+    snap_max: float = typer.Option(1.0, "--snap-max", help="Max snap distance to surface (m)"),
+) -> None:
+    """Append a curated case, with both endpoints snapped to the golden surface."""
+    manifest = CASES_DIR / f"{dataset}.yaml"
+    if not manifest.exists():
+        raise typer.BadParameter(f"no manifest {manifest}; run ingest first")
+    suite = load_suite(manifest)
+    cfg = EvalConfig()
+    golden = load_or_build_golden(resolve_named_path(dataset, ".db"), suite, cfg)
+    planner = cfg.make_planner()
+    planner.update_global_map(golden.occupied)
+    surface = planner.surface_map()
+
+    case = Case(
+        id=case_id or f"manual_{sum(c.id.startswith('manual_') for c in suite.cases):02d}",
+        start=_snap_or_fail("start", start, surface, snap_max),
+        goal=_snap_or_fail("goal", goal, surface, snap_max),
+        weight=weight,
+        tags=[t.strip() for t in tags.split(",") if t.strip()],
+    )
+    if any(c.id == case.id for c in suite.cases):
+        raise typer.BadParameter(f"case id {case.id!r} already exists in {manifest}")
+    suite.cases.append(case)
+    save_suite(suite, manifest)
+    print(f"added {case.id}: {case.start} -> {case.goal} to {manifest}")
 
 
 @app.command("list")

@@ -16,15 +16,14 @@
 
 One static scene per dataset:
 - map/obstacles: golden voxels, turbo colormap by height
-- map/walked_free: voxels the robot's body swept while recording, so they are
-  proven free space and exempt from the collision gate (magenta)
 - walked_path: the recorded foot path (white)
 - planner_online, planner_golden: the planner graph each map produced.
   Surface cells colored by wall clearance (red inside the hard clearance),
   nodes yellow, edges colored white to red by log traversal cost.
 - cases/<id>: start (cyan), goal (orange), online and golden planned paths
   colored by verdict (green valid, red gate-invalid, yellow unreached), and
-  the gate's collision samples (red dots)
+  the gate's collision samples (red dots). Failed cases also get a thin red
+  start-to-goal line so the intended connection is visible even with no path.
 """
 
 from __future__ import annotations
@@ -34,7 +33,7 @@ from typing import TYPE_CHECKING
 import numpy as np
 import rerun as rr
 
-from dimos.navigation.nav_3d.evaluator.golden import keys_contain, load_or_build_golden, voxel_keys
+from dimos.navigation.nav_3d.evaluator.golden import load_or_build_golden
 from dimos.navigation.nav_3d.evaluator.recording import load_trajectory
 from dimos.utils.data import resolve_named_path
 
@@ -47,7 +46,6 @@ if TYPE_CHECKING:
     from dimos.navigation.nav_3d.evaluator.config import EvalConfig
     from dimos.navigation.nav_3d.evaluator.runner import PlannerArtifacts, PlanOutcome, Report
 
-WALKED_FREE_COLOR = [230, 60, 230]
 WALKED_PATH_COLOR = [255, 255, 255]
 START_COLOR = [0, 255, 255]
 GOAL_COLOR = [255, 140, 0]
@@ -152,28 +150,16 @@ def write_rrd(report: Report, suites: list[Suite], cfg: EvalConfig, out: Path) -
     for dataset in report.datasets:
         suite = suites_by_dataset[dataset.dataset]
         db_path = resolve_named_path(suite.dataset, ".db")
-        golden = load_or_build_golden(
-            db_path,
-            suite,
-            cfg,
-            corridor_radius=cfg.robot_radius + 0.1,
-            corridor_z_lo=-cfg.robot_height,
-            corridor_z_hi=-cfg.robot_height + cfg.body_clearance + cfg.voxel_size,
-        )
+        golden = load_or_build_golden(db_path, suite, cfg)
         trajectory = load_trajectory(db_path, suite.odom_stream)
         root = dataset.dataset
 
-        walked_free = keys_contain(golden.walked_keys, voxel_keys(golden.occupied, cfg.voxel_size))
-        obstacles = golden.occupied[~walked_free]
         rr.log(
             f"{root}/map/obstacles",
-            rr.Points3D(obstacles, colors=_turbo_by_height(obstacles), radii=cfg.voxel_size / 4),
-            static=True,
-        )
-        rr.log(
-            f"{root}/map/walked_free",
             rr.Points3D(
-                golden.occupied[walked_free], colors=[WALKED_FREE_COLOR], radii=cfg.voxel_size / 3
+                golden.occupied,
+                colors=_turbo_by_height(golden.occupied),
+                radii=cfg.voxel_size / 4,
             ),
             static=True,
         )
@@ -199,6 +185,14 @@ def write_rrd(report: Report, suites: list[Suite], cfg: EvalConfig, out: Path) -
                 rr.Points3D([case.goal], colors=[GOAL_COLOR], radii=0.12),
                 static=True,
             )
+            if not case.online.success:
+                rr.log(
+                    f"{base}/intent",
+                    rr.LineStrips3D(
+                        [[case.start, case.goal]], colors=[INVALID_PATH_COLOR], radii=0.003
+                    ),
+                    static=True,
+                )
             _log_path(f"{base}/online", case.online, radius=0.04)
             _log_path(f"{base}/golden", case.golden, radius=0.02)
 

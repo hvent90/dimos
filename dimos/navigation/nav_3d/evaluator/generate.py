@@ -1,0 +1,370 @@
+# Copyright 2026 Dimensional Inc.
+#
+# Licensed under the Apache License, Version 2.0 (the "License");
+# you may not use this file except in compliance with the License.
+# You may obtain a copy of the License at
+#
+#     http://www.apache.org/licenses/LICENSE-2.0
+#
+# Unless required by applicable law or agreed to in writing, software
+# distributed under the License is distributed on an "AS IS" BASIS,
+# WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
+# See the License for the specific language governing permissions and
+# limitations under the License.
+
+"""Generate evaluation cases from a recorded trajectory.
+
+Candidate pairs are sampled along the walked path, so both endpoints are
+physically proven reachable. A pair is kept only when it is non-trivial:
+the straight start-goal line collides with golden obstacles, the walked
+route detours well past the straight-line distance, or the pair climbs.
+Endpoints snap to the golden surface so drift between passes cannot leave
+a case floating off the map. Generation is deterministic.
+"""
+
+from __future__ import annotations
+
+from dataclasses import dataclass, field
+from typing import TYPE_CHECKING
+
+import numpy as np
+
+from dimos.navigation.nav_3d.evaluator import metrics
+from dimos.navigation.nav_3d.evaluator.cases import Case
+
+if TYPE_CHECKING:
+    from numpy.typing import NDArray
+
+    from dimos.navigation.nav_3d.evaluator.config import EvalConfig
+    from dimos.navigation.nav_3d.evaluator.golden import GoldenMap
+    from dimos.navigation.nav_3d.evaluator.recording import Trajectory
+
+STAIRS_DZ_M = 0.5
+LONG_STAIRS_DZ_M = 1.5
+LONG_STAIRS_WALKED_M = 20.0
+
+
+@dataclass
+class GenerationParams:
+    min_separation_m: float = 3.0
+    min_euclid_m: float = 2.0
+    detour_ratio_min: float = 1.3
+    snap_max_m: float = 1.0
+    bin_size_m: float = 2.0
+    waypoint_spacing_m: float = 1.0
+    # None scales the case count with the walked distance.
+    max_cases: int | None = None
+    # Two cases are duplicates when both endpoints land within this radius.
+    dedupe_radius_m: float = 1.5
+    # Share of slots reserved for flat cases when the recording has them.
+    flat_fraction: float = 0.25
+    # Coverage sectors: a case earns a slot first by connecting a sector pair
+    # no accepted case connects yet.
+    sector_size_m: float = 8.0
+    sector_z_m: float = 1.5
+    # A sector may anchor at most this many selected cases, which prevents a
+    # single high-priority spot from becoming the hub of every case.
+    endpoint_reuse_max: int = 2
+    # Floor on the case count. When strict selection falls short, a relaxed
+    # pass ignores the sector caps and the flat quota to reach it.
+    min_cases: int = 10
+
+    def resolve_max_cases(self, walked_total_m: float) -> int:
+        if self.max_cases is not None:
+            return self.max_cases
+        return int(np.clip(walked_total_m / 25.0, 16, 48))
+
+
+@dataclass
+class Candidate:
+    start: tuple[float, float, float]
+    goal: tuple[float, float, float]
+    walked_m: float
+    detour_ratio: float
+    dz: float
+
+    @property
+    def priority(self) -> float:
+        return (
+            min(self.detour_ratio, 3.0)
+            + 2.0 * min(abs(self.dz), 3.0)
+            + 0.5 * min(self.walked_m / 50.0, 2.0)
+        )
+
+
+def snap_to_surface(
+    point: NDArray[np.float32],
+    surface: NDArray[np.float32],
+    snap_max_m: float,
+) -> NDArray[np.float32] | None:
+    """Nearest standable surface cell, or None when the point is off the map.
+
+    Horizontal distance dominates so drift in z between passes does not pull
+    the snap onto another floor.
+    """
+    hd = np.linalg.norm(surface[:, :2] - point[:2], axis=1)
+    zd = np.abs(surface[:, 2] - point[2])
+    score = hd + np.where(zd < 1.0, zd * 0.5, np.inf)
+    best = int(score.argmin())
+    if not np.isfinite(score[best]) or hd[best] > snap_max_m:
+        return None
+    return np.asarray(surface[best], dtype=np.float32)
+
+
+def _subsample_indices(trajectory: Trajectory, spacing_m: float) -> NDArray[np.int64]:
+    arcs = trajectory.arc_lengths()
+    targets = np.arange(0.0, arcs[-1], spacing_m)
+    return np.unique(np.searchsorted(arcs, targets))
+
+
+def generate_cases(
+    trajectory: Trajectory,
+    golden: GoldenMap,
+    surface: NDArray[np.float32],
+    cfg: EvalConfig,
+    params: GenerationParams | None = None,
+) -> list[Case]:
+    params = params or GenerationParams()
+    obstacle_keys = golden.occupied_keys
+    arcs = trajectory.arc_lengths()
+    foot = trajectory.positions - np.array([0.0, 0.0, cfg.robot_height], dtype=np.float32)
+
+    idx = _subsample_indices(trajectory, params.waypoint_spacing_m)
+    snaps = np.full((len(idx), 3), np.nan, dtype=np.float32)
+    for n, i in enumerate(idx):
+        hit = snap_to_surface(foot[i], surface, params.snap_max_m)
+        if hit is not None:
+            snaps[n] = hit
+    ok = np.isfinite(snaps[:, 0])
+    way_arcs = arcs[idx]
+
+    candidates: dict[tuple[int, ...], Candidate] = {}
+    for ai in range(len(idx)):
+        if not ok[ai]:
+            continue
+        sa = snaps[ai]
+        later = np.arange(ai + 1, len(idx))
+        later = later[ok[later]]
+        if not len(later):
+            continue
+        walked = way_arcs[later] - way_arcs[ai]
+        deltas = snaps[later] - sa
+        euclid = np.linalg.norm(deltas, axis=1)
+        keep = (walked >= params.min_separation_m) & (euclid >= params.min_euclid_m)
+        for bi, w, e in zip(later[keep], walked[keep], euclid[keep], strict=True):
+            sb = snaps[bi]
+            dz = float(sb[2] - sa[2])
+            detour = float(w / e)
+            if detour < params.detour_ratio_min and abs(dz) < STAIRS_DZ_M:
+                # A long near-straight flat pair is trivial; not worth a sweep.
+                if e > 30.0:
+                    continue
+                # Only pairs not already qualified pay for the line sweep.
+                line = np.stack([sa, sb])
+                blocked = not metrics.check_path(
+                    line,
+                    obstacle_keys,
+                    cfg.voxel_size,
+                    cfg.robot_radius,
+                    cfg.ground_margin,
+                    cfg.body_clearance,
+                ).valid
+                if not blocked:
+                    continue
+            cand = Candidate(
+                start=(float(sa[0]), float(sa[1]), float(sa[2])),
+                goal=(float(sb[0]), float(sb[1]), float(sb[2])),
+                walked_m=float(w),
+                detour_ratio=detour,
+                dz=dz,
+            )
+            bins = np.floor(np.array([*sa[:2], *sb[:2]]) / params.bin_size_m).astype(int)
+            dz_sign = int(np.sign(dz)) if abs(dz) >= STAIRS_DZ_M else 0
+            key = (*bins, dz_sign)
+            best = candidates.get(key)
+            if best is None or cand.priority > best.priority:
+                candidates[key] = cand
+
+    ranked = sorted(candidates.values(), key=lambda c: (-c.priority, c.start, c.goal))
+    selected = _select_diverse(ranked, params, params.resolve_max_cases(float(arcs[-1])))
+    cases = [_to_case(cand, n) for n, cand in enumerate(selected)]
+    return cases
+
+
+def _is_duplicate(cand: Candidate, accepted: list[Candidate], radius: float) -> bool:
+    a = np.array([*cand.start, *cand.goal])
+    for other in accepted:
+        b = np.array([*other.start, *other.goal])
+        if np.linalg.norm(a[:3] - b[:3]) < radius and np.linalg.norm(a[3:] - b[3:]) < radius:
+            return True
+    return False
+
+
+def _reversed(cand: Candidate) -> Candidate:
+    return Candidate(
+        start=cand.goal,
+        goal=cand.start,
+        walked_m=cand.walked_m,
+        detour_ratio=cand.detour_ratio,
+        dz=-cand.dz,
+    )
+
+
+def _select_diverse(
+    ranked: list[Candidate], params: GenerationParams, max_cases: int
+) -> list[Candidate]:
+    """Spread-greedy selection: each slot goes to the candidate whose score is
+    its priority plus how far its endpoints are from every endpoint already in
+    use. Coverage is the objective, not a filter, so cases spread across the
+    map instead of fanning out of the highest-priority spot. A sector-usage
+    cap bounds hub reuse outright. Stair candidates also claim their reversed
+    direction, and the flat quota keeps stairs from crowding out flats.
+    When the strict pass yields fewer than min_cases, sector-capped candidates
+    are revived and a relaxed pass without sector caps or the flat quota
+    backfills up to the floor.
+    """
+    if not ranked:
+        return []
+    flat_target = int(max_cases * params.flat_fraction)
+    stairs_cap = max_cases - flat_target
+
+    starts = np.array([c.start for c in ranked], dtype=np.float32)
+    goals = np.array([c.goal for c in ranked], dtype=np.float32)
+    priorities = np.array([c.priority for c in ranked], dtype=np.float32)
+    is_stairs = np.array([abs(c.dz) >= STAIRS_DZ_M for c in ranked])
+    spread_cap = 2.0 * params.sector_size_m
+
+    def sector(p: NDArray[np.float32]) -> tuple[int, ...]:
+        return (
+            int(np.floor(p[0] / params.sector_size_m)),
+            int(np.floor(p[1] / params.sector_size_m)),
+            round(float(p[2]) / params.sector_z_m),
+        )
+
+    usage: dict[tuple[int, ...], int] = {}
+    used_points: list[NDArray[np.float32]] = []
+    alive = np.ones(len(ranked), dtype=bool)
+    sector_capped: list[int] = []
+    stairs: list[Candidate] = []
+    flats: list[Candidate] = []
+
+    def fill(target: int, relax: bool) -> None:
+        while alive.any() and len(stairs) + len(flats) < target:
+            if used_points:
+                used = np.stack(used_points)
+                d_start = np.linalg.norm(starts[:, None] - used[None], axis=2).min(axis=1)
+                d_goal = np.linalg.norm(goals[:, None] - used[None], axis=2).min(axis=1)
+                spread = np.minimum(d_start, spread_cap) + np.minimum(d_goal, spread_cap)
+            else:
+                spread = np.full(len(ranked), 2.0 * spread_cap, dtype=np.float32)
+            score = priorities + 0.4 * spread
+            score[~alive] = -np.inf
+            if not relax and len(stairs) + 1 >= stairs_cap:
+                score[is_stairs] = -np.inf
+            if not np.isfinite(score).any():
+                break
+            n = int(score.argmax())
+            alive[n] = False
+            cand = ranked[n]
+            sa, sb = sector(starts[n]), sector(goals[n])
+            if not relax and (
+                usage.get(sa, 0) >= params.endpoint_reuse_max
+                or usage.get(sb, 0) >= params.endpoint_reuse_max
+            ):
+                sector_capped.append(n)
+                continue
+            bucket = stairs if is_stairs[n] else flats
+            if _is_duplicate(cand, bucket, params.dedupe_radius_m):
+                continue
+            usage[sa] = usage.get(sa, 0) + 1
+            usage[sb] = usage.get(sb, 0) + 1
+            used_points.append(starts[n])
+            used_points.append(goals[n])
+            bucket.append(cand)
+            if bucket is stairs and (relax or len(stairs) < stairs_cap):
+                bucket.append(_reversed(cand))
+
+    fill(max_cases, relax=False)
+    min_cases = min(params.min_cases, max_cases)
+    if len(stairs) + len(flats) < min_cases:
+        alive[sector_capped] = True
+        fill(min_cases, relax=True)
+
+    return (stairs + flats)[:max_cases]
+
+
+def _to_case(cand: Candidate, n: int) -> Case:
+    if cand.dz >= STAIRS_DZ_M:
+        kind, tags = "up", ["auto", "stairs", "up"]
+    elif cand.dz <= -STAIRS_DZ_M:
+        kind, tags = "down", ["auto", "stairs", "down"]
+    else:
+        kind, tags = "flat", ["auto", "flat"]
+    weight = 1.0
+    if kind != "flat":
+        weight = 2.0
+        if abs(cand.dz) >= LONG_STAIRS_DZ_M or cand.walked_m >= LONG_STAIRS_WALKED_M:
+            weight = 3.0
+            tags.append("long")
+    return Case(
+        id=f"auto_{n:02d}_{kind}",
+        start=cand.start,
+        goal=cand.goal,
+        weight=weight,
+        tags=tags,
+    )
+
+
+@dataclass
+class DriftStats:
+    """Consistency of same-floor revisits, plus loop closure when one exists."""
+
+    revisit_count: int
+    revisit_dz_p95: float
+    closure_m: float | None
+    warnings: list[str] = field(default_factory=list)
+
+
+def drift_stats(
+    trajectory: Trajectory,
+    revisit_gap_s: float = 30.0,
+    revisit_radius_m: float = 0.5,
+    dz_warn_m: float = 0.3,
+    closure_warn_m: float = 1.0,
+) -> DriftStats:
+    p = trajectory.positions
+    ts = trajectory.ts
+    idx = _subsample_indices(trajectory, 0.5)
+    dzs: list[float] = []
+    for i in idx:
+        earlier = idx[ts[idx] < ts[i] - revisit_gap_s]
+        if not len(earlier):
+            continue
+        hd = np.linalg.norm(p[earlier, :2] - p[i, :2], axis=1)
+        near = earlier[hd < revisit_radius_m]
+        if not len(near):
+            continue
+        dz = np.abs(p[near, 2] - p[i, 2])
+        same_floor = dz[dz < 1.0]
+        if len(same_floor):
+            dzs.append(float(same_floor.min()))
+
+    closure: float | None = None
+    if np.linalg.norm(p[-1, :2] - p[0, :2]) < 2.0:
+        closure = float(np.linalg.norm(p[-1] - p[0]))
+
+    warnings = []
+    dz_p95 = float(np.percentile(dzs, 95)) if dzs else 0.0
+    if dz_p95 > dz_warn_m:
+        warnings.append(
+            f"same-floor revisit z mismatch p95 {dz_p95:.2f}m exceeds {dz_warn_m}m; "
+            "the recording may be too drifty for reliable evaluation"
+        )
+    if closure is not None and closure > closure_warn_m:
+        warnings.append(f"loop closure error {closure:.2f}m exceeds {closure_warn_m}m")
+    return DriftStats(
+        revisit_count=len(dzs),
+        revisit_dz_p95=dz_p95,
+        closure_m=closure,
+        warnings=warnings,
+    )

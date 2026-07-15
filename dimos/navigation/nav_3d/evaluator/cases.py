@@ -86,3 +86,28 @@ def load_suites(paths: list[Path] | None = None) -> list[Suite]:
     if not paths:
         raise FileNotFoundError(f"no case manifests found under {CASES_DIR}")
     return [load_suite(p) for p in paths]
+
+
+def save_suite(suite: Suite, path: Path | None = None) -> Path:
+    """Write the suite manifest as YAML. Defaults to cases/<dataset>.yaml."""
+    path = path or suite.path or CASES_DIR / f"{suite.dataset}.yaml"
+    doc: dict[str, object] = {"dataset": suite.dataset}
+    if suite.lidar_stream != "pointlio_lidar":
+        doc["lidar_stream"] = suite.lidar_stream
+    if suite.odom_stream != "pointlio_odometry":
+        doc["odom_stream"] = suite.odom_stream
+    entries = []
+    for case in suite.cases:
+        entry: dict[str, object] = {
+            "id": case.id,
+            "start": [round(float(v), 3) for v in case.start],
+            "goal": [round(float(v), 3) for v in case.goal],
+            "weight": case.weight,
+            "tags": case.tags,
+        }
+        if case.l_ref is not None:
+            entry["l_ref"] = round(case.l_ref, 3)
+        entries.append(entry)
+    doc["cases"] = entries
+    path.write_text(yaml.safe_dump(doc, sort_keys=False, default_flow_style=None))
+    return path

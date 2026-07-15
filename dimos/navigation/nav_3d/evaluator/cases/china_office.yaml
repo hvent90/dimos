@@ -1,0 +1,167 @@
+dataset: china_office
+cases:
+- id: auto_00_up
+  start: [-10.2, 15.8, -0.48]
+  goal: [-8.12, 14.6, 2.56]
+  weight: 3.0
+  tags: [auto, stairs, up, long]
+- id: auto_01_down
+  start: [-8.12, 14.6, 2.56]
+  goal: [-10.2, 15.8, -0.48]
+  weight: 3.0
+  tags: [auto, stairs, down, long]
+- id: auto_02_down
+  start: [-3.64, -0.76, 3.04]
+  goal: [-1.4, -1.8, -0.4]
+  weight: 3.0
+  tags: [auto, stairs, down, long]
+- id: auto_03_up
+  start: [-1.4, -1.8, -0.4]
+  goal: [-3.64, -0.76, 3.04]
+  weight: 3.0
+  tags: [auto, stairs, up, long]
+- id: auto_04_up
+  start: [1.24, -17.64, 1.28]
+  goal: [11.48, -13.56, 4.32]
+  weight: 3.0
+  tags: [auto, stairs, up, long]
+- id: auto_05_down
+  start: [11.48, -13.56, 4.32]
+  goal: [1.24, -17.64, 1.28]
+  weight: 3.0
+  tags: [auto, stairs, down, long]
+- id: auto_06_down
+  start: [3.72, 9.64, 3.12]
+  goal: [5.64, 23.64, -0.24]
+  weight: 3.0
+  tags: [auto, stairs, down, long]
+- id: auto_07_up
+  start: [5.64, 23.64, -0.24]
+  goal: [3.72, 9.64, 3.12]
+  weight: 3.0
+  tags: [auto, stairs, up, long]
+- id: auto_08_up
+  start: [8.2, -32.52, -0.48]
+  goal: [8.28, -2.04, 4.16]
+  weight: 3.0
+  tags: [auto, stairs, up, long]
+- id: auto_09_down
+  start: [8.28, -2.04, 4.16]
+  goal: [8.2, -32.52, -0.48]
+  weight: 3.0
+  tags: [auto, stairs, down, long]
+- id: auto_10_up
+  start: [18.84, -23.96, -1.36]
+  goal: [-4.6, 8.2, 6.56]
+  weight: 3.0
+  tags: [auto, stairs, up, long]
+- id: auto_11_down
+  start: [-4.6, 8.2, 6.56]
+  goal: [18.84, -23.96, -1.36]
+  weight: 3.0
+  tags: [auto, stairs, down, long]
+- id: auto_12_down
+  start: [-1.72, -10.28, 2.96]
+  goal: [11.96, 5.4, -0.96]
+  weight: 3.0
+  tags: [auto, stairs, down, long]
+- id: auto_13_up
+  start: [11.96, 5.4, -0.96]
+  goal: [-1.72, -10.28, 2.96]
+  weight: 3.0
+  tags: [auto, stairs, up, long]
+- id: auto_14_down
+  start: [5.4, 3.32, 3.2]
+  goal: [14.52, -6.36, -1.28]
+  weight: 3.0
+  tags: [auto, stairs, down, long]
+- id: auto_15_up
+  start: [14.52, -6.36, -1.28]
+  goal: [5.4, 3.32, 3.2]
+  weight: 3.0
+  tags: [auto, stairs, up, long]
+- id: auto_16_down
+  start: [-1.72, 12.52, 2.96]
+  goal: [17.4, -32.76, -0.96]
+  weight: 3.0
+  tags: [auto, stairs, down, long]
+- id: auto_17_up
+  start: [17.4, -32.76, -0.96]
+  goal: [-1.72, 12.52, 2.96]
+  weight: 3.0
+  tags: [auto, stairs, up, long]
+- id: auto_18_down
+  start: [11.24, -6.76, 4.16]
+  goal: [9.24, 15.56, -0.48]
+  weight: 3.0
+  tags: [auto, stairs, down, long]
+- id: auto_19_up
+  start: [9.24, 15.56, -0.48]
+  goal: [11.24, -6.76, 4.16]
+  weight: 3.0
+  tags: [auto, stairs, up, long]
+- id: auto_20_up
+  start: [6.04, -24.2, -0.48]
+  goal: [-7.72, 5.96, 2.88]
+  weight: 3.0
+  tags: [auto, stairs, up, long]
+- id: auto_21_down
+  start: [-7.72, 5.96, 2.88]
+  goal: [6.04, -24.2, -0.48]
+  weight: 3.0
+  tags: [auto, stairs, down, long]
+- id: auto_22_up
+  start: [17.0, -15.48, -1.28]
+  goal: [1.96, -0.28, 3.12]
+  weight: 3.0
+  tags: [auto, stairs, up, long]
+- id: auto_23_down
+  start: [1.96, -0.28, 3.12]
+  goal: [17.0, -15.48, -1.28]
+  weight: 3.0
+  tags: [auto, stairs, down, long]
+- id: auto_24_flat
+  start: [5.72, -9.72, -0.4]
+  goal: [4.36, -11.96, -0.48]
+  weight: 1.0
+  tags: [auto, flat]
+- id: auto_25_flat
+  start: [8.2, -17.32, -0.4]
+  goal: [3.32, 16.12, -0.24]
+  weight: 1.0
+  tags: [auto, flat]
+- id: auto_26_flat
+  start: [10.76, 10.12, -0.72]
+  goal: [14.6, -27.88, -0.24]
+  weight: 1.0
+  tags: [auto, flat]
+- id: auto_27_flat
+  start: [1.08, 4.84, -0.4]
+  goal: [13.56, -32.28, -0.88]
+  weight: 1.0
+  tags: [auto, flat]
+- id: auto_28_flat
+  start: [13.32, -0.28, -1.12]
+  goal: [17.88, -19.64, -1.36]
+  weight: 1.0
+  tags: [auto, flat]
+- id: auto_29_flat
+  start: [-5.64, 9.8, -0.4]
+  goal: [-8.52, 10.52, -0.48]
+  weight: 1.0
+  tags: [auto, flat]
+- id: auto_30_flat
+  start: [10.6, -34.92, -0.8]
+  goal: [0.52, -6.28, -0.4]
+  weight: 1.0
+  tags: [auto, flat]
+- id: auto_31_flat
+  start: [-1.08, -16.6, 2.64]
+  goal: [-2.76, -15.48, 3.04]
+  weight: 1.0
+  tags: [auto, flat]
+- id: auto_32_flat
+  start: [4.04, 5.16, 0.16]
+  goal: [2.36, 11.96, -0.32]
+  weight: 1.0
+  tags: [auto, flat]

@@ -100,21 +100,28 @@ def reference_length(
     robot_height: float,
     max_snap_m: float = 1.0,
 ) -> tuple[float, bool]:
-    """Walked-trajectory length between the poses nearest start and goal.
+    """Shortest walked length the trajectory demonstrates between start and goal.
 
-    Returns (length, snapped). When either endpoint is farther than max_snap_m
-    from the trajectory, falls back to the straight-line distance.
+    The robot usually passes each spot several times, so the reference is the
+    minimum arc distance over every combination of start and goal visits, not
+    the arc between single nearest poses, which would include any wandering in
+    between. Returns (length, snapped). When either endpoint is farther than
+    max_snap_m from the trajectory, falls back to the straight-line distance.
     """
     foot = trajectory.positions - np.array([0.0, 0.0, robot_height], dtype=np.float32)
     s = np.asarray(start, dtype=np.float32)
     g = np.asarray(goal, dtype=np.float32)
     ds = np.linalg.norm(foot - s, axis=1)
     dg = np.linalg.norm(foot - g, axis=1)
-    i, j = int(ds.argmin()), int(dg.argmin())
-    if ds[i] > max_snap_m or dg[j] > max_snap_m:
+    if ds.min() > max_snap_m or dg.min() > max_snap_m:
         return float(np.linalg.norm(g - s)), False
     arcs = trajectory.arc_lengths()
-    length = abs(float(arcs[j] - arcs[i])) + float(ds[i]) + float(dg[j])
+    near_s = np.flatnonzero(ds <= max_snap_m)
+    near_g = np.flatnonzero(dg <= max_snap_m)
+    pair_arcs = np.abs(arcs[near_s][:, None] - arcs[near_g][None, :])
+    best = np.unravel_index(pair_arcs.argmin(), pair_arcs.shape)
+    i, j = int(near_s[best[0]]), int(near_g[best[1]])
+    length = float(pair_arcs[best]) + float(ds[i]) + float(dg[j])
     return max(length, 1e-6), True
 
 
