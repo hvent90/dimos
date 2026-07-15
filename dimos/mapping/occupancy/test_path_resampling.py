@@ -32,11 +32,12 @@ def costmap() -> OccupancyGrid:
 
 
 @pytest.mark.parametrize("method", ["simple", "smooth"])
-def test_resample_path(costmap, method) -> None:
+def test_resample_path(costmap: OccupancyGrid, method: str) -> None:
     start = Vector3(4.0, 2.0, 0)
     goal_pose = Pose(6.15, 10.0, 0, 0, 0, 0, 1)
     expected = Image.from_file(get_data(f"resample_path_{method}.png"))
     path = min_cost_astar(costmap, goal_pose.position, start, use_cpp=False)
+    assert path is not None
 
     match method:
         case "simple":
@@ -48,3 +49,22 @@ def test_resample_path(costmap, method) -> None:
 
     actual = visualize_path(costmap, resampled, 0.2, 0.4)
     np.testing.assert_array_equal(actual.data, expected.data)
+
+
+def test_smooth_resample_preserves_stair_z() -> None:
+    """DanLocalPlanner uses this; z=0 flattening killed MLS stair paths in rerun."""
+    from dimos.msgs.geometry_msgs.PoseStamped import PoseStamped
+    from dimos.msgs.nav_msgs.Path import Path
+
+    poses = [
+        PoseStamped(frame_id="world", position=[0.0, float(i), 0.25 * i], orientation=[0, 0, 0, 1])
+        for i in range(11)
+    ]
+    path = Path(frame_id="world", poses=poses)
+    goal = Pose(poses[-1].position, poses[-1].orientation)
+    out = smooth_resample_path(path, goal, spacing=0.2, smoothing_window=5)
+    zs = [p.z for p in out.poses]
+    assert zs[0] == pytest.approx(0.0, abs=1e-5)
+    assert zs[-1] == pytest.approx(2.5, abs=1e-5)
+    assert max(zs) > 1.0
+    assert min(zs) >= -0.05

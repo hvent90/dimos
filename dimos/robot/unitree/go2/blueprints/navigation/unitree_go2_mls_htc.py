@@ -76,6 +76,7 @@ unitree_go2_mls_htc = autoconnect(
         voxel_size=voxel_size,
         frame_id="world",
         emit_every=1,
+        carve_columns=False,
     ),
     MLSPlannerNative.blueprint(
         world_frame="world",
@@ -95,7 +96,8 @@ unitree_go2_mls_htc = autoconnect(
         ]
     ),
     GoalRelay.blueprint(),
-    # Setting resample_spacing_m to > 0.0 will smooth out jagged paths retunned my MLSP
+    # Pass-through: resample_spacing_m>0 used to flatten Z to 0 (fixed in
+    # path_resampling) and is not needed to validate MLS stair connectivity.
     DanLocalPlanner.blueprint(resample_spacing_m=0.1),
     DanHolonomicTC.blueprint(run_profile="walk"),
     MovementManager.blueprint(),

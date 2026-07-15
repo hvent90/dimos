@@ -76,6 +76,11 @@ class GlobalConfig(BaseSettings):
     robot_rotation_diameter: float = 0.6
     nerf_speed: float = 1.0
     mcp_port: int = 9990
+    # unitree-go2-map-nav: build in-memory milestones + expose MCP nav skills.
+    map_for_agent: bool = False
+    map_milestones: int = 10
+    # unitree-go2-map-nav: rebuild static map via offline PGO (loop-closure), cache to disk.
+    map_pgo: bool = False
     # `DIMOS_TRANSPORT` (or `.env`) is the single switch read by every process
     # (dimos, humancli, agentspy, dtop). The `transport` alias keeps the bare
     # env name and the `--transport` CLI flag (which sets the field by name) working.

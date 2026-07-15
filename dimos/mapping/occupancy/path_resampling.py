@@ -94,10 +94,11 @@ def simple_resample_path(path: Path, goal_pose: Pose, spacing: float) -> Path:
         current = path.poses[i]
         prev = path.poses[i - 1]
 
-        # Calculate segment distance
+        # Calculate segment distance (3D so stair climbs keep spacing and Z)
         dx = current.x - prev.x
         dy = current.y - prev.y
-        segment_length = (dx**2 + dy**2) ** 0.5
+        dz = current.z - prev.z
+        segment_length = (dx**2 + dy**2 + dz**2) ** 0.5
 
         if segment_length < 1e-10:
             continue
@@ -105,6 +106,7 @@ def simple_resample_path(path: Path, goal_pose: Pose, spacing: float) -> Path:
         # Direction vector
         dir_x = dx / segment_length
         dir_y = dy / segment_length
+        dir_z = dz / segment_length
 
         # Add points along this segment
         while accumulated_distance + segment_length >= spacing:
@@ -116,9 +118,10 @@ def simple_resample_path(path: Path, goal_pose: Pose, spacing: float) -> Path:
             # Create new pose
             new_x = prev.x + dir_x * dist_along
             new_y = prev.y + dir_y * dist_along
+            new_z = prev.z + dir_z * dist_along
             new_pose = PoseStamped(
                 frame_id=path.frame_id,
-                position=[new_x, new_y, 0.0],
+                position=[new_x, new_y, new_z],
                 orientation=prev.orientation,  # Keep same orientation
             )
             resampled.append(new_pose)
@@ -177,15 +180,17 @@ def smooth_resample_path(
     if len(path) < 2 or spacing <= 0:
         return path
 
-    # Extract x, y coordinates from path
+    # Extract x, y, z — Z must be kept for multi-level MLS paths (stairs).
     xs = np.array([p.x for p in path.poses])
     ys = np.array([p.y for p in path.poses])
+    zs = np.array([p.z for p in path.poses])
 
     # Remove duplicate consecutive points
-    diffs = np.sqrt(np.diff(xs) ** 2 + np.diff(ys) ** 2)
+    diffs = np.sqrt(np.diff(xs) ** 2 + np.diff(ys) ** 2 + np.diff(zs) ** 2)
     valid_mask = np.concatenate([[True], diffs > 1e-10])
     xs = xs[valid_mask]
     ys = ys[valid_mask]
+    zs = zs[valid_mask]
 
     if len(xs) < 2:
         return path
@@ -193,7 +198,8 @@ def smooth_resample_path(
     # Calculate total path length
     dx = np.diff(xs)
     dy = np.diff(ys)
-    segment_lengths = np.sqrt(dx**2 + dy**2)
+    dz = np.diff(zs)
+    segment_lengths = np.sqrt(dx**2 + dy**2 + dz**2)
     total_length = np.sum(segment_lengths)
 
     if total_length < spacing:
@@ -210,6 +216,7 @@ def smooth_resample_path(
     # Linear interpolation along arc length
     xs_upsampled = np.interp(upsample_distances, arc_length, xs)
     ys_upsampled = np.interp(upsample_distances, arc_length, ys)
+    zs_upsampled = np.interp(upsample_distances, arc_length, zs)
 
     # Apply moving average smoothing
     # Use 'nearest' mode to avoid shrinking at boundaries
@@ -217,20 +224,25 @@ def smooth_resample_path(
     if window >= 3:
         xs_smooth = uniform_filter1d(xs_upsampled, size=window, mode="nearest")
         ys_smooth = uniform_filter1d(ys_upsampled, size=window, mode="nearest")
+        zs_smooth = uniform_filter1d(zs_upsampled, size=window, mode="nearest")
     else:
         xs_smooth = xs_upsampled
         ys_smooth = ys_upsampled
+        zs_smooth = zs_upsampled
 
     # Keep start and end points exactly as original
     xs_smooth[0] = xs[0]
     ys_smooth[0] = ys[0]
+    zs_smooth[0] = zs[0]
     xs_smooth[-1] = xs[-1]
     ys_smooth[-1] = ys[-1]
+    zs_smooth[-1] = zs[-1]
 
     # Recalculate arc length on smoothed path
     dx_smooth = np.diff(xs_smooth)
     dy_smooth = np.diff(ys_smooth)
-    segment_lengths_smooth = np.sqrt(dx_smooth**2 + dy_smooth**2)
+    dz_smooth = np.diff(zs_smooth)
+    segment_lengths_smooth = np.sqrt(dx_smooth**2 + dy_smooth**2 + dz_smooth**2)
     arc_length_smooth = np.concatenate([[0], np.cumsum(segment_lengths_smooth)])
     total_length_smooth = arc_length_smooth[-1]
 
@@ -241,13 +253,14 @@ def smooth_resample_path(
     # Interpolate to get final points
     sampled_x = np.interp(sample_distances, arc_length_smooth, xs_smooth)
     sampled_y = np.interp(sample_distances, arc_length_smooth, ys_smooth)
+    sampled_z = np.interp(sample_distances, arc_length_smooth, zs_smooth)
 
     # Create resampled poses
     resampled = []
     for i in range(len(sampled_x)):
         new_pose = PoseStamped(
             frame_id=path.frame_id,
-            position=[float(sampled_x[i]), float(sampled_y[i]), 0.0],
+            position=[float(sampled_x[i]), float(sampled_y[i]), float(sampled_z[i])],
             orientation=Quaternion(0, 0, 0, 1),
         )
         resampled.append(new_pose)
