@@ -12,7 +12,7 @@
 # See the License for the specific language governing permissions and
 # limitations under the License.
 import asyncio
-from collections.abc import AsyncGenerator, Callable
+from collections.abc import AsyncGenerator, Callable, Sequence
 from dataclasses import dataclass
 from functools import partial
 import inspect
@@ -40,7 +40,7 @@ from dimos.core.introspection.module.info import extract_module_info
 from dimos.core.introspection.module.render import render_module_io
 from dimos.core.resource import CompositeResource
 from dimos.core.rpc_client import RpcCall
-from dimos.core.stream import In, Out, RemoteOut, Transport
+from dimos.core.stream import In, Out, RemoteOut, StreamRef, Transport
 from dimos.core.transport_factory import rpc_backend, tf_backend
 from dimos.protocol.rpc.spec import DEFAULT_RPC_TIMEOUT, DEFAULT_RPC_TIMEOUTS, RPCSpec
 from dimos.protocol.service.spec import BaseConfig, Configurable
@@ -422,6 +422,19 @@ class ModuleBase(Configurable, CompositeResource):
 
     module_info = _module_info_descriptor()
 
+    @classmethod
+    def declared_streams(cls, kwargs: dict[str, Any]) -> Sequence[StreamRef]:
+        """Streams derived from config rather than class annotations. Default: none.
+
+        Must be pure in ``(cls, kwargs)`` — equal kwargs yield equal refs. The host
+        (``BlueprintAtom.create``), the worker (``Module.__init__``), and
+        ``restart_module`` each call it and must agree; if they diverge, ports differ
+        between the wiring plan and the running instance and streams fail to connect.
+        Config-derived ports show on instance-level ``io()``/``module_info()`` but not
+        the class-level views, which read annotations only.
+        """
+        return ()
+
     @classproperty
     def blueprint(self) -> _BlueprintPartial:
         # Here to prevent circular imports.
@@ -770,6 +783,18 @@ class Module(ModuleBase):
                 inner, *_ = get_args(ann) or (Any,)
                 stream = In(inner, name, self)  # type: ignore[assignment]
                 setattr(self, name, stream)
+
+        for ref in type(self).declared_streams(kwargs):
+            if hasattr(self, ref.name):
+                raise ValueError(
+                    f"{type(self).__name__} config-derived stream {ref.name!r} "
+                    "collides with an existing attribute"
+                )
+            if ref.direction == "out":
+                setattr(self, ref.name, Out(ref.type, ref.name, self))
+            else:
+                setattr(self, ref.name, In(ref.type, ref.name, self))
+
         super().__init__(config_args=kwargs)
 
     def __str__(self) -> str:

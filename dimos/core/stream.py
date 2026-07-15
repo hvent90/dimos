@@ -14,11 +14,13 @@
 
 from __future__ import annotations
 
+from dataclasses import dataclass
 import enum
 from typing import (
     TYPE_CHECKING,
     Any,
     Generic,
+    Literal,
     TypeVar,
 )
 
@@ -42,6 +44,15 @@ T = TypeVar("T")
 
 
 logger = setup_logger()
+
+
+@dataclass(frozen=True)
+class StreamRef:
+    """A named directed port on a module, independent of any instance."""
+
+    name: str
+    type: type
+    direction: Literal["in", "out"]
 
 
 class ObservableMixin(Generic[T]):

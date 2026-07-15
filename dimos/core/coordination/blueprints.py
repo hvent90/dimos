@@ -19,7 +19,7 @@ import operator
 import sys
 import types as types_mod
 from types import MappingProxyType
-from typing import TYPE_CHECKING, Any, Literal, Union, get_args, get_origin, get_type_hints
+from typing import TYPE_CHECKING, Any, Union, get_args, get_origin, get_type_hints
 
 from pydantic import BaseModel, create_model
 
@@ -28,7 +28,7 @@ if TYPE_CHECKING:
 
 from dimos.core.global_config import GlobalConfig
 from dimos.core.module import ModuleBase, is_module_type
-from dimos.core.stream import In, Out, Transport
+from dimos.core.stream import In, Out, StreamRef, Transport
 from dimos.spec.utils import Spec, is_spec
 from dimos.utils.logging_config import setup_logger
 
@@ -62,13 +62,6 @@ class DisabledModuleProxy:
 
     def __repr__(self) -> str:
         return f"<DisabledModuleProxy spec={self._spec_name}>"
-
-
-@dataclass(frozen=True)
-class StreamRef:
-    name: str
-    type: type
-    direction: Literal["in", "out"]
 
 
 @dataclass(frozen=True)
@@ -131,6 +124,26 @@ class BlueprintAtom:
                         module_refs.append(ModuleRef(name=name, spec=inner, optional=True))
                     elif is_module_type(inner):
                         module_refs.append(ModuleRef(name=name, spec=inner, optional=True))
+
+        stream_names = {s.name for s in streams}
+        for ref in module.declared_streams(kwargs):
+            if not (isinstance(ref.name, str) and ref.name.isidentifier()):
+                raise ValueError(
+                    f"{module.__name__}.declared_streams returned invalid stream name "
+                    f"{ref.name!r} (must be a valid identifier)"
+                )
+            if ref.direction not in ("in", "out"):
+                raise ValueError(
+                    f"{module.__name__}.declared_streams stream {ref.name!r} has invalid "
+                    f"direction {ref.direction!r} (must be 'in' or 'out')"
+                )
+            if ref.name in stream_names:
+                raise ValueError(
+                    f"{module.__name__}.declared_streams stream {ref.name!r} collides "
+                    "with an annotation-derived stream of the same name"
+                )
+            stream_names.add(ref.name)
+            streams.append(ref)
 
         return cls(
             module=module,
