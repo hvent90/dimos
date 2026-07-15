@@ -23,7 +23,9 @@ Pure logic lives in TokenBucket so tests can drive it with a fake clock.
 """
 
 import hashlib
+import hmac
 import logging
+import os
 import time
 
 from fastapi import Request
@@ -31,6 +33,9 @@ from fastapi.responses import JSONResponse
 from metrics import RATE_LIMIT_HITS
 
 log = logging.getLogger(__name__)
+
+# HMAC key so log fingerprints can't be reversed to raw tokens; reuses the prod CF secret.
+_FP_KEY = os.environ.get("CF_TELEOP_APP_SECRET", "").encode("utf-8")
 
 # route class → (max tokens = burst, refill tokens/sec). Rates are per caller.
 LIMITS: dict[str, tuple[float, float]] = {
@@ -105,8 +110,7 @@ class RateLimiter:
 
 
 def _fp(secret: str) -> str:
-    # Non-reversible 16-hex fingerprint: stable per caller, safe to log.
-    return hashlib.sha256(secret.encode("utf-8")).hexdigest()[:16]
+    return hmac.new(_FP_KEY, secret.encode("utf-8"), hashlib.sha256).hexdigest()[:16]
 
 
 def caller_id(request: Request) -> str:
