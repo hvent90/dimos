@@ -230,15 +230,16 @@ external_python_module/
 ├── deployment.py
 └── python/
     ├── pyproject.toml       # required
-    ├── pixi.toml            # optional
+    ├── pixi.toml            # optional outer environment for uv
     └── my_feature_runtime/
         └── runtime.py
 ```
 
-The shipped example includes its runtime project's `pyproject.toml` as package
-data, so the sibling layout remains available when DimOS is installed from a
-wheel. The example does not check in a `uv.lock`; uv may create one locally
-when preparing the runtime project, and lockfiles are used when present.
+The shipped example includes both runtime manifests as package data, so the
+sibling layout remains available when DimOS is installed from a wheel. The
+example does not check in either a `uv.lock` or `pixi.lock`; both may be
+generated locally when preparing the runtime project and are ignored by git.
+uv and Pixi have separate lockfiles.
 
 The runtime class subclasses the declaration. Compose the declaration with
 regular modules using `autoconnect`; do not add a deployment plan, target, or

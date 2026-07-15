@@ -66,12 +66,28 @@ def test_uv_commands_use_uv_lock_and_pixi_when_present(
         "-m",
     ]
 
-    (runtime.project / "pixi.toml").touch()
-    assert runtime.prepare_command() == ["pixi", "run", "--", "uv", "sync", "--locked"]
+    (runtime.project / "pixi.toml").write_text(
+        """[workspace]
+name = 'external-package'
+channels = ['conda-forge']
+platforms = ['linux-64']
+
+[dependencies]
+uv = '*'
+"""
+    )
+    assert runtime.prepare_command() == [
+        "pixi",
+        "run",
+        "--executable",
+        "uv",
+        "sync",
+        "--locked",
+    ]
     assert runtime.launch_command("decl:Declaration", "impl:Implementation", 17)[:5] == [
         "pixi",
         "run",
-        "--",
+        "--executable",
         "uv",
         "run",
     ]

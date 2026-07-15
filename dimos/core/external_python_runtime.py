@@ -63,7 +63,7 @@ class ExternalPythonRuntime:
 
     def _uv(self, *args: str) -> list[str]:
         command = ["uv", *args]
-        return ["pixi", "run", "--", *command] if self.pixi.is_file() else command
+        return ["pixi", "run", "--executable", *command] if self.pixi.is_file() else command
 
     def prepare_command(self) -> list[str]:
         args = ["sync"]

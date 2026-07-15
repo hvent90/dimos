@@ -52,6 +52,7 @@ exclude = [
 ]
 "examples.external_python_module" = [
     "python/pyproject.toml",
+    "python/pixi.toml",
 ]
 
 [tool.setuptools.exclude-package-data]
