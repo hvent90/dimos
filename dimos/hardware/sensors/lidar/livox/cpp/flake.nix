@@ -66,12 +66,15 @@
           src = ./.;
 
           nativeBuildInputs = [ pkgs.cmake pkgs.pkg-config ];
-          buildInputs = [ livox-sdk2 lcm pkgs.glib ];
+          buildInputs = [ livox-sdk2 lcm pkgs.glib pkgs.nlohmann_json ];
 
           cmakeFlags = [
             "-DCMAKE_POLICY_VERSION_MINIMUM=3.5"
             "-DFETCHCONTENT_SOURCE_DIR_DIMOS_LCM=${dimos-lcm}"
             "-DLIVOX_COMMON_DIR=${livox-common}"
+            # The header-only SDK lives outside this dir. A git-tree flake can
+            # reach it as a path literal within the repo tree.
+            "-DDIMOS_NATIVE_CPP_DIR=${../../../../../../native/cpp}"
           ];
         };
       in {
