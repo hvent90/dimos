@@ -29,10 +29,10 @@ Once connected, four streams flow continuously:
 
 | Stream | Direction | Carries |
 |--------|-----------|---------|
-| Video | robot → you | The selected camera, composited into one live track |
-| Minimap | robot → you | Occupancy grid + robot pose for click-to-navigate |
-| Telemetry | robot → you | Battery, posture, link latency/rate for the HUD |
-| Commands | you → robot | Drive input, sport commands, nav goals, E-STOP |
+| Video | robot → operator | The selected camera, composited into one live track |
+| Minimap | robot → operator | Occupancy grid + robot pose for click-to-navigate |
+| Telemetry | robot → operator | Battery, posture, link latency/rate for the HUD |
+| Commands | operator → robot | Drive input, sport commands, nav goals, E-STOP |
 
 All broker-facing modules share a single broker session, so there's exactly
 one video track and one control plane per robot — see
