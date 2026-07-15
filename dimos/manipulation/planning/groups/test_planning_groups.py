@@ -627,7 +627,7 @@ def test_robot_model_config_end_effector_link_requires_pose_group() -> None:
     )
 
     with pytest.raises(ValueError, match="no pose-target planning group"):
-        getattr(config, "end_effector_link")
+        config.end_effector_link
 
 
 def test_robot_model_config_end_effector_link_rejects_ambiguous_pose_groups() -> None:
@@ -652,7 +652,7 @@ def test_robot_model_config_end_effector_link_rejects_ambiguous_pose_groups() ->
     )
 
     with pytest.raises(ValueError, match="multiple pose-target planning groups"):
-        getattr(config, "end_effector_link")
+        config.end_effector_link
 
 
 def test_joint_state_to_ordered_positions_accepts_all_supported_name_forms() -> None:

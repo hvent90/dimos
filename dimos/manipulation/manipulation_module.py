@@ -982,9 +982,7 @@ class ManipulationModule(Module):
             current = self._world_monitor.current_global_joint_state()
             start = filter_joint_state_to_selected_joints(current, selection.joint_names)
         except Exception as exc:
-            self._fail_planning_epoch(
-                planning_epoch, f"Failed to resolve planning groups: {exc}"
-            )
+            self._fail_planning_epoch(planning_epoch, f"Failed to resolve planning groups: {exc}")
             return None
 
         goal_names: list[str] = []
@@ -996,9 +994,7 @@ class ManipulationModule(Module):
                 target_global = joint_target_to_global_names(target_group, target)
             except (KeyError, ValueError) as exc:
                 logger.error(str(exc))
-                self._fail_planning_epoch(
-                    planning_epoch, f"Invalid joint target for '{group_id}'"
-                )
+                self._fail_planning_epoch(planning_epoch, f"Invalid joint target for '{group_id}'")
                 return None
             goal_names.extend(target_global.name)
             goal_positions.extend(target_global.position)
@@ -1035,9 +1031,7 @@ class ManipulationModule(Module):
             current = self._world_monitor.current_global_joint_state()
             start = filter_joint_state_to_selected_joints(current, selection.joint_names)
         except Exception as exc:
-            self._fail_planning_epoch(
-                planning_epoch, f"Failed to resolve planning groups: {exc}"
-            )
+            self._fail_planning_epoch(planning_epoch, f"Failed to resolve planning groups: {exc}")
             return None
         ik = self.inverse_kinematics(
             pose_targets=stamped_targets,
