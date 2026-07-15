@@ -24,7 +24,9 @@ def make_runtime(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> ExternalPyt
     return ExternalPythonRuntime(Declaration, object(), {"answer": 42})
 
 
-def test_missing_runtime_project_is_reported(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+def test_missing_runtime_project_is_reported(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
     source = tmp_path / "declaration.py"
     source.touch()
     monkeypatch.setattr(runtime_module.inspect, "getfile", lambda _: str(source))
@@ -33,7 +35,9 @@ def test_missing_runtime_project_is_reported(tmp_path: Path, monkeypatch: pytest
         ExternalPythonRuntime(Declaration, object(), {})
 
 
-def test_missing_runtime_manifest_is_reported(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+def test_missing_runtime_manifest_is_reported(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
     source = tmp_path / "declaration.py"
     source.touch()
     (tmp_path / "python").mkdir()
@@ -73,7 +77,9 @@ def test_uv_commands_use_uv_lock_and_pixi_when_present(
     ]
 
 
-def test_command_failure_keeps_bounded_diagnostics(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+def test_command_failure_keeps_bounded_diagnostics(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
     runtime = make_runtime(tmp_path, monkeypatch)
     monkeypatch.setattr(
         runtime_module.subprocess,

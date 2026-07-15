@@ -24,7 +24,9 @@ def _load(ref: str) -> type:
         module = __import__(module_name, fromlist=[class_name])
         value = getattr(module, class_name)
     except (ImportError, AttributeError) as error:
-        raise ImportError(f"Could not load class {class_name!r} from {module_name!r}: {error}") from error
+        raise ImportError(
+            f"Could not load class {class_name!r} from {module_name!r}: {error}"
+        ) from error
     if not isinstance(value, type):
         raise TypeError(f"Import reference {ref!r} does not resolve to a class")
     return value

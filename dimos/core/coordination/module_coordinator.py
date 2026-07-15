@@ -70,7 +70,10 @@ class ModuleCoordinator(Resource):
         g: GlobalConfig = global_config,
     ) -> None:
         self._global_config = g
-        manager_types: list[type[WorkerManager]] = [WorkerManagerPython, WorkerManagerExternalPython]
+        manager_types: list[type[WorkerManager]] = [
+            WorkerManagerPython,
+            WorkerManagerExternalPython,
+        ]
         self._managers = {cls.deployment_identifier: cls(g=g) for cls in manager_types}
         self._deployed_modules = {}
         self._deployed_atoms: dict[type[ModuleBase], BlueprintAtom] = {}
@@ -513,9 +516,7 @@ class ModuleCoordinator(Resource):
         if reload_source:
             source_mod = sys.modules.get(module_class.__module__)
             if source_mod is None:
-                raise RuntimeError(
-                    f"Cannot reload unavailable module {module_class.__module__!r}"
-                )
+                raise RuntimeError(f"Cannot reload unavailable module {module_class.__module__!r}")
             importlib.reload(source_mod)
             new_class = cast("type[ModuleBase]", getattr(source_mod, module_class.__name__))
         else:

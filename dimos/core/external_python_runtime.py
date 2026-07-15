@@ -91,7 +91,7 @@ class ExternalPythonRuntime:
         if result.returncode:
             output = (result.stdout + "\n" + result.stderr).strip()
             raise RuntimeError(
-                f"External Python command failed ({' '.join(command)}), exit {result.returncode}: {output[-self.output_limit:]}"
+                f"External Python command failed ({' '.join(command)}), exit {result.returncode}: {output[-self.output_limit :]}"
             )
 
     def start(self) -> None:
@@ -115,8 +115,12 @@ class ExternalPythonRuntime:
             os.close(child_write)
             child_write = -1
             self._reader_threads = [
-                threading.Thread(target=self._capture, args=(self._process.stdout, self._stdout), daemon=True),
-                threading.Thread(target=self._capture, args=(self._process.stderr, self._stderr), daemon=True),
+                threading.Thread(
+                    target=self._capture, args=(self._process.stdout, self._stdout), daemon=True
+                ),
+                threading.Thread(
+                    target=self._capture, args=(self._process.stderr, self._stderr), daemon=True
+                ),
             ]
             for thread in self._reader_threads:
                 thread.start()
@@ -157,7 +161,7 @@ class ExternalPythonRuntime:
                 return
             with self._lock:
                 target.extend(chunk)
-                del target[:-self.output_limit]
+                del target[: -self.output_limit]
 
     def diagnostics(self) -> str:
         with self._lock:
@@ -193,4 +197,10 @@ class ExternalPythonRuntime:
 
     @property
     def pid(self) -> int | None:
-        return None if self._process is None else self._process.pid if self._process.poll() is None else None
+        return (
+            None
+            if self._process is None
+            else self._process.pid
+            if self._process.poll() is None
+            else None
+        )

@@ -23,7 +23,9 @@ from examples.external_python_module.deployment import ExampleConsumer
 
 @pytest.fixture
 def running_external_example() -> Generator[
-    tuple[ModuleCoordinator, WorkerManagerExternalPython, list[ExternalPythonWorker], list[RPCClient]],
+    tuple[
+        ModuleCoordinator, WorkerManagerExternalPython, list[ExternalPythonWorker], list[RPCClient]
+    ],
     None,
     None,
 ]:
