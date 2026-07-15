@@ -25,6 +25,7 @@ avoid coordinator internals: messages enter through the ports'
 from __future__ import annotations
 
 from collections.abc import Callable, Iterator
+import threading
 from typing import Any
 
 import pytest
@@ -54,7 +55,7 @@ STREAMS = (
 
 
 class VelocityCapableTask(RecordingTask):
-    """Stub that opts into the twist fan-out via set_velocity_command."""
+    """Bare stub with set_velocity_command; card routing gives it nothing."""
 
     def __init__(self, name: str) -> None:
         super().__init__(name)
@@ -62,6 +63,20 @@ class VelocityCapableTask(RecordingTask):
 
     def set_velocity_command(self, vx: float, vy: float, wz: float, t_now: float) -> None:
         self.velocity_commands.append((vx, vy, wz, t_now))
+
+
+class G1ShapedVelocityTask(VelocityCapableTask):
+    """Stub carrying g1_groot_wbc's twist surface, registered under its type."""
+
+    def __init__(self, name: str) -> None:
+        super().__init__(name)
+        self.twist_msgs: list[Any] = []
+
+    def on_twist_command(self, msg: Any, t_now: float) -> None:
+        # Mirrors G1GrootWBCTask: the uniform handler delegates to
+        # set_velocity_command.
+        self.twist_msgs.append(msg)
+        self.set_velocity_command(msg.linear.x, msg.linear.y, msg.angular.z, t_now)
 
 
 class PortTap:
@@ -269,7 +284,7 @@ def _base_component() -> HardwareComponent:
 
 
 class TestTwistRouting:
-    """Twist stays on the legacy path until B3; these guard that seam."""
+    """Base virtual-joint mapping is hardware-side; the fan-out is card-routed."""
 
     def test_base_twist_maps_to_virtual_joint_velocities(self, make_coordinator):
         coordinator, taps = make_coordinator(
@@ -288,21 +303,6 @@ class TestTwistRouting:
 
         assert coordinator.get_task("basevel")._velocities == [1.0, 2.0, 3.0]
 
-    def test_twist_fans_out_to_velocity_capable_tasks(self, make_coordinator):
-        coordinator, taps = make_coordinator()
-        capable = VelocityCapableTask("capable")
-        plain = RecordingTask("plain")
-        coordinator.add_task(capable)
-        coordinator.add_task(plain)
-        coordinator.start()
-
-        taps["twist_command"].emit(Twist(linear=[1.0, 2.0, 0.0], angular=[0.0, 0.0, 3.0]))
-
-        assert len(capable.velocity_commands) == 1
-        vx, vy, wz, t_now = capable.velocity_commands[0]
-        assert (vx, vy, wz) == (1.0, 2.0, 3.0)
-        assert isinstance(t_now, float)
-
     def test_base_twist_both_maps_joints_and_fans_out(self, make_coordinator):
         coordinator, taps = make_coordinator(
             hardware=[_base_component()],
@@ -314,8 +314,8 @@ class TestTwistRouting:
                 )
             ],
         )
-        capable = VelocityCapableTask("capable")
-        coordinator.add_task(capable)
+        capable = G1ShapedVelocityTask("capable")
+        coordinator.add_task(capable, task_type="g1_groot_wbc")
         coordinator.start()
 
         taps["twist_command"].emit(Twist(linear=[1.0, 2.0, 0.0], angular=[0.0, 0.0, 3.0]))
@@ -329,13 +329,6 @@ class TestTwistRouting:
 
         assert taps["twist_command"].subscribed
 
-    def test_twist_subscribed_for_velocity_capable_task_without_base(self, make_coordinator):
-        coordinator, taps = make_coordinator()
-        coordinator.add_task(VelocityCapableTask("capable"))
-        coordinator.start()
-
-        assert taps["twist_command"].subscribed
-
     def test_twist_not_subscribed_without_base_or_velocity_capable_task(self, make_coordinator):
         coordinator, taps = make_coordinator(
             tasks=[TaskConfig(name="traj", type="trajectory", joint_names=ARM_JOINTS)]
@@ -343,6 +336,160 @@ class TestTwistRouting:
         coordinator.start()
 
         assert not taps["twist_command"].subscribed
+
+    def test_base_suffix_subset_maps_only_declared_joints(self, make_coordinator):
+        carlike_joints = make_twist_base_joints("base", ["vx", "wz"])
+        coordinator, taps = make_coordinator(
+            hardware=[
+                HardwareComponent(
+                    hardware_id="base",
+                    hardware_type=HardwareType.BASE,
+                    joints=carlike_joints,
+                    adapter_type="mock_twist_base",
+                )
+            ],
+            tasks=[TaskConfig(name="basevel", type="velocity", joint_names=carlike_joints)],
+        )
+        coordinator.start()
+
+        taps["twist_command"].emit(Twist(linear=[1.0, 2.0, 0.0], angular=[0.0, 0.0, 3.0]))
+
+        assert coordinator.get_task("basevel")._velocities == [1.0, 3.0]
+
+    def test_base_full_6d_twist_maps_all_axes(self, make_coordinator):
+        # Drones and such: a base may declare all six twist axes.
+        drone_joints = make_twist_base_joints("base", ["vx", "vy", "vz", "wx", "wy", "wz"])
+        coordinator, taps = make_coordinator(
+            hardware=[
+                HardwareComponent(
+                    hardware_id="base",
+                    hardware_type=HardwareType.BASE,
+                    joints=drone_joints,
+                    adapter_type="mock_twist_base",
+                )
+            ],
+            tasks=[TaskConfig(name="basevel", type="velocity", joint_names=drone_joints)],
+        )
+        coordinator.start()
+
+        taps["twist_command"].emit(Twist(linear=[1.0, 2.0, 3.0], angular=[4.0, 5.0, 6.0]))
+
+        assert coordinator.get_task("basevel")._velocities == [1.0, 2.0, 3.0, 4.0, 5.0, 6.0]
+
+    def test_twist_mapping_ignores_non_base_hardware(self, make_coordinator):
+        # A manipulator joint named like a twist axis must not be mapped.
+        coordinator, taps = make_coordinator(
+            hardware=[
+                _base_component(),
+                HardwareComponent(
+                    hardware_id="arm",
+                    hardware_type=HardwareType.MANIPULATOR,
+                    joints=["arm/vx"],
+                    adapter_type="mock",
+                ),
+            ],
+            tasks=[
+                TaskConfig(
+                    name="basevel",
+                    type="velocity",
+                    joint_names=make_twist_base_joints("base"),
+                ),
+                TaskConfig(name="armvel", type="velocity", joint_names=["arm/vx"]),
+            ],
+        )
+        coordinator.start()
+
+        taps["twist_command"].emit(Twist(linear=[1.0, 2.0, 0.0], angular=[0.0, 0.0, 3.0]))
+
+        assert coordinator.get_task("basevel")._velocities == [1.0, 2.0, 3.0]
+        assert coordinator.get_task("armvel")._velocities is None
+
+    def test_twist_reaches_declaring_velocity_task_without_base(self, make_coordinator):
+        coordinator, taps = make_coordinator()
+        task = G1ShapedVelocityTask("g1")
+        coordinator.add_task(task, task_type="g1_groot_wbc")
+        coordinator.start()
+
+        assert taps["twist_command"].subscribed
+        taps["twist_command"].emit(Twist(linear=[1.0, 2.0, 0.0], angular=[0.0, 0.0, 3.0]))
+
+        assert len(task.velocity_commands) == 1
+        vx, vy, wz, t_now = task.velocity_commands[0]
+        assert (vx, vy, wz) == (1.0, 2.0, 3.0)
+        assert isinstance(t_now, float)
+
+
+class TestTwistCardContract:
+    """Contract introduced by the twist migration: intentional deltas and new seams."""
+
+    def test_card_routed_twist_delivers_raw_msg_to_on_twist_command(self, make_coordinator):
+        coordinator, taps = make_coordinator()
+        task = G1ShapedVelocityTask("g1")
+        coordinator.add_task(task, task_type="g1_groot_wbc")
+        coordinator.start()
+
+        msg = Twist(linear=[1.0, 2.0, 0.0], angular=[0.0, 0.0, 3.0])
+        taps["twist_command"].emit(msg)
+
+        assert len(task.twist_msgs) == 1
+        assert task.twist_msgs[0] is msg  # the raw message, not a digest
+
+    def test_bare_set_velocity_command_stub_gets_nothing(self, make_coordinator):
+        # Intentional delta: the fan-out narrowed to card-declared consumers.
+        coordinator, taps = make_coordinator(hardware=[_base_component()])
+        bare = VelocityCapableTask("bare")
+        coordinator.add_task(bare)
+        coordinator.start()
+        assert taps["twist_command"].subscribed  # the base keeps the stream alive
+
+        taps["twist_command"].emit(Twist(linear=[1.0, 2.0, 0.0], angular=[0.0, 0.0, 3.0]))
+
+        assert bare.velocity_commands == []
+
+    def test_runtime_base_add_remove_toggles_twist_subscription(self, make_coordinator):
+        from dimos.hardware.drive_trains.registry import twist_base_adapter_registry
+
+        coordinator, taps = make_coordinator()
+        coordinator.start()
+        assert not taps["twist_command"].subscribed
+
+        component = _base_component()
+        adapter = twist_base_adapter_registry.create(
+            "mock_twist_base", dof=len(component.joints), hardware_id="base"
+        )
+        assert adapter.connect()
+        assert coordinator.add_hardware(adapter, component)
+        assert taps["twist_command"].subscribed
+
+        assert coordinator.remove_hardware("base")
+        taps["twist_command"].unsub.assert_called_once()
+
+    def test_twist_delivery_concurrent_with_remove_hardware(self, make_coordinator):
+        coordinator, taps = make_coordinator(hardware=[_base_component()])
+        coordinator.start()
+        assert taps["twist_command"].subscribed
+
+        msg = Twist(linear=[1.0, 0.0, 0.0], angular=[0.0, 0.0, 0.5])
+        stop = threading.Event()
+
+        def pump() -> None:
+            while not stop.is_set():
+                taps["twist_command"].emit(msg)
+
+        removed: list[bool] = []
+        pumper = threading.Thread(target=pump, daemon=True)
+        remover = threading.Thread(
+            target=lambda: removed.append(coordinator.remove_hardware("base")), daemon=True
+        )
+        pumper.start()
+        remover.start()
+        remover.join(timeout=5.0)
+        stop.set()
+        pumper.join(timeout=5.0)
+
+        assert not remover.is_alive(), "remove_hardware deadlocked against twist delivery"
+        assert not pumper.is_alive(), "twist delivery deadlocked against remove_hardware"
+        assert removed == [True]
 
 
 class TestSubscriptionLifecycle:

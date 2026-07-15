@@ -62,6 +62,7 @@ class CommandRecordingTask(BaseControlTask):
         self.armed: bool | None = None
         self.arm_calls: list[float | None] = []
         self.dry_run: bool | None = None
+        self.reset_calls: list[bool | None] = []
         self.t_now_seen: float | None = None
         self._state = "IDLE"
 
@@ -107,6 +108,10 @@ class CommandRecordingTask(BaseControlTask):
 
     def set_dry_run(self, enabled: bool) -> None:
         self.dry_run = bool(enabled)
+
+    def reset_runtime_state(self, reactivate: bool | None = None) -> bool:
+        self.reset_calls.append(reactivate)
+        return True
 
     # Undeclared helper (never in any TASK_EXPOSES card)
     def record_time(self, t_now: float | None = None) -> float | None:
@@ -193,6 +198,20 @@ class TestActivationFanOut:
         coordinator.set_dry_run(False)
         assert task.dry_run is False
 
+    def test_reset_runtime_state_reaches_declaring_task(self, coordinator):
+        task = CommandRecordingTask("g1")
+        coordinator.add_task(task, task_type="g1_groot_wbc")
+
+        assert coordinator.reset_runtime_state(reactivate=True) == {"g1": True}
+        assert task.reset_calls == [True]
+
+    def test_reset_runtime_state_defaults_reactivate_to_none(self, coordinator):
+        task = CommandRecordingTask("g1")
+        coordinator.add_task(task, task_type="g1_groot_wbc")
+
+        assert coordinator.reset_runtime_state() == {"g1": True}
+        assert task.reset_calls == [None]
+
     def test_restart_keeps_declared_commands_reachable(self, coordinator):
         # add_task() skips known names, so a table cleared on stop() never rebuilds.
         task = CommandRecordingTask("g1")
@@ -272,6 +291,17 @@ class TestValidatedDispatch:
             coordinator.task_invoke("traj_arm", "exceute", {})
         assert "execute" in str(excinfo.value)  # the error points at the right name
 
+    def test_reset_runtime_state_covers_declaring_tasks_only(self, coordinator):
+        declaring = CommandRecordingTask("g1")
+        coordinator.add_task(declaring, task_type="g1_groot_wbc")
+        # Bare add: has reset_runtime_state() but declares no commands.
+        bare = CommandRecordingTask("bare")
+        coordinator.add_task(bare)
+
+        assert coordinator.reset_runtime_state(reactivate=False) == {"g1": True}
+        assert declaring.reset_calls == [False]
+        assert bare.reset_calls == []
+
     def test_shims_reach_only_declaring_tasks(self, coordinator):
         declaring = CommandRecordingTask("g1")
         coordinator.add_task(declaring, task_type="g1_groot_wbc")
@@ -317,3 +347,13 @@ class TestDescribeTask:
 
     def test_unknown_task_returns_none(self, coordinator):
         assert coordinator.describe_task("nope") is None
+
+    def test_g1_reports_twist_stream_and_reset_command(self, coordinator):
+        task = CommandRecordingTask("g1")
+        coordinator.add_task(task, task_type="g1_groot_wbc")
+
+        desc = coordinator.describe_task("g1")
+
+        assert ("twist_command", "broadcast") in desc["streams"]
+        assert "reset_runtime_state" in desc["commands"]
+        assert desc["commands"]["reset_runtime_state"]["params"] == ["reactivate"]
