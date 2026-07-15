@@ -53,6 +53,7 @@ print(CameraModule.io())
  │
  ├─ RPC build() -> None
  ├─ RPC get_skills() -> list
+ ├─ RPC peek_stream(stream_name: str, timeout: float) -> Any
  ├─ RPC set_module_ref(name: str, module_ref: RPCClient) -> None
  ├─ RPC set_transport(stream_name: str, transport: Transport) -> bool
  ├─ RPC start() -> None
@@ -227,6 +228,7 @@ runtime implementation. Declare a module-specific `Config(ModuleConfig)`,
 annotate the declaration's `config` with it, and read it from the runtime:
 
 ```python
+from dimos.core.external_python_module import ExternalPythonModule
 from dimos.core.module import ModuleConfig
 
 class Config(ModuleConfig):
