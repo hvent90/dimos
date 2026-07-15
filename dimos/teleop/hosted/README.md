@@ -3,17 +3,16 @@
 Robot dials out to the [dimensional-teleop](https://github.com/dimensionalOS/dimensional-teleop)
 broker (Cloudflare Realtime SFU) — no inbound ports needed. The browser/VR
 operator connects through the broker; commands arrive over WebRTC datachannels,
-robot video goes out as a WebRTC track, and — opt-in (`audio_in`) — the
-operator's mic comes back on a recvonly audio track.
+robot video goes out as a WebRTC track.
 
 ## Files
 
 The session (dial-out, datachannel lifecycle, video track) is owned by the
-per-process `BrokerProvider` / `LiveKitBrokerProvider`
+per-process `BrokerProvider`
 (`dimos/protocol/pubsub/impl/webrtc/providers/`); blueprints bind
-`Cloudflare*`/`LiveKit*` transports to the streams of several small,
-per-concern modules that all run in one process so everything shares that
-single session:
+`Cloudflare*` transports to the streams of several small, per-concern modules
+that all run in one worker so everything shares that single session (the
+`GO2Connection` driver runs in a second worker — `n_workers=2`):
 
 - **`go2_command.py`** — `Go2CommandModule`: operator command / E-STOP dispatch
   and the manual-drive guard. Reaches the driver over `@rpc` (`GO2Connection`).
@@ -25,8 +24,8 @@ single session:
   and command-link latency/rate stats.
 - **`command_executor.py`** — `SerializedCommandMixin`: serializes blocking
   driver commands with nonce dedup and a safety-epoch fence (E-STOP aborts).
-- **`blueprints/cloudflare.py`** / **`blueprints/livekit.py`** — wire the above
-  to the Go2 driver, cameras, planner, and transports (single + multicam).
+- **`blueprints/cloudflare.py`** — wires the above to the Go2 driver, cameras,
+  planner, and transports (single + multicam).
 
 The operator HTML lives in the [dimensional-teleop](https://github.com/dimensionalOS/dimensional-teleop)
 broker repo (`web/`), not here.
@@ -35,9 +34,10 @@ broker repo (`web/`), not here.
 
 1. Robot creates an `RTCPeerConnection` (MAX_BUNDLE, **must** — see below),
    `addTrack(video)`, adds a recvonly audio transceiver if `audio_in` is set
-   (the broker later pulls the operator's mic onto it and renegotiates via a
-   heartbeat-ack offer), opens a throwaway negotiated DataChannel on SCTP id 0,
-   creates an offer, gathers ICE non-trickle.
+   (plumbing only for now — frames are dropped until something calls
+   `set_audio_frame_callback`; robot-side playback is a follow-up), opens a
+   throwaway negotiated DataChannel on SCTP id 0, creates an offer, gathers
+   ICE non-trickle.
 2. `POST /api/v1/sessions` to the broker with the offer. Broker creates a CF
    session, returns the answer + a `session_id` keyed off the robot.
 3. SDP answer's candidates are propagated across bundled m-sections (aiortc
@@ -115,5 +115,6 @@ pushes (the 30s GC is media-only), so without that close, the long-lived robot
 session accumulates half-dead pushes and the second bridge 502s with
 `repeated_local_track_error`.
 
-Robot-side auto-redial is not yet implemented and is gated behind TURN
-landing first.
+Robot-side auto-redial is not yet implemented (a follow-up). TURN has landed
+(`_fetch_ice_servers` fetches broker-minted creds, STUN fallback), so it is no
+longer blocked on that.

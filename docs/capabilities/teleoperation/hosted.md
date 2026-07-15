@@ -4,8 +4,8 @@ title: "Remote Teleop"
 
 Operate a DimOS robot remotely from any browser or Quest headset over WebRTC.
 The robot dials out to a hosted broker
-([teleop.dimensionalos.com](https://teleop.dimensionalos.com)) — Cloudflare
-Realtime or LiveKit SFU — so you don't need to open any inbound ports on the
+([teleop.dimensionalos.com](https://teleop.dimensionalos.com)) — a Cloudflare
+Realtime SFU — so you don't need to open any inbound ports on the
 robot's network. It works behind a home router, on Wi-Fi, wired LAN, or
 cellular.
 
@@ -34,8 +34,8 @@ Once connected, four streams flow continuously:
 | Telemetry | robot → you | Battery, posture, link latency/rate for the HUD |
 | Commands | you → robot | Drive input, sport commands, nav goals, E-STOP |
 
-Everything runs in one robot-side process sharing a single broker session, so
-there's exactly one video track and one control plane per robot — see
+All broker-facing modules share a single broker session, so there's exactly
+one video track and one control plane per robot — see
 [How it connects](#how-it-connects) for the channel-level detail.
 
 ## Quick Start
@@ -62,20 +62,17 @@ overrides. All broker settings can also be passed on the CLI, e.g.
 
 ## Available blueprints
 
-| Blueprint | Backend | Notes |
-|-----------|---------|-------|
-| `teleop-hosted-go2-transport` | Cloudflare | Drive + camera + minimap + click-to-nav (recommended) |
-| `teleop-hosted-go2-multicam` | Cloudflare | Adds a second RealSense, operator-selectable, mux'd into one video track |
-| `teleop-hosted-go2-livekit` | LiveKit | Drive + camera + state; no minimap/click-nav yet |
-| `teleop-hosted-go2-livekit-multicam` | LiveKit | LiveKit backend with the second RealSense |
+| Blueprint | Notes |
+|-----------|-------|
+| `teleop-hosted-go2-transport` | Drive + camera + minimap + click-to-nav (recommended) |
+| `teleop-hosted-go2-multicam` | Adds a second RealSense, operator-selectable, mux'd into one video track |
 
-The transport blueprints bind `Cloudflare*` / `LiveKit*` transports directly to
-the streams of several small, per-concern modules that all run in one process
-(`n_workers=1`) so they share a single broker session: `Go2CommandModule`
-(command / E-STOP / drive guard), `CameraMuxModule` (camera → video track),
-`MapCompressModule` (costmap → minimap), `HostedStatsModule` (telemetry + acks),
-and the `GO2Connection` driver itself. LiveKit uses the same
-`transports.broker.*` config key as Cloudflare.
+The transport blueprints bind `Cloudflare*` transports directly to the streams
+of several small, per-concern modules: `Go2CommandModule` (command / E-STOP /
+drive guard), `CameraMuxModule` (camera → video track), `MapCompressModule`
+(costmap → minimap), and `HostedStatsModule` (telemetry + acks). The
+broker-bound modules run in one worker so they share a single broker session;
+the `GO2Connection` driver runs in a second worker (`n_workers=2`).
 
 Enable the glass-to-glass latency benchmark with
 `-o cameramuxmodule.latency_stamp=true` (adds a timestamp strip the operator
@@ -95,7 +92,7 @@ key matches the one the robot registered with.
 
 ### 2. Drive
 
-Use **WASD** on a desktop keyboard (or the on-screen buttons on a phone) to
+Use **WASD** on a desktop keyboard (or the thumbsticks in VR) to
 drive: `W`/`S` forward/back, `A`/`D` strafe, and turn with the yaw controls.
 Hold **Shift** for 2× speed, **Ctrl** for half speed. Drive input streams
 continuously and stops the instant you release — the robot treats a released
@@ -145,9 +142,7 @@ the robot blueprint decides what to do with it.
 | Device | Input | Maps to |
 |--------|-------|---------|
 | Desktop browser | **WASD** keyboard | `TwistStamped` → `cmd_vel` |
-| Phone | **On-screen WASD** | same path as keyboard |
-| Quest 3 (Go2) | **Left thumbstick** Y → fwd/back, X → strafe; **Right thumbstick** X → yaw | `Joy` → derived twist on the robot |
-| Quest 3 (xArm7) | **Controller poses** + analog triggers | `PoseStamped` → coordinator IK task; triggers → gripper |
+| Quest 3 / VR headset | **Left thumbstick** Y → fwd/back, X → strafe; **right thumbstick** X → yaw; grip = boost/slow | same `TwistStamped` path as keyboard |
 
 Shift = 2× speed, Ctrl = ½×. The operator can also send allow-listed sport
 commands (StandDown, RecoveryStand, Sit, Damp, Hello, Stretch, and — gated
@@ -214,29 +209,23 @@ module's config key (module class name, lowercased). Pass with `-o`, e.g.
 | `map_min_resolution` | `0.1` | Coarsen finer occupancy grids to this m/cell before encoding for the minimap |
 
 Broker settings live under `transports.broker.*`: `api_key` (required),
-`broker_url`, `robot_id`, `robot_name` (`"robot"` default), `stun_url`,
-`video_codec` (e.g. `h264`/`vp8`), `video_max_bitrate_bps` (`0` = aiortc's
-default 3 Mbps ceiling; raise for crisper video on a good uplink), and — for the
-operator→robot mic — `audio_in` (opt-in). With broker `audio_in=true` the offer
-carries a recvonly audio transceiver and the broker pulls the operator's mic
-onto the session; set `go2connection.audio_in=true` as well and the Go2 plays it
-on the dog's speaker. Operator→robot audio is Cloudflare-only.
+`broker_url`, `robot_id`, `robot_name` (`"robot"` default), `stun_url`, and
+`video_codec` (e.g. `h264`/`vp8`).
 
 ## How it connects
 
-The per-process `BrokerProvider` (Cloudflare) / `LiveKitBrokerProvider` owns the
-session; blueprint transports bind to it. Channels:
+The per-process `BrokerProvider` owns the session; blueprint transports bind
+to it. Channels:
 
 ```text
-robot                          broker (Cloudflare / LiveKit)      operator browser/Quest
-─────                          ─────────────────────────────      ──────────────────────
+robot                          broker (Cloudflare)                operator browser/Quest
+─────                          ───────────────────                ──────────────────────
   POST /api/v1/sessions  ───►  session + datachannels     ◄───    operator joins
   cmd_unreliable        ◄────  (operator → robot, lossy)  ◄────    WASD / Joy
   state_reliable        ◄────  (operator → robot, json)   ◄────    ping, video_stats, estop
   state_reliable_back   ────►  (robot → operator, json)    ────►   pong, robot_telemetry, cmd_ack
   map_unreliable        ────►  (robot → operator, lossy)   ────►   minimap grid + odom
   video track           ────►  broker publishes + pulls    ────►   <video> sink
-  audio track           ◄────  broker pulls operator mic   ◄────    mic (opt-in, audio_in)
 ```
 
 For the WebRTC / aiortc / Cloudflare implementation details (MAX_BUNDLE, SCTP
@@ -253,5 +242,5 @@ id-0 channel, candidate propagation, thread model), see
   networks (which need the relay) may then fail to connect.
 - **No robot-side auto-reconnect.** If the link drops, the operator clicks
   **Connect** again; the robot side stays up.
-- **LiveKit** ships command/state/video only — no minimap or click-to-nav yet.
-- **Operator→robot audio** is opt-in (broker `audio_in=true`) and Cloudflare-only.
+- **No operator→robot audio.** The operator's mic is not played on the robot
+  yet (planned follow-up).
