@@ -59,6 +59,7 @@
             pkgs.glib
             pkgs.eigen
             pkgs.boost
+            pkgs.nlohmann_json
             pcl
             gtsam
           ];
@@ -68,6 +69,9 @@
           cmakeFlags = [
             "-DCMAKE_POLICY_VERSION_MINIMUM=3.5"
             "-DFETCHCONTENT_SOURCE_DIR_DIMOS_LCM=${dimos-lcm}"
+            # The header-only SDK lives outside this dir. A git-tree flake can
+            # reach it as a path literal within the repo tree.
+            "-DDIMOS_NATIVE_CPP_DIR=${../../../../../../native/cpp}"
           ];
 
           # On macOS, libgtsam.4.dylib is referenced via @rpath but the binary
