@@ -111,8 +111,11 @@ debug software** — that mistake cost a full session.
 
 ## Running the dimos blueprints (fast path, 2026-07-09)
 
-One-time on the laptop: `uv tool install rerun-sdk==0.29.2` (host-native
-viewer; the repo venv is container-built and not executable on the host).
+One-time on the laptop: `uv tool install dimos-viewer==0.32.0a1`
+(host-native viewer — GUIs must not run in the container). Keep it in step
+with what the repo pins: dimos now requires `rerun-sdk==0.32.0` /
+`dimos-viewer==0.32.0a1`. The old `rerun-sdk==0.29.2` viewer is a version
+mismatch against the 0.32 SDK and will warn on connect.
 
 Then, with the robot stack up (see every-session bring-up above):
 ```bash
