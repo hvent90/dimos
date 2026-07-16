@@ -79,12 +79,23 @@ class RawROS(PubSub[RawROSTopic, Any]):
     native LCM and other pubsub implementations.
     """
 
-    def __init__(self, node_name: str | None = None, qos: "QoSProfile | None" = None) -> None:
+    def __init__(
+        self,
+        node_name: str | None = None,
+        qos: "QoSProfile | None" = None,
+        isolated_context: bool = False,
+    ) -> None:
         """Initialize the ROS pubsub.
 
         Args:
             node_name: Name for the ROS node (auto-generated if None)
             qos: Optional QoS profile (defaults to BEST_EFFORT for throughput)
+            isolated_context: Run the node in its own rclpy Context, i.e. its
+                own DDS participant with its own network receive threads.
+                One context per process is the rclpy default, so all RawROS
+                instances normally share one participant; isolate when this
+                node's traffic must not contend with the default context's
+                (e.g. bulk sensor streams vs. high-rate control).
         """
         if not ROS_AVAILABLE:
             raise ImportError("rclpy is not installed. ROS pubsub requires ROS 2.")
@@ -95,6 +106,8 @@ class RawROS(PubSub[RawROSTopic, Any]):
         self._executor: SingleThreadedExecutor | None = None
         self._spin_thread: threading.Thread | None = None
         self._stop_event = threading.Event()
+        self._isolated_context = isolated_context
+        self._context: Any = None
 
         # Track publishers and subscriptions
         self._publishers: dict[str, Any] = {}
@@ -121,12 +134,17 @@ class RawROS(PubSub[RawROSTopic, Any]):
         if self._spin_thread is not None:
             return
 
-        if not rclpy.ok():  # type: ignore[attr-defined]
+        if self._isolated_context:
+            from rclpy.context import Context
+
+            self._context = Context()
+            rclpy.init(context=self._context)  # type: ignore[attr-defined]
+        elif not rclpy.ok():  # type: ignore[attr-defined]
             rclpy.init()
 
         self._stop_event.clear()
-        self._node = Node(self._node_name)
-        self._executor = SingleThreadedExecutor()
+        self._node = Node(self._node_name, context=self._context)
+        self._executor = SingleThreadedExecutor(context=self._context)
         self._executor.add_node(self._node)
 
         self._spin_thread = threading.Thread(target=self._spin, name="ros_pubsub_spin")
@@ -163,6 +181,13 @@ class RawROS(PubSub[RawROSTopic, Any]):
         if self._node:
             self._node.destroy_node()  # type: ignore[no-untyped-call]
             self._node = None
+
+        if self._context is not None:
+            try:
+                rclpy.shutdown(context=self._context)  # type: ignore[attr-defined]
+            except (OSError, RuntimeError):
+                pass
+            self._context = None
 
         self._executor = None
         self._spin_thread = None
