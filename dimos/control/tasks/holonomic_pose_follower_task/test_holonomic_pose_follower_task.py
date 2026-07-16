@@ -213,6 +213,20 @@ def test_crab_walks_square_holding_heading():
     assert score.cte_rms < 0.15
 
 
+def test_zero_gain_artifact_rejected_cleanly(tmp_path):
+    """A zero plant gain must raise ValueError at start_path (the envelope/K
+    divisions), not a raw ZeroDivisionError deep in the load."""
+    import json
+
+    art = json.loads(open(DEFAULT_ARTIFACT_PATH).read())
+    art["plant"]["vx"]["K"] = 0.0
+    bad = tmp_path / "zero_gain.json"
+    bad.write_text(json.dumps(art))
+    task = _task(artifact_path=str(bad))
+    with pytest.raises(ValueError, match="invalid calibration artifact"):
+        task.start_path(straight_rotate(length=2.0), _pose())
+
+
 def test_holds_fixed_tangent_offset_around_circle():
     # At speed v the yaw error floor is ~(tau + L) * wz = 0.45 * v * kappa
     # (the artifact's documented plant floor); run at 0.3 so the floor

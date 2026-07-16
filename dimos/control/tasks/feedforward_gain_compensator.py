@@ -59,6 +59,19 @@ class FeedforwardGainConfig:
     output_max_wz: float = 1.5
 
 
+def validate_plant_gains(K_vx: float, K_vy: float, K_wz: float) -> None:
+    """Reject a near-zero plant gain: dividing by it (u_cmd = u_phys / K, or the
+    envelope/K output limits) would ZeroDivisionError or explode. A K of 0 means
+    the axis does not move — an invalid calibration artifact. Call before any
+    division by these gains, not just at compensator construction."""
+    for axis, k in (("vx", K_vx), ("vy", K_vy), ("wz", K_wz)):
+        if abs(k) < 1e-6:
+            raise ValueError(
+                f"plant gain K_{axis}={k} is ~0; a zero plant gain is an "
+                f"invalid calibration artifact (axis does not move)."
+            )
+
+
 class FeedforwardGainCompensator:
     """Divide controller-output velocities by plant gains; clamp to limits.
 
@@ -69,15 +82,7 @@ class FeedforwardGainCompensator:
 
     def __init__(self, config: FeedforwardGainConfig | None = None) -> None:
         self.cfg = config or FeedforwardGainConfig()
-        # Fail at construction, not on the control tick: a near-zero plant gain
-        # would divide-by-zero (or explode) in compute(). A K of 0 means the
-        # calibration artifact says the axis does not move — an invalid artifact.
-        for axis, k in (("vx", self.cfg.K_vx), ("vy", self.cfg.K_vy), ("wz", self.cfg.K_wz)):
-            if abs(k) < 1e-6:
-                raise ValueError(
-                    f"FeedforwardGainConfig.K_{axis}={k} is ~0; a zero plant gain "
-                    f"is an invalid calibration artifact (axis does not move)."
-                )
+        validate_plant_gains(self.cfg.K_vx, self.cfg.K_vy, self.cfg.K_wz)
 
     def compute(
         self,

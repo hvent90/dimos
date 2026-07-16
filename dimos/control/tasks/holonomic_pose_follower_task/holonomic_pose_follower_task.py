@@ -37,6 +37,7 @@ from dimos.control.task import (
 from dimos.control.tasks.feedforward_gain_compensator import (
     FeedforwardGainCompensator,
     FeedforwardGainConfig,
+    validate_plant_gains,
 )
 from dimos.control.tasks.holonomic_pose_follower_task.progress_reference import (
     ProgressPathReference,
@@ -341,6 +342,9 @@ class HolonomicPoseFollowerTask(BaseControlTask):
         art = TuningConfig.from_json(path)
         plant = art.plant
         vp = art.velocity_profile
+
+        # Reject a zero-gain artifact before the envelope/K divisions below.
+        validate_plant_gains(plant.vx.K, plant.vy.K, plant.wz.K)
 
         self._kp = (
             _kp_for_tau(plant.vx.tau),
