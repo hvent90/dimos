@@ -343,14 +343,24 @@ class MujocoEngine(SimulationEngine):
             logger.error("connect() failed", cls=self.__class__.__name__, error=str(e))
             return False
 
-    def disconnect(self) -> bool:
+    def request_stop(self) -> None:
+        """Request simulation cancellation without waiting for the sim thread."""
+        with self._lock:
+            self._connected = False
+        self._stop_event.set()
+
+    def disconnect(self, timeout: float | None = DEFAULT_THREAD_JOIN_TIMEOUT) -> bool:
         try:
             logger.info("disconnect()", cls=self.__class__.__name__)
-            with self._lock:
-                self._connected = False
-            self._stop_event.set()
-            if self._sim_thread and self._sim_thread.is_alive():
-                self._sim_thread.join(timeout=DEFAULT_THREAD_JOIN_TIMEOUT)
+            self.request_stop()
+            deadline = None if timeout is None else time.monotonic() + max(0.0, timeout)
+            sim_thread = self._sim_thread
+            if sim_thread is not None and sim_thread.is_alive():
+                remaining = None if deadline is None else max(0.0, deadline - time.monotonic())
+                sim_thread.join(timeout=remaining)
+            if sim_thread is not None and sim_thread.is_alive():
+                logger.warning("disconnect() timed out", cls=self.__class__.__name__)
+                return False
             self._sim_thread = None
             return True
         except Exception as e:
@@ -580,10 +590,9 @@ class MujocoEngine(SimulationEngine):
         dt = 1.0 / self._control_frequency
 
         # Camera renderers: created once in the sim thread
-        cam_renderers = self._init_cameras()
-        lidar_states = self._init_raycast_lidars()
+        cam_renderers: dict[str, _CameraRendererState] = {}
 
-        def _step_once(sync_viewer: bool) -> None:
+        def _step_once(sync_viewer: bool, m_viewer: object | None = None) -> None:
             loop_start = time.time()
             reset_done_events: list[threading.Event] = []
             with self._lock:
@@ -602,7 +611,8 @@ class MujocoEngine(SimulationEngine):
             self._apply_control()
             mujoco.mj_step(self._model, self._data)
             if sync_viewer:
-                m_viewer.sync()
+                assert m_viewer is not None
+                m_viewer.sync()  # type: ignore[attr-defined]
             self._update_joint_state()
             if self._on_after_step is not None:
                 try:
@@ -617,18 +627,25 @@ class MujocoEngine(SimulationEngine):
             if sleep_time > 0:
                 time.sleep(sleep_time)
 
-        if self._headless:
-            while not self._stop_event.is_set():
-                _step_once(sync_viewer=False)
-        else:
-            with viewer.launch_passive(
-                self._model, self._data, show_left_ui=False, show_right_ui=False
-            ) as m_viewer:
-                while m_viewer.is_running() and not self._stop_event.is_set():
-                    _step_once(sync_viewer=True)
-
-        self._close_cam_renderers(cam_renderers)
-        logger.info("sim loop stopped", cls=self.__class__.__name__)
+        try:
+            cam_renderers = self._init_cameras()
+            lidar_states = self._init_raycast_lidars()
+            if self._headless:
+                while not self._stop_event.is_set():
+                    _step_once(sync_viewer=False)
+            else:
+                with viewer.launch_passive(
+                    self._model, self._data, show_left_ui=False, show_right_ui=False
+                ) as m_viewer:
+                    while m_viewer.is_running() and not self._stop_event.is_set():
+                        _step_once(sync_viewer=True, m_viewer=m_viewer)
+        finally:
+            try:
+                self._close_cam_renderers(cam_renderers)
+            finally:
+                with self._lock:
+                    self._connected = False
+                logger.info("sim loop stopped", cls=self.__class__.__name__)
 
     @property
     def connected(self) -> bool:

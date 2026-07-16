@@ -12,16 +12,27 @@
 # See the License for the specific language governing permissions and
 # limitations under the License.
 
+import builtins
 from pathlib import Path
 from typing import Any
 
 import pytest
 
 from dimos.control.coordinator import ControlCoordinator, TaskConfig
-from dimos.core.coordination.blueprints import Blueprint
+from dimos.core.coordination.blueprints import Blueprint, autoconnect
+from dimos.core.global_config import global_config
 from dimos.manipulation.manipulation_module import ManipulationModule, ManipulationModuleConfig
 from dimos.manipulation.visualization.config import NoManipulationVisualizationConfig
-from dimos.robot.manipulators.a1z.blueprints.teleop import keyboard_teleop_a1z
+from dimos.robot.manipulators.a1z.blueprints.teleop import (
+    _build_a1z_keyboard_components,
+    keyboard_teleop_a1z,
+)
+from dimos.robot.manipulators.a1z.config import A1Z_DOF, make_a1z_hardware
+from dimos.robot.manipulators.a1z.simulation import (
+    A1Z_SCENE_PATH,
+    A1Z_SIM_HOME,
+    _A1ZMujocoSimModule,
+)
 from dimos.robot.manipulators.a750.blueprints.teleop import keyboard_teleop_a750
 from dimos.robot.manipulators.common.blueprints import eef_twist_task, planner
 from dimos.robot.manipulators.common.topics import EEF_TWIST_TASK_NAME
@@ -36,10 +47,16 @@ from dimos.robot.manipulators.xarm.blueprints.basic import (
     xarm7_planner_coordinator,
 )
 from dimos.robot.manipulators.xarm.blueprints.teleop import (
+    _build_xarm6_keyboard_components,
     keyboard_teleop_xarm6,
     keyboard_teleop_xarm7,
 )
-from dimos.robot.manipulators.xarm.config import make_xarm7_model_config, make_xarm_hardware
+from dimos.robot.manipulators.xarm.config import (
+    XARM6_SIM_PATH,
+    make_xarm7_model_config,
+    make_xarm_hardware,
+)
+from dimos.robot.manipulators.xarm.simulation import _XArm6MujocoSimModule
 from dimos.teleop.keyboard.keyboard_teleop_module import KeyboardTeleopModule
 
 
@@ -94,6 +111,116 @@ def test_eef_twist_task_helper_uses_hardware_joints_and_default_name() -> None:
     assert task.type == "eef_twist"
     assert task.joint_names == hardware.joints
     assert task.params == {"model_path": Path("fake.urdf"), "ee_joint_id": 6}
+
+
+def test_a1z_keyboard_blueprint_modes_are_explicit() -> None:
+    hardware_blueprint = autoconnect(*_build_a1z_keyboard_components(simulation="dimsim"))
+    simulation_blueprint = autoconnect(*_build_a1z_keyboard_components(simulation="mujoco"))
+
+    hardware_tasks = _coordinator_tasks(hardware_blueprint)
+    simulation_tasks = _coordinator_tasks(simulation_blueprint)
+    assert not any(atom.module is ManipulationModule for atom in hardware_blueprint.blueprints)
+    assert not any(atom.module is ManipulationModule for atom in simulation_blueprint.blueprints)
+    assert all(task.type != "servo" for task in hardware_tasks)
+
+    servo_tasks = [task for task in simulation_tasks if task.type == "servo"]
+
+    assert len(servo_tasks) == 1
+    assert servo_tasks[0].name == "servo_gripper"
+    assert servo_tasks[0].joint_names == ["arm/gripper"]
+    assert servo_tasks[0].priority != 10
+    assert servo_tasks[0].params == {"timeout": 0.0, "default_positions": [0.0]}
+
+
+def test_a1z_non_mujoco_mode_does_not_import_simulator(monkeypatch: pytest.MonkeyPatch) -> None:
+    real_import = builtins.__import__
+
+    def reject_simulator_import(name: str, *args: Any, **kwargs: Any) -> Any:
+        if name == "dimos.robot.manipulators.a1z.simulation":
+            raise AssertionError("non-MuJoCo mode imported the optional simulator")
+        return real_import(name, *args, **kwargs)
+
+    monkeypatch.setattr(builtins, "__import__", reject_simulator_import)
+    blueprint = autoconnect(*_build_a1z_keyboard_components(simulation="dimsim"))
+    hardware = _module_kwargs(blueprint, ControlCoordinator)["hardware"][0]
+
+    assert hardware.adapter_type == "mock"
+    assert not any("Mujoco" in atom.module.__name__ for atom in blueprint.blueprints)
+
+
+def test_a1z_hardware_configuration_is_explicit() -> None:
+    hardware = make_a1z_hardware("arm")
+    simulation_hardware = make_a1z_hardware(
+        "arm",
+        adapter_type="sim_mujoco",
+        address=str(A1Z_SCENE_PATH),
+        home_joints=list(A1Z_SIM_HOME),
+    )
+
+    assert hardware.adapter_type == "mock"
+    assert hardware.address is None
+    assert "initial_positions" not in hardware.adapter_kwargs
+    assert simulation_hardware.adapter_type == "sim_mujoco"
+    assert simulation_hardware.address == str(A1Z_SCENE_PATH)
+    assert simulation_hardware.adapter_kwargs["initial_positions"] == list(A1Z_SIM_HOME)
+
+
+def test_a1z_simulation_blueprint_wires_scene_and_camera_contract() -> None:
+    blueprint = autoconnect(*_build_a1z_keyboard_components(simulation="mujoco"))
+    sim_kwargs = _module_kwargs(blueprint, _A1ZMujocoSimModule)
+    sim_hardware = _module_kwargs(blueprint, ControlCoordinator)["hardware"][0]
+
+    assert sim_kwargs["address"] == sim_hardware.address == str(A1Z_SCENE_PATH)
+    assert sim_kwargs["dof"] == A1Z_DOF
+    assert sim_kwargs["reset_joint_positions"] == list(A1Z_SIM_HOME)
+    assert sim_kwargs["fps"] == 30
+    assert sim_kwargs["camera_name"] == "wrist_camera"
+    assert sim_kwargs["gripper_control_mapping"] == "identity"
+
+
+def test_a1z_simulator_is_dedicated_and_absent_from_hardware_blueprint() -> None:
+    assert _A1ZMujocoSimModule.dedicated_worker is True
+    assert not any(
+        atom.module is _A1ZMujocoSimModule
+        for atom in autoconnect(*_build_a1z_keyboard_components("dimsim")).blueprints
+    )
+    assert any(
+        atom.module is _A1ZMujocoSimModule
+        for atom in autoconnect(*_build_a1z_keyboard_components("mujoco")).blueprints
+    )
+
+
+def test_xarm6_keyboard_builder_composes_non_mujoco_mode() -> None:
+    blueprint = autoconnect(*_build_xarm6_keyboard_components("dimsim"))
+
+    hardware = _module_kwargs(blueprint, ControlCoordinator)["hardware"][0]
+    assert hardware.adapter_type == ("xarm" if global_config.xarm6_ip else "mock")
+    assert hardware.address == global_config.xarm6_ip
+    assert not any(atom.module is _XArm6MujocoSimModule for atom in blueprint.blueprints)
+
+
+def test_xarm6_keyboard_builder_wires_mujoco_scene_and_camera() -> None:
+    blueprint = autoconnect(*_build_xarm6_keyboard_components("mujoco"))
+
+    sim_kwargs = _module_kwargs(blueprint, _XArm6MujocoSimModule)
+    hardware = _module_kwargs(blueprint, ControlCoordinator)["hardware"][0]
+    assert hardware.adapter_type == "sim_mujoco"
+    assert hardware.address == sim_kwargs["address"] == str(XARM6_SIM_PATH)
+    assert sim_kwargs["dof"] == 6
+    assert sim_kwargs["camera_name"] == "wrist_camera"
+    assert sim_kwargs["base_frame_id"] == "link6"
+    assert sim_kwargs["width"] == 640
+    assert sim_kwargs["height"] == 480
+    assert sim_kwargs["fps"] == 15
+
+
+def test_xarm6_simulator_is_dedicated_and_registry_export_is_direct() -> None:
+    assert _XArm6MujocoSimModule.dedicated_worker is True
+    assert isinstance(keyboard_teleop_xarm6, Blueprint)
+    assert any(
+        atom.module is _XArm6MujocoSimModule
+        for atom in autoconnect(*_build_xarm6_keyboard_components("mujoco")).blueprints
+    )
 
 
 @pytest.mark.parametrize(

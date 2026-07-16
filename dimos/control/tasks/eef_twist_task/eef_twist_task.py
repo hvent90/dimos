@@ -78,6 +78,8 @@ class EEFTwistTask(BaseControlTask):
         self._lock = threading.Lock()
         self._latest_twist: TwistStamped | None = None
         self._last_update_time = 0.0
+        self._last_commanded_positions: NDArray[np.float64] | None = None
+        self._last_commanded_pose: pinocchio.SE3 | None = None
 
     @property
     def name(self) -> str:
@@ -96,10 +98,6 @@ class EEFTwistTask(BaseControlTask):
             logger.warning("EEFTwistTask rejecting non-finite twist", task=self._name)
             return False
         with self._lock:
-            if np.allclose(values, 0.0):
-                self._clear_locked()
-                self._last_update_time = t_now
-                return True
             self._latest_twist = twist
             self._last_update_time = t_now
         return True
@@ -113,13 +111,28 @@ class EEFTwistTask(BaseControlTask):
                 self._config.timeout > 0
                 and state.t_now - self._last_update_time > self._config.timeout
             ):
-                self._clear_locked()
+                self._clear_locked(clear_target=True)
                 return None
 
         q_current = self._get_current_joints(state)
         if q_current is None or not np.all(np.isfinite(q_current)):
             return None
-        target_pose = self._ik.forward_kinematics(q_current)
+        q_current = np.asarray(q_current, dtype=np.float64)
+        if np.allclose(twist_to_numpy(twist), 0.0):
+            commanded_positions = self._last_commanded_positions
+            if commanded_positions is None:
+                commanded_positions = q_current.copy()
+                self._last_commanded_positions = commanded_positions
+                self._last_commanded_pose = self._ik.forward_kinematics(q_current)
+            return JointCommandOutput(
+                joint_names=self._joint_names_list,
+                positions=commanded_positions.tolist(),
+                mode=ControlMode.SERVO_POSITION,
+            )
+
+        if self._last_commanded_pose is None:
+            self._last_commanded_pose = self._ik.forward_kinematics(q_current)
+        target_pose = self._last_commanded_pose
         dt = min(max(state.dt, 0.0), _MAX_DT)
         candidate = self._integrate_twist(target_pose, twist, dt)
 
@@ -143,6 +156,10 @@ class EEFTwistTask(BaseControlTask):
             )
             return None
 
+        commanded_positions = np.asarray(q_solution, dtype=np.float64).reshape(-1)
+        self._last_commanded_positions = commanded_positions.copy()
+        self._last_commanded_pose = self._ik.forward_kinematics(commanded_positions)
+
         return JointCommandOutput(
             joint_names=self._joint_names_list,
             positions=q_solution.flatten().tolist(),
@@ -164,8 +181,11 @@ class EEFTwistTask(BaseControlTask):
             positions.append(pos)
         return np.array(positions, dtype=np.float64)
 
-    def _clear_locked(self) -> None:
+    def _clear_locked(self, *, clear_target: bool = False) -> None:
         self._latest_twist = None
+        if clear_target:
+            self._last_commanded_positions = None
+            self._last_commanded_pose = None
 
     def _integrate_twist(
         self, pose: pinocchio.SE3, twist: TwistStamped, dt: float

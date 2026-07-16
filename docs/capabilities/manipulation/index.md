@@ -14,12 +14,19 @@ Recent addition: the A-750 keyboard teleop blueprint is now available via:
 dimos run keyboard-teleop-a750
 ```
 
+The A1Z keyboard teleop simulation is available via:
+
+```bash
+dimos --simulation run keyboard-teleop-a1z
+```
+
 ### Keyboard Teleop (single command)
 
 Each blueprint launches the full stack — keyboard UI, mock controller, IK solver, and Drake visualization:
 
 ```bash
 dimos run keyboard-teleop-a750    # A-750 6-DOF
+dimos --simulation run keyboard-teleop-a1z # A1Z simulation
 dimos run keyboard-teleop-piper   # Piper 6-DOF
 dimos run keyboard-teleop-xarm6   # XArm6 6-DOF
 dimos run keyboard-teleop-xarm7   # XArm7 7-DOF
@@ -233,6 +240,7 @@ visualization backend.
 | Blueprint | Description |
 |-----------|-------------|
 | `keyboard-teleop-a750` | A750 6-DOF keyboard teleop with Drake viz |
+| `keyboard-teleop-a1z` | A1Z deterministic simulation keyboard teleop |
 | `keyboard-teleop-piper` | Piper 6-DOF keyboard teleop with Drake viz |
 | `keyboard-teleop-xarm6` | XArm6 6-DOF keyboard teleop with Drake viz |
 | `keyboard-teleop-xarm7` | XArm7 7-DOF keyboard teleop with Drake viz |
@@ -248,6 +256,7 @@ visualization backend.
 | Robot | DOF | Teleop | Planning | Perception |
 |-------|-----|--------|----------|------------|
 | [A-750](/docs/capabilities/manipulation/a750.md) | 6 | Y | Y | — |
+| [A1Z](/docs/capabilities/manipulation/a1z.md) | — | Simulation | — | Wrist camera |
 | Piper | 6 | Y | Y | — |
 | XArm6 | 6 | Y | Y | — |
 | XArm7 | 7 | Y | Y | Y |

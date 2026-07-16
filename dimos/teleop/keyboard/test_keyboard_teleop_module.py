@@ -19,10 +19,14 @@ from collections.abc import Iterator
 import pytest
 
 from dimos.msgs.geometry_msgs.TwistStamped import TwistStamped
+from dimos.msgs.sensor_msgs.JointState import JointState
 from dimos.robot.manipulators.common.topics import EEF_TWIST_TASK_NAME
 import dimos.teleop.keyboard.keyboard_teleop_module as keyboard_mod
 from dimos.teleop.keyboard.keyboard_teleop_module import (
     ANGULAR_SPEED,
+    GRIPPER_CLOSED_POSITION,
+    GRIPPER_JOINT_NAME,
+    GRIPPER_OPEN_POSITION,
     LINEAR_SPEED,
     KeyboardTeleopModule,
     _twist_from_keys,
@@ -85,3 +89,22 @@ def test_twist_from_keys_maps_rotation_keys_to_eef_angular_twist() -> None:
 
     assert linear == (0.0, 0.0, 0.0)
     assert angular == (ANGULAR_SPEED, -ANGULAR_SPEED, ANGULAR_SPEED)
+
+
+def test_set_gripper_position_publishes_partial_joint_state_only_on_change(
+    module: KeyboardTeleopModule, mocker
+) -> None:
+    publish = mocker.patch.object(module.joint_command, "publish")
+
+    module._set_gripper_position(GRIPPER_OPEN_POSITION)
+    module._set_gripper_position(GRIPPER_OPEN_POSITION)
+    module._set_gripper_position(GRIPPER_CLOSED_POSITION)
+
+    assert publish.call_count == 2
+    msg = publish.call_args_list[0].args[0]
+    assert isinstance(msg, JointState)
+    assert msg.name == [GRIPPER_JOINT_NAME]
+    assert msg.position == [GRIPPER_OPEN_POSITION]
+    assert msg.velocity == []
+    assert msg.effort == []
+    assert publish.call_args_list[1].args[0].position == [GRIPPER_CLOSED_POSITION]

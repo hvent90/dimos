@@ -93,5 +93,5 @@ def make_a1z_model_config(
         ),
         coordinator_task_name=coordinator_task_name or f"traj_{name}",
         gripper_hardware_id=name if has_gripper else None,
-        home_joints=home_joints or [0.0] * A1Z_DOF,
+        home_joints=list(home_joints) if home_joints is not None else [0.0] * A1Z_DOF,
     )

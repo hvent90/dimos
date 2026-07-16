@@ -30,7 +30,7 @@ import math
 from pathlib import Path
 import threading
 import time
-from typing import Any
+from typing import Any, Literal
 
 import mujoco
 import numpy as np
@@ -109,6 +109,9 @@ def _imu_from_mujoco_wxyz(
     )
 
 
+GripperControlMapping = Literal["inverted", "identity"]
+
+
 class _WholeBodySimHooks:
     """Per-step bridge between MuJoCo actuators and whole-body SHM."""
 
@@ -120,12 +123,14 @@ class _WholeBodySimHooks:
         gripper_idx: int | None = None,
         gripper_ctrl_range: tuple[float, float] = (0.0, 1.0),
         gripper_joint_range: tuple[float, float] = (0.0, 1.0),
+        gripper_control_mapping: GripperControlMapping = "inverted",
     ) -> None:
         self._shm = shm
         self._dof = dof
         self._gripper_idx = gripper_idx
         self._gripper_ctrl_range = gripper_ctrl_range
         self._gripper_joint_range = gripper_joint_range
+        self._gripper_control_mapping = gripper_control_mapping
         self._latest_pd_pos_target: NDArray[np.float64] | None = None
         self._latest_pd_kp: NDArray[np.float64] | None = None
         self._latest_pd_kd: NDArray[np.float64] | None = None
@@ -203,7 +208,11 @@ class _WholeBodySimHooks:
         if jhi == jlo:
             return clo
         t = (clamped - jlo) / (jhi - jlo)
-        return chi - t * (chi - clo)
+        if self._gripper_control_mapping == "inverted":
+            return chi - t * (chi - clo)
+        if self._gripper_control_mapping == "identity":
+            return clo + t * (chi - clo)
+        raise ValueError(f"Unsupported gripper control mapping: {self._gripper_control_mapping!r}")
 
 
 class MujocoSimModuleConfig(ModuleConfig, DepthCameraConfig):
@@ -227,6 +236,7 @@ class MujocoSimModuleConfig(ModuleConfig, DepthCameraConfig):
     reset_joint_positions: list[float] | None = None
     headless: bool = False
     dof: int = 7
+    gripper_control_mapping: GripperControlMapping = "inverted"
 
     # Camera config (matches former MujocoCameraConfig).
     camera_name: str = "wrist_camera"
@@ -317,6 +327,9 @@ class MujocoSimModule(
         self._gripper_joint_range: tuple[float, float] = (0.0, 1.0)
         self._stop_event = threading.Event()
         self._publish_thread: threading.Thread | None = None
+        self._lifecycle_lock = threading.Lock()
+        self._stop_finished = threading.Event()
+        self._stop_in_progress = False
         self._camera_info_base: CameraInfo | None = None
         self._shm_ready_signaled = False
 
@@ -369,6 +382,8 @@ class MujocoSimModule(
 
     @rpc
     def start(self) -> None:
+        with self._lifecycle_lock:
+            self._stop_finished.clear()
         if not self.config.address and not self.config.robot_mjcf:
             raise RuntimeError(
                 "MujocoSimModule: either config.address (legacy MJCF path) "
@@ -517,6 +532,7 @@ class MujocoSimModule(
             gripper_idx=self._gripper_idx,
             gripper_ctrl_range=self._gripper_ctrl_range,
             gripper_joint_range=self._gripper_joint_range,
+            gripper_control_mapping=self.config.gripper_control_mapping,
         )
         self._engine.set_step_hooks(
             before=self._sim_hooks.pre_step,
@@ -628,35 +644,74 @@ class MujocoSimModule(
 
     @rpc
     def stop(self) -> None:
-        self._stop_event.set()
-        if self._publish_thread and self._publish_thread.is_alive():
-            self._publish_thread.join(timeout=2.0)
-        self._publish_thread = None
+        with self._lifecycle_lock:
+            if self._stop_finished.is_set():
+                return
+            if self._stop_in_progress:
+                stop_finished = self._stop_finished
+                leader = False
+            else:
+                self._stop_in_progress = True
+                stop_finished = self._stop_finished
+                leader = True
 
+        if not leader:
+            stop_finished.wait(timeout=2.0)
+            return
+
+        deadline = time.monotonic() + 2.0
         errors: list[tuple[str, BaseException]] = []
-        if self._engine is not None:
-            try:
-                self._engine.disconnect()
-                self._engine = None
-            except Exception as exc:
-                logger.error("engine.disconnect() failed", error=str(exc))
-                errors.append(("engine.disconnect", exc))
-        if self._shm is not None:
-            try:
-                self._shm.signal_stop()
-                self._shm.cleanup()
-                self._shm = None
-            except Exception as exc:
-                logger.error("SHM cleanup failed", error=str(exc))
-                errors.append(("shm.cleanup", exc))
+        try:
+            # Signal both loops before waiting on either one.
+            self._stop_event.set()
+            engine = self._engine
+            if engine is not None:
+                engine.request_stop()
 
-        self._sim_hooks = None
-        self._camera_info_base = None
-        super().stop()
+            publish_thread = self._publish_thread
+            if publish_thread is not None and publish_thread.is_alive():
+                publish_thread.join(timeout=max(0.0, deadline - time.monotonic()))
+            publish_stopped = publish_thread is None or not publish_thread.is_alive()
+            if publish_stopped:
+                self._publish_thread = None
 
-        if errors:
-            op, err = errors[0]
-            raise RuntimeError(f"MujocoSimModule.stop() failed during {op}: {err}") from err
+            engine_stopped = True
+            if engine is not None:
+                try:
+                    engine_stopped = engine.disconnect(
+                        timeout=max(0.0, deadline - time.monotonic())
+                    )
+                    if engine_stopped:
+                        self._engine = None
+                except Exception as exc:
+                    logger.error("engine.disconnect() failed", error=str(exc))
+                    errors.append(("engine.disconnect", exc))
+                    engine_stopped = False
+
+            if publish_stopped and engine_stopped and self._shm is not None:
+                try:
+                    self._shm.signal_stop()
+                    self._shm.cleanup()
+                    self._shm = None
+                except Exception as exc:
+                    logger.error("SHM cleanup failed", error=str(exc))
+                    errors.append(("shm.cleanup", exc))
+
+            if not publish_stopped or not engine_stopped:
+                errors.append(("stop", RuntimeError("simulation threads did not stop before deadline")))
+            else:
+                self._sim_hooks = None
+                self._camera_info_base = None
+
+            super().stop()
+            if errors:
+                op, err = errors[0]
+                raise RuntimeError(f"MujocoSimModule.stop() failed during {op}: {err}") from err
+        finally:
+            with self._lifecycle_lock:
+                self._stop_in_progress = False
+                if not errors:
+                    self._stop_finished.set()
 
     @rpc
     def reset(self) -> bool:

@@ -24,6 +24,8 @@ Keyboard controls:
     R/F: +Roll/-Roll
     T/G: +Pitch/-Pitch
     Y/H: +Yaw/-Yaw
+    [: Open gripper
+    ]: Close gripper
     ESC: Quit
 """
 
@@ -46,6 +48,7 @@ from dimos.core.core import rpc
 from dimos.core.module import Module, ModuleConfig
 from dimos.core.stream import Out
 from dimos.msgs.geometry_msgs.TwistStamped import TwistStamped
+from dimos.msgs.sensor_msgs.JointState import JointState
 from dimos.robot.manipulators.common.topics import EEF_TWIST_TASK_NAME
 from dimos.utils.logging_config import setup_logger
 
@@ -57,6 +60,9 @@ os.environ["SDL_VIDEODRIVER"] = "x11"
 # Jog speeds
 LINEAR_SPEED = 0.05  # m/s
 ANGULAR_SPEED = 0.5  # rad/s
+GRIPPER_OPEN_POSITION = 0.015
+GRIPPER_CLOSED_POSITION = 0.0
+GRIPPER_JOINT_NAME = "arm/gripper"
 
 TwistVector = tuple[float, float, float]
 
@@ -74,13 +80,16 @@ class KeyboardTeleopModule(Module):
     config: KeyboardTeleopConfig
 
     coordinator_ee_twist_command: Out[TwistStamped]
+    joint_command: Out[JointState]
 
     _stop_event: threading.Event
     _thread: threading.Thread | None = None
+    _gripper_position: float | None = None
 
     def __init__(self, **kwargs: Any) -> None:
         super().__init__(**kwargs)
         self._stop_event = threading.Event()
+        self._gripper_position = None
 
     @rpc
     def start(self) -> None:
@@ -117,6 +126,10 @@ class KeyboardTeleopModule(Module):
                 elif event.type == pygame.KEYDOWN:
                     if event.key == pygame.K_ESCAPE:
                         self._stop_event.set()
+                    elif event.key == pygame.K_LEFTBRACKET:
+                        self._set_gripper_position(GRIPPER_OPEN_POSITION)
+                    elif event.key == pygame.K_RIGHTBRACKET:
+                        self._set_gripper_position(GRIPPER_CLOSED_POSITION)
 
             linear, angular = _twist_from_keys(pygame.key.get_pressed())
             linear_x, linear_y, linear_z = linear
@@ -156,6 +169,7 @@ class KeyboardTeleopModule(Module):
                 ("R/F", "+Roll/-Roll"),
                 ("T/G", "+Pitch/-Pitch"),
                 ("Y/H", "+Yaw/-Yaw"),
+                ("[/]", "Open/close gripper"),
                 ("ESC", "Quit"),
             ]
             for key, desc in controls:
@@ -177,6 +191,15 @@ class KeyboardTeleopModule(Module):
     ) -> None:
         self.coordinator_ee_twist_command.publish(
             TwistStamped(frame_id=task_name, linear=list(linear), angular=list(angular))
+        )
+
+    def _set_gripper_position(self, position: float) -> None:
+        """Latch and publish a changed gripper endpoint command."""
+        if self._gripper_position == position:
+            return
+        self._gripper_position = position
+        self.joint_command.publish(
+            JointState(name=[GRIPPER_JOINT_NAME], position=[position])
         )
 
 

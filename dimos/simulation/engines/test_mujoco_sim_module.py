@@ -25,7 +25,11 @@ import numpy as np
 import pytest
 
 from dimos.simulation.engines.mujoco_engine import MujocoEngine
-from dimos.simulation.engines.mujoco_sim_module import MujocoSimModule, MujocoSimModuleConfig
+from dimos.simulation.engines.mujoco_sim_module import (
+    MujocoSimModule,
+    MujocoSimModuleConfig,
+    _WholeBodySimHooks,
+)
 
 
 class _FakeData:
@@ -76,6 +80,151 @@ class _FakeSimHooks:
 
     def clear_latched_commands(self) -> None:
         self.cleared = True
+
+
+class _FakeThread:
+    def __init__(self, *, alive_after_join: bool = False, on_join: Any = None) -> None:
+        self.alive = True
+        self.alive_after_join = alive_after_join
+        self.on_join = on_join
+
+    def is_alive(self) -> bool:
+        return self.alive
+
+    def join(self, timeout: float | None = None) -> None:
+        del timeout
+        if self.on_join is not None:
+            self.on_join()
+        self.alive = self.alive_after_join
+
+
+def _bare_engine(thread: _FakeThread) -> MujocoEngine:
+    engine = object.__new__(MujocoEngine)
+    engine._lock = threading.Lock()
+    engine._connected = True
+    engine._stop_event = threading.Event()
+    engine._sim_thread = thread
+    return engine
+
+
+def test_engine_disconnect_requests_stop_before_waiting() -> None:
+    observed: list[str] = []
+    thread = _FakeThread(on_join=lambda: observed.append("join"))
+    engine = _bare_engine(thread)
+
+    assert engine.disconnect(timeout=1.0) is True
+    assert engine.connected is False
+    assert engine._stop_event.is_set()
+    assert observed == ["join"]
+
+
+def test_engine_disconnect_reports_timeout_and_keeps_live_thread() -> None:
+    thread = _FakeThread(alive_after_join=True)
+    engine = _bare_engine(thread)
+
+    assert engine.disconnect(timeout=0.0) is False
+    assert engine._sim_thread is thread
+    assert engine.connected is False
+
+
+def test_module_stop_concurrent_calls_cleanup_once_in_order(monkeypatch: pytest.MonkeyPatch) -> None:
+    entered_disconnect = threading.Event()
+    release_disconnect = threading.Event()
+    events: list[str] = []
+
+    class FakeEngine:
+        def request_stop(self) -> None:
+            events.append("engine.request_stop")
+
+        def disconnect(self, *, timeout: float | None) -> bool:
+            del timeout
+            events.append("engine.disconnect")
+            entered_disconnect.set()
+            release_disconnect.wait()
+            return True
+
+    class FakeShm:
+        def signal_stop(self) -> None:
+            events.append("shm.signal_stop")
+
+        def cleanup(self) -> None:
+            events.append("shm.cleanup")
+
+    module = object.__new__(MujocoSimModule)
+    module._lifecycle_lock = threading.Lock()
+    module._stop_finished = threading.Event()
+    module._stop_in_progress = False
+    module._stop_event = threading.Event()
+    module._publish_thread = None
+    module._engine = FakeEngine()
+    module._shm = FakeShm()
+    module._sim_hooks = object()
+    module._camera_info_base = object()
+    monkeypatch.setattr("dimos.core.module.Module.stop", lambda _: events.append("base.stop"))
+
+    first = threading.Thread(target=module.stop)
+    second = threading.Thread(target=module.stop)
+    first.start()
+    assert entered_disconnect.wait(timeout=1.0)
+    second.start()
+    release_disconnect.set()
+    first.join(timeout=1.0)
+    second.join(timeout=1.0)
+
+    assert events.count("shm.signal_stop") == 1
+    assert events.count("shm.cleanup") == 1
+    assert events.count("base.stop") == 1
+    assert events.index("engine.request_stop") < events.index("engine.disconnect")
+    assert events.index("engine.disconnect") < events.index("shm.signal_stop")
+
+
+def test_sim_loop_closes_renderers_when_initialization_fails() -> None:
+    module = object.__new__(MujocoEngine)
+    module._control_frequency = 100.0
+    module._stop_event = threading.Event()
+    module._lock = threading.Lock()
+    module._connected = True
+    module._headless = True
+    module._init_cameras = MagicMock(return_value={})
+    module._init_raycast_lidars = MagicMock(side_effect=RuntimeError("lidar failure"))
+    close_renderers = MagicMock()
+    module._close_cam_renderers = close_renderers
+
+    with pytest.raises(RuntimeError, match="lidar failure"):
+        module._sim_loop()
+
+    close_renderers.assert_called_once_with({})
+    assert module.connected is False
+
+
+def test_gripper_control_mapping_defaults_to_legacy_inversion() -> None:
+    hooks = _WholeBodySimHooks(
+        MagicMock(),
+        dof=1,
+        gripper_ctrl_range=(10.0, 20.0),
+        gripper_joint_range=(2.0, 6.0),
+    )
+
+    assert hooks._gripper_joint_to_ctrl(2.0) == pytest.approx(20.0)
+    assert hooks._gripper_joint_to_ctrl(6.0) == pytest.approx(10.0)
+
+
+def test_gripper_control_mapping_identity_preserves_range_direction() -> None:
+    hooks = _WholeBodySimHooks(
+        MagicMock(),
+        dof=1,
+        gripper_ctrl_range=(10.0, 20.0),
+        gripper_joint_range=(2.0, 6.0),
+        gripper_control_mapping="identity",
+    )
+
+    assert hooks._gripper_joint_to_ctrl(2.0) == pytest.approx(10.0)
+    assert hooks._gripper_joint_to_ctrl(6.0) == pytest.approx(20.0)
+
+
+def test_gripper_control_mapping_rejects_unsupported_config() -> None:
+    with pytest.raises(ValueError):
+        MujocoSimModuleConfig(gripper_control_mapping="unsupported")
 
 
 def test_ready_signal_happens_after_joint_state_and_imu_write() -> None:
