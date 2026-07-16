@@ -328,30 +328,7 @@ else:
     )
     # Same nav middle as unitree-g1-nav-simple, fed by Point-LIO from the
     # MID-360, executed through the coordinator's twist_command.
-    _nav_stack = autoconnect(
-        PointLio.blueprint(),
-        RayTracingVoxelMap.blueprint(
-            voxel_size=_G1_REAL_NAV_VOXEL_RESOLUTION,
-            emit_every=0,  # no local_map consumer here
-            global_emit_every=4,  # ~1 Hz global map; also paces the costmap
-            # Clearing matched to go2 nav_3d.
-            max_health=10,
-            graze_cos=0.85,
-        ),
-        CostMapper.blueprint(
-            config=HeightCostConfig(
-                resolution=_G1_REAL_NAV_VOXEL_RESOLUTION,
-                can_pass_under=G1.height_clearance + _G1_NAV_OVERHEAD_SAFETY_MARGIN,
-                can_climb=_G1_NAV_MAX_STEP_HEIGHT,
-            ),
-            initial_safe_radius_meters=G1.width_clearance + _G1_NAV_SAFE_RADIUS_MARGIN,
-        ),
-        ReplanningAStarPlanner.blueprint(
-            robot_width=G1.width_clearance,
-            robot_rotation_diameter=_G1_NAV_ROTATION_DIAMETER,
-        ),
-        MovementManager.blueprint(),
-    )
+    _nav_stack = MovementManager.blueprint()
     _remappings = [(ControlCoordinator, "twist_command", "cmd_vel")]
 
 
