@@ -14,6 +14,7 @@
 
 from __future__ import annotations
 
+import time
 from typing import TYPE_CHECKING, Any
 
 from dimos.core.global_config import global_config
@@ -51,8 +52,17 @@ class CoordinatorRPC:
         rpc = rpc_backend()()
         rpc.start()
         client = cls(rpc)
+        deadline = time.monotonic() + timeout
         try:
-            client.call("ping", rpc_timeout=timeout)
+            while True:
+                remaining = deadline - time.monotonic()
+                if remaining <= 0:
+                    raise TimeoutError
+                try:
+                    client.call("ping", rpc_timeout=min(0.5, remaining))
+                    break
+                except TimeoutError:
+                    pass
         except BaseException:
             rpc.stop()
             raise

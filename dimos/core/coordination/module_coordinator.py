@@ -675,6 +675,8 @@ def _coerce_transport_to_backend(transport: Transport[Any]) -> Transport[Any]:
     out and left untouched.
     """
     want = global_config.transport
+    if getattr(transport, "preserve_backend", False):
+        return transport
     is_pickled = type(transport) in (pLCMTransport, pZenohTransport)
     is_lcm = type(transport) in (LCMTransport, pLCMTransport)
     is_zenoh = type(transport) in (ZenohTransport, pZenohTransport)

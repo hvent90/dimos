@@ -28,7 +28,7 @@ Features:
 from dataclasses import dataclass, field
 import threading
 import time
-from typing import TYPE_CHECKING, Any
+from typing import TYPE_CHECKING, Any, Literal
 
 from dimos.control.components import (
     TWIST_SUFFIX_MAP,
@@ -58,6 +58,7 @@ from dimos.msgs.geometry_msgs.PoseStamped import PoseStamped
 from dimos.msgs.geometry_msgs.Twist import Twist
 from dimos.msgs.geometry_msgs.TwistStamped import TwistStamped
 from dimos.msgs.sensor_msgs.JointState import JointState
+from dimos.sim2.control.tick_source import SimTickSource
 from dimos.teleop.quest.quest_types import (
     Buttons,
 )
@@ -88,6 +89,8 @@ class ControlCoordinatorConfig(ModuleConfig):
     publish_joint_state: bool = True
     joint_state_frame_id: str = "coordinator"
     log_ticks: bool = False
+    clock: Literal["wall", "sim"] = "wall"
+    sim_id: str = "main"
     hardware: list[HardwareComponent] = field(default_factory=lambda: [])
     tasks: list[TaskConfig] = field(default_factory=lambda: [])
 
@@ -667,6 +670,21 @@ class ControlCoordinator(Module):
         publish_cb = (
             self.coordinator_joint_state.publish if self.config.publish_joint_state else None
         )
+        tick_source = None
+        if self.config.clock == "sim":
+            non_sim = [
+                component.hardware_id
+                for component in self.config.hardware
+                if component.adapter_type != "sim"
+                or component.adapter_kwargs.get("sim_id", self.config.sim_id) != self.config.sim_id
+            ]
+            if non_sim:
+                raise ValueError(
+                    "sim-clock ControlCoordinator requires every hardware component "
+                    f"to use sim_id='{self.config.sim_id}'; invalid={non_sim}"
+                )
+            tick_source = SimTickSource(self.config.sim_id)
+
         self._tick_loop = TickLoop(
             tick_rate=self.config.tick_rate,
             hardware=self._hardware,
@@ -677,6 +695,7 @@ class ControlCoordinator(Module):
             publish_callback=publish_cb,
             frame_id=self.config.joint_state_frame_id,
             log_ticks=self.config.log_ticks,
+            tick_source=tick_source,
         )
         self._tick_loop.start()
 

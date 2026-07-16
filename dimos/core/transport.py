@@ -138,8 +138,15 @@ class pLCMTransport(PubSubTransport[T]):
 class LCMTransport(PubSubTransport[T]):
     _started: bool = False
 
-    def __init__(self, topic: str, type: type, **kwargs) -> None:  # type: ignore[no-untyped-def]
+    def __init__(
+        self,
+        topic: str,
+        type: type,
+        preserve_backend: bool = False,
+        **kwargs: Any,
+    ) -> None:
         super().__init__(LCMTopic(topic, type))
+        self.preserve_backend = preserve_backend
         if not hasattr(self, "lcm"):
             self.lcm = LCM(**kwargs)
 
@@ -152,7 +159,10 @@ class LCMTransport(PubSubTransport[T]):
         self._started = False
 
     def __reduce__(self):  # type: ignore[no-untyped-def]
-        return (LCMTransport, (self.topic.topic, self.topic.lcm_type))
+        return (
+            LCMTransport,
+            (self.topic.topic, self.topic.lcm_type, self.preserve_backend),
+        )
 
     def broadcast(self, _, msg) -> None:  # type: ignore[no-untyped-def]
         if not self._started:

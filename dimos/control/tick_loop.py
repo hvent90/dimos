@@ -45,6 +45,7 @@ from dimos.utils.logging_config import setup_logger
 if TYPE_CHECKING:
     from collections.abc import Callable
 
+    from dimos.control.clock import TickSource
     from dimos.control.components import HardwareId, JointName, TaskName
     from dimos.control.hardware_interface import ConnectedHardware
     from dimos.hardware.manipulators.spec import ControlMode
@@ -97,6 +98,7 @@ class TickLoop:
         publish_callback: Callable[[JointState], None] | None = None,
         frame_id: str = "coordinator",
         log_ticks: bool = False,
+        tick_source: TickSource | None = None,
     ) -> None:
         self._tick_rate = tick_rate
         self._hardware = hardware
@@ -107,6 +109,7 @@ class TickLoop:
         self._publish_callback = publish_callback
         self._frame_id = frame_id
         self._log_ticks = log_ticks
+        self._tick_source = tick_source
 
         self._stop_event = threading.Event()
         self._stop_event.set()  # Initially stopped
@@ -134,6 +137,9 @@ class TickLoop:
         self._last_tick_time = time.perf_counter()
         self._tick_count = 0
 
+        if self._tick_source is not None:
+            self._tick_source.start()
+
         self._tick_thread = threading.Thread(
             target=self._loop,
             name="ControlCoordinator-Tick",
@@ -145,12 +151,17 @@ class TickLoop:
     def stop(self) -> None:
         """Stop the tick loop."""
         self._stop_event.set()
+        if self._tick_source is not None:
+            self._tick_source.stop()
         if self._tick_thread and self._tick_thread.is_alive():
             self._tick_thread.join(timeout=DEFAULT_THREAD_JOIN_TIMEOUT)
         logger.info("TickLoop stopped")
 
     def _loop(self) -> None:
         """Main control loop - deterministic read → compute → arbitrate → write."""
+        if self._tick_source is not None:
+            self._external_clock_loop()
+            return
         period = 1.0 / self._tick_rate
 
         while not self._stop_event.is_set():
@@ -167,16 +178,36 @@ class TickLoop:
             if sleep_time > 0:
                 time.sleep(sleep_time)
 
-    def _tick(self) -> None:
+    def _external_clock_loop(self) -> None:
+        assert self._tick_source is not None
+        while not self._stop_event.is_set():
+            tick = self._tick_source.wait_next(self._stop_event)
+            if tick is None:
+                return
+            try:
+                if tick.reset:
+                    self._reset_runtime_state()
+                self._tick(t_now=tick.t_now, dt=tick.dt)
+                self._tick_source.complete(tick)
+            except Exception as exc:
+                logger.error(f"TickLoop external tick error: {exc}")
+
+    def _tick(self, *, t_now: float | None = None, dt: float | None = None) -> None:
         """Single tick: read → compute → arbitrate → route → write."""
-        t_now = time.perf_counter()
-        dt = t_now - self._last_tick_time
-        self._last_tick_time = t_now
+        external_time = t_now is not None
+        resolved_now = time.perf_counter() if t_now is None else t_now
+        resolved_dt = resolved_now - self._last_tick_time if dt is None else dt
+        self._last_tick_time = resolved_now
         self._tick_count += 1
 
-        joint_states = self._read_all_hardware()
+        joint_states = self._read_all_hardware(timestamp=resolved_now if external_time else None)
         imu_states = self._read_all_imu()
-        state = CoordinatorState(joints=joint_states, imu=imu_states, t_now=t_now, dt=dt)
+        state = CoordinatorState(
+            joints=joint_states,
+            imu=imu_states,
+            t_now=resolved_now,
+            dt=resolved_dt,
+        )
 
         commands = self._compute_all_tasks(state)
 
@@ -195,12 +226,12 @@ class TickLoop:
         if self._log_ticks:
             active = len([c for c in commands if c[2] is not None])
             logger.debug(
-                f"Tick {self._tick_count}: dt={dt:.4f}s, "
+                f"Tick {self._tick_count}: dt={resolved_dt:.4f}s, "
                 f"{len(joint_states.joint_positions)} joints, "
                 f"{active} active tasks"
             )
 
-    def _read_all_hardware(self) -> JointStateSnapshot:
+    def _read_all_hardware(self, timestamp: float | None = None) -> JointStateSnapshot:
         """Read state from all hardware interfaces."""
         joint_positions: dict[str, float] = {}
         joint_velocities: dict[str, float] = {}
@@ -221,8 +252,16 @@ class TickLoop:
             joint_positions=joint_positions,
             joint_velocities=joint_velocities,
             joint_efforts=joint_efforts,
-            timestamp=time.time(),
+            timestamp=time.time() if timestamp is None else timestamp,
         )
+
+    def _reset_runtime_state(self) -> None:
+        with self._task_lock:
+            for task in self._tasks.values():
+                try:
+                    task.reset_runtime_state()
+                except Exception as exc:
+                    logger.error(f"Failed to reset task {task.name}: {exc}")
 
     def _read_all_imu(self) -> dict[str, IMUState]:
         """Poll IMU from every whole-body hardware in the pool.

@@ -248,6 +248,14 @@ def test_coerce_lcm_to_zenoh_typed(use_zenoh) -> None:
     assert t.topic.topic == "dimos/cmd_vel"
 
 
+def test_preserved_lcm_is_not_coerced_and_survives_pickle(use_zenoh) -> None:
+    original = LCMTransport("/native", Image, preserve_backend=True)
+    restored = pickle.loads(pickle.dumps(original))
+
+    assert restored.preserve_backend is True
+    assert _coerce_transport_to_backend(restored) is restored
+
+
 def test_coerce_pickled_lcm_to_zenoh(use_zenoh) -> None:
     t = _coerce_transport_to_backend(pLCMTransport("/human_input"))
     assert type(t) is pZenohTransport

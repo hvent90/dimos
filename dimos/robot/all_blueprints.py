@@ -105,6 +105,7 @@ all_blueprints = {
     "unitree-g1-coordinator": "dimos.robot.unitree.g1.blueprints.basic.unitree_g1_coordinator:unitree_g1_coordinator",
     "unitree-g1-detection": "dimos.robot.unitree.g1.blueprints.perceptive.unitree_g1_detection:unitree_g1_detection",
     "unitree-g1-full": "dimos.robot.unitree.g1.blueprints.agentic.unitree_g1_full:unitree_g1_full",
+    "unitree-g1-groot-sim2": "dimos.robot.unitree.g1.blueprints.basic.unitree_g1_groot_sim2:unitree_g1_groot_sim2",
     "unitree-g1-groot-wbc": "dimos.robot.unitree.g1.blueprints.basic.unitree_g1_groot_wbc:unitree_g1_groot_wbc",
     "unitree-g1-joystick": "dimos.robot.unitree.g1.blueprints.basic.unitree_g1_joystick:unitree_g1_joystick",
     "unitree-g1-nav-onboard": "dimos.robot.unitree.g1.blueprints.navigation.unitree_g1_nav_onboard:unitree_g1_nav_onboard",
@@ -132,6 +133,9 @@ all_blueprints = {
     "unitree-go2-relocalization": "dimos.robot.unitree.go2.blueprints.smart.unitree_go2:unitree_go2_relocalization",
     "unitree-go2-ros": "dimos.robot.unitree.go2.blueprints.smart.unitree_go2_ros:unitree_go2_ros",
     "unitree-go2-security": "dimos.robot.unitree.go2.blueprints.agentic.unitree_go2_security:unitree_go2_security",
+    "unitree-go2-sim2": "dimos.robot.unitree.go2.blueprints.basic.unitree_go2_sim2:unitree_go2_sim2",
+    "unitree-go2-sim2-lockstep": "dimos.robot.unitree.go2.blueprints.basic.unitree_go2_sim2:unitree_go2_sim2_lockstep",
+    "unitree-go2-sim2-nav": "dimos.robot.unitree.go2.blueprints.basic.unitree_go2_sim2:unitree_go2_sim2_nav",
     "unitree-go2-spatial": "dimos.robot.unitree.go2.blueprints.smart.unitree_go2_spatial:unitree_go2_spatial",
     "unitree-go2-temporal-memory": "dimos.robot.unitree.go2.blueprints.agentic.unitree_go2_temporal_memory:unitree_go2_temporal_memory",
     "unitree-go2-vlm-stream-test": "dimos.robot.unitree.go2.blueprints.smart.unitree_go2_vlm_stream_test:unitree_go2_vlm_stream_test",
@@ -146,6 +150,7 @@ all_blueprints = {
     "xarm6-worldbelief": "dimos.robot.manipulators.xarm.blueprints.worldbelief:xarm6_worldbelief",
     "xarm7-planner-coordinator": "dimos.robot.manipulators.xarm.blueprints.basic:xarm7_planner_coordinator",
     "xarm7-planner-coordinator-agent": "dimos.robot.manipulators.xarm.blueprints.agentic:xarm7_planner_coordinator_agent",
+    "xarm7-sim2": "dimos.robot.manipulators.xarm.blueprints.sim2:xarm7_sim2",
 }
 
 
@@ -255,8 +260,10 @@ all_modules = {
     "replanning-a-star-planner": "dimos.navigation.replanning_a_star.module.ReplanningAStarPlanner",
     "rerun-bridge-module": "dimos.visualization.rerun.bridge.RerunBridgeModule",
     "rerun-web-socket-server": "dimos.visualization.rerun.websocket_server.RerunWebSocketServer",
+    "scene-lidar-module": "dimos.simulation.sensors.scene_lidar.SceneLidarModule",
     "security-module": "dimos.experimental.security_demo.security_module.SecurityModule",
     "semantic-search": "dimos.memory2.module.SemanticSearch",
+    "sim-module": "dimos.sim2.module.SimModule",
     "simple-phone-teleop": "dimos.teleop.phone.phone_extensions.SimplePhoneTeleop",
     "simple-planner": "dimos.navigation.cmu_nav.modules.simple_planner.simple_planner.SimplePlanner",
     "spatial-memory": "dimos.perception.spatial_perception.SpatialMemory",

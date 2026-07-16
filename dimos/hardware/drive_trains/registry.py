@@ -34,7 +34,10 @@ class TwistBaseAdapterRegistry(LazyAdapterRegistry[TwistBaseAdapter]):
     """Registry for twist base adapters."""
 
     kind = "twist base adapter"
-    manifest_roots = (("dimos.hardware.drive_trains", 1),)
+    manifest_roots = (
+        ("dimos.hardware.drive_trains", 1),
+        ("dimos.sim2.control.adapters.twist_base", 0),
+    )
 
 
 twist_base_adapter_registry = TwistBaseAdapterRegistry()
