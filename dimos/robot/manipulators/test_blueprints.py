@@ -147,7 +147,11 @@ def test_shipped_eef_twist_blueprints_use_pink_with_named_models(
 
 
 def test_piper_pink_task_uses_xacro_and_gripper_base() -> None:
-    blueprints = (keyboard_teleop_piper, coordinator_cartesian_ik_mock, coordinator_cartesian_ik_piper)
+    blueprints = (
+        keyboard_teleop_piper,
+        coordinator_cartesian_ik_mock,
+        coordinator_cartesian_ik_piper,
+    )
     for blueprint in blueprints:
         task = next(
             task
