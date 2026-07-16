@@ -70,11 +70,28 @@ if ! $DOCKER ps -a --format '{{.Names}}' | grep -qx "$CONTAINER"; then
     echo "[run_r1lite] (needs ghcr access: gh auth token | docker login ghcr.io -u <user> --password-stdin)"
     # -v /dev/shm: same-host FastDDS uses shared memory — without it the
     # on-robot container sees topics but zero messages. Harmless on laptops.
+    #
+    # X11 (pygame keyboard teleop) needs all three of these:
+    #   -v /tmp/.X11-unix  the socket
+    #   -v ~/.Xauthority   the MIT-MAGIC-COOKIE-1 file
+    #   --hostname         THE SUBTLE ONE. X cookies are keyed by
+    #                      (hostname, display). With docker's default random
+    #                      hostname the mounted cookie is addressed to someone
+    #                      else, so the lookup misses, no credentials are sent,
+    #                      and the X server answers "Authorization required, but
+    #                      no authorization protocol specified" -> SDL reports
+    #                      the useless "x11 not available". Matching the host's
+    #                      hostname makes the cookie resolve.
+    # The touch pre-empts docker creating .Xauthority as a root-owned DIRECTORY
+    # on a headless box, which breaks X forwarding permanently.
+    touch "$HOME/.Xauthority" 2>/dev/null || true
     $DOCKER run -d --name "$CONTAINER" --network host \
+        --hostname "$(hostname)" \
         -v "$REPO_ROOT":/app \
         -v /dev/shm:/dev/shm \
         -v /tmp/.X11-unix:/tmp/.X11-unix \
-        -e PYTHONUNBUFFERED=1 -e PYTHONPATH=/app \
+        -v "$HOME/.Xauthority":/root/.Xauthority \
+        -e PYTHONUNBUFFERED=1 -e PYTHONPATH=/app -e DISPLAY="$DISPLAY" \
         -it "$IMAGE" /bin/bash >/dev/null
 fi
 $DOCKER start "$CONTAINER" >/dev/null 2>&1 || true

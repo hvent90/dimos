@@ -77,8 +77,12 @@ if ! $DOCKER ps -a --format '{{.Names}}' | grep -qx "$CONTAINER"; then
     # X11 mounts: allow ssh -X forwarded pygame teleop. The touch matters:
     # on a headless box with no ~/.Xauthority, docker would create the
     # mount source as a root-owned DIRECTORY, breaking ssh -X forever.
+    # --hostname: X cookies are keyed by (hostname, display). Without it the
+    # mounted .Xauthority is addressed to a different host, the lookup misses,
+    # and ssh -X teleop dies with "x11 not available".
     touch "$HOME/.Xauthority"
     $DOCKER run -d --name "$CONTAINER" --network host \
+        --hostname "$(hostname)" \
         -v "$DIMOS_DIR":/app \
         -v /dev/shm:/dev/shm \
         -v /tmp/.X11-unix:/tmp/.X11-unix \

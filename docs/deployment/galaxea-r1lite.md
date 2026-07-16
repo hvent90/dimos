@@ -331,6 +331,7 @@ clobber a robot's pinned version.
 | `RTNETLINK: Operation not permitted` | container has no `CAP_NET_ADMIN`; dimos' LCM configurator wants multicast on `lo` | apply on the **host**; does not persist across reboot |
 | rerun web hangs | `rr.serve_grpc()` GIL-spin in forkserver workers | viewer as its own container/process |
 | Arm commands silently overridden | factory GELLO teleop session holding the arms | `tmux kill-session -t r1lite_teleop` |
+| `pygame.error: x11 not available` + `Authorization required` | X cookies are keyed by **(hostname, display)**; mounting `~/.Xauthority` isn't enough if the container's hostname differs — the cookie is addressed to someone else | create with `--hostname "$(hostname)"`; or `xhost +local:` on the host |
 | `VIEWER=rerun-connect` fails at startup | viewer modes split; `GlobalConfig` is pydantic → validation error, not a warning | `VIEWER=rerun` + `RERUN_OPEN=none` |
 
 ---

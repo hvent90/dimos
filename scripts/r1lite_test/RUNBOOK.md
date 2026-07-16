@@ -12,7 +12,7 @@ Consoles: **[laptop]** = plain laptop shell · **[robot]** = `ssh r1lite` ·
 |---|---|---|
 | ghcr access (needs `read:packages`) | `gh auth refresh -h github.com -s read:packages` then `gh auth token \| docker login ghcr.io -u KrishnaH96 --password-stdin` | ✅ |
 | Pull ROS-track dev image (NOT `dev:latest` — that one has no ROS) | `docker pull ghcr.io/dimensionalos/ros-dev:dev` | ✅ |
-| Create container | `docker run -d --name dimos-dev-r1lite --network host -v /home/krishnah/krishnah/dimos:/app -v /tmp/.X11-unix:/tmp/.X11-unix -v $HOME/.Xauthority:/root/.Xauthority:rw -e PYTHONUNBUFFERED=1 -e PYTHONPATH=/app -e DISPLAY=$DISPLAY -it ghcr.io/dimensionalos/ros-dev:dev /bin/bash` | ✅ |
+| Create container (`--hostname` matters — see X11 note below) | `docker run -d --name dimos-dev-r1lite --network host --hostname "$(hostname)" -v /home/krishnah/krishnah/dimos:/app -v /dev/shm:/dev/shm -v /tmp/.X11-unix:/tmp/.X11-unix -v $HOME/.Xauthority:/root/.Xauthority:rw -e PYTHONUNBUFFERED=1 -e PYTHONPATH=/app -e DISPLAY=$DISPLAY -it ghcr.io/dimensionalos/ros-dev:dev /bin/bash` | ✅ |
 | Rebuild venv as py3.10 (Humble/rclpy) — in container | `cd /app && ln -sf .envrc.humble .envrc && rm -rf .venv && UV_PYTHON=3.10 uv sync --all-extras --no-extra dds --no-extra unitree-dds` | ✅ |
 | SSH alias + key | `~/.ssh/config` Host `r1lite` → `r1lite@192.168.1.85`; `ssh-copy-id r1lite` (password: `1`) | ✅ |
 | Persistent laptop IP (2026-07-03) | `nmcli connection modify lidar +ipv4.addresses 10.42.0.100/24` — "lidar" profile now carries 192.168.1.5 AND 10.42.0.100 on every link-up | ✅ |
@@ -38,6 +38,30 @@ Consoles: **[laptop]** = plain laptop shell · **[robot]** = `ssh r1lite` ·
    cd ~/dimos && ./scripts/r1lite_test/roslaunch.sh   # no-op if already up
    ```
    Shutdown: `./scripts/r1lite_test/roslaunch.sh stop`
+
+### X11 for pygame teleop — "x11 not available" (2026-07-16)
+
+Symptom, from `dimos run r1lite-keyboard-teleop` in the container:
+```
+Authorization required, but no authorization protocol specified
+pygame.error: x11 not available
+```
+The module deployed fine — this is X auth, not dimos.
+
+**Cause:** X `MIT-MAGIC-COOKIE-1` entries are keyed by **(hostname, display)**.
+Mounting `~/.Xauthority` is necessary but NOT sufficient: with docker's default
+hostname, the cookie inside is addressed to a different host, so the lookup
+misses and no credentials are sent. `xauth list` on the host shows the cookie
+filed under the laptop's hostname, not the container's.
+
+**Fix (durable):** create the container with `--hostname "$(hostname)"` so the
+cookie resolves. `run_r1lite.sh` and `r1lite_dimos_install.sh` now do this.
+
+**Fix (existing container, no recreate):** on the **[laptop]**:
+```bash
+xhost +local:        # host-based auth for local connections; xhost -local: to revert
+```
+Same trap applies to `ssh -X` teleop on the robot.
 
 ## Validated tests (all ✅, safe to recreate)
 
