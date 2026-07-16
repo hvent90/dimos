@@ -1599,7 +1599,7 @@ agents = [
     { name = "sounddevice" },
 ]
 all = [
-    { name = "a750-control", marker = "platform_machine == 'x86_64' and sys_platform == 'linux'" },
+    { name = "a750-control", marker = "python_full_version >= '3.12' and platform_machine == 'x86_64' and sys_platform == 'linux'" },
     { name = "aiortc" },
     { name = "chromadb" },
     { name = "coacd" },
@@ -1718,7 +1718,7 @@ learning = [
     { name = "pyarrow" },
 ]
 manipulation = [
-    { name = "a750-control", marker = "platform_machine == 'x86_64' and sys_platform == 'linux'" },
+    { name = "a750-control", marker = "python_full_version >= '3.12' and platform_machine == 'x86_64' and sys_platform == 'linux'" },
     { name = "drake", version = "1.45.0", source = { registry = "https://pypi.org/simple" }, marker = "platform_machine != 'aarch64' and sys_platform == 'darwin'" },
     { name = "drake", version = "1.49.0", source = { registry = "https://pypi.org/simple" }, marker = "platform_machine != 'aarch64' and sys_platform != 'darwin'" },
     { name = "matplotlib" },
@@ -2018,7 +2018,7 @@ tests-self-hosted = [
 
 [package.metadata]
 requires-dist = [
-    { name = "a750-control", marker = "platform_machine == 'x86_64' and sys_platform == 'linux' and extra == 'manipulation'" },
+    { name = "a750-control", marker = "python_full_version >= '3.12' and platform_machine == 'x86_64' and sys_platform == 'linux' and extra == 'manipulation'" },
     { name = "aiortc", marker = "extra == 'webrtc'", specifier = ">=1.14.0" },
     { name = "annotation-protocol", specifier = ">=1.4.0" },
     { name = "bleak", specifier = ">=3.0.2" },

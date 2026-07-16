@@ -272,7 +272,12 @@ manipulation = [
     "piper-sdk",
     "pyrealsense2-extended; sys_platform != 'darwin'",
     "xarm-python-sdk>=1.17.0",
-    "a750-control; sys_platform == 'linux' and platform_machine == 'x86_64'",
+    # a750-control ships cp312-only wheels, so it cannot install on the
+    # Python 3.10 floor this project declares (ROS 2 Humble needs cp310).
+    # Without this marker `uv sync --all-extras` hard-fails on 3.10 for
+    # every robot, not just the A750. Drop the marker if upstream ever
+    # publishes cp310 wheels.
+    "a750-control; sys_platform == 'linux' and platform_machine == 'x86_64' and python_version >= '3.12'",
 
     # Mesh conversion (STL/DAE → OBJ for Drake collision geometry)
     "trimesh",
