@@ -34,6 +34,7 @@ from typing import TYPE_CHECKING
 
 import numpy as np
 import rerun as rr
+import rerun.blueprint as rrb
 
 from dimos.navigation.nav_3d.evaluator.final_map import load_or_build_final_map
 from dimos.navigation.nav_3d.evaluator.recording import load_trajectory
@@ -152,6 +153,17 @@ def _log_path(entity: str, outcome: PlanOutcome, radius: float) -> None:
         )
 
 
+def _dataset_view(root: str, case_ids: list[str]) -> rrb.Spatial3DView:
+    """One view per dataset, planner graph edges hidden until toggled on."""
+    hidden = [f"{root}/planner_final/edges"]
+    hidden += [f"{root}/cases/{cid}/known/edges" for cid in case_ids]
+    return rrb.Spatial3DView(
+        origin=f"/{root}",
+        name=root,
+        overrides={path: rrb.EntityBehavior(visible=False) for path in hidden},
+    )
+
+
 def write_rrd(report: Report, suites: list[Suite], cfg: EvalConfig, out: Path) -> None:
     rr.init("nav3d_eval", recording_id="nav3d_eval")
     rr.save(str(out))
@@ -214,6 +226,9 @@ def write_rrd(report: Report, suites: list[Suite], cfg: EvalConfig, out: Path) -
                 _log_planner(f"{base}/known", case.online_artifacts, cfg)
             _log_path(f"{base}/online", case.online, radius=0.04)
             _log_path(f"{base}/final", case.final, radius=0.02)
+
+    views = [_dataset_view(d.dataset, [c.id for c in d.cases]) for d in report.datasets]
+    rr.send_blueprint(rrb.Blueprint(rrb.Tabs(*views) if len(views) > 1 else views[0]))
 
     print(f"wrote {out}")
     print(f"open with: rerun {out}")
