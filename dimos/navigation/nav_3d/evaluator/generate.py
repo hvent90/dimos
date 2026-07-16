@@ -301,17 +301,15 @@ def _to_case(cand: Candidate, n: int) -> Case:
         kind, tags = "down", ["auto", "stairs", "down"]
     else:
         kind, tags = "flat", ["auto", "flat"]
-    weight = 1.0
-    if kind != "flat":
-        weight = 2.0
-        if abs(cand.dz) >= LONG_STAIRS_DZ_M or cand.walked_m >= LONG_STAIRS_WALKED_M:
-            weight = 3.0
-            tags.append("long")
+    if kind != "flat" and (
+        abs(cand.dz) >= LONG_STAIRS_DZ_M or cand.walked_m >= LONG_STAIRS_WALKED_M
+    ):
+        tags.append("long")
     return Case(
         id=f"auto_{n:02d}_{kind}",
         start=cand.start,
         goal=cand.goal,
-        weight=weight,
+        weight=1.0,
         tags=tags,
     )
 

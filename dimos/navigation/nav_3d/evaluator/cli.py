@@ -100,6 +100,9 @@ def _print_report(report: Report) -> None:
             f"final {d.final_voxels} voxels, "
             f"map build {d.map_build_ms / 1000:.1f}s"
         )
+    print(f"\n{'by tag':<12} {'inc':>5} {'fin':>5} {'n':>4}")
+    for tag, s in report.by_tag.items():
+        print(f"{tag:<12} {s.inc_score:>5.2f} {s.fin_score:>5.2f} {s.n:>4}")
     print(
         f"\nscore {report.score:.3f} | soft {report.score_soft:.3f} | "
         f"final {report.final_score:.3f} | "
@@ -117,6 +120,9 @@ def run(
         None, help="Suite YAMLs; defaults to every manifest under cases/"
     ),
     dataset: str = typer.Option(None, "--dataset", help="Only run suites for this dataset"),
+    tag: list[str] = typer.Option(
+        None, "--tag", help="Only run cases carrying every given tag, e.g. --tag stairs --tag up"
+    ),
     json_out: Path = typer.Option(None, "--json", help="Write the full report as JSON"),
     rrd_out: Path = typer.Option(None, "--rrd", help="Write a rerun recording of every case"),
     workers: int = typer.Option(
@@ -138,6 +144,13 @@ def run(
         ]
         if not suites:
             raise typer.BadParameter(f"no suite for dataset {dataset!r}")
+    if tag:
+        wanted_tags = set(tag)
+        for s in suites:
+            s.cases = [c for c in s.cases if wanted_tags <= set(c.tags)]
+        suites = [s for s in suites if s.cases]
+        if not suites:
+            raise typer.BadParameter(f"no cases carry all tags {tag}")
     cfg = _apply_overrides(EvalConfig(), set_ or [])
     report = evaluate(suites, cfg, workers=workers)
     _print_report(report)
@@ -292,7 +305,7 @@ def add_case(
     goal: tuple[float, float, float] = typer.Option(..., "--goal", help="Foot-level xyz"),
     case_id: str = typer.Option(None, "--id", help="Case id; default manual_<n> or neg_<n>"),
     tags: str = typer.Option(None, "--tags", help="Comma-separated tags"),
-    weight: float = typer.Option(2.0, "--weight"),
+    weight: float = typer.Option(1.0, "--weight"),
     snap_max: float = typer.Option(1.0, "--snap-max", help="Max snap distance to surface (m)"),
     expect_fail: bool = typer.Option(
         False, "--expect-fail", help="Certified-infeasible pair; the planner must refuse"
@@ -321,7 +334,7 @@ def pick_case(
     expect_fail: bool = typer.Option(
         False, "--expect-fail", help="Picked pairs are certified infeasible; planner must refuse"
     ),
-    weight: float = typer.Option(2.0, "--weight"),
+    weight: float = typer.Option(1.0, "--weight"),
     snap_max: float = typer.Option(1.0, "--snap-max", help="Max snap distance to surface (m)"),
 ) -> None:
     """Pick cases by clicking the map: shift+click start then goal, repeat, then close.

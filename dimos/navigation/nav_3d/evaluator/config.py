@@ -40,7 +40,7 @@ class EvalConfig:
 
     robot_height: float = 0.3
     max_overhead_m: float = 2.0
-    surface_closing_radius: float = 0.3
+    surface_closing_radius: float = 0.4
     node_spacing_m: float = 1.0
     wall_clearance_m: float = 0.1
     wall_buffer_m: float = 0.75

@@ -136,6 +136,17 @@ class DatasetResult:
 
 
 @dataclass
+class TagStats:
+    """Aggregate scores over every case carrying a given tag."""
+
+    n: int
+    inc_score: float
+    fin_score: float
+    inc_success: int
+    fin_success: int
+
+
+@dataclass
 class Report:
     score: float
     score_soft: float
@@ -146,6 +157,9 @@ class Report:
     # The incremental and final runs are independent tests per case; these
     # count the four pass/fail combinations.
     outcome_counts: dict[str, int]
+    # Score sliced by case tag (stairs, flat, up, down, ...), so a config's
+    # effect on each terrain class is visible next to the aggregate.
+    by_tag: dict[str, TagStats]
     plan_ms: dict[str, float]
     map_update_ms: dict[str, float]
     datasets: list[DatasetResult]
@@ -456,6 +470,18 @@ def evaluate(suites: list[Suite], cfg: EvalConfig | None = None, workers: int = 
         }[(c.online.success, c.final.success)]
         outcome_counts[key] += 1
 
+    by_tag: dict[str, TagStats] = {}
+    for tag in sorted({t for c in cases for t in c.tags}):
+        tc = [c for c in cases if tag in c.tags]
+        w = np.array([c.weight for c in tc])
+        by_tag[tag] = TagStats(
+            n=len(tc),
+            inc_score=float(np.average([c.online.spl for c in tc], weights=w)),
+            fin_score=float(np.average([c.final.spl for c in tc], weights=w)),
+            inc_success=sum(c.online.success for c in tc),
+            fin_success=sum(c.final.success for c in tc),
+        )
+
     return Report(
         score=float(np.average(online_spl, weights=weights)),
         score_soft=float(np.average(soft, weights=weights)),
@@ -464,6 +490,7 @@ def evaluate(suites: list[Suite], cfg: EvalConfig | None = None, workers: int = 
         n_success=sum(c.online.success for c in cases),
         n_success_final=sum(c.final.success for c in cases),
         outcome_counts=outcome_counts,
+        by_tag=by_tag,
         plan_ms=metrics.timing_stats([c.online.plan_ms for c in cases]),
         map_update_ms=metrics.timing_stats([c.map_update_ms for c in cases]),
         datasets=datasets,
