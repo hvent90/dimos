@@ -113,8 +113,17 @@ else
     echo "[run_r1lite] rerun viewer already up on :9877"
 fi
 
+# On the robot, the container is a same-host DDS peer of the Galaxea stack.
+# FastDDS would deliver via shared memory, but the container runs as root and
+# the vendor stack as uid 1000, which cannot write into root-owned /dev/shm
+# reader segments: topics discover fine, zero messages arrive. UDP-only sidesteps
+# the uid mismatch entirely. See fastdds_udp_only.xml + BRINGUP_LOG 2026-07-17.
+DDS_PROFILE=""
+[ "$ON_ROBOT" = "1" ] && DDS_PROFILE="/app/scripts/r1lite_test/fastdds_udp_only.xml"
+
 echo "[run_r1lite] launching $BLUEPRINT in container (Ctrl-C stops it)"
-exec $DOCKER exec -it -e DISPLAY="$DISPLAY" "$CONTAINER" bash -c "
+exec $DOCKER exec -it -e DISPLAY="$DISPLAY" \
+    -e FASTRTPS_DEFAULT_PROFILES_FILE="$DDS_PROFILE" "$CONTAINER" bash -c "
     cd /app &&
     source .venv/bin/activate &&
     source /opt/ros/humble/setup.bash &&

@@ -118,7 +118,8 @@ from dimos.robot.galaxea.r1lite.connection import R1LiteConnection
 R1LiteConnection.blueprint()
 print(\"    imports + blueprint: OK\")"'
 echo "    DDS cross-boundary check (needs the Galaxea stack running — ./scripts/r1lite_test/roslaunch.sh):"
-$DOCKER exec "$CONTAINER" bash -c 'cd /app && source .venv/bin/activate && source /opt/ros/humble/setup.bash && export ROS_DOMAIN_ID=2 && timeout 15 python - <<PYEOF
+$DOCKER exec -e FASTRTPS_DEFAULT_PROFILES_FILE=/app/scripts/r1lite_test/fastdds_udp_only.xml \
+    "$CONTAINER" bash -c 'cd /app && source .venv/bin/activate && source /opt/ros/humble/setup.bash && export ROS_DOMAIN_ID=2 && timeout 15 python - <<PYEOF
 import time, rclpy
 from rclpy.qos import QoSProfile, ReliabilityPolicy
 from sensor_msgs.msg import JointState
