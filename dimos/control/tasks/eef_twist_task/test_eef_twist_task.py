@@ -21,6 +21,9 @@ from numpy.typing import NDArray
 import pytest
 
 from dimos.control.task import ControlMode, CoordinatorState, JointStateSnapshot
+from dimos.control.tasks.cartesian_ik_task.pink_control_ik import (
+    ControlIKResult,
+)
 from dimos.control.tasks.eef_twist_task.eef_twist_task import EEFTwistTask, EEFTwistTaskConfig
 from dimos.msgs.geometry_msgs.TwistStamped import TwistStamped
 
@@ -39,26 +42,29 @@ class FakeIK:
         self.nq = 3
         self.fk_calls: list[np.ndarray] = []
         self.solve_calls: list[FakePose] = []
+        self.dt_calls: list[float] = []
         self.solution = np.array([0.01, 0.02, 0.03], dtype=np.float64)
         self.converged = True
         self.final_error = 0.0
+        self.raise_runtime = False
 
     def forward_kinematics(self, q_current: NDArray[np.float64]) -> FakePose:
         self.fk_calls.append(q_current.copy())
         return FakePose(q_current.copy(), np.eye(3, dtype=np.float64))
 
-    def solve(
-        self, pose: FakePose, q_current: NDArray[np.float64]
-    ) -> tuple[NDArray[np.float64], bool, float]:
+    def solve(self, pose: FakePose, q_current: NDArray[np.float64], dt: float) -> ControlIKResult:
+        if self.raise_runtime:
+            raise RuntimeError("synthetic solver failure")
         self.solve_calls.append(pose.copy())
-        return self.solution.copy(), self.converged, self.final_error
+        self.dt_calls.append(dt)
+        return ControlIKResult(self.solution.copy(), self.solution - q_current)
 
 
 @pytest.fixture
 def fake_ik(mocker) -> FakeIK:
     ik = FakeIK()
     mocker.patch(
-        "dimos.control.tasks.eef_twist_task.eef_twist_task.PinocchioIK.from_model_path",
+        "dimos.control.tasks.cartesian_ik_task.cartesian_ik_task.PinkControlIK",
         return_value=ik,
     )
     return ik
@@ -110,6 +116,29 @@ def test_first_nonzero_command_activates_seeds_from_fk_and_outputs_servo_positio
     assert fake_ik.solve_calls[0].translation[0] > 0.0
 
 
+def test_twist_task_rejects_cartesian_commands_and_holds_on_runtime_failure(
+    task: EEFTwistTask, fake_ik: FakeIK
+) -> None:
+    assert not task.on_cartesian_command(object(), t_now=1.0)
+    assert task.on_ee_twist_command(_twist(), t_now=1.0)
+    fake_ik.raise_runtime = True
+    hold = task.compute(_state(1.01))
+    assert hold is not None
+    assert hold.mode == ControlMode.SERVO_POSITION
+    assert hold.positions == [0.0, 0.0, 0.0]
+
+
+def test_expected_runtime_twist_error_is_a_bounded_hold(
+    task: EEFTwistTask, fake_ik: FakeIK
+) -> None:
+    assert task.on_ee_twist_command(_twist(), t_now=1.0)
+    fake_ik.raise_runtime = True
+    hold = task.compute(_state(1.01))
+    assert hold is not None
+    assert hold.mode == ControlMode.SERVO_POSITION
+    assert hold.positions == [0.0, 0.0, 0.0]
+
+
 def test_integration_uses_current_fk_and_coordinator_dt(
     task: EEFTwistTask, fake_ik: FakeIK
 ) -> None:
@@ -143,7 +172,9 @@ def test_non_finite_ik_solution_is_rejected(task: EEFTwistTask, fake_ik: FakeIK)
     assert task.on_ee_twist_command(_twist(), t_now=1.0)
     output = task.compute(_state(1.01))
 
-    assert output is None
+    assert output is not None
+    assert output.mode == ControlMode.SERVO_POSITION
+    assert output.positions == [0.0, 0.0, 0.0]
 
 
 def test_non_finite_twist_is_rejected_without_activating_task(task: EEFTwistTask) -> None:
@@ -166,13 +197,15 @@ def test_missing_joint_state_skips_fk_and_ik(task: EEFTwistTask, fake_ik: FakeIK
     assert fake_ik.solve_calls == []
 
 
-def test_joint_delta_rejection_returns_none(task: EEFTwistTask, fake_ik: FakeIK) -> None:
+def test_joint_delta_rejection_returns_a_hold(task: EEFTwistTask, fake_ik: FakeIK) -> None:
     assert task.on_ee_twist_command(_twist(), t_now=1.0)
     fake_ik.solution = np.array([10.0, 0.0, 0.0], dtype=np.float64)
 
     rejected = task.compute(_state(1.01))
 
-    assert rejected is None
+    assert rejected is not None
+    assert rejected.mode == ControlMode.SERVO_POSITION
+    assert rejected.positions == [0.0, 0.0, 0.0]
 
 
 def test_timeout_and_zero_command_clear_then_next_nonzero_reseeds(

@@ -569,6 +569,75 @@ yourarm_planner = manipulation_module(
 | `coordinator_task_name` | Must match the `TaskConfig.name` in your coordinator blueprint |
 | `collision_exclusion_pairs` | List of `(link_a, link_b)` tuples for links that may legitimately touch (e.g., gripper fingers) |
 
+### 4d. Configure Cartesian and EEF-twist control IK
+
+Pink is the default backend for Cartesian and EEF-twist control. The legacy
+Pinocchio backend is available only through an explicit
+`backend="pinocchio"` setting. Pink control and manipulation planning are
+separate: planning uses `WorldSpec` and its selected planning backend, while
+control performs one local differential-IK step and does not use `WorldSpec` as
+a control input.
+
+Use the same `RobotModelConfig` for the control model and planning robot
+metadata. Its `model_path` points to the direct URDF or Xacro, `package_paths`
+and `xacro_args` describe model preparation, `end_effector_link` names the EEF
+frame, and `joint_name_mapping` maps coordinator joints to URDF joints. Pink
+validates the prepared model, named frame, and exact ordered joint mapping at
+startup.
+
+The common helper passes that typed configuration to Pink:
+
+```python skip
+from dimos.control.tasks.cartesian_ik_task.pink_control_ik import PinkControlIKConfig
+from dimos.robot.manipulators.common.blueprints import cartesian_ik_task, eef_twist_task
+
+control_ik = PinkControlIKConfig(robot_model=robot_model)
+
+cartesian_task = cartesian_ik_task(
+    hardware,
+    model_path=robot_model.model_path,
+    robot_model=robot_model,
+    control_ik=control_ik,
+)
+twist_task = eef_twist_task(
+    hardware,
+    model_path=robot_model.model_path,
+    robot_model=robot_model,
+    control_ik=control_ik,
+)
+```
+
+Do not provide `ee_joint_id` for Pink tasks. To retain the legacy path during
+migration, select it explicitly and provide its numeric EEF ID:
+
+```python skip
+legacy_control_ik = PinkControlIKConfig(backend="pinocchio")
+legacy_task = cartesian_ik_task(
+    hardware,
+    model_path=legacy_model_path,
+    ee_joint_id=6,
+    control_ik=legacy_control_ik,
+)
+```
+
+At every coordinator tick, Pink re-anchors to measured joints, derives the EEF
+target from measured FK for twist input, clamps `dt`, updates one `FrameTask`,
+integrates one step, and applies position and velocity limits. The shared task
+pipeline validates finite bounded output and uses a safe hold for expected
+runtime solve errors. Invalid models, frames, mappings, or model-preparation
+inputs fail startup; Pink is never silently replaced by Pinocchio.
+
+Piper follows the same path as other arms. Its Cartesian and EEF-twist tasks use
+the matching existing Xacro/URDF model, `make_piper_model_config()`, and the
+named `gripper_base` frame. They do not use the previous MJCF model or numeric
+EEF ID on the Pink path.
+
+Before hardware, validate the configuration in simulation or replay at the
+coordinator rate. Benchmark end-to-end latency, exercise Cartesian and twist
+commands, verify startup diagnostics and runtime safe holds, and confirm
+emergency-stop readiness. Hardware validation is future work and must be
+supervised and low speed; this guide does not claim that it has occurred.
+
 ## Step 5: Register Blueprints
 
 The blueprint registry in `dimos/robot/all_blueprints.py` is **auto-generated** by scanning the codebase for blueprint declarations. After adding your blueprints:

@@ -568,6 +568,8 @@ module = [
     "nav_msgs.*",
     "open_clip",
     "pinocchio",
+    "pink",
+    "pink.*",
     "piper_sdk.*",
     "plotext",
     "plum.*",

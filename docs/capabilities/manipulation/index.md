@@ -118,6 +118,65 @@ request. For example, `planner_name=roboplan` requires
 `world_backend=roboplan`, and `kinematics.backend=drake_optimization` requires
 `world_backend=drake`.
 
+### Cartesian control IK
+
+Cartesian and keyboard EEF-twist tasks use generic Pink control IK by default.
+Select the legacy Pinocchio backend only explicitly with
+`backend="pinocchio"`; a failed Pink setup does not silently select Pinocchio.
+
+Pink control uses the direct URDF/Xacro model from `RobotModelConfig`. Package
+paths and Xacro arguments are prepared before startup. The configuration names
+the end-effector frame and maps coordinator joints to model joints; missing
+frames, mismatched mappings, or an invalid prepared model fail initialization.
+
+Each control tick starts from measured joints, clamps `dt`, updates one Pink
+`FrameTask`, solves and integrates one local differential-IK step, and applies
+position and velocity limits. Non-finite or unsafe output is rejected. Expected
+runtime solve errors produce a bounded safe hold instead of an invalid command.
+
+The control backend is separate from manipulation planning. It does not use
+`WorldSpec` to control the robot and makes no planning-world or dynamic-obstacle
+avoidance claim. `WorldSpec` and its Pink/Drake backends remain responsible for
+planning behavior.
+
+For a custom robot, the current helper API passes the typed model configuration
+to Pink without a numeric EEF ID:
+
+```python skip
+from dimos.control.tasks.cartesian_ik_task.pink_control_ik import PinkControlIKConfig
+from dimos.robot.manipulators.common.blueprints import cartesian_ik_task
+
+control_ik = PinkControlIKConfig(robot_model=robot_model)
+task = cartesian_ik_task(
+    hardware,
+    model_path=robot_model.model_path,
+    robot_model=robot_model,
+    control_ik=control_ik,
+)
+```
+
+The compatibility path remains explicit and uses the legacy numeric EEF ID:
+
+```python skip
+legacy_task = cartesian_ik_task(
+    hardware,
+    model_path=legacy_model_path,
+    ee_joint_id=6,
+    control_ik=PinkControlIKConfig(backend="pinocchio"),
+)
+```
+
+Piper's Cartesian and EEF-twist blueprints use the matching Xacro/URDF
+`PIPER_MODEL_PATH`, `make_piper_model_config()`, and named `gripper_base` frame.
+Piper's Pink configuration does not use its previous MJCF model or numeric EEF
+ID.
+
+Validate a rollout in simulation or replay first: exercise Cartesian and twist
+commands at the coordinator rate, benchmark end-to-end control latency, verify
+model/frame diagnostics and safe holds, and confirm emergency-stop readiness.
+Hardware validation remains future work and must be supervised and low speed;
+no hardware validation is claimed here.
+
 Install the manipulation dependencies:
 
 ```bash
@@ -214,7 +273,7 @@ KeyboardTeleopModule ──→ ControlCoordinator ──→ ManipulationModule
   (pygame UI)              (100Hz tick loop)      (WorldSpec backend)
        │                        │                       │
   TwistStamped           EEFTwistTask             RRT planner
-  spatial EEF twist      (Pinocchio FK/IK)        JacobianIK
+  spatial EEF twist      (Pink control IK)        JacobianIK
                                │                   DrakeWorld
                           JointState ────────────→ (visualization)
 ```
