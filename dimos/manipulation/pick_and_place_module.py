@@ -244,8 +244,7 @@ class PickAndPlaceModule(ManipulationModule):
         if self._scene_reconciliation_error is None:
             return False
         self._error_message = (
-            "Scene reconciliation required before planning: "
-            f"{self._scene_reconciliation_error}"
+            f"Scene reconciliation required before planning: {self._scene_reconciliation_error}"
         )
         return True
 
@@ -306,8 +305,7 @@ class PickAndPlaceModule(ManipulationModule):
             if restoration_error is not None:
                 return SkillResult.fail(
                     "GRIPPER_FAILED",
-                    "Cannot reset until target obstacle is restored: "
-                    f"{restoration_error}",
+                    f"Cannot reset until target obstacle is restored: {restoration_error}",
                 )
         return super().reset()
 
@@ -693,9 +691,7 @@ class PickAndPlaceModule(ManipulationModule):
                 )
             exec_result = self._preview_execute_wait(rname)
             if not exec_result.is_success():
-                return self._fail_after_target_exclusion(
-                    "EXECUTION_FAILED", exec_result.message
-                )
+                return self._fail_after_target_exclusion("EXECUTION_FAILED", exec_result.message)
 
             # 6. Close gripper
             logger.info("Closing gripper...")
