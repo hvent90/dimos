@@ -24,7 +24,7 @@ from unittest.mock import MagicMock
 import numpy as np
 import pytest
 
-from dimos.simulation.engines.mujoco_engine import MujocoEngine
+from dimos.simulation.engines.mujoco_engine import CameraFrame, MujocoEngine
 from dimos.simulation.engines.mujoco_sim_module import MujocoSimModule, MujocoSimModuleConfig
 
 
@@ -109,6 +109,47 @@ def test_ready_signal_happens_after_joint_state_and_imu_write() -> None:
     module._publish_shm_and_lcm(_FakeEngine)
 
     assert events == ["joint_state", "imu", "ready"]
+
+
+def test_camera_tf_is_published_relative_to_configured_base_frame() -> None:
+    module = object.__new__(MujocoSimModule)
+    module.config = MujocoSimModuleConfig(base_frame_id="link7")
+
+    class _FakeEngine:
+        def get_body_pose(self, body_name: str) -> tuple[np.ndarray, np.ndarray]:
+            raise AssertionError("TF publication must use the frame snapshot")
+
+    class _FakeTf:
+        transforms: tuple[Any, ...] = ()
+
+        def publish(self, *transforms: Any) -> None:
+            self.transforms = transforms
+
+    fake_tf = _FakeTf()
+    module._engine = _FakeEngine()
+    module._tf = fake_tf
+    frame = CameraFrame(
+        rgb=np.zeros((1, 1, 3), dtype=np.uint8),
+        depth=np.ones((1, 1), dtype=np.float32),
+        cam_pos=np.array([1.0, 2.0, 3.0]),
+        cam_mat=np.eye(3),
+        fovy=60.0,
+        timestamp=1.0,
+        base_pos=np.array([1.0, 2.0, 2.0]),
+        base_mat=np.eye(3),
+    )
+
+    module._publish_tf(10.0, frame)
+
+    color_tf, depth_tf, camera_link_tf = fake_tf.transforms
+    assert color_tf.frame_id == "link7"
+    assert color_tf.child_frame_id == "wrist_camera_color_optical_frame"
+    assert np.allclose(color_tf.translation.to_numpy(), [0.0, 0.0, 1.0])
+    assert depth_tf.frame_id == "link7"
+    assert depth_tf.child_frame_id == "wrist_camera_depth_optical_frame"
+    assert camera_link_tf.frame_id == "link7"
+    assert camera_link_tf.child_frame_id == "wrist_camera_link"
+    assert np.allclose(camera_link_tf.translation.to_numpy(), [0.0, 0.0, 1.0])
 
 
 def test_reset_requests_engine_reset_and_clears_latched_commands() -> None:

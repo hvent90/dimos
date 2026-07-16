@@ -20,7 +20,7 @@ import threading
 from unittest.mock import MagicMock
 
 from dimos.agents.capabilities import CapabilityRegistry
-from dimos.agents.mcp.mcp_server import app, handle_request
+from dimos.agents.mcp.mcp_server import McpServer, app, handle_request
 from dimos.core.module import SkillInfo
 
 
@@ -37,6 +37,11 @@ def _make_rpc_calls(
             mock_call.return_value = None
         rpc_calls[skill.func_name] = mock_call
     return rpc_calls
+
+
+def test_mcp_server_uses_a_dedicated_worker() -> None:
+    """Keep the HTTP listener responsive beside CPU-bound robot modules."""
+    assert McpServer.dedicated_worker is True
 
 
 def test_mcp_module_request_flow() -> None:
