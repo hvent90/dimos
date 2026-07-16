@@ -47,12 +47,22 @@ def goal_reached(
     return bool(np.linalg.norm(waypoints[-1] - np.asarray(goal, dtype=np.float32)) <= tolerance)
 
 
+# Clearance margins are only measured out to this horizontal distance from
+# the body surface; anything farther reports the cap.
+MARGIN_CAP_M = 0.3
+
+
 @dataclass
 class GateResult:
-    """Collision check of a path against the final obstacle set."""
+    """Collision check of a path against an obstacle key set."""
 
     valid: bool
     collision_points: NDArray[np.float32]
+    # Horizontal distance from the body surface to the nearest obstacle in
+    # the gate's z band, minimized along the path. Negative is penetration
+    # depth; capped at MARGIN_CAP_M when nothing is near. Gives a smooth
+    # how-close-to-flipping signal next to the binary verdict.
+    min_clearance_m: float
 
 
 def check_path(
@@ -63,7 +73,7 @@ def check_path(
     ground_margin: float,
     body_clearance: float,
 ) -> GateResult:
-    """Sweep the robot body along foot-level waypoints against final obstacles.
+    """Sweep the robot body along foot-level waypoints against obstacles.
 
     The checked volume at each sample is a cylinder from ground_margin above
     the foot (so the supporting floor never counts) up to body_clearance.
@@ -73,7 +83,7 @@ def check_path(
     """
     samples = densify(waypoints, voxel_size / 2)
     offsets = cylinder_offsets(
-        robot_radius + voxel_size,
+        robot_radius + MARGIN_CAP_M + voxel_size,
         ground_margin - voxel_size,
         body_clearance + voxel_size,
         voxel_size,
@@ -82,15 +92,90 @@ def check_path(
     candidate = keys_contain(obstacle_keys, keys.ravel()).reshape(keys.shape)
     s_idx, o_idx = np.nonzero(candidate)
     if len(s_idx) == 0:
-        return GateResult(valid=True, collision_points=samples[:0])
+        return GateResult(valid=True, collision_points=samples[:0], min_clearance_m=MARGIN_CAP_M)
     delta = key_centers(keys[s_idx, o_idx], voxel_size) - samples[s_idx]
-    exact = (
-        (np.linalg.norm(delta[:, :2], axis=1) <= robot_radius)
-        & (delta[:, 2] >= ground_margin)
-        & (delta[:, 2] <= body_clearance)
-    )
+    hd = np.linalg.norm(delta[:, :2], axis=1)
+    in_band = (delta[:, 2] >= ground_margin) & (delta[:, 2] <= body_clearance)
+    exact = in_band & (hd <= robot_radius)
+    clearance = float(hd[in_band].min() - robot_radius) if in_band.any() else MARGIN_CAP_M
     colliding = np.unique(s_idx[exact])
-    return GateResult(valid=len(colliding) == 0, collision_points=samples[colliding])
+    return GateResult(
+        valid=len(colliding) == 0,
+        collision_points=samples[colliding],
+        min_clearance_m=min(clearance, MARGIN_CAP_M),
+    )
+
+
+@dataclass
+class SupportResult:
+    """Ground check: every path sample must stand on mapped occupancy."""
+
+    valid: bool
+    unsupported_points: NDArray[np.float32]
+
+
+def check_support(
+    waypoints: NDArray[np.float32],
+    support_keys: NDArray[np.int64],
+    voxel_size: float,
+    radius: float,
+    depth: float,
+) -> SupportResult:
+    """Require occupied voxels beneath every path sample.
+
+    A path across a void collides with nothing, so the collision gate alone
+    cannot catch fabricated bridges. Each densified sample must have at least
+    one occupied voxel within radius horizontally and from depth below the
+    foot up to one voxel above it.
+    """
+    samples = densify(waypoints, voxel_size)
+    offsets = cylinder_offsets(radius, -depth, voxel_size, voxel_size)
+    keys = offset_keys(samples, offsets, voxel_size)
+    supported = keys_contain(support_keys, keys.ravel()).reshape(keys.shape).any(axis=1)
+    return SupportResult(bool(supported.all()), samples[~supported])
+
+
+@dataclass
+class KinematicsResult:
+    """Steppability check of the path profile."""
+
+    valid: bool
+    violation_points: NDArray[np.float32]
+
+
+def _resample(waypoints: NDArray[np.float32], spacing: float) -> NDArray[np.float32]:
+    """Points every spacing meters of 3D arc length along the polyline."""
+    steps = np.linalg.norm(np.diff(waypoints, axis=0), axis=1)
+    arc = np.concatenate([[0.0], np.cumsum(steps)])
+    if arc[-1] <= spacing:
+        return waypoints[[0, -1]]
+    s = np.append(np.arange(0.0, arc[-1], spacing), arc[-1])
+    return np.stack([np.interp(s, arc, waypoints[:, i]) for i in range(3)], axis=1).astype(
+        np.float32
+    )
+
+
+def check_kinematics(
+    waypoints: NDArray[np.float32],
+    max_slope: float,
+    max_step_m: float,
+    window_m: float,
+) -> KinematicsResult:
+    """Reject paths that climb steeper than the robot can.
+
+    The profile is resampled at window_m of arc length so single-cell
+    quantization in planner waypoints does not read as a cliff. Each
+    resampled segment may rise at most max_slope times its horizontal run,
+    with a max_step_m floor so stair risers between close samples pass.
+    """
+    if len(waypoints) < 2:
+        return KinematicsResult(True, waypoints[:0])
+    profile = _resample(waypoints, window_m)
+    d = np.diff(profile, axis=0)
+    rise = np.abs(d[:, 2])
+    run = np.linalg.norm(d[:, :2], axis=1)
+    bad = rise > np.maximum(run * max_slope, max_step_m)
+    return KinematicsResult(not bad.any(), profile[1:][bad])
 
 
 @dataclass

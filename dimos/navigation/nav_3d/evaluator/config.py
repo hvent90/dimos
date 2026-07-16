@@ -22,7 +22,11 @@ from dimos.navigation.nav_3d.mls_planner.mls_planner import MLSPlanner
 
 @dataclass
 class EvalConfig:
-    """Mapper, planner, and gate parameters. Defaults mirror production."""
+    """Mapper, planner, and gate parameters.
+
+    Defaults mirror production. Body and capability bounds are sized for the
+    Unitree Go2 (0.31m wide, 0.40m tall, ~0.16m stair risers).
+    """
 
     voxel_size: float = 0.08
     max_range: float = 30.0
@@ -53,6 +57,18 @@ class EvalConfig:
     body_clearance: float = 0.45
     goal_tolerance: float = 0.5
     align_tol: float = 0.05
+    # Paths must stand on final-map occupancy within support_radius_m of
+    # each sample and support_depth_m below it. The radius models the Go2
+    # straddling small scan holes (0.7m footprint), not its body width.
+    support_radius_m: float = 0.35
+    support_depth_m: float = 0.35
+    # Climb limits, checked over a stride-scale window so planner cell
+    # quantization does not read as a cliff. The slope bound comes from the
+    # steepest climbs the Go2 demonstrated on the Athens stairs, where
+    # switchback corners locally exceed the spec-sheet 40 degrees.
+    max_slope: float = 1.2
+    max_step_m: float = 0.2
+    kinematic_window_m: float = 0.5
 
     def make_mapper(self) -> VoxelRayMapper:
         return VoxelRayMapper(

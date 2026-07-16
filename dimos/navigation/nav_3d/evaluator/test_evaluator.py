@@ -22,6 +22,7 @@ import pytest
 
 from dimos.navigation.nav_3d.evaluator import metrics
 from dimos.navigation.nav_3d.evaluator.cases import Case, Suite, load_suite, save_suite
+from dimos.navigation.nav_3d.evaluator.config import EvalConfig
 from dimos.navigation.nav_3d.evaluator.final_map import (
     FinalMap,
     MapCheckpoints,
@@ -40,6 +41,7 @@ from dimos.navigation.nav_3d.evaluator.generate import (
     snap_to_surface,
 )
 from dimos.navigation.nav_3d.evaluator.recording import Frame, Trajectory
+from dimos.navigation.nav_3d.evaluator.runner import _run_plan
 
 VOXEL = 0.1
 
@@ -97,6 +99,19 @@ def test_gate_tolerates_stair_slope() -> None:
         [np.arange(-0.5, 1.5, 0.1), np.zeros(20), np.arange(-0.5, 1.5, 0.1) * 0.7], axis=1
     ).astype(np.float32)
     assert _gate(path, slope).valid
+
+
+def test_gate_reports_clearance_margin() -> None:
+    wall = _wall(10.0)
+    graze = np.array([[9.7, -0.5, 0], [9.7, 0.5, 0]], dtype=np.float32)
+    result = _gate(graze, wall)
+    assert result.valid
+    assert result.min_clearance_m == pytest.approx(0.35 - 0.16, abs=0.02)
+    crossing = _gate(np.array([[9, 0, 0], [11, 0, 0]], dtype=np.float32), wall)
+    assert not crossing.valid
+    assert crossing.min_clearance_m < 0
+    far = _gate(np.array([[2, 0, 0], [3, 0, 0]], dtype=np.float32), wall)
+    assert far.min_clearance_m == metrics.MARGIN_CAP_M
 
 
 def test_spl() -> None:
@@ -256,8 +271,6 @@ def test_checkpoint_deltas_roundtrip() -> None:
 
 def test_replay_frames_snapshots_grow_with_time() -> None:
     """Each checkpoint must contain exactly the frames seen up to its time."""
-    from dimos.navigation.nav_3d.evaluator.config import EvalConfig
-
     cfg = EvalConfig(voxel_size=VOXEL, support_min=1)
 
     def frame_at(ts: float, x: float) -> Frame:
@@ -287,6 +300,117 @@ def test_replay_frames_snapshots_grow_with_time() -> None:
     assert keys_contain(observed[0], wall1).all()
     assert not keys_contain(observed[0], wall3).any()
     assert keys_contain(observed[2], wall3).all()
+
+
+class _StubPlanner:
+    """Returns a fixed path regardless of the map, for gaming the scorer."""
+
+    def __init__(self, waypoints: np.ndarray | None) -> None:
+        self._waypoints = waypoints
+
+    def plan(
+        self, start: tuple[float, float, float], goal: tuple[float, float, float]
+    ) -> np.ndarray | None:
+        return self._waypoints
+
+
+def _floor(x_lo: float = 0.0, x_hi: float = 20.0) -> np.ndarray:
+    xs, ys = np.meshgrid(np.arange(x_lo, x_hi, VOXEL), np.arange(-2, 6, VOXEL))
+    return np.stack([xs.ravel(), ys.ravel(), np.full(xs.size, -0.05)], axis=1, dtype=np.float32)
+
+
+def _meta_scene() -> tuple[np.ndarray, EvalConfig, Case]:
+    """A floored corridor with a wall at x=10 between x=2 and x=18."""
+    scene = np.concatenate([_floor(), _wall(10.0)])
+    keys = np.unique(voxel_keys(scene, VOXEL))
+    cfg = EvalConfig(voxel_size=VOXEL)
+    case = Case(id="meta", start=(2.0, 0.0, 0.0), goal=(18.0, 0.0, 0.0))
+    return keys, cfg, case
+
+
+def _u_route() -> np.ndarray:
+    return np.array(
+        [[2, 0, 0], [2, 4, 0], [18, 4, 0], [18, 0, 0]],
+        dtype=np.float32,
+    )
+
+
+def test_meta_straight_line_cheat_scores_zero() -> None:
+    """A planner that ignores the map and beelines must not score."""
+    keys, cfg, case = _meta_scene()
+    line = np.array([case.start, case.goal], dtype=np.float32)
+    out, _ = _run_plan(_StubPlanner(line), case, 24.0, keys, keys, cfg)
+    assert out.planned and out.reached and out.supported
+    assert not out.valid
+    assert out.spl == 0.0
+    assert out.collisions
+    assert out.min_clearance is not None and out.min_clearance < 0
+
+
+def test_meta_no_path_scores_zero_with_miss() -> None:
+    keys, cfg, case = _meta_scene()
+    out, _ = _run_plan(_StubPlanner(None), case, 24.0, keys, keys, cfg)
+    assert not out.planned
+    assert out.spl == 0.0
+    assert out.goal_miss == pytest.approx(16.0)
+    assert out.min_clearance is None
+
+
+def test_meta_demonstrated_route_scores_full() -> None:
+    """The route the robot actually walked must earn full SPL."""
+    keys, cfg, case = _meta_scene()
+    route = _u_route()
+    l_ref = metrics.path_length(route)
+    out, _ = _run_plan(_StubPlanner(route), case, l_ref, keys, keys, cfg)
+    assert out.success
+    assert out.spl == pytest.approx(1.0)
+    assert out.goal_miss == 0.0
+    assert out.min_clearance == metrics.MARGIN_CAP_M
+
+
+def test_meta_everything_occupied_fails_even_good_routes() -> None:
+    """An all-occupied map must collapse the score, not inflate it."""
+    xs, ys, zs = np.meshgrid(
+        np.arange(0, 20, VOXEL), np.arange(-2, 6, VOXEL), np.arange(0.3, 0.5, VOXEL)
+    )
+    everything = np.stack([xs.ravel(), ys.ravel(), zs.ravel()], axis=1, dtype=np.float32)
+    keys = np.unique(voxel_keys(np.concatenate([_floor(), everything]), VOXEL))
+    _, cfg, case = _meta_scene()
+    out, _ = _run_plan(_StubPlanner(_u_route()), case, 24.0, keys, keys, cfg)
+    assert out.planned and out.reached
+    assert not out.valid
+    assert out.spl == 0.0
+
+
+def test_meta_floating_bridge_fails_support() -> None:
+    """A path across a floor gap collides with nothing but must still fail."""
+    gapped = np.concatenate([_floor(0.0, 6.0), _floor(14.0, 20.0)])
+    keys = np.unique(voxel_keys(gapped, VOXEL))
+    _, cfg, case = _meta_scene()
+    line = np.array([case.start, case.goal], dtype=np.float32)
+    out, _ = _run_plan(_StubPlanner(line), case, 24.0, keys, keys, cfg)
+    assert out.planned and out.reached and out.valid
+    assert not out.supported
+    assert out.spl == 0.0
+    assert out.unsupported
+    gap_x = np.asarray(out.unsupported, dtype=np.float32)[:, 0]
+    assert gap_x.min() > 5.5 and gap_x.max() < 14.5
+
+
+def test_check_kinematics_rejects_cliff_jumps() -> None:
+    stairs = np.array([[0, 0, 0], [0.4, 0, 0.16], [0.8, 0, 0.32]], dtype=np.float32)
+    assert metrics.check_kinematics(stairs, max_slope=1.0, max_step_m=0.2, window_m=0.5).valid
+    riser = np.array([[0, 0, 0], [0.08, 0, 0.16]], dtype=np.float32)
+    assert metrics.check_kinematics(riser, max_slope=1.0, max_step_m=0.2, window_m=0.5).valid
+    # A double riser between adjacent cells is quantization, not a cliff.
+    quantized = np.array(
+        [[0, 0, 0], [0.4, 0, 0.08], [0.56, 0, 0.4], [0.96, 0, 0.48]], dtype=np.float32
+    )
+    assert metrics.check_kinematics(quantized, max_slope=1.0, max_step_m=0.2, window_m=0.5).valid
+    cliff = np.array([[0, 0, 0], [0.2, 0, 0.9], [1, 0, 0.9]], dtype=np.float32)
+    result = metrics.check_kinematics(cliff, max_slope=1.0, max_step_m=0.2, window_m=0.5)
+    assert not result.valid
+    assert len(result.violation_points) >= 1
 
 
 def test_save_suite_roundtrip(tmp_path) -> None:

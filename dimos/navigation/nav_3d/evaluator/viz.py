@@ -21,8 +21,9 @@ One static scene per dataset:
   Surface cells colored by wall clearance (red inside the hard clearance),
   edges colored white to red by log traversal cost.
 - cases/<id>: start (cyan), goal (orange), online and final planned paths
-  colored by verdict (green valid, red gate-invalid, yellow unreached), and
-  the gate's collision samples (red dots). Failed cases also get a thin red
+  colored by verdict (green valid, red gate-invalid, yellow unreached), the
+  gate's collision samples (red dots), unsupported samples (magenta), and
+  too-steep waypoints (purple). Failed cases also get a thin red
   start-to-goal intent line and a known/ layer: the planner graph on the
   incremental map at plan time, i.e. what the robot knew when it failed.
 """
@@ -51,6 +52,8 @@ WALKED_PATH_COLOR = [255, 255, 255]
 START_COLOR = [0, 255, 255]
 GOAL_COLOR = [255, 140, 0]
 COLLISION_COLOR = [255, 0, 0]
+UNSUPPORTED_COLOR = [255, 0, 255]
+STEEP_COLOR = [160, 32, 240]
 
 VALID_PATH_COLOR = [0, 220, 0]
 INVALID_PATH_COLOR = [255, 0, 0]
@@ -132,6 +135,18 @@ def _log_path(entity: str, outcome: PlanOutcome, radius: float) -> None:
         rr.log(
             f"{entity}/collisions",
             rr.Points3D(outcome.collisions, colors=[COLLISION_COLOR], radii=radius * 3),
+            static=True,
+        )
+    if outcome.unsupported:
+        rr.log(
+            f"{entity}/unsupported",
+            rr.Points3D(outcome.unsupported, colors=[UNSUPPORTED_COLOR], radii=radius * 3),
+            static=True,
+        )
+    if outcome.steep:
+        rr.log(
+            f"{entity}/steep",
+            rr.Points3D(outcome.steep, colors=[STEEP_COLOR], radii=radius * 3),
             static=True,
         )
 

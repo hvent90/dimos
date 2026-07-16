@@ -76,16 +76,20 @@ def _apply_overrides(cfg: EvalConfig, overrides: list[str]) -> EvalConfig:
 def _print_report(report: Report) -> None:
     header = (
         f"{'case':<28} {'dataset':<22} {'inc':>5} {'fin':>5} "
-        f"{'len':>6} {'ref':>6} {'vox':>8} {'ms':>7}"
+        f"{'len':>6} {'ref':>6} {'miss':>6} {'clr':>6} {'vox':>8} {'ms':>7}"
     )
     print(header)
     print("-" * len(header))
     for d in report.datasets:
         for c in d.cases:
+            clr = (
+                f"{c.online.min_clearance:>6.2f}" if c.online.min_clearance is not None else " " * 6
+            )
             print(
                 f"{c.id:<28} {c.dataset:<22} "
                 f"{c.online.spl:>5.2f} {c.final.spl:>5.2f} "
                 f"{c.online.length:>6.1f} {c.l_ref:>6.1f} "
+                f"{c.online.goal_miss:>6.1f} {clr} "
                 f"{c.online_voxels:>8d} {c.online.plan_ms:>7.1f}"
             )
     print("-" * len(header))

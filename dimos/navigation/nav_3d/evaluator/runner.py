@@ -23,8 +23,10 @@ produces, so a failure on it means the whole pipeline cannot solve the case
 even with all the data. The final path is gated against the full final
 occupancy; the online path only against the final obstacles the sensor had
 returns from by plan time: hitting a wall no lidar return ever came from is
-not an error, but hitting one the sensor saw and the mapper dropped is. The
-headline score is validity-gated SPL on the incremental map.
+not an error, but hitting one the sensor saw and the mapper dropped is.
+Every path must also stand on final-map occupancy (no fabricated bridges)
+and stay within the robot's climb envelope. The headline score is
+validity-gated SPL on the incremental map.
 """
 
 from __future__ import annotations
@@ -70,15 +72,27 @@ class PlanOutcome:
     planned: bool
     reached: bool
     valid: bool
+    # Every sample stands on final-map occupancy; fabricated bridges fail.
+    supported: bool
+    # No segment rises steeper than the robot can climb.
+    kinematic: bool
     length: float
     plan_ms: float
     spl: float
+    # How far the path end is from the goal; start-to-goal distance when no
+    # path was planned. Smooth counterpart to the binary reached flag.
+    goal_miss: float
+    # Gate margin along the path (see GateResult.min_clearance_m); None when
+    # no path was planned.
+    min_clearance: float | None
     waypoints: list[list[float]]
     collisions: list[list[float]]
+    unsupported: list[list[float]]
+    steep: list[list[float]]
 
     @property
     def success(self) -> bool:
-        return self.planned and self.reached and self.valid
+        return self.planned and self.reached and self.valid and self.supported and self.kinematic
 
 
 @dataclass
@@ -151,13 +165,14 @@ def _run_plan(
     case: Case,
     l_ref: float,
     obstacle_keys: NDArray[np.int64],
+    support_keys: NDArray[np.int64],
     cfg: EvalConfig,
 ) -> tuple[PlanOutcome, NDArray[np.float32] | None]:
     t0 = perf_counter()
     waypoints = planner.plan(case.start, case.goal)
     plan_ms = (perf_counter() - t0) * 1000
     if waypoints is None or len(waypoints) == 0:
-        return PlanOutcome(False, False, False, 0.0, plan_ms, 0.0, [], []), None
+        return _no_plan(case, plan_ms), None
 
     reached = metrics.goal_reached(waypoints, case.goal, cfg.goal_tolerance)
     gate = metrics.check_path(
@@ -168,19 +183,38 @@ def _run_plan(
         cfg.ground_margin,
         cfg.body_clearance,
     )
+    support = metrics.check_support(
+        waypoints, support_keys, cfg.voxel_size, cfg.support_radius_m, cfg.support_depth_m
+    )
+    kinematics = metrics.check_kinematics(
+        waypoints, cfg.max_slope, cfg.max_step_m, cfg.kinematic_window_m
+    )
     length = metrics.path_length(waypoints)
-    success = reached and gate.valid
+    success = reached and gate.valid and support.valid and kinematics.valid
     outcome = PlanOutcome(
         planned=True,
         reached=reached,
         valid=gate.valid,
+        supported=support.valid,
+        kinematic=kinematics.valid,
         length=length,
         plan_ms=plan_ms,
         spl=metrics.spl(success, l_ref, length),
+        goal_miss=float(np.linalg.norm(waypoints[-1] - np.asarray(case.goal, dtype=np.float32))),
+        min_clearance=gate.min_clearance_m,
         waypoints=waypoints.tolist(),
         collisions=gate.collision_points[:MAX_COLLISIONS_KEPT].tolist(),
+        unsupported=support.unsupported_points[:MAX_COLLISIONS_KEPT].tolist(),
+        steep=kinematics.violation_points[:MAX_COLLISIONS_KEPT].tolist(),
     )
     return outcome, waypoints
+
+
+def _no_plan(case: Case, plan_ms: float) -> PlanOutcome:
+    miss = float(np.linalg.norm(np.asarray(case.goal) - np.asarray(case.start)))
+    return PlanOutcome(
+        False, False, False, True, True, 0.0, plan_ms, 0.0, miss, None, [], [], [], []
+    )
 
 
 def _goal_seen(online_points: NDArray[np.float32], goal: tuple[float, float, float]) -> bool:
@@ -245,13 +279,15 @@ def run_suite(suite: Suite, cfg: EvalConfig, threads: int = 1) -> DatasetResult:
         map_update_ms = (perf_counter() - t0) * 1000
         for ci in np.flatnonzero(case_ckpt == k):
             case, ref = suite.cases[ci], refs[ci]
-            final_out, _ = _run_plan(final_planner, case, ref.length, obstacle_keys, cfg)
+            final_out, _ = _run_plan(
+                final_planner, case, ref.length, obstacle_keys, obstacle_keys, cfg
+            )
             if len(online_points):
                 online_out, online_wp = _run_plan(
-                    online_planner, case, ref.length, online_gate_keys, cfg
+                    online_planner, case, ref.length, online_gate_keys, obstacle_keys, cfg
                 )
             else:
-                online_out = PlanOutcome(False, False, False, 0.0, 0.0, 0.0, [], [])
+                online_out = _no_plan(case, 0.0)
                 online_wp = None
             end = online_wp[-1] if online_wp is not None and len(online_wp) else None
             goal_seen = _goal_seen(online_points, case.goal)
