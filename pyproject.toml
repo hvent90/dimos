@@ -22,7 +22,7 @@ include-package-data = false
 
 [tool.setuptools.packages.find]
 where = ["."]
-include = ["dimos*", "examples*"]
+include = ["dimos*"]
 # Web frontends / vendored node_modules: not part of the Python runtime
 # (MANIFEST.in already prunes these from the sdist; this keeps their stray
 # .py modules out of the wheel too).
@@ -49,10 +49,6 @@ exclude = [
     "**/*.svg",
     "**/*.tcss",
     "**/*.pyi",
-]
-"examples.external_python_module" = [
-    "python/pyproject.toml",
-    "python/pixi.toml",
 ]
 
 [tool.setuptools.exclude-package-data]

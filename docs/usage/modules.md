@@ -257,11 +257,10 @@ external_python_module/
         └── runtime.py
 ```
 
-The shipped example includes both runtime manifests as package data, so the
-sibling layout remains available when DimOS is installed from a wheel. The
-example does not check in either a `uv.lock` or `pixi.lock`; both may be
-generated locally when preparing the runtime project and are ignored by git.
-uv and Pixi have separate lockfiles.
+The source-checkout example keeps both runtime manifests in the sibling
+project. The example does not check in either a `uv.lock` or `pixi.lock`; both
+may be generated locally when preparing the runtime project and are ignored by
+git. uv and Pixi have separate lockfiles.
 
 The runtime class subclasses the declaration. Compose the declaration with
 regular modules using `autoconnect`; do not add a deployment plan, target, or
@@ -276,13 +275,13 @@ stack = autoconnect(ExampleExternal.blueprint(), ExampleConsumer.blueprint())
 ```
 
 `python/pyproject.toml` is mandatory and must declare every Python dependency
-needed by the runtime, including its compatible DimOS package. The contract is
-imported directly (for example, `from examples.external_python_module.contract
-import ExampleExternal`) because the `examples` package is part of the DimOS
-distribution; no `PYTHONPATH` setting is required or used. DimOS prepares and
-runs this project with uv. If `python/pixi.toml` is present, Pixi supplies the
-outer tool environment and runs uv; it does not replace the uv Python project
-or its dependency declarations.
+needed by the runtime, including its compatible DimOS package. In a source
+checkout, import the contract directly (for example, `from
+examples.external_python_module.contract import ExampleExternal`); the
+example is not part of the DimOS distribution. DimOS prepares and runs this
+project with uv. If `python/pixi.toml` is present, Pixi supplies the outer tool
+environment and runs uv; it does not replace the uv Python project or its
+dependency declarations.
 
 If the sibling `python/pixi.toml` is present, local preparation requires Pixi
 to be installed; Pixi is not supplied by DimOS. Preparation happens before the

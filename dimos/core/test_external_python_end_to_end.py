@@ -15,7 +15,6 @@
 from __future__ import annotations
 
 from collections.abc import Generator
-from importlib import resources
 import os
 from pathlib import Path
 import shutil
@@ -113,13 +112,6 @@ def test_external_example_runs_through_real_coordinator_and_restarts(
     assert replacement_worker.pid is not None
     assert replacement_worker.pid != first_pid
     assert replacement_proxy.get_multiplier() == 3
-
-
-def test_external_example_runtime_assets_are_packaged() -> None:
-    package = resources.files("examples.external_python_module")
-    assert package.joinpath("python", "pyproject.toml").is_file()
-    assert package.joinpath("python", "pixi.toml").is_file()
-    assert package.joinpath("python", "example_external", "runtime.py").is_file()
 
 
 def test_external_example_entrypoint_exits_after_clean_restart() -> None:
