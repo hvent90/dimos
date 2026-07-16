@@ -21,8 +21,16 @@ RUN apt-get update && apt-get install -y --no-install-recommends \
 # CIBUILDWHEEL=1 makes setup.py drop -march=native so the C++ extension is
 # portable across customer x86-64 CPUs (same switch the PyPI release uses).
 ENV CIBUILDWHEEL=1
+# Build deps installed explicitly + --no-build-isolation: jammy ships
+# setuptools 59, which silently ignores pyproject's [project] table and
+# produces an UNKNOWN-0.0.0 wheel with no packages (find_packages() finds
+# nothing — the repo has no __init__.py files, so the name/packages MUST
+# come from pyproject). Pinning setuptools>=70 here makes that impossible.
+RUN pip install --no-cache-dir "setuptools>=70" wheel "pybind11>=2.12" tomli
 COPY . /src
-RUN pip wheel --no-deps --wheel-dir /wheels /src
+RUN pip wheel --no-deps --no-build-isolation --wheel-dir /wheels /src \
+    && ls -l /wheels \
+    && test -n "$(find /wheels -name 'dimos-*.whl' -print -quit)"
 
 # ---- runtime ---------------------------------------------------------------
 FROM ${ROS_BASE}

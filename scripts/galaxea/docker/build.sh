@@ -21,6 +21,10 @@ CTX="$(mktemp -d)"
 trap 'rm -rf "$CTX"' EXIT
 echo "[build] staging clean context from HEAD ($(git rev-parse --short HEAD)) -> $CTX"
 git archive HEAD | tar -x -C "$CTX"
+# git archive materialises LFS content, so data/ lands as ~33GB of real
+# assets. The r1lite blueprints load none of it; drop it or every build
+# spends ~100s just transferring context to the daemon.
+rm -rf "$CTX/data"
 
 # --network=host: build steps use the host's own DNS/network — guest/corp
 # networks (e.g. on-site at vendors) often block docker's default 8.8.8.8.
