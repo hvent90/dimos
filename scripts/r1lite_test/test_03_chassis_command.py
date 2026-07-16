@@ -19,7 +19,15 @@ zero-velocity stop stream. PASS requires measured chassis speed to rise
 above threshold during the move AND settle back near zero after.
 
 Prerequisites: robot untethered (except ethernet — tend the slack), ~0.5 m
-clear floor ahead, hand on e-stop, RC idle/off.
+clear floor ahead, hand on e-stop.
+
+  *** RC MUST BE ON, ALL SWITCHES IN POSITION 1 (= mode 5, software may
+  drive). An RC that is OFF is NOT neutral: the receiver fails safe to
+  mode 3 ("manual, sticks centered") and the chassis node VETOES software
+  commands — you get the 0.3mm/s creep and a FAIL that looks exactly like
+  a latched VCU. Verify before running:  ros2 topic echo /controller --once
+  (This docstring said "RC idle/off" until 2026-07-17 — it predated the
+  Day-2 RC mode map and was wrong; that error cost a test cycle twice.)
 
 Run:
     export ROS_DOMAIN_ID=2
@@ -73,7 +81,12 @@ def main(skip_prompt=False) -> bool:
         print("!!! SAFETY CHECK !!!")
         print("- ~0.5 m clear floor AHEAD of the robot?")
         print("- Ethernet cable slack tended? Charger unplugged?")
-        print("- Hand on e-stop? RC idle?")
+        print("- Hand on e-stop?")
+        print("- RC ON with ALL SWITCHES IN POSITION 1 (= mode 5)?")
+        print("    RC OFF fails safe to mode 3 and VETOES software -> 0.3mm/s creep.")
+        print("    Verify on the HOST (hdas_msg lives in the vendor workspace, not")
+        print("    this container):  source ~/galaxea/install/setup.bash &&")
+        print("                      ros2 topic echo /controller --once")
         print("- Robot was powered on with e-stop RELEASED?")
         if input("\nType 'yes' to proceed: ").strip().lower() != "yes":
             print("Aborted.")
