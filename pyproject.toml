@@ -318,7 +318,12 @@ sim = [
 mapping = [
     # PGO for reloc premap + cmu_nav experiments
     # Jeff's https://github.com/jeff-hykin/gtsam-extended
-    "gtsam-extended>=4.3a1.post1",
+    # 4.3a1.post1's only cp310 wheel is macosx_14_0_arm64 — on linux it
+    # publishes cp311/cp312 only. Without this marker the whole `mapping`
+    # extra is uninstallable on the Python 3.10 floor this project declares,
+    # and it is not opt-out: `unitree` depends on `dimos[base,mapping]`, so
+    # --no-extra mapping cannot avoid it. Lift when cp310 linux wheels ship.
+    "gtsam-extended>=4.3a1.post1; python_version >= '3.11'",
 ]
 
 # NOTE: jetson-jp6-cuda126 extra is disabled due to 404 errors from wheel URLs
