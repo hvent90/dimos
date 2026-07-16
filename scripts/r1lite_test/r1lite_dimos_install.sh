@@ -109,7 +109,10 @@ EOF
 fi
 
 step 8 "Verification"
-$DOCKER exec "$CONTAINER" bash -c 'cd /app && source .venv/bin/activate && python -c "
+# `docker exec bash -c` is non-interactive: it does not read the image's
+# .bashrc, so ROS must be sourced explicitly or `import rclpy` fails here
+# (venv first, then ROS — same order as run_r1lite.sh).
+$DOCKER exec "$CONTAINER" bash -c 'cd /app && source .venv/bin/activate && source /opt/ros/humble/setup.bash && python -c "
 import rclpy, dimos
 from dimos.robot.galaxea.r1lite.connection import R1LiteConnection
 R1LiteConnection.blueprint()
