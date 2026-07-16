@@ -54,6 +54,7 @@ GOAL_COLOR = [255, 140, 0]
 COLLISION_COLOR = [255, 0, 0]
 UNSUPPORTED_COLOR = [255, 0, 255]
 STEEP_COLOR = [160, 32, 240]
+NEGATIVE_INTENT_COLOR = [255, 255, 0]
 
 VALID_PATH_COLOR = [0, 220, 0]
 INVALID_PATH_COLOR = [255, 0, 0]
@@ -185,15 +186,24 @@ def write_rrd(report: Report, suites: list[Suite], cfg: EvalConfig, out: Path) -
             base = f"{root}/cases/{case.id}"
             rr.log(
                 f"{base}/start",
-                rr.Points3D([case.start], colors=[START_COLOR], radii=0.12),
+                rr.Points3D([case.start], colors=[START_COLOR], radii=0.05),
                 static=True,
             )
             rr.log(
                 f"{base}/goal",
-                rr.Points3D([case.goal], colors=[GOAL_COLOR], radii=0.12),
+                rr.Points3D([case.goal], colors=[GOAL_COLOR], radii=0.05),
                 static=True,
             )
-            if not case.online.success:
+            if case.expect_fail:
+                # Always visible, so a correct refusal is reviewable too.
+                rr.log(
+                    f"{base}/intent",
+                    rr.LineStrips3D(
+                        [[case.start, case.goal]], colors=[NEGATIVE_INTENT_COLOR], radii=0.006
+                    ),
+                    static=True,
+                )
+            elif not case.online.success:
                 rr.log(
                     f"{base}/intent",
                     rr.LineStrips3D(

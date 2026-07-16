@@ -32,7 +32,7 @@ validity-gated SPL on the incremental map.
 from __future__ import annotations
 
 from concurrent.futures import ProcessPoolExecutor, ThreadPoolExecutor
-from dataclasses import asdict, dataclass, field
+from dataclasses import asdict, dataclass, field, replace
 import itertools
 import threading
 from time import perf_counter
@@ -76,6 +76,9 @@ class PlanOutcome:
     supported: bool
     # No segment rises steeper than the robot can climb.
     kinematic: bool
+    # For an ordinary case: all of the above. For an expect_fail case: the
+    # planner correctly refused the infeasible goal.
+    success: bool
     length: float
     plan_ms: float
     spl: float
@@ -89,10 +92,6 @@ class PlanOutcome:
     collisions: list[list[float]]
     unsupported: list[list[float]]
     steep: list[list[float]]
-
-    @property
-    def success(self) -> bool:
-        return self.planned and self.reached and self.valid and self.supported and self.kinematic
 
 
 @dataclass
@@ -117,6 +116,7 @@ class CaseResult:
     online_voxels: int
     map_update_ms: float
     goal_seen: bool
+    expect_fail: bool
     online: PlanOutcome
     final: PlanOutcome
     soft_progress: float
@@ -197,6 +197,7 @@ def _run_plan(
         valid=gate.valid,
         supported=support.valid,
         kinematic=kinematics.valid,
+        success=success,
         length=length,
         plan_ms=plan_ms,
         spl=metrics.spl(success, l_ref, length),
@@ -213,8 +214,33 @@ def _run_plan(
 def _no_plan(case: Case, plan_ms: float) -> PlanOutcome:
     miss = float(np.linalg.norm(np.asarray(case.goal) - np.asarray(case.start)))
     return PlanOutcome(
-        False, False, False, True, True, 0.0, plan_ms, 0.0, miss, None, [], [], [], []
+        planned=False,
+        reached=False,
+        valid=False,
+        supported=True,
+        kinematic=True,
+        success=False,
+        length=0.0,
+        plan_ms=plan_ms,
+        spl=0.0,
+        goal_miss=miss,
+        min_clearance=None,
+        waypoints=[],
+        collisions=[],
+        unsupported=[],
+        steep=[],
     )
+
+
+def score_negative(raw: PlanOutcome) -> PlanOutcome:
+    """Invert an outcome for a human-certified infeasible case.
+
+    The planner succeeds by refusing. Any goal-reaching path it returns is a
+    false positive scored zero, whether or not the gates would have caught
+    it, because the planner claimed a route that does not exist.
+    """
+    refused = not (raw.planned and raw.reached)
+    return replace(raw, success=refused, spl=1.0 if refused else 0.0)
 
 
 def _goal_seen(online_points: NDArray[np.float32], goal: tuple[float, float, float]) -> bool:
@@ -239,6 +265,11 @@ def run_suite(suite: Suite, cfg: EvalConfig, threads: int = 1) -> DatasetResult:
 
     refs: list[metrics.Reference] = []
     for case in suite.cases:
+        if case.expect_fail:
+            # Infeasible by certification: no demonstrated route, no plan time.
+            miss = float(np.linalg.norm(np.asarray(case.goal) - np.asarray(case.start)))
+            refs.append(metrics.Reference(miss, False, float("inf"), False))
+            continue
         ref = metrics.reference_length(trajectory, case.start, case.goal, cfg.robot_height)
         if not ref.snapped:
             logger.warning(
@@ -260,11 +291,37 @@ def run_suite(suite: Suite, cfg: EvalConfig, threads: int = 1) -> DatasetResult:
     start_ts = np.array([r.start_ts for r in refs], dtype=np.float64)
     checkpoints = load_or_build_checkpoints(db_path, suite, cfg, start_ts)
     case_ckpt = np.searchsorted(checkpoints.times, start_ts)
+    negative = np.array([c.expect_fail for c in suite.cases])
+    case_ckpt[negative] = -1
 
     final_planner = cfg.make_planner()
     final_planner.update_global_map(final.occupied)
 
     results: list[CaseResult | None] = [None] * len(suite.cases)
+
+    for ci in np.flatnonzero(negative):
+        case, ref = suite.cases[ci], refs[ci]
+        outcome = score_negative(
+            _run_plan(final_planner, case, ref.length, obstacle_keys, obstacle_keys, cfg)[0]
+        )
+        results[ci] = CaseResult(
+            id=case.id,
+            dataset=suite.dataset,
+            start=case.start,
+            goal=case.goal,
+            weight=case.weight,
+            tags=case.tags,
+            l_ref=ref.length,
+            l_ref_snapped=False,
+            plan_ts=float("inf"),
+            online_voxels=len(final.occupied),
+            map_update_ms=0.0,
+            goal_seen=True,
+            expect_fail=True,
+            online=outcome,
+            final=outcome,
+            soft_progress=outcome.spl,
+        )
 
     def process_checkpoint(
         k: int,
@@ -304,6 +361,7 @@ def run_suite(suite: Suite, cfg: EvalConfig, threads: int = 1) -> DatasetResult:
                 online_voxels=len(keys),
                 map_update_ms=map_update_ms,
                 goal_seen=goal_seen,
+                expect_fail=False,
                 online=online_out,
                 final=final_out,
                 soft_progress=metrics.soft_progress(end, case.start, case.goal),

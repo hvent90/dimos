@@ -165,3 +165,9 @@ cases:
   goal: [5.72, -9.72, -0.4]
   weight: 1.0
   tags: [auto, flat]
+- id: neg_00
+  start: [5.0, 2.44, 3.2]
+  goal: [9.32, 5.24, 6.4]
+  weight: 2.0
+  tags: [manual, negative]
+  expect_fail: true

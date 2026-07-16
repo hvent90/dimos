@@ -36,6 +36,9 @@ class Case:
     weight: float = 1.0
     tags: list[str] = field(default_factory=list)
     l_ref: float | None = None
+    # Human-certified infeasible pair: the correct answer is to refuse.
+    # Evaluated on the final map only, scored 1.0 for refusal.
+    expect_fail: bool = False
 
 
 @dataclass
@@ -65,6 +68,7 @@ def load_suite(path: Path) -> Suite:
             weight=float(entry.get("weight", 1.0)),
             tags=[str(t) for t in entry.get("tags", [])],
             l_ref=float(entry["l_ref"]) if "l_ref" in entry else None,
+            expect_fail=bool(entry.get("expect_fail", False)),
         )
         if case.id in seen:
             raise ValueError(f"{path}: duplicate case id {case.id}")
@@ -107,6 +111,8 @@ def save_suite(suite: Suite, path: Path | None = None) -> Path:
         }
         if case.l_ref is not None:
             entry["l_ref"] = round(case.l_ref, 3)
+        if case.expect_fail:
+            entry["expect_fail"] = True
         entries.append(entry)
     doc["cases"] = entries
     path.write_text(yaml.safe_dump(doc, sort_keys=False, default_flow_style=None))

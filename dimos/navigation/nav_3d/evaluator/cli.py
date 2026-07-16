@@ -25,6 +25,7 @@ Curate a case:        python -m dimos.navigation.nav_3d.evaluator add-case offic
 from __future__ import annotations
 
 import dataclasses
+import itertools
 import json
 import os
 from pathlib import Path
@@ -234,17 +235,45 @@ def ingest(
     print(f"\nrun with: python -m dimos.navigation.nav_3d.evaluator run --dataset {name}")
 
 
-@app.command("add-case")
-def add_case(
-    dataset: str = typer.Argument(..., help="Dataset whose manifest gets the case"),
-    start: tuple[float, float, float] = typer.Option(..., "--start", help="Foot-level xyz"),
-    goal: tuple[float, float, float] = typer.Option(..., "--goal", help="Foot-level xyz"),
-    case_id: str = typer.Option(None, "--id", help="Case id; default manual_<n>"),
-    tags: str = typer.Option("manual", "--tags", help="Comma-separated tags"),
-    weight: float = typer.Option(2.0, "--weight"),
-    snap_max: float = typer.Option(1.0, "--snap-max", help="Max snap distance to surface (m)"),
-) -> None:
-    """Append a curated case, with both endpoints snapped to the final surface."""
+def _append_case(
+    suite: Suite,
+    manifest: Path,
+    surface: NDArray[np.float32],
+    start: tuple[float, float, float],
+    goal: tuple[float, float, float],
+    case_id: str | None,
+    tags: list[str],
+    weight: float,
+    snap_max: float,
+    expect_fail: bool,
+) -> Case:
+    prefix = "neg" if expect_fail else "manual"
+    snapped_goal = snap_to_surface(np.asarray(goal, dtype=np.float32), surface, snap_max)
+    if snapped_goal is not None:
+        goal = (float(snapped_goal[0]), float(snapped_goal[1]), float(snapped_goal[2]))
+    elif expect_fail:
+        # An infeasible goal may sit on geometry with no standable surface.
+        print(f"note: goal {goal} is off any standable surface; keeping it as picked")
+    else:
+        raise typer.BadParameter(f"goal {goal} is more than {snap_max}m from standable surface")
+    case = Case(
+        id=case_id or f"{prefix}_{sum(c.id.startswith(f'{prefix}_') for c in suite.cases):02d}",
+        start=_snap_or_fail("start", start, surface, snap_max),
+        goal=goal,
+        weight=weight,
+        tags=tags,
+        expect_fail=expect_fail,
+    )
+    if any(c.id == case.id for c in suite.cases):
+        raise typer.BadParameter(f"case id {case.id!r} already exists in {manifest}")
+    suite.cases.append(case)
+    save_suite(suite, manifest)
+    kind = "negative (must refuse)" if expect_fail else "positive"
+    print(f"added {kind} {case.id}: {case.start} -> {case.goal} to {manifest}")
+    return case
+
+
+def _load_for_curation(dataset: str) -> tuple[Suite, Path, NDArray[np.float32], EvalConfig]:
     manifest = CASES_DIR / f"{dataset}.yaml"
     if not manifest.exists():
         raise typer.BadParameter(f"no manifest {manifest}; run ingest first")
@@ -253,20 +282,101 @@ def add_case(
     final = load_or_build_final_map(resolve_named_path(dataset, ".db"), suite, cfg)
     planner = cfg.make_planner()
     planner.update_global_map(final.occupied)
-    surface = planner.surface_map()
+    return suite, manifest, planner.surface_map(), cfg
 
-    case = Case(
-        id=case_id or f"manual_{sum(c.id.startswith('manual_') for c in suite.cases):02d}",
-        start=_snap_or_fail("start", start, surface, snap_max),
-        goal=_snap_or_fail("goal", goal, surface, snap_max),
-        weight=weight,
-        tags=[t.strip() for t in tags.split(",") if t.strip()],
+
+@app.command("add-case")
+def add_case(
+    dataset: str = typer.Argument(..., help="Dataset whose manifest gets the case"),
+    start: tuple[float, float, float] = typer.Option(..., "--start", help="Foot-level xyz"),
+    goal: tuple[float, float, float] = typer.Option(..., "--goal", help="Foot-level xyz"),
+    case_id: str = typer.Option(None, "--id", help="Case id; default manual_<n> or neg_<n>"),
+    tags: str = typer.Option(None, "--tags", help="Comma-separated tags"),
+    weight: float = typer.Option(2.0, "--weight"),
+    snap_max: float = typer.Option(1.0, "--snap-max", help="Max snap distance to surface (m)"),
+    expect_fail: bool = typer.Option(
+        False, "--expect-fail", help="Certified-infeasible pair; the planner must refuse"
+    ),
+) -> None:
+    """Append a curated case, with endpoints snapped to the final surface."""
+    suite, manifest, surface, _ = _load_for_curation(dataset)
+    default_tags = "manual,negative" if expect_fail else "manual"
+    _append_case(
+        suite,
+        manifest,
+        surface,
+        start,
+        goal,
+        case_id,
+        [t.strip() for t in (tags or default_tags).split(",") if t.strip()],
+        weight,
+        snap_max,
+        expect_fail,
     )
-    if any(c.id == case.id for c in suite.cases):
-        raise typer.BadParameter(f"case id {case.id!r} already exists in {manifest}")
-    suite.cases.append(case)
-    save_suite(suite, manifest)
-    print(f"added {case.id}: {case.start} -> {case.goal} to {manifest}")
+
+
+@app.command("pick-case")
+def pick_case(
+    dataset: str = typer.Argument(..., help="Dataset whose manifest gets the cases"),
+    expect_fail: bool = typer.Option(
+        False, "--expect-fail", help="Picked pairs are certified infeasible; planner must refuse"
+    ),
+    weight: float = typer.Option(2.0, "--weight"),
+    snap_max: float = typer.Option(1.0, "--snap-max", help="Max snap distance to surface (m)"),
+) -> None:
+    """Pick cases by clicking the map: shift+click start then goal, repeat, then close.
+
+    Opens an Open3D window with the final map colored by height and the
+    walked path in white. Every consecutive pair of picked points becomes
+    one case, snapped and appended to the manifest.
+    """
+    import open3d as o3d  # type: ignore[import-untyped]
+
+    from dimos.navigation.nav_3d.evaluator.viz import _turbo_by_height
+
+    suite, manifest, surface, cfg = _load_for_curation(dataset)
+    final = load_or_build_final_map(resolve_named_path(dataset, ".db"), suite, cfg)
+    trajectory = load_trajectory(resolve_named_path(dataset, ".db"), suite.odom_stream)
+    foot = trajectory.positions - np.array([0.0, 0.0, cfg.robot_height], dtype=np.float32)
+
+    points = np.concatenate([final.occupied, foot])
+    colors = np.concatenate(
+        [_turbo_by_height(final.occupied), np.full((len(foot), 3), 255, dtype=np.uint8)]
+    )
+    cloud = o3d.geometry.PointCloud()
+    cloud.points = o3d.utility.Vector3dVector(points.astype(np.float64))
+    cloud.colors = o3d.utility.Vector3dVector(colors.astype(np.float64) / 255.0)
+
+    print("shift+click START then GOAL for each case (shift+right-click undoes); close to save")
+    vis = o3d.visualization.VisualizerWithEditing()
+    vis.create_window(window_name=f"pick cases: {dataset}")
+    vis.add_geometry(cloud)
+    vis.run()
+    vis.destroy_window()
+    picked = vis.get_picked_points()
+
+    if len(picked) % 2:
+        print(f"odd number of picks ({len(picked)}); dropping the last one")
+        picked = picked[:-1]
+    if not picked:
+        print("no points picked; nothing added")
+        return
+    for start_idx, goal_idx in itertools.batched(picked, 2):
+        start = tuple(float(v) for v in points[start_idx])
+        goal = tuple(float(v) for v in points[goal_idx])
+        _append_case(
+            suite,
+            manifest,
+            surface,
+            (start[0], start[1], start[2]),
+            (goal[0], goal[1], goal[2]),
+            None,
+            ["manual", "negative"] if expect_fail else ["manual"],
+            weight,
+            snap_max,
+            expect_fail,
+        )
+    print(f"\nrun with: python -m dimos.navigation.nav_3d.evaluator run --dataset {dataset}")
 
 
 @app.command("list")

@@ -41,7 +41,7 @@ from dimos.navigation.nav_3d.evaluator.generate import (
     snap_to_surface,
 )
 from dimos.navigation.nav_3d.evaluator.recording import Frame, Trajectory
-from dimos.navigation.nav_3d.evaluator.runner import _run_plan
+from dimos.navigation.nav_3d.evaluator.runner import _run_plan, score_negative
 
 VOXEL = 0.1
 
@@ -397,6 +397,23 @@ def test_meta_floating_bridge_fails_support() -> None:
     assert gap_x.min() > 5.5 and gap_x.max() < 14.5
 
 
+def test_meta_negative_case_scoring() -> None:
+    """A certified-infeasible case scores 1.0 for refusal, 0.0 for any claim."""
+    keys, cfg, case = _meta_scene()
+    refused, _ = _run_plan(_StubPlanner(None), case, 16.0, keys, keys, cfg)
+    out = score_negative(refused)
+    assert out.success
+    assert out.spl == 1.0
+    claimed, _ = _run_plan(_StubPlanner(_u_route()), case, 16.0, keys, keys, cfg)
+    out = score_negative(claimed)
+    assert not out.success
+    assert out.spl == 0.0
+    # A path that wanders but never reaches the goal is still a refusal.
+    wander = np.array([case.start, [4.0, 2.0, 0.0]], dtype=np.float32)
+    partial, _ = _run_plan(_StubPlanner(wander), case, 16.0, keys, keys, cfg)
+    assert score_negative(partial).success
+
+
 def test_check_kinematics_rejects_cliff_jumps() -> None:
     stairs = np.array([[0, 0, 0], [0.4, 0, 0.16], [0.8, 0, 0.32]], dtype=np.float32)
     assert metrics.check_kinematics(stairs, max_slope=1.0, max_step_m=0.2, window_m=0.5).valid
@@ -416,7 +433,10 @@ def test_check_kinematics_rejects_cliff_jumps() -> None:
 def test_save_suite_roundtrip(tmp_path) -> None:
     suite = Suite(
         dataset="demo",
-        cases=[Case(id="a", start=(0.0, 0.0, 0.0), goal=(1.0, 2.0, 3.0), weight=2.0, tags=["x"])],
+        cases=[
+            Case(id="a", start=(0.0, 0.0, 0.0), goal=(1.0, 2.0, 3.0), weight=2.0, tags=["x"]),
+            Case(id="neg", start=(0.0, 0.0, 0.0), goal=(5.0, 5.0, 5.0), expect_fail=True),
+        ],
         lidar_stream="other_lidar",
     )
     path = save_suite(suite, tmp_path / "demo.yaml")
@@ -426,6 +446,8 @@ def test_save_suite_roundtrip(tmp_path) -> None:
     assert loaded.odom_stream == "pointlio_odometry"
     assert loaded.cases[0].goal == (1.0, 2.0, 3.0)
     assert loaded.cases[0].tags == ["x"]
+    assert not loaded.cases[0].expect_fail
+    assert loaded.cases[1].expect_fail
 
 
 def test_load_suite(tmp_path) -> None:
