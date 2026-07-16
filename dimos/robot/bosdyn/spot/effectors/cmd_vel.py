@@ -29,7 +29,6 @@ from __future__ import annotations
 import asyncio
 from collections.abc import AsyncIterator
 from dataclasses import field
-import os
 import time
 from typing import Any
 
@@ -39,24 +38,18 @@ from dimos.core.module import Module, ModuleConfig
 from dimos.core.stream import In
 from dimos.msgs.geometry_msgs.Twist import Twist
 from dimos.msgs.geometry_msgs.Vector3 import Vector3
+from dimos.robot.bosdyn.spot.config import (
+    POWER_OFF_TIMEOUT_S,
+    POWER_ON_TIMEOUT_S,
+    SIT_TIMEOUT_S,
+    STAND_TIMEOUT_S,
+    default_candidate_ips,
+    resolve_credentials,
+    resolve_ip,
+)
 from dimos.utils.logging_config import setup_logger
 
 logger = setup_logger()
-
-_POWER_ON_TIMEOUT_S = 20.0
-_POWER_OFF_TIMEOUT_S = 20.0
-_STAND_TIMEOUT_S = 10.0
-_SIT_TIMEOUT_S = 10.0
-
-# Spot's fixed default addresses: 192.168.80.3 when it hosts its own WiFi AP,
-# 10.0.0.3 on the rear Ethernet port. Probed in order when no ip is given.
-_SPOT_WIFI_AP_IP = "192.168.80.3"
-_SPOT_ETHERNET_IP = "10.0.0.3"
-_IP_LABELS = {_SPOT_WIFI_AP_IP: "WiFi", _SPOT_ETHERNET_IP: "Ethernet"}
-# Spot's gRPC API listens on HTTPS/443; a TCP connect confirms real reachability
-# (and matches what the SDK does) better than an ICMP ping.
-_SPOT_API_PORT = 443
-_REACHABILITY_PROBE_TIMEOUT_S = 2.0
 
 
 class SpotCmdVelConfig(ModuleConfig):
@@ -66,10 +59,9 @@ class SpotCmdVelConfig(ModuleConfig):
     # main() probes `candidate_ips` and uses the first that answers on the API
     # port — so plugging in over Ethernet or joining Spot's WiFi both "just work".
     ip: str = ""
-    candidate_ips: list[str] = field(default_factory=lambda: [_SPOT_WIFI_AP_IP, _SPOT_ETHERNET_IP])
+    candidate_ips: list[str] = field(default_factory=default_candidate_ips)
 
-    # Auth — falls back to BOSDYN_CLIENT_USERNAME / BOSDYN_CLIENT_PASSWORD at
-    # start time when left as None. Startup fails fast if neither is supplied.
+    # Auth — required. Startup fails fast if either is missing.
     username: str | None = None
     password: str | None = None
 
@@ -114,8 +106,8 @@ class SpotCmdVel(Module):
         self._ready = asyncio.Event()
 
     async def main(self) -> AsyncIterator[None]:
-        username, password = self._resolve_credentials()
-        ip = self.config.ip or await self._resolve_ip()
+        username, password = resolve_credentials(self.config.username, self.config.password)
+        ip = self.config.ip or await resolve_ip(self.config.candidate_ips)
 
         from bosdyn.client import create_standard_sdk  # type: ignore[import-not-found]
         from bosdyn.client.estop import (  # type: ignore[import-not-found]
@@ -161,14 +153,16 @@ class SpotCmdVel(Module):
 
         if self.config.power_on_at_start:
             logger.info("Powering on Spot motors")
-            await asyncio.to_thread(self._robot.power_on, timeout_sec=_POWER_ON_TIMEOUT_S)
+            await asyncio.to_thread(self._robot.power_on, timeout_sec=POWER_ON_TIMEOUT_S)
 
         if self.config.stand_at_start:
             logger.info("Standing Spot")
             await asyncio.to_thread(
-                blocking_stand, self._command_client, timeout_sec=_STAND_TIMEOUT_S
+                blocking_stand, self._command_client, timeout_sec=STAND_TIMEOUT_S
             )
             self._standing = True
+
+        await self._on_connected()
 
         self._ready.set()
         logger.info("Spot cmd_vel control ready")
@@ -176,6 +170,8 @@ class SpotCmdVel(Module):
         yield
 
         self._ready.clear()
+        await self._on_teardown()
+
         if self._standing:
             try:
                 from bosdyn.client.robot_command import (  # type: ignore[import-not-found]
@@ -183,7 +179,7 @@ class SpotCmdVel(Module):
                 )
 
                 await asyncio.to_thread(
-                    blocking_sit, self._command_client, timeout_sec=_SIT_TIMEOUT_S
+                    blocking_sit, self._command_client, timeout_sec=SIT_TIMEOUT_S
                 )
             except Exception as error:
                 logger.error(f"Spot sit during teardown failed: {error}")
@@ -192,7 +188,7 @@ class SpotCmdVel(Module):
         if self.config.power_on_at_start and self._robot is not None:
             try:
                 await asyncio.to_thread(
-                    self._robot.power_off, cut_immediately=False, timeout_sec=_POWER_OFF_TIMEOUT_S
+                    self._robot.power_off, cut_immediately=False, timeout_sec=POWER_OFF_TIMEOUT_S
                 )
             except Exception as error:
                 logger.error(f"Spot power_off during teardown failed: {error}")
@@ -209,6 +205,12 @@ class SpotCmdVel(Module):
         self._lease_keepalive = None
         self._estop_keepalive = None
         logger.info("Spot cmd_vel control torn down")
+
+    async def _on_connected(self) -> None:
+        """Hook for subclasses to start extra services once the robot is up."""
+
+    async def _on_teardown(self) -> None:
+        """Hook for subclasses to stop extra services before the robot sits."""
 
     async def handle_cmd_vel(self, msg: Twist) -> None:
         if not self._ready.is_set():
@@ -279,7 +281,7 @@ class SpotCmdVel(Module):
             )
 
             await asyncio.to_thread(
-                blocking_stand, self._command_client, timeout_sec=_STAND_TIMEOUT_S
+                blocking_stand, self._command_client, timeout_sec=STAND_TIMEOUT_S
             )
             self._standing = True
             return "Spot is standing."
@@ -297,50 +299,9 @@ class SpotCmdVel(Module):
                 blocking_sit,
             )
 
-            await asyncio.to_thread(blocking_sit, self._command_client, timeout_sec=_SIT_TIMEOUT_S)
+            await asyncio.to_thread(blocking_sit, self._command_client, timeout_sec=SIT_TIMEOUT_S)
             self._standing = False
             return "Spot is sitting."
         except Exception as error:
             logger.error(f"Spot sit failed: {error}")
             return f"Sit failed: {error}"
-
-    async def _resolve_ip(self) -> str:
-        for candidate in self.config.candidate_ips:
-            if await self._is_reachable(candidate):
-                logger.info(f"Spot reachable at {candidate}")
-                return candidate
-        described = " or ".join(
-            f"{candidate} ({_IP_LABELS[candidate]})" if candidate in _IP_LABELS else candidate
-            for candidate in self.config.candidate_ips
-        )
-        raise ConnectionError(
-            f"I'm unable to connect to {described}. Did you forget to connect to "
-            "Spot's WiFi or plug in an Ethernet cable to Spot?"
-        )
-
-    async def _is_reachable(self, ip: str) -> bool:
-        try:
-            _, writer = await asyncio.wait_for(
-                asyncio.open_connection(ip, _SPOT_API_PORT),
-                timeout=_REACHABILITY_PROBE_TIMEOUT_S,
-            )
-        except (OSError, asyncio.TimeoutError):
-            return False
-        # Reachable — a successful TCP handshake is all we need. Close without
-        # awaiting wait_closed(); the API port speaks TLS and never completes a
-        # clean plaintext close, which would otherwise hang the probe.
-        writer.close()
-        return True
-
-    def _resolve_credentials(self) -> tuple[str, str]:
-        username = self.config.username or os.environ.get("BOSDYN_CLIENT_USERNAME")
-        password = self.config.password or os.environ.get("BOSDYN_CLIENT_PASSWORD")
-        if not username or not password:
-            raise ValueError(
-                "Spot credentials missing — set username/password in config "
-                "or BOSDYN_CLIENT_USERNAME / BOSDYN_CLIENT_PASSWORD env vars"
-            )
-        return username, password
-
-
-__all__ = ["SpotCmdVel", "SpotCmdVelConfig"]
