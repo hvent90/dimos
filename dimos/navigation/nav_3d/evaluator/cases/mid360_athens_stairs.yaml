@@ -1,82 +1,52 @@
 dataset: mid360_athens_stairs
 cases:
 - id: auto_00_up
-  start: [-2.52, -0.52, -0.32]
+  start: [-0.12, -0.6, -0.32]
   goal: [1.32, -0.84, 2.72]
   weight: 3.0
   tags: [auto, stairs, up, long]
-- id: auto_01_down
-  start: [1.32, -0.84, 2.72]
-  goal: [-2.52, -0.52, -0.32]
-  weight: 3.0
-  tags: [auto, stairs, down, long]
-- id: auto_02_down
-  start: [6.44, -5.56, -1.44]
-  goal: [7.24, -3.96, -6.08]
-  weight: 3.0
-  tags: [auto, stairs, down, long]
-- id: auto_03_up
+- id: auto_01_up
   start: [7.24, -3.96, -6.08]
   goal: [6.44, -5.56, -1.44]
   weight: 3.0
   tags: [auto, stairs, up, long]
-- id: auto_04_up
-  start: [0.68, -4.12, -0.32]
-  goal: [8.04, -0.76, 3.04]
-  weight: 3.0
-  tags: [auto, stairs, up, long]
-- id: auto_05_down
+- id: auto_02_down
   start: [8.04, -0.76, 3.04]
-  goal: [0.68, -4.12, -0.32]
-  weight: 3.0
-  tags: [auto, stairs, down, long]
-- id: auto_06_up
-  start: [-2.36, -4.36, -0.32]
-  goal: [5.88, -4.52, 2.96]
-  weight: 3.0
-  tags: [auto, stairs, up, long]
-- id: auto_07_down
-  start: [5.88, -4.52, 2.96]
   goal: [-2.36, -4.36, -0.32]
   weight: 3.0
   tags: [auto, stairs, down, long]
-- id: auto_08_up
-  start: [-2.04, 3.16, -0.48]
-  goal: [-0.2, -3.0, 2.56]
+- id: auto_03_down
+  start: [5.88, -4.52, 2.96]
+  goal: [2.28, -6.52, -0.32]
   weight: 3.0
-  tags: [auto, stairs, up, long]
-- id: auto_09_down
+  tags: [auto, stairs, down, long]
+- id: auto_04_down
   start: [-0.2, -3.0, 2.56]
   goal: [-2.04, 3.16, -0.48]
   weight: 3.0
   tags: [auto, stairs, down, long]
-- id: auto_10_up
-  start: [5.96, -3.64, -3.52]
-  goal: [0.12, -0.76, -0.32]
-  weight: 3.0
-  tags: [auto, stairs, up, long]
-- id: auto_11_down
-  start: [0.12, -0.76, -0.32]
+- id: auto_05_down
+  start: [0.52, -4.68, -0.32]
   goal: [5.96, -3.64, -3.52]
   weight: 3.0
   tags: [auto, stairs, down, long]
-- id: auto_12_flat
-  start: [5.16, -3.96, -3.44]
-  goal: [7.48, -3.8, -2.96]
-  weight: 1.0
-  tags: [auto, flat]
-- id: auto_13_flat
-  start: [-2.04, 3.16, -0.48]
-  goal: [5.48, -5.56, -0.96]
-  weight: 1.0
-  tags: [auto, flat]
-- id: auto_14_flat
-  start: [6.28, -5.64, 2.24]
-  goal: [-0.04, -1.96, 2.56]
-  weight: 1.0
-  tags: [auto, flat]
-- id: auto_15_flat
-  start: [7.24, -3.96, -6.08]
-  goal: [5.08, -3.8, -6.48]
+- id: auto_06_up
+  start: [6.36, -5.4, -4.48]
+  goal: [-2.36, 0.44, -0.4]
+  weight: 3.0
+  tags: [auto, stairs, up, long]
+- id: auto_07_down
+  start: [6.68, -5.56, 2.08]
+  goal: [5.72, -5.48, -1.04]
+  weight: 3.0
+  tags: [auto, stairs, down, long]
+- id: auto_08_down
+  start: [-0.2, -3.0, 2.56]
+  goal: [7.16, -3.8, -3.12]
+  weight: 3.0
+  tags: [auto, stairs, down, long]
+- id: auto_09_flat
+  start: [5.08, -3.8, -6.48]
+  goal: [7.24, -3.96, -6.08]
   weight: 1.0
   tags: [auto, flat]

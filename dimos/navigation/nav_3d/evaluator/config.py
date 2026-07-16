@@ -82,7 +82,7 @@ class EvalConfig:
         )
 
     def mapper_fingerprint(self) -> dict[str, float | int]:
-        """The mapper parameters that determine golden map content."""
+        """The mapper parameters that determine final map content."""
         return {
             "voxel_size": self.voxel_size,
             "max_range": self.max_range,

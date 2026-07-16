@@ -26,6 +26,7 @@ from __future__ import annotations
 
 import dataclasses
 import json
+import os
 from pathlib import Path
 import sqlite3
 from typing import TYPE_CHECKING
@@ -42,13 +43,13 @@ from dimos.navigation.nav_3d.evaluator.cases import (
     save_suite,
 )
 from dimos.navigation.nav_3d.evaluator.config import EvalConfig
+from dimos.navigation.nav_3d.evaluator.final_map import load_or_build_final_map
 from dimos.navigation.nav_3d.evaluator.generate import (
     GenerationParams,
     drift_stats,
     generate_cases,
     snap_to_surface,
 )
-from dimos.navigation.nav_3d.evaluator.golden import load_or_build_golden
 from dimos.navigation.nav_3d.evaluator.recording import load_trajectory
 from dimos.navigation.nav_3d.evaluator.runner import Report, evaluate
 from dimos.utils.data import get_data_dir, resolve_named_path
@@ -73,29 +74,35 @@ def _apply_overrides(cfg: EvalConfig, overrides: list[str]) -> EvalConfig:
 
 
 def _print_report(report: Report) -> None:
-    header = f"{'case':<28} {'dataset':<22} {'attr':<8} {'spl':>5} {'len':>6} {'ref':>6} {'ms':>7}"
+    header = (
+        f"{'case':<28} {'dataset':<22} {'inc':>5} {'fin':>5} "
+        f"{'len':>6} {'ref':>6} {'vox':>8} {'ms':>7}"
+    )
     print(header)
     print("-" * len(header))
     for d in report.datasets:
         for c in d.cases:
             print(
-                f"{c.id:<28} {c.dataset:<22} {c.attribution:<8} "
-                f"{c.online.spl:>5.2f} {c.online.length:>6.1f} {c.l_ref:>6.1f} "
-                f"{c.online.plan_ms:>7.1f}"
+                f"{c.id:<28} {c.dataset:<22} "
+                f"{c.online.spl:>5.2f} {c.final.spl:>5.2f} "
+                f"{c.online.length:>6.1f} {c.l_ref:>6.1f} "
+                f"{c.online_voxels:>8d} {c.online.plan_ms:>7.1f}"
             )
     print("-" * len(header))
     for d in report.datasets:
         print(
-            f"{d.dataset}: {d.frames} frames, online {d.online_voxels} / "
-            f"golden {d.golden_voxels} voxels, "
+            f"{d.dataset}: {d.frames} frames, "
+            f"final {d.final_voxels} voxels, "
             f"map build {d.map_build_ms / 1000:.1f}s"
         )
     print(
         f"\nscore {report.score:.3f} | soft {report.score_soft:.3f} | "
-        f"planner {report.planner_score:.3f} | "
-        f"success {report.n_success}/{report.n_cases} | "
-        f"attribution {report.attribution_counts} | "
-        f"plan p95 {report.plan_ms['p95']:.1f}ms"
+        f"final {report.final_score:.3f} | "
+        f"success inc {report.n_success}/{report.n_cases} "
+        f"fin {report.n_success_final}/{report.n_cases} | "
+        f"outcomes {report.outcome_counts} | "
+        f"plan p95 {report.plan_ms['p95']:.1f}ms | "
+        f"map update p95 {report.map_update_ms['p95']:.0f}ms"
     )
 
 
@@ -107,7 +114,11 @@ def run(
     dataset: str = typer.Option(None, "--dataset", help="Only run suites for this dataset"),
     json_out: Path = typer.Option(None, "--json", help="Write the full report as JSON"),
     rrd_out: Path = typer.Option(None, "--rrd", help="Write a rerun recording of every case"),
-    workers: int = typer.Option(1, "--workers", help="Datasets evaluated in parallel processes"),
+    workers: int = typer.Option(
+        os.cpu_count() or 1,
+        "--workers",
+        help="Total parallelism: dataset processes x checkpoint threads",
+    ),
     set_: list[str] = typer.Option(
         None, "--set", help="Repeatable EvalConfig override, e.g. wall_clearance_m=0.05"
     ),
@@ -199,11 +210,11 @@ def ingest(
         print(f"WARNING: {warning}")
 
     cfg = EvalConfig()
-    golden = load_or_build_golden(dest, suite, cfg)
+    final = load_or_build_final_map(dest, suite, cfg)
     planner = cfg.make_planner()
-    planner.update_global_map(golden.occupied)
+    planner.update_global_map(final.occupied)
     gen = GenerationParams(max_cases=max_cases or None)
-    suite.cases = generate_cases(trajectory, golden, planner.surface_map(), cfg, gen)
+    suite.cases = generate_cases(trajectory, final, planner.surface_map(), cfg, gen)
     if not suite.cases:
         raise typer.Exit(code=1)
     floor = min(gen.min_cases, gen.resolve_max_cases(float(arcs[-1])))
@@ -229,15 +240,15 @@ def add_case(
     weight: float = typer.Option(2.0, "--weight"),
     snap_max: float = typer.Option(1.0, "--snap-max", help="Max snap distance to surface (m)"),
 ) -> None:
-    """Append a curated case, with both endpoints snapped to the golden surface."""
+    """Append a curated case, with both endpoints snapped to the final surface."""
     manifest = CASES_DIR / f"{dataset}.yaml"
     if not manifest.exists():
         raise typer.BadParameter(f"no manifest {manifest}; run ingest first")
     suite = load_suite(manifest)
     cfg = EvalConfig()
-    golden = load_or_build_golden(resolve_named_path(dataset, ".db"), suite, cfg)
+    final = load_or_build_final_map(resolve_named_path(dataset, ".db"), suite, cfg)
     planner = cfg.make_planner()
-    planner.update_global_map(golden.occupied)
+    planner.update_global_map(final.occupied)
     surface = planner.surface_map()
 
     case = Case(

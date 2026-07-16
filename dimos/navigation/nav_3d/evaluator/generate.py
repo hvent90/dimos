@@ -16,9 +16,13 @@
 
 Candidate pairs are sampled along the walked path, so both endpoints are
 physically proven reachable. A pair is kept only when it is non-trivial:
-the straight start-goal line collides with golden obstacles, the walked
+the straight start-goal line collides with final obstacles, the walked
 route detours well past the straight-line distance, or the pair climbs.
-Endpoints snap to the golden surface so drift between passes cannot leave
+Every case points backward in time: the goal is a spot the robot had
+already visited when it stood at the start, so an incremental map built up
+to the start time has seen the goal and a demonstrated route. The forward
+direction is emitted too when the start is revisited after the goal.
+Endpoints snap to the final surface so drift between passes cannot leave
 a case floating off the map. Generation is deterministic.
 """
 
@@ -36,7 +40,7 @@ if TYPE_CHECKING:
     from numpy.typing import NDArray
 
     from dimos.navigation.nav_3d.evaluator.config import EvalConfig
-    from dimos.navigation.nav_3d.evaluator.golden import GoldenMap
+    from dimos.navigation.nav_3d.evaluator.final_map import FinalMap
     from dimos.navigation.nav_3d.evaluator.recording import Trajectory
 
 STAIRS_DZ_M = 0.5
@@ -119,13 +123,13 @@ def _subsample_indices(trajectory: Trajectory, spacing_m: float) -> NDArray[np.i
 
 def generate_cases(
     trajectory: Trajectory,
-    golden: GoldenMap,
+    final: FinalMap,
     surface: NDArray[np.float32],
     cfg: EvalConfig,
     params: GenerationParams | None = None,
 ) -> list[Case]:
     params = params or GenerationParams()
-    obstacle_keys = golden.occupied_keys
+    obstacle_keys = final.occupied_keys
     arcs = trajectory.arc_lengths()
     foot = trajectory.positions - np.array([0.0, 0.0, cfg.robot_height], dtype=np.float32)
 
@@ -143,6 +147,8 @@ def generate_cases(
         if not ok[ai]:
             continue
         sa = snaps[ai]
+        near_a = np.linalg.norm(foot - sa, axis=1) <= params.snap_max_m
+        last_visit_a = float(trajectory.ts[near_a].max()) if near_a.any() else -np.inf
         later = np.arange(ai + 1, len(idx))
         later = later[ok[later]]
         if not len(later):
@@ -171,19 +177,27 @@ def generate_cases(
                 ).valid
                 if not blocked:
                     continue
-            cand = Candidate(
-                start=(float(sa[0]), float(sa[1]), float(sa[2])),
-                goal=(float(sb[0]), float(sb[1]), float(sb[2])),
-                walked_m=float(w),
-                detour_ratio=detour,
-                dz=dz,
-            )
-            bins = np.floor(np.array([*sa[:2], *sb[:2]]) / params.bin_size_m).astype(int)
-            dz_sign = int(np.sign(dz)) if abs(dz) >= STAIRS_DZ_M else 0
-            key = (*bins, dz_sign)
-            best = candidates.get(key)
-            if best is None or cand.priority > best.priority:
-                candidates[key] = cand
+            # Backward in time is always causal; forward only when the start
+            # spot is revisited after the goal visit.
+            directed = [(sb, sa, -dz)]
+            if last_visit_a >= float(trajectory.ts[idx[bi]]):
+                directed.append((sa, sb, dz))
+            for p_start, p_goal, d_dz in directed:
+                cand = Candidate(
+                    start=(float(p_start[0]), float(p_start[1]), float(p_start[2])),
+                    goal=(float(p_goal[0]), float(p_goal[1]), float(p_goal[2])),
+                    walked_m=float(w),
+                    detour_ratio=detour,
+                    dz=d_dz,
+                )
+                bins = np.floor(np.array([*p_start[:2], *p_goal[:2]]) / params.bin_size_m).astype(
+                    int
+                )
+                dz_sign = int(np.sign(d_dz)) if abs(d_dz) >= STAIRS_DZ_M else 0
+                key = (*bins, dz_sign)
+                best = candidates.get(key)
+                if best is None or cand.priority > best.priority:
+                    candidates[key] = cand
 
     ranked = sorted(candidates.values(), key=lambda c: (-c.priority, c.start, c.goal))
     selected = _select_diverse(ranked, params, params.resolve_max_cases(float(arcs[-1])))
@@ -200,16 +214,6 @@ def _is_duplicate(cand: Candidate, accepted: list[Candidate], radius: float) -> 
     return False
 
 
-def _reversed(cand: Candidate) -> Candidate:
-    return Candidate(
-        start=cand.goal,
-        goal=cand.start,
-        walked_m=cand.walked_m,
-        detour_ratio=cand.detour_ratio,
-        dz=-cand.dz,
-    )
-
-
 def _select_diverse(
     ranked: list[Candidate], params: GenerationParams, max_cases: int
 ) -> list[Candidate]:
@@ -217,11 +221,10 @@ def _select_diverse(
     its priority plus how far its endpoints are from every endpoint already in
     use. Coverage is the objective, not a filter, so cases spread across the
     map instead of fanning out of the highest-priority spot. A sector-usage
-    cap bounds hub reuse outright. Stair candidates also claim their reversed
-    direction, and the flat quota keeps stairs from crowding out flats.
-    When the strict pass yields fewer than min_cases, sector-capped candidates
-    are revived and a relaxed pass without sector caps or the flat quota
-    backfills up to the floor.
+    cap bounds hub reuse outright, and the flat quota keeps stairs from
+    crowding out flats. When the strict pass yields fewer than min_cases,
+    sector-capped candidates are revived and a relaxed pass without sector
+    caps or the flat quota backfills up to the floor.
     """
     if not ranked:
         return []
@@ -281,8 +284,6 @@ def _select_diverse(
             used_points.append(starts[n])
             used_points.append(goals[n])
             bucket.append(cand)
-            if bucket is stairs and (relax or len(stairs) < stairs_cap):
-                bucket.append(_reversed(cand))
 
     fill(max_cases, relax=False)
     min_cases = min(params.min_cases, max_cases)

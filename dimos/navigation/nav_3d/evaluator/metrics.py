@@ -21,7 +21,7 @@ from typing import TYPE_CHECKING
 
 import numpy as np
 
-from dimos.navigation.nav_3d.evaluator.golden import (
+from dimos.navigation.nav_3d.evaluator.final_map import (
     cylinder_offsets,
     densify,
     key_centers,
@@ -49,7 +49,7 @@ def goal_reached(
 
 @dataclass
 class GateResult:
-    """Collision check of a path against the golden obstacle set."""
+    """Collision check of a path against the final obstacle set."""
 
     valid: bool
     collision_points: NDArray[np.float32]
@@ -63,7 +63,7 @@ def check_path(
     ground_margin: float,
     body_clearance: float,
 ) -> GateResult:
-    """Sweep the robot body along foot-level waypoints against golden obstacles.
+    """Sweep the robot body along foot-level waypoints against final obstacles.
 
     The checked volume at each sample is a cylinder from ground_margin above
     the foot (so the supporting floor never counts) up to body_clearance.
@@ -93,19 +93,35 @@ def check_path(
     return GateResult(valid=len(colliding) == 0, collision_points=samples[colliding])
 
 
+@dataclass
+class Reference:
+    """Demonstrated route between a case's endpoints."""
+
+    length: float
+    snapped: bool
+    # When the robot stood at the start about to walk the route; inf when
+    # the endpoints are off the trajectory or no causal pair exists.
+    start_ts: float
+    # True when the goal was visited before the chosen start visit, so a
+    # planner at start_ts targets a place the robot has already been.
+    causal: bool
+
+
 def reference_length(
     trajectory: Trajectory,
     start: tuple[float, float, float],
     goal: tuple[float, float, float],
     robot_height: float,
     max_snap_m: float = 1.0,
-) -> tuple[float, bool]:
+) -> Reference:
     """Shortest walked length the trajectory demonstrates between start and goal.
 
     The robot usually passes each spot several times, so the reference is the
-    minimum arc distance over every combination of start and goal visits, not
-    the arc between single nearest poses, which would include any wandering in
-    between. Returns (length, snapped). When either endpoint is farther than
+    minimum route length over every combination of start and goal visits, not
+    the route between single nearest poses, which would include any wandering
+    in between. Only causal pairs count when one exists: the goal visited
+    before the start, so an incremental map at the start time has seen the
+    goal and the demonstrated route. When either endpoint is farther than
     max_snap_m from the trajectory, falls back to the straight-line distance.
     """
     foot = trajectory.positions - np.array([0.0, 0.0, robot_height], dtype=np.float32)
@@ -114,15 +130,23 @@ def reference_length(
     ds = np.linalg.norm(foot - s, axis=1)
     dg = np.linalg.norm(foot - g, axis=1)
     if ds.min() > max_snap_m or dg.min() > max_snap_m:
-        return float(np.linalg.norm(g - s)), False
+        return Reference(float(np.linalg.norm(g - s)), False, float("inf"), False)
     arcs = trajectory.arc_lengths()
     near_s = np.flatnonzero(ds <= max_snap_m)
     near_g = np.flatnonzero(dg <= max_snap_m)
-    pair_arcs = np.abs(arcs[near_s][:, None] - arcs[near_g][None, :])
-    best = np.unravel_index(pair_arcs.argmin(), pair_arcs.shape)
-    i, j = int(near_s[best[0]]), int(near_g[best[1]])
-    length = float(pair_arcs[best]) + float(ds[i]) + float(dg[j])
-    return max(length, 1e-6), True
+    totals = (
+        np.abs(arcs[near_s][:, None] - arcs[near_g][None, :])
+        + ds[near_s][:, None]
+        + dg[near_g][None, :]
+    )
+    backward = trajectory.ts[near_g][None, :] <= trajectory.ts[near_s][:, None]
+    causal = bool(backward.any())
+    if causal:
+        totals = np.where(backward, totals, np.inf)
+    best = np.unravel_index(totals.argmin(), totals.shape)
+    i = int(near_s[best[0]])
+    start_ts = float(trajectory.ts[i]) if causal else float("inf")
+    return Reference(max(float(totals[best]), 1e-6), True, start_ts, causal)
 
 
 def spl(success: bool, l_ref: float, p_len: float) -> float:

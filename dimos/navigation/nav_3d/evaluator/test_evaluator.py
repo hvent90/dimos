@@ -14,6 +14,7 @@
 
 from __future__ import annotations
 
+import itertools
 from types import SimpleNamespace
 
 import numpy as np
@@ -21,6 +22,15 @@ import pytest
 
 from dimos.navigation.nav_3d.evaluator import metrics
 from dimos.navigation.nav_3d.evaluator.cases import Case, Suite, load_suite, save_suite
+from dimos.navigation.nav_3d.evaluator.final_map import (
+    FinalMap,
+    MapCheckpoints,
+    encode_deltas,
+    key_centers,
+    keys_contain,
+    replay_frames,
+    voxel_keys,
+)
 from dimos.navigation.nav_3d.evaluator.generate import (
     Candidate,
     GenerationParams,
@@ -29,13 +39,7 @@ from dimos.navigation.nav_3d.evaluator.generate import (
     generate_cases,
     snap_to_surface,
 )
-from dimos.navigation.nav_3d.evaluator.golden import (
-    GoldenMap,
-    key_centers,
-    keys_contain,
-    voxel_keys,
-)
-from dimos.navigation.nav_3d.evaluator.recording import Trajectory
+from dimos.navigation.nav_3d.evaluator.recording import Frame, Trajectory
 
 VOXEL = 0.1
 
@@ -107,11 +111,19 @@ def test_reference_length_snaps_to_trajectory() -> None:
         [np.linspace(0, 10, 101), np.zeros(101), np.full(101, 0.3)], axis=1
     ).astype(np.float32)
     traj = Trajectory(ts=np.linspace(0, 10, 101), positions=positions)
-    l_ref, snapped = metrics.reference_length(traj, (0, 0, 0), (10, 0, 0), robot_height=0.3)
-    assert snapped
-    assert l_ref == pytest.approx(10.0, abs=0.01)
-    l_ref, snapped = metrics.reference_length(traj, (0, 5, 0), (10, 0, 0), robot_height=0.3)
-    assert not snapped
+    # Walking toward a never-yet-visited goal is not causal.
+    ref = metrics.reference_length(traj, (0, 0, 0), (10, 0, 0), robot_height=0.3)
+    assert ref.snapped
+    assert ref.length == pytest.approx(10.0, abs=0.01)
+    assert not ref.causal
+    assert ref.start_ts == float("inf")
+    # Returning to the walk's origin is causal.
+    ref = metrics.reference_length(traj, (10, 0, 0), (0, 0, 0), robot_height=0.3)
+    assert ref.causal
+    assert 9.0 <= ref.start_ts <= 10.0
+    ref = metrics.reference_length(traj, (0, 5, 0), (10, 0, 0), robot_height=0.3)
+    assert not ref.snapped
+    assert ref.start_ts == float("inf")
 
 
 def test_reference_length_uses_shortest_revisit() -> None:
@@ -121,9 +133,9 @@ def test_reference_length_uses_shortest_revisit() -> None:
     back = detour[::-1]
     positions = np.concatenate([out, detour, back]).astype(np.float32)
     traj = Trajectory(ts=np.linspace(0, 30, len(positions)), positions=positions)
-    l_ref, snapped = metrics.reference_length(traj, (0, 0, 0), (10, 0, 0), robot_height=0.3)
-    assert snapped
-    assert l_ref == pytest.approx(10.0, abs=0.2)
+    ref = metrics.reference_length(traj, (0, 0, 0), (10, 0, 0), robot_height=0.3)
+    assert ref.snapped
+    assert ref.length == pytest.approx(10.0, abs=0.2)
 
 
 def test_path_length_and_goal() -> None:
@@ -137,7 +149,7 @@ def test_generate_cases_around_wall() -> None:
     """A U-shaped walk around a wall must yield non-trivial cases spanning it."""
     wall_pts = _wall(10.0)
     wall_keys = np.unique(voxel_keys(wall_pts, VOXEL))
-    golden = GoldenMap(
+    final = FinalMap(
         voxel_size=VOXEL,
         occupied=wall_pts,
         occupied_keys=wall_keys,
@@ -166,7 +178,7 @@ def test_generate_cases_around_wall() -> None:
         ground_margin=0.25,
         body_clearance=0.45,
     )
-    cases = generate_cases(traj, golden, surface, cfg, GenerationParams(max_cases=10))
+    cases = generate_cases(traj, final, surface, cfg, GenerationParams(max_cases=10))
     assert cases
     assert len({c.id for c in cases}) == len(cases)
     spans_wall = [c for c in cases if (c.start[0] - 10) * (c.goal[0] - 10) < 0]
@@ -212,6 +224,69 @@ def test_drift_stats_flags_z_mismatch() -> None:
 
     clean = Trajectory(ts=ts, positions=np.concatenate([out, out[::-1]]).astype(np.float32))
     assert not drift_stats(clean).warnings
+
+
+def test_checkpoint_deltas_roundtrip() -> None:
+    snapshots = [
+        np.array([1, 2, 3], dtype=np.int64),
+        np.array([2, 3, 4, 5], dtype=np.int64),
+        np.array([4, 5], dtype=np.int64),
+    ]
+    observed = [
+        np.array([1, 2, 3], dtype=np.int64),
+        np.array([1, 2, 3, 4, 5], dtype=np.int64),
+        np.array([1, 2, 3, 4, 5, 9], dtype=np.int64),
+    ]
+    added, removed = encode_deltas(snapshots)
+    observed_added, _ = encode_deltas(observed)
+    ckpt = MapCheckpoints(
+        times=np.arange(3, dtype=np.float64),
+        added=added,
+        removed=removed,
+        observed_added=observed_added,
+    )
+    seen = np.array([], dtype=np.int64)
+    for (orig_keys, orig_obs), (keys, obs_new) in zip(
+        zip(snapshots, observed, strict=True), ckpt.iter_snapshots(), strict=True
+    ):
+        assert np.array_equal(orig_keys, keys)
+        seen = np.union1d(seen, obs_new)
+        assert np.array_equal(orig_obs, seen)
+
+
+def test_replay_frames_snapshots_grow_with_time() -> None:
+    """Each checkpoint must contain exactly the frames seen up to its time."""
+    from dimos.navigation.nav_3d.evaluator.config import EvalConfig
+
+    cfg = EvalConfig(voxel_size=VOXEL, support_min=1)
+
+    def frame_at(ts: float, x: float) -> Frame:
+        return Frame(ts=ts, points=_wall(x), origin=(x - 2.0, 0.0, 0.5))
+
+    # A voxel needs a second observation to persist, so hit each wall twice.
+    frames = [
+        frame_at(0.0, 5.0),
+        frame_at(0.1, 5.0),
+        frame_at(1.0, 8.0),
+        frame_at(1.1, 8.0),
+        frame_at(2.0, 11.0),
+        frame_at(2.1, 11.0),
+    ]
+    times = np.array([0.5, 1.5, np.inf])
+    final, snapshots, observed = replay_frames(frames, cfg.make_mapper(), VOXEL, times)
+    assert final.frames == 6
+    sizes = [len(s) for s in snapshots]
+    assert 0 < sizes[0] < sizes[1] < sizes[2]
+    assert np.array_equal(snapshots[2], final.occupied_keys)
+    for earlier, later in itertools.pairwise(snapshots):
+        assert keys_contain(later, earlier).all()
+    # The observed set holds raw returns causally: wall 1 by the first
+    # checkpoint, wall 3 only at the end.
+    wall1 = np.unique(voxel_keys(_wall(5.0), VOXEL))
+    wall3 = np.unique(voxel_keys(_wall(11.0), VOXEL))
+    assert keys_contain(observed[0], wall1).all()
+    assert not keys_contain(observed[0], wall3).any()
+    assert keys_contain(observed[2], wall3).all()
 
 
 def test_save_suite_roundtrip(tmp_path) -> None:

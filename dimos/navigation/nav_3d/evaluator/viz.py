@@ -15,15 +15,16 @@
 """Write an evaluation report into a rerun recording.
 
 One static scene per dataset:
-- map/obstacles: golden voxels, turbo colormap by height
+- map/obstacles: final voxels, turbo colormap by height
 - walked_path: the recorded foot path (white)
-- planner_online, planner_golden: the planner graph each map produced.
+- planner_final: the planner graph the full aggregated map produced.
   Surface cells colored by wall clearance (red inside the hard clearance),
-  nodes yellow, edges colored white to red by log traversal cost.
-- cases/<id>: start (cyan), goal (orange), online and golden planned paths
+  edges colored white to red by log traversal cost.
+- cases/<id>: start (cyan), goal (orange), online and final planned paths
   colored by verdict (green valid, red gate-invalid, yellow unreached), and
   the gate's collision samples (red dots). Failed cases also get a thin red
-  start-to-goal line so the intended connection is visible even with no path.
+  start-to-goal intent line and a known/ layer: the planner graph on the
+  incremental map at plan time, i.e. what the robot knew when it failed.
 """
 
 from __future__ import annotations
@@ -33,7 +34,7 @@ from typing import TYPE_CHECKING
 import numpy as np
 import rerun as rr
 
-from dimos.navigation.nav_3d.evaluator.golden import load_or_build_golden
+from dimos.navigation.nav_3d.evaluator.final_map import load_or_build_final_map
 from dimos.navigation.nav_3d.evaluator.recording import load_trajectory
 from dimos.utils.data import resolve_named_path
 
@@ -55,7 +56,6 @@ VALID_PATH_COLOR = [0, 220, 0]
 INVALID_PATH_COLOR = [255, 0, 0]
 UNREACHED_PATH_COLOR = [255, 200, 0]
 
-NODE_COLOR = [255, 200, 0]
 CLEARANCE_CLAMP_M = 1.0
 
 
@@ -97,12 +97,6 @@ def _log_planner(entity: str, artifacts: PlannerArtifacts | None, cfg: EvalConfi
                 colors=_clearance_colors(surface[:, 3], cfg.wall_clearance_m),
                 radii=cfg.voxel_size / 4,
             ),
-            static=True,
-        )
-    if artifacts.nodes.size:
-        rr.log(
-            f"{entity}/nodes",
-            rr.Points3D(artifacts.nodes, colors=[NODE_COLOR], radii=0.05),
             static=True,
         )
     edges = artifacts.edges
@@ -150,15 +144,15 @@ def write_rrd(report: Report, suites: list[Suite], cfg: EvalConfig, out: Path) -
     for dataset in report.datasets:
         suite = suites_by_dataset[dataset.dataset]
         db_path = resolve_named_path(suite.dataset, ".db")
-        golden = load_or_build_golden(db_path, suite, cfg)
+        final = load_or_build_final_map(db_path, suite, cfg)
         trajectory = load_trajectory(db_path, suite.odom_stream)
         root = dataset.dataset
 
         rr.log(
             f"{root}/map/obstacles",
             rr.Points3D(
-                golden.occupied,
-                colors=_turbo_by_height(golden.occupied),
+                final.occupied,
+                colors=_turbo_by_height(final.occupied),
                 radii=cfg.voxel_size / 4,
             ),
             static=True,
@@ -170,8 +164,7 @@ def write_rrd(report: Report, suites: list[Suite], cfg: EvalConfig, out: Path) -
             static=True,
         )
 
-        _log_planner(f"{root}/planner_online", dataset.online_artifacts, cfg)
-        _log_planner(f"{root}/planner_golden", dataset.golden_artifacts, cfg)
+        _log_planner(f"{root}/planner_final", dataset.final_artifacts, cfg)
 
         for case in dataset.cases:
             base = f"{root}/cases/{case.id}"
@@ -193,8 +186,9 @@ def write_rrd(report: Report, suites: list[Suite], cfg: EvalConfig, out: Path) -
                     ),
                     static=True,
                 )
+                _log_planner(f"{base}/known", case.online_artifacts, cfg)
             _log_path(f"{base}/online", case.online, radius=0.04)
-            _log_path(f"{base}/golden", case.golden, radius=0.02)
+            _log_path(f"{base}/final", case.final, radius=0.02)
 
     print(f"wrote {out}")
     print(f"open with: rerun {out}")
