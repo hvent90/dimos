@@ -2,9 +2,10 @@
 # One-time dimos provisioning for an R1 Lite ONBOARD PC — single run.
 # RUN THIS ON THE ROBOT (ssh r1lite). Standard flow for any fresh R1 Lite
 # (repo is public — no credentials needed on the robot):
-#     git clone -b krishna/task/r1lite-integration \
-#         https://github.com/dimensionalOS/dimos.git ~/dimos
+#     git clone https://github.com/dimensionalOS/dimos.git ~/dimos
 #     cd ~/dimos
+# To install from a feature branch instead of main:
+#     DIMOS_BRANCH=my/branch bash scripts/r1lite_test/r1lite_dimos_install.sh
 #     ./scripts/r1lite_test/roslaunch.sh        # stack up (final DDS check needs it)
 #     bash scripts/r1lite_test/r1lite_dimos_install.sh
 #
@@ -16,7 +17,7 @@
 
 set -e
 
-BRANCH=krishna/task/r1lite-integration
+BRANCH="${DIMOS_BRANCH:-main}"
 REPO_URL=https://github.com/dimensionalOS/dimos.git
 IMAGE=ghcr.io/dimensionalos/ros-dev:dev
 CONTAINER=dimos-dev-r1lite
