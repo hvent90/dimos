@@ -36,7 +36,5 @@ def test_inverts_plant_gain():
 @pytest.mark.parametrize("axis", ["K_vx", "K_vy", "K_wz"])
 @pytest.mark.parametrize("bad", [0.0, float("nan"), float("inf"), -float("inf")])
 def test_unusable_gain_rejected_at_construction(axis, bad):
-    # Zero divides-by-zero on the tick; NaN/inf slip past a magnitude check and
-    # poison every command. Both are invalid artifacts — reject at construction.
     with pytest.raises(ValueError, match="invalid calibration artifact"):
         FeedforwardGainCompensator(FeedforwardGainConfig(**{axis: bad}))

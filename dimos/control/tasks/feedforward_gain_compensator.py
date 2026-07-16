@@ -61,11 +61,8 @@ class FeedforwardGainConfig:
 
 
 def validate_plant_gains(K_vx: float, K_vy: float, K_wz: float) -> None:
-    """Reject an unusable plant gain before dividing by it (u_cmd = u_phys / K,
-    or the envelope/K output limits). Near-zero divides-by-zero; NaN/inf (which
-    slip past a magnitude check) poison the derived limits and every command.
-    Either means an invalid calibration artifact. Call before any division by
-    these gains, not just at compensator construction."""
+    """Raise if any gain is non-finite or ~0. Callers divide by these (u/K,
+    envelope/K limits), so validate before that, not only at construction."""
     for axis, k in (("vx", K_vx), ("vy", K_vy), ("wz", K_wz)):
         if not math.isfinite(k) or abs(k) < 1e-6:
             raise ValueError(
