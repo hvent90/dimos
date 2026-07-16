@@ -91,7 +91,9 @@ fi
 if [ "$WEB" = "1" ]; then
     if ! ss -tln | grep -q ':9877 '; then
         echo "[run_r1lite] starting headless web sidecar in container (:9877 grpc, :9090 browser)"
-        $DOCKER exec -d "$CONTAINER" rerun --serve-web --port 9877 --memory-limit 2GB
+        # Full venv path: `docker exec` runs a non-login shell, so the venv is
+        # not on PATH and a bare `rerun` is "executable file not found".
+        $DOCKER exec -d "$CONTAINER" /app/.venv/bin/rerun --serve-web --port 9877 --memory-limit 2GB
         sleep 2
     fi
     echo "[run_r1lite] BROWSER VIEWER (open on any machine that can reach this one):"
