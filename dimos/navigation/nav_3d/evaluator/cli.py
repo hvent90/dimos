@@ -18,7 +18,7 @@ Run every suite:      python -m dimos.navigation.nav_3d.evaluator run
 One dataset:          python -m dimos.navigation.nav_3d.evaluator run --dataset mid360_athens_stairs
 Only some cases:      python -m dimos.navigation.nav_3d.evaluator run --tag stairs --tag up
 Machine output:       python -m dimos.navigation.nav_3d.evaluator run --json report.json
-Override a knob:      python -m dimos.navigation.nav_3d.evaluator run --set wall_clearance_m=0.05
+Override a gate:      python -m dimos.navigation.nav_3d.evaluator run --set goal_tolerance=0.4
 Compare two runs:     python -m dimos.navigation.nav_3d.evaluator diff old.json new.json
 Determinism check:    run twice with --json, then diff a.json b.json --exact
 New dataset:          python -m dimos.navigation.nav_3d.evaluator ingest recordings/.../mem2.db --name office_a
@@ -52,7 +52,6 @@ from dimos.navigation.nav_3d.evaluator.config import EvalConfig
 from dimos.navigation.nav_3d.evaluator.final_map import load_or_build_final_map
 from dimos.navigation.nav_3d.evaluator.generate import (
     GenerationParams,
-    drift_stats,
     generate_cases,
     snap_to_surface,
 )
@@ -152,6 +151,9 @@ def diff_reports(
         print(f"  new case: {key}")
     for key in d.removed:
         print(f"  case gone: {key}")
+    violations = tripwire.perf_violations(new_report)
+    for violation in violations:
+        print(f"PERF BUDGET EXCEEDED: {violation}")
     if exact:
         differences = tripwire.exact_differences(old_report, new_report)
         if differences:
@@ -163,7 +165,7 @@ def diff_reports(
                 print(f"  ... and {len(differences) - shown} more")
             raise typer.Exit(code=1)
         print("exact: reports identical")
-    if d.broke:
+    if d.broke or violations:
         raise typer.Exit(code=1)
 
 
@@ -184,7 +186,7 @@ def run(
         help="Total parallelism: dataset processes x checkpoint threads",
     ),
     set_: list[str] = typer.Option(
-        None, "--set", help="Repeatable EvalConfig override, e.g. wall_clearance_m=0.05"
+        None, "--set", help="Repeatable EvalConfig override, e.g. goal_tolerance=0.4"
     ),
 ) -> None:
     """Evaluate every case suite and print scores. The headline is incremental-map SPL."""
@@ -208,7 +210,10 @@ def run(
     cfg = _apply_overrides(EvalConfig(), set_ or [])
     report = evaluate(suites, cfg, workers=workers)
     _print_report(report)
+    for violation in tripwire.perf_violations(report.to_dict()):
+        print(f"PERF BUDGET EXCEEDED: {violation}")
     if json_out is not None:
+        json_out.parent.mkdir(parents=True, exist_ok=True)
         json_out.write_text(json.dumps(report.to_dict(), indent=2))
         print(f"wrote {json_out}")
     if rrd_out is not None:
@@ -249,12 +254,12 @@ def ingest(
     name: str = typer.Option(..., "--name", help="Dataset name; becomes data/<name>.db"),
     lidar_stream: str = typer.Option("pointlio_lidar", "--lidar-stream"),
     odom_stream: str = typer.Option("pointlio_odometry", "--odom-stream"),
-    max_cases: int = typer.Option(
-        0, "--max-cases", help="Auto-generated case cap; 0 scales with recording length"
+    cases: int = typer.Option(
+        0, "--cases", help="Exact auto-generated case count; 0 scales with recording length"
     ),
     force: bool = typer.Option(False, "--force", help="Overwrite dataset and manifest"),
 ) -> None:
-    """Register a recording as a dataset: copy, drift-check, map, generate cases."""
+    """Register a recording as a dataset: copy, map, generate cases."""
     src = source / "mem2.db" if source.is_dir() else source
     if not src.exists():
         raise typer.BadParameter(f"{src} does not exist")
@@ -276,20 +281,13 @@ def ingest(
         f"{trajectory.ts[-1] - trajectory.ts[0]:.0f}s, {arcs[-1]:.1f}m walked, "
         f"z [{trajectory.positions[:, 2].min():.2f}, {trajectory.positions[:, 2].max():.2f}]"
     )
-    drift = drift_stats(trajectory)
-    closure = f"{drift.closure_m:.2f}m" if drift.closure_m is not None else "n/a"
-    print(
-        f"drift: {drift.revisit_count} same-floor revisits, "
-        f"z mismatch p95 {drift.revisit_dz_p95:.2f}m, loop closure {closure}"
-    )
-    for warning in drift.warnings:
-        print(f"WARNING: {warning}")
-
     cfg = EvalConfig()
     final = load_or_build_final_map(dest, suite, cfg)
     planner = cfg.make_planner()
     planner.update_global_map(final.occupied)
-    gen = GenerationParams(max_cases=max_cases or None)
+    gen = GenerationParams(max_cases=cases or None)
+    if cases:
+        gen.min_cases = cases
     suite.cases = generate_cases(trajectory, final, planner.surface_map(), cfg, gen)
     if not suite.cases:
         raise typer.Exit(code=1)
@@ -392,11 +390,12 @@ def pick_case(
     weight: float = typer.Option(1.0, "--weight"),
     snap_max: float = typer.Option(1.0, "--snap-max", help="Max snap distance to surface (m)"),
 ) -> None:
-    """Pick cases by shift+clicking the map in a browser viewer.
+    """Pick and edit cases by shift+clicking the map in a browser viewer.
 
-    Serves the final map and walked path with viser. Shift+click picks
-    start/goal pairs. The side panel tags negatives, undoes picks, and saves
-    pairs to the manifest, snapped like add-case.
+    Serves the final map, the walked path, and every case already in the
+    manifest as an editable panel entry. Shift+click picks new start/goal
+    pairs. Any case can be renamed, retagged, flipped negative, or deleted;
+    new pairs save to the manifest snapped like add-case.
     """
     # Lazy: picker/viz pull in viser and matplotlib, only needed for pick-case.
     from dimos.navigation.nav_3d.evaluator.picker import pick_cases
@@ -415,9 +414,9 @@ def pick_case(
         start: tuple[float, float, float],
         goal: tuple[float, float, float],
         negative: bool,
-        extra_tags: list[str],
+        tags: list[str],
         case_id: str | None,
-    ) -> tuple[bool, str, str | None]:
+    ) -> tuple[bool, str, str | None, list[str] | None]:
         try:
             case = _append_case(
                 suite,
@@ -426,31 +425,49 @@ def pick_case(
                 start,
                 goal,
                 case_id,
-                full_tags(negative, extra_tags),
+                full_tags(negative, tags),
                 weight,
                 snap_max,
                 negative,
             )
         except typer.BadParameter as err:
-            return False, str(err), None
-        return True, f"saved {case.id} [{', '.join(case.tags)}]", case.id
+            return False, str(err), None, None
+        return True, f"saved {case.id} [{', '.join(case.tags)}]", case.id, list(case.tags)
 
     def update_case(
-        saved_id: str, new_id: str, negative: bool, extra_tags: list[str]
-    ) -> tuple[bool, str, str | None]:
+        saved_id: str, new_id: str, negative: bool, tags: list[str]
+    ) -> tuple[bool, str, str | None, list[str] | None]:
         case = next((c for c in suite.cases if c.id == saved_id), None)
         if case is None:
-            return False, f"case {saved_id!r} not found in manifest", None
+            return False, f"case {saved_id!r} not found in manifest", None, None
         if new_id != saved_id and any(c.id == new_id for c in suite.cases):
-            return False, f"case id {new_id!r} already exists", None
+            return False, f"case id {new_id!r} already exists", None, None
         case.id = new_id
-        case.tags = full_tags(negative, extra_tags)
+        # Tags round-trip verbatim; the negative checkbox owns only the
+        # negative tag, so auto/manual provenance survives edits.
+        plain = [t for t in tags if t != "negative"]
+        case.tags = plain + (["negative"] if negative else [])
         case.expect_fail = negative
         save_suite(suite, manifest)
-        return True, f"updated {case.id} [{', '.join(case.tags)}]", case.id
+        return True, f"updated {case.id} [{', '.join(case.tags)}]", case.id, list(case.tags)
+
+    def delete_case(saved_id: str) -> tuple[bool, str]:
+        case = next((c for c in suite.cases if c.id == saved_id), None)
+        if case is None:
+            return False, f"case {saved_id!r} not found in manifest"
+        suite.cases.remove(case)
+        save_suite(suite, manifest)
+        return True, f"deleted {saved_id} from {manifest.name}"
 
     pick_cases(
-        dataset, final.occupied, turbo_by_height(final.occupied), foot, save_pair, update_case
+        dataset,
+        final.occupied,
+        turbo_by_height(final.occupied),
+        foot,
+        suite.cases,
+        save_pair,
+        update_case,
+        delete_case,
     )
     print(f"\nrun with: python -m dimos.navigation.nav_3d.evaluator run --dataset {dataset}")
 

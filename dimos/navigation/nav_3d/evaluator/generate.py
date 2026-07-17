@@ -25,7 +25,7 @@ cannot leave a case floating off the map. Generation is deterministic.
 
 from __future__ import annotations
 
-from dataclasses import dataclass, field
+from dataclasses import dataclass
 from typing import TYPE_CHECKING
 
 import numpy as np
@@ -303,59 +303,4 @@ def _to_case(cand: Candidate, n: int) -> Case:
         goal=cand.goal,
         weight=1.0,
         tags=tags,
-    )
-
-
-@dataclass
-class DriftStats:
-    """Consistency of same-floor revisits, plus loop closure when one exists."""
-
-    revisit_count: int
-    revisit_dz_p95: float
-    closure_m: float | None
-    warnings: list[str] = field(default_factory=list)
-
-
-def drift_stats(
-    trajectory: Trajectory,
-    revisit_gap_s: float = 30.0,
-    revisit_radius_m: float = 0.5,
-    dz_warn_m: float = 0.3,
-    closure_warn_m: float = 1.0,
-) -> DriftStats:
-    p = trajectory.positions
-    ts = trajectory.ts
-    idx = _subsample_indices(trajectory, 0.5)
-    dzs: list[float] = []
-    for i in idx:
-        earlier = idx[ts[idx] < ts[i] - revisit_gap_s]
-        if not len(earlier):
-            continue
-        hd = np.linalg.norm(p[earlier, :2] - p[i, :2], axis=1)
-        near = earlier[hd < revisit_radius_m]
-        if not len(near):
-            continue
-        dz = np.abs(p[near, 2] - p[i, 2])
-        same_floor = dz[dz < 1.0]
-        if len(same_floor):
-            dzs.append(float(same_floor.min()))
-
-    closure: float | None = None
-    if np.linalg.norm(p[-1, :2] - p[0, :2]) < 2.0:
-        closure = float(np.linalg.norm(p[-1] - p[0]))
-
-    warnings = []
-    dz_p95 = float(np.percentile(dzs, 95)) if dzs else 0.0
-    if dz_p95 > dz_warn_m:
-        warnings.append(
-            f"same-floor revisit z mismatch p95 {dz_p95:.2f}m exceeds {dz_warn_m}m; "
-            "the recording may be too drifty for reliable evaluation"
-        )
-    if closure is not None and closure > closure_warn_m:
-        warnings.append(f"loop closure error {closure:.2f}m exceeds {closure_warn_m}m")
-    return DriftStats(
-        revisit_count=len(dzs),
-        revisit_dz_p95=dz_p95,
-        closure_m=closure,
-        warnings=warnings,
     )

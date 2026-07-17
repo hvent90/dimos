@@ -14,16 +14,20 @@
 
 """Browser point-picking for case curation, served by viser.
 
-Opens a dark-themed local web viewer with the final map and walked path.
-Shift+click picks points in start/goal pairs. Every pair gets its own panel
-entry with the coordinates, a name field, geometry-suggested tag checkboxes,
-custom tags, and a negative toggle. Pairs save individually or all at once,
-and stay editable after saving: rename or retag and press the pair's button
-again to update the manifest. Plain clicks and drags only move the camera.
+Opens a dark-themed local web viewer with the final map, the walked path,
+and every case already in the manifest as a collapsed, editable panel entry.
+Clicking a pair's endpoint sphere in the scene highlights the pair, opens
+its panel entry, and scrolls to it. The show button inside each entry
+highlights its pair in the scene. Shift+click picks new start/goal pairs.
+Every entry has the coordinates, a name field, geometry-suggested tag
+checkboxes, custom tags, a negative toggle, and save/delete buttons, so any
+case can be renamed, retagged, flipped, or removed. Plain clicks and drags
+only move the camera.
 """
 
 from __future__ import annotations
 
+from dataclasses import dataclass
 import threading
 from typing import TYPE_CHECKING, Literal, cast
 
@@ -36,18 +40,24 @@ from dimos.navigation.nav_3d.evaluator.generate import (
 )
 
 if TYPE_CHECKING:
-    from collections.abc import Callable
+    from collections.abc import Callable, Sequence
 
     from numpy.typing import NDArray
     import viser
 
-    # (start, goal, negative, extra_tags, case_id) -> (ok, message, saved_id)
+    from dimos.navigation.nav_3d.evaluator.cases import Case
+
+    # (start, goal, negative, tags, case_id) -> (ok, message, saved_id, saved_tags)
     SavePair = Callable[
         [tuple[float, float, float], tuple[float, float, float], bool, list[str], str | None],
-        tuple[bool, str, str | None],
+        tuple[bool, str, str | None, list[str] | None],
     ]
-    # (saved_id, new_id, negative, extra_tags) -> (ok, message, saved_id)
-    UpdateCase = Callable[[str, str, bool, list[str]], tuple[bool, str, str | None]]
+    # (saved_id, new_id, negative, tags) -> (ok, message, saved_id, saved_tags)
+    UpdateCase = Callable[
+        [str, str, bool, list[str]], tuple[bool, str, str | None, list[str] | None]
+    ]
+    # (saved_id) -> (ok, message)
+    DeleteCase = Callable[[str], tuple[bool, str]]
 
 # Selection cone half-angle around the click ray. Wide enough to hit a voxel
 # point from across a room, narrow enough to stay on the intended surface.
@@ -55,9 +65,15 @@ PICK_CONE_RAD = 0.008
 START_COLOR = (0, 255, 255)
 GOAL_COLOR = (255, 140, 0)
 PAIR_COLOR = (255, 255, 0)
+HIGHLIGHT_LINE_COLOR = (255, 255, 255)
+MARKER_RADIUS = 0.09
+HIGHLIGHT_MARKER_RADIUS = 0.16
+LINE_WIDTH = 2.5
+HIGHLIGHT_LINE_WIDTH = 6.0
 SUGGESTED_TAGS = ("stairs", "flat", "up", "down", "long", "doorway")
 
 INSTRUCTIONS = """**shift+click** picks START then GOAL, repeated per case.
+**click** an endpoint sphere to highlight and open its case.
 Plain drag orbits, scroll zooms, right-drag pans.
 """
 
@@ -99,8 +115,21 @@ def suggested_tags(start: NDArray[np.float32], goal: NDArray[np.float32]) -> set
     return tags
 
 
+@dataclass
+class _Hooks:
+    """Manifest callbacks and shared state handed to every pair entry."""
+
+    save_pair: SavePair
+    update_case: UpdateCase
+    delete_case: DeleteCase
+    lock: threading.Lock
+    unregister: Callable[[_PairEntry], None]
+    announce: Callable[[str], None]
+    highlight: Callable[[_PairEntry], None]
+
+
 class _PairEntry:
-    """One picked start/goal pair and its editable panel widgets."""
+    """One start/goal pair and its editable panel widgets and scene markers."""
 
     def __init__(
         self,
@@ -108,32 +137,83 @@ class _PairEntry:
         n: int,
         start: NDArray[np.float32],
         goal: NDArray[np.float32],
-        save_pair: SavePair,
-        update_case: UpdateCase,
-        lock: threading.Lock,
+        hooks: _Hooks,
+        markers: list[viser.SceneNodeHandle],
+        case: Case | None = None,
     ) -> None:
         self._server = server
         self._n = n
         self.start = start
         self.goal = goal
-        self._save_pair = save_pair
-        self._update_case = update_case
-        self._lock = lock
-        self.saved_id: str | None = None
-        self._name = ""
-        self._checked = suggested_tags(start, goal)
-        self._custom = ""
-        self._negative = False
-        self._status = "unsaved"
-        self._build(expanded=True, order=None)
+        self._hooks = hooks
+        self.markers = markers
+        self.preloaded = case is not None
+        if case is None:
+            self.saved_id: str | None = None
+            self._name = ""
+            self._checked = suggested_tags(start, goal)
+            self._custom = ""
+            self._negative = False
+            self._status = "unsaved"
+        else:
+            self.saved_id = case.id
+            self._name = case.id
+            self._sync_tags(case.tags)
+            self._negative = case.expect_fail
+            self._status = "in manifest"
+        self.removed = False
+        self._build(expanded=case is None, order=None)
+        for marker in markers:
+            if hasattr(marker, "on_click"):
+                marker.on_click(self._on_marker_click)
 
-    def _build(self, *, expanded: bool, order: float | None) -> None:
+    def _on_marker_click(self, _event: object) -> None:
+        with self._hooks.lock:
+            self.reveal()
+
+    def reveal(self) -> None:
+        """Announce and highlight this pair, and open its panel entry."""
+        self._hooks.announce(self._label())
+        self._hooks.highlight(self)
+        self._snapshot()
+        order = self.panel.order
+        self.panel.remove()
+        self._build(expanded=True, order=order, scroll=True)
+
+    def set_highlight(self, on: bool) -> None:
+        if self.removed:
+            return
+        for marker in self.markers:
+            if hasattr(marker, "radius"):
+                marker.radius = HIGHLIGHT_MARKER_RADIUS if on else MARKER_RADIUS
+            elif hasattr(marker, "line_width"):
+                marker.line_width = HIGHLIGHT_LINE_WIDTH if on else LINE_WIDTH
+                marker.colors = np.array(HIGHLIGHT_LINE_COLOR if on else PAIR_COLOR, dtype=np.uint8)
+
+    def _label(self) -> str:
+        return self.saved_id or f"pair {self._n}"
+
+    def _sync_tags(self, tags: list[str]) -> None:
+        """Split a manifest tag list into checkbox and custom-text state.
+
+        The negative tag is owned by the checkbox. Everything not in the
+        suggested set (auto, manual, ...) lands in the custom text so it
+        stays visible and round-trips verbatim.
+        """
+        self._checked = {t for t in tags if t in SUGGESTED_TAGS}
+        self._custom = ", ".join(t for t in tags if t not in SUGGESTED_TAGS and t != "negative")
+
+    def _build(self, *, expanded: bool, order: float | None, scroll: bool = False) -> None:
         server = self._server
         start, goal = self.start, self.goal
-        self.folder = server.gui.add_folder(
-            f"pair {self._n}", order=order, expand_by_default=expanded
-        )
-        with self.folder:
+        self.panel = server.gui.add_folder(self._label(), order=order, expand_by_default=expanded)
+        with self.panel:
+            if scroll:
+                # Autofocus makes the browser scroll the side panel here.
+                server.gui.add_html(
+                    '<button autofocus style="width:0;height:0;padding:0;border:0;opacity:0">'
+                    "</button>"
+                )
             server.gui.add_markdown(
                 f"({start[0]:.1f}, {start[1]:.1f}, {start[2]:.1f}) → "
                 f"({goal[0]:.1f}, {goal[1]:.1f}, {goal[2]:.1f})"
@@ -151,18 +231,44 @@ class _PairEntry:
                 )
             self.negative_box = server.gui.add_checkbox("negative (must refuse)", self._negative)
             self.message = server.gui.add_markdown(self._status)
+            self.show_button = server.gui.add_button("show in scene")
             self.button = server.gui.add_button("save / update")
+            self.delete_button = server.gui.add_button("delete")
+
+            @self.show_button.on_click
+            def _(_event: object) -> None:
+                with self._hooks.lock:
+                    self._hooks.announce(self._label())
+                    self._hooks.highlight(self)
 
             @self.button.on_click
             def _(_event: object) -> None:
                 # save_unsaved calls save_or_update already holding the lock;
                 # the button path runs on a bare viser callback thread and must
                 # take it to serialize suite/manifest mutation.
-                with self._lock:
+                with self._hooks.lock:
                     self.save_or_update()
 
+            @self.delete_button.on_click
+            def _(_event: object) -> None:
+                with self._hooks.lock:
+                    self.delete()
+
     def remove(self) -> None:
-        self.folder.remove()
+        self.removed = True
+        self.panel.remove()
+        for marker in self.markers:
+            marker.remove()
+
+    def delete(self) -> None:
+        if self.saved_id is not None:
+            ok, msg = self._hooks.delete_case(self.saved_id)
+            print(msg)
+            if not ok:
+                self.message.content = f"**FAILED**: {msg}"
+                return
+        self._hooks.unregister(self)
+        self.remove()
 
     def _snapshot(self) -> None:
         self._name = self.id_text.value
@@ -178,7 +284,7 @@ class _PairEntry:
     def save_or_update(self) -> None:
         name = self.id_text.value.strip()
         if self.saved_id is None:
-            ok, msg, saved = self._save_pair(
+            ok, msg, saved, tags = self._hooks.save_pair(
                 (float(self.start[0]), float(self.start[1]), float(self.start[2])),
                 (float(self.goal[0]), float(self.goal[1]), float(self.goal[2])),
                 self.negative_box.value,
@@ -186,22 +292,23 @@ class _PairEntry:
                 name or None,
             )
         else:
-            ok, msg, saved = self._update_case(
+            ok, msg, saved, tags = self._hooks.update_case(
                 self.saved_id, name or self.saved_id, self.negative_box.value, self.extra_tags()
             )
         print(msg)
         if not (ok and saved is not None):
             self.message.content = f"**FAILED**: {msg}"
             return
-        # Folders cannot be collapsed live in viser, expand_by_default is
-        # only read when the folder is first created. Rebuild it collapsed
-        # in place instead.
+        # Viser cannot collapse a live panel, so replace it with the
+        # collapsed button form, synced from the authoritative save.
         self.saved_id = saved
         self._snapshot()
         self._name = saved
+        if tags is not None:
+            self._sync_tags(tags)
         self._status = msg
-        order = self.folder.order
-        self.folder.remove()
+        order = self.panel.order
+        self.panel.remove()
         self._build(expanded=False, order=order)
 
 
@@ -210,8 +317,10 @@ def pick_cases(
     map_points: NDArray[np.float32],
     map_colors: NDArray[np.uint8],
     walked: NDArray[np.float32],
+    cases: Sequence[Case],
     save_pair: SavePair,
     update_case: UpdateCase,
+    delete_case: DeleteCase,
 ) -> None:
     """Serve the picker until the user exits from the panel or hits ctrl-c."""
     import viser
@@ -243,6 +352,7 @@ def pick_cases(
         client.camera.look_at = tuple(center)
 
     server.gui.add_markdown(INSTRUCTIONS)
+    selected_line = server.gui.add_markdown("selected: —")
     with server.gui.add_folder("display", expand_by_default=False):
         size_slider = server.gui.add_slider(
             "point size", min=0.005, max=0.08, step=0.0025, initial_value=cloud.point_size
@@ -272,9 +382,63 @@ def pick_cases(
 
     lock = threading.Lock()
     stop = threading.Event()
-    picks: list[NDArray[np.float32]] = []
     pairs: list[_PairEntry] = []
-    markers: list[viser.SceneNodeHandle] = []
+
+    def announce(label: str) -> None:
+        selected_line.content = f"selected: **{label}**"
+
+    highlighted: list[_PairEntry] = []
+
+    def highlight(entry: _PairEntry) -> None:
+        while highlighted:
+            highlighted.pop().set_highlight(False)
+        entry.set_highlight(True)
+        highlighted.append(entry)
+
+    hooks = _Hooks(
+        save_pair,
+        update_case,
+        delete_case,
+        lock,
+        lambda entry: pairs.remove(entry),
+        announce,
+        highlight,
+    )
+    marker_seq = 0
+
+    def sphere(point: NDArray[np.float32], color: tuple[int, int, int]) -> viser.SceneNodeHandle:
+        nonlocal marker_seq
+        marker_seq += 1
+        return server.scene.add_icosphere(
+            f"/picks/m{marker_seq}",
+            radius=0.09,
+            color=color,
+            position=(float(point[0]), float(point[1]), float(point[2]) + 0.05),
+        )
+
+    def pair_line(start: NDArray[np.float32], goal: NDArray[np.float32]) -> viser.SceneNodeHandle:
+        nonlocal marker_seq
+        marker_seq += 1
+        return server.scene.add_line_segments(
+            f"/picks/m{marker_seq}",
+            np.stack([start, goal])[None],
+            colors=PAIR_COLOR,
+            line_width=2.5,
+        )
+
+    def pair_markers(
+        start: NDArray[np.float32], goal: NDArray[np.float32]
+    ) -> list[viser.SceneNodeHandle]:
+        return [sphere(start, START_COLOR), sphere(goal, GOAL_COLOR), pair_line(start, goal)]
+
+    for case in cases:
+        start = np.asarray(case.start, dtype=np.float32)
+        goal = np.asarray(case.goal, dtype=np.float32)
+        pairs.append(
+            _PairEntry(server, 0, start, goal, hooks, pair_markers(start, goal), case=case)
+        )
+
+    pending: list[tuple[viser.SceneNodeHandle, NDArray[np.float32]]] = []
     pair_count = 0
 
     @server.scene.on_click(modifier="shift")
@@ -286,45 +450,27 @@ def pick_cases(
         if point is None:
             return
         with lock:
-            is_goal = len(picks) % 2 == 1
-            picks.append(point)
-            n = len(picks)
-            markers.append(
-                server.scene.add_icosphere(
-                    f"/picks/p{n}",
-                    radius=0.09,
-                    color=GOAL_COLOR if is_goal else START_COLOR,
-                    position=(float(point[0]), float(point[1]), float(point[2]) + 0.05),
-                )
-            )
-            if is_goal:
-                start, goal = picks[-2], picks[-1]
-                markers.append(
-                    server.scene.add_line_segments(
-                        f"/picks/l{n}",
-                        np.stack([start, goal])[None],
-                        colors=PAIR_COLOR,
-                        line_width=2.5,
-                    )
-                )
-                pair_count += 1
-                pairs.append(
-                    _PairEntry(server, pair_count, start, goal, save_pair, update_case, lock)
-                )
+            if not pending:
+                pending.append((sphere(point, START_COLOR), point))
+                return
+            start_marker, start = pending.pop()
+            markers = [start_marker, sphere(point, GOAL_COLOR), pair_line(start, point)]
+            pair_count += 1
+            pairs.append(_PairEntry(server, pair_count, start, point, hooks, markers))
 
     @undo_button.on_click
     def _(_event: object) -> None:
         with lock:
-            if not picks:
-                return
-            if len(picks) % 2 == 0:
-                # Completing pick of the last pair. Saved cases stay in the
-                # manifest, only the panel entry and markers go away.
-                pair = pairs.pop()
-                pair.remove()
-                markers.pop().remove()  # pair line
-            picks.pop()
-            markers.pop().remove()
+            if pending:
+                pending.pop()[0].remove()
+            elif pairs and not pairs[-1].preloaded:
+                # Saved cases stay in the manifest, only the panel entry and
+                # markers go away. Deleting from the manifest is the per-pair
+                # delete button.
+                entry = pairs.pop()
+                entry.remove()
+                if entry.saved_id is not None:
+                    print(f"{entry.saved_id} stays in the manifest; use delete to remove it")
 
     def save_unsaved() -> None:
         with lock:

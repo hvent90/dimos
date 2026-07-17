@@ -62,6 +62,8 @@ INVALID_PATH_COLOR = [255, 0, 0]
 UNREACHED_PATH_COLOR = [255, 200, 0]
 
 CLEARANCE_CLAMP_M = 1.0
+# Cells colored red as too close to a wall. Display threshold only.
+CLEARANCE_RED_M = 0.1
 
 
 def turbo_by_height(points: NDArray[np.float32]) -> NDArray[np.uint8]:
@@ -100,7 +102,7 @@ def _log_planner(entity: str, artifacts: PlannerArtifacts | None, cfg: EvalConfi
             f"{entity}/surface",
             rr.Points3D(
                 surface[:, :3],
-                colors=_clearance_colors(surface[:, 3], cfg.wall_clearance_m),
+                colors=_clearance_colors(surface[:, 3], CLEARANCE_RED_M),
                 radii=cfg.voxel_size / 4,
             ),
             static=True,

@@ -23,6 +23,7 @@ from typing import TYPE_CHECKING, cast
 import numpy as np
 import pytest
 
+from dimos.mapping.ray_tracing.voxel_map import VoxelRayMapper
 from dimos.navigation.nav_3d.evaluator import metrics, tripwire
 from dimos.navigation.nav_3d.evaluator.cases import Case, Suite, load_suite, save_suite
 from dimos.navigation.nav_3d.evaluator.config import EvalConfig
@@ -39,7 +40,6 @@ from dimos.navigation.nav_3d.evaluator.generate import (
     Candidate,
     GenerationParams,
     _select_diverse,
-    drift_stats,
     generate_cases,
     snap_to_surface,
 )
@@ -240,20 +240,6 @@ def test_snap_to_surface() -> None:
     assert snap_to_surface(np.array([1.0, 1.0, 5.0], dtype=np.float32), surface, 1.0) is None
 
 
-def test_drift_stats_flags_z_mismatch() -> None:
-    n = 400
-    ts = np.linspace(0, 120, n)
-    out = np.stack([np.linspace(0, 20, n // 2), np.zeros(n // 2), np.zeros(n // 2)], axis=1)
-    back = np.stack([np.linspace(20, 0, n // 2), np.zeros(n // 2), np.full(n // 2, 0.6)], axis=1)
-    drifty = Trajectory(ts=ts, positions=np.concatenate([out, back]).astype(np.float32))
-    stats = drift_stats(drifty)
-    assert stats.revisit_dz_p95 > 0.3
-    assert stats.warnings
-
-    clean = Trajectory(ts=ts, positions=np.concatenate([out, out[::-1]]).astype(np.float32))
-    assert not drift_stats(clean).warnings
-
-
 def test_checkpoint_deltas_roundtrip() -> None:
     snapshots = [
         np.array([1, 2, 3], dtype=np.int64),
@@ -284,7 +270,7 @@ def test_checkpoint_deltas_roundtrip() -> None:
 
 def test_replay_frames_snapshots_grow_with_time() -> None:
     """Each checkpoint must contain exactly the frames seen up to its time."""
-    cfg = EvalConfig(voxel_size=VOXEL, support_min=1)
+    mapper = VoxelRayMapper(voxel_size=VOXEL, max_range=30.0, support_min=1)
 
     def frame_at(ts: float, x: float) -> Frame:
         return Frame(ts=ts, points=_wall(x), origin=(x - 2.0, 0.0, 0.5))
@@ -299,7 +285,7 @@ def test_replay_frames_snapshots_grow_with_time() -> None:
         frame_at(2.1, 11.0),
     ]
     times = np.array([0.5, 1.5, np.inf])
-    final, snapshots, observed = replay_frames(frames, cfg.make_mapper(), VOXEL, times)
+    final, snapshots, observed = replay_frames(frames, mapper, VOXEL, times)
     assert final.frames == 6
     sizes = [len(s) for s in snapshots]
     assert 0 < sizes[0] < sizes[1] < sizes[2]
@@ -573,6 +559,19 @@ def test_tripwire_outcomes() -> None:
     }
     d = tripwire.diff(report, report)
     assert d.fixed == [] and d.broke == [] and d.added == [] and d.removed == []
+
+
+def test_tripwire_perf_violations() -> None:
+    report = _tripwire_report({"office": {"a": (True, True)}})
+    report["config"] = {"plan_p95_budget_ms": 60.0, "map_update_p95_budget_ms": 3000.0}
+    report["plan_ms"] = {"p95": 30.0}
+    report["map_update_ms"] = {"p95": 1500.0}
+    assert tripwire.perf_violations(report) == []
+    report["plan_ms"] = {"p95": 61.0}
+    violations = tripwire.perf_violations(report)
+    assert len(violations) == 1 and "plan_ms" in violations[0]
+    # Reports predating the budgets pass.
+    assert tripwire.perf_violations({"datasets": []}) == []
 
 
 def test_tripwire_exact_differences() -> None:

@@ -118,6 +118,22 @@ def _walk(path: str, old: object, new: object, out: list[str]) -> None:
         out.append(f"{path}: {old!r} != {new!r}")
 
 
+def perf_violations(report: dict[str, object]) -> list[str]:
+    """Timing stats that exceed the budgets recorded in the report's config."""
+    config = cast("dict[str, float]", report.get("config") or {})
+    out: list[str] = []
+    for stat_key, budget_key in (
+        ("plan_ms", "plan_p95_budget_ms"),
+        ("map_update_ms", "map_update_p95_budget_ms"),
+    ):
+        stats = cast("dict[str, float]", report.get(stat_key) or {})
+        budget = config.get(budget_key)
+        p95 = stats.get("p95")
+        if budget is not None and p95 is not None and p95 > budget:
+            out.append(f"{stat_key} p95 {p95:.1f}ms exceeds budget {budget:.0f}ms")
+    return out
+
+
 def exact_differences(old_report: dict[str, object], new_report: dict[str, object]) -> list[str]:
     """Every non-timing field that differs between two reports, at full precision.
 

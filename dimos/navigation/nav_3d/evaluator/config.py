@@ -22,31 +22,20 @@ from dimos.navigation.nav_3d.mls_planner.mls_planner import MLSPlanner
 
 @dataclass
 class EvalConfig:
-    """Mapper, planner, and gate parameters.
+    """Harness and gate parameters, sized for the Unitree Go2.
 
-    Defaults mirror production. Body and capability bounds are sized for the
-    Unitree Go2 (0.31m wide, 0.40m tall, ~0.16m stair risers).
+    (0.31m wide, 0.40m tall, ~0.16m stair risers.)
+
+    Algorithm tuning lives in the algorithm packages as their constructor
+    defaults. The evaluator fixes only the shared voxel resolution, the
+    sensor range, the robot's sensor height, and the physical body and
+    capability bounds it gates against. Improving the algorithm means
+    changing the algorithm, never this file.
     """
 
     voxel_size: float = 0.08
     max_range: float = 30.0
-    ray_subsample: int = 1
-    shadow_depth: float = 0.1
-    grace_depth: float = 0.2
-    min_health: int = -1
-    max_health: int = 5
-    graze_cos: float = 0.7
-    support_min: int = 4
-
     robot_height: float = 0.3
-    max_overhead_m: float = 2.0
-    surface_closing_radius: float = 0.4
-    node_spacing_m: float = 1.0
-    wall_clearance_m: float = 0.1
-    wall_buffer_m: float = 0.75
-    wall_buffer_weight: float = 100.0
-    step_threshold_m: float = 0.16
-    step_penalty_weight: float = 4.0
 
     # Physical body envelope for the collision gate. The gate catches paths
     # that penetrate obstacles, not near-grazes, so the radius is the true
@@ -70,43 +59,20 @@ class EvalConfig:
     max_step_m: float = 0.2
     kinematic_window_m: float = 0.5
 
+    # An improvement must not buy score with compute. p95 over the suite.
+    plan_p95_budget_ms: float = 50.0
+    map_update_p95_budget_ms: float = 1000.0
+
     def make_mapper(self) -> VoxelRayMapper:
-        return VoxelRayMapper(
-            voxel_size=self.voxel_size,
-            max_range=self.max_range,
-            ray_subsample=self.ray_subsample,
-            shadow_depth=self.shadow_depth,
-            grace_depth=self.grace_depth,
-            min_health=self.min_health,
-            max_health=self.max_health,
-            graze_cos=self.graze_cos,
-            support_min=self.support_min,
-        )
+        return VoxelRayMapper(voxel_size=self.voxel_size, max_range=self.max_range)
 
     def make_planner(self) -> MLSPlanner:
-        return MLSPlanner(
-            voxel_size=self.voxel_size,
-            robot_height=self.robot_height,
-            max_overhead_m=self.max_overhead_m,
-            surface_closing_radius=self.surface_closing_radius,
-            node_spacing_m=self.node_spacing_m,
-            wall_clearance_m=self.wall_clearance_m,
-            wall_buffer_m=self.wall_buffer_m,
-            wall_buffer_weight=self.wall_buffer_weight,
-            step_threshold_m=self.step_threshold_m,
-            step_penalty_weight=self.step_penalty_weight,
-        )
+        return MLSPlanner(voxel_size=self.voxel_size, robot_height=self.robot_height)
 
     def mapper_fingerprint(self) -> dict[str, float | int]:
-        """The mapper parameters that determine final map content."""
-        return {
-            "voxel_size": self.voxel_size,
-            "max_range": self.max_range,
-            "ray_subsample": self.ray_subsample,
-            "shadow_depth": self.shadow_depth,
-            "grace_depth": self.grace_depth,
-            "min_health": self.min_health,
-            "max_health": self.max_health,
-            "graze_cos": self.graze_cos,
-            "support_min": self.support_min,
-        }
+        """Cache key parameters for the final map.
+
+        Mapper internals are deliberately not fingerprinted. Changes to the
+        mapper, code or defaults, require wiping data/.final instead.
+        """
+        return {"voxel_size": self.voxel_size, "max_range": self.max_range}
