@@ -20,11 +20,7 @@ discovery keeps working — on hosts without the SDK.
 
 from __future__ import annotations
 
-import asyncio
-
-from dimos.utils.logging_config import setup_logger
-
-logger = setup_logger()
+from pathlib import Path
 
 # Spot's fixed default addresses: 192.168.80.3 when it hosts its own WiFi AP,
 # 10.0.0.3 on the rear Ethernet port. Probed in order when no ip is given.
@@ -43,68 +39,16 @@ POWER_OFF_TIMEOUT_S = 20.0
 STAND_TIMEOUT_S = 10.0
 SIT_TIMEOUT_S = 10.0
 
-# Spot's five body fisheye cameras and their matching depth cameras, ordered to
-# match the grayscale_image_N / depth_image_N output streams.
-GRAYSCALE_SOURCES = [
-    "frontleft_fisheye_image",
-    "frontright_fisheye_image",
-    "left_fisheye_image",
-    "right_fisheye_image",
-    "back_fisheye_image",
-]
-DEPTH_SOURCES = [
-    "frontleft_depth",
-    "frontright_depth",
-    "left_depth",
-    "right_depth",
-    "back_depth",
-]
+# Static camera-mount geometry lives in this URDF (base_link -> body -> {pos}_camera
+# -> {pos}_camera_optical, all fixed joints). SpotHighLevel publishes those mounts
+# as static tf; the moving odom->base_link edge stays live from Spot's state.
+SPOT_URDF_PATH = Path(__file__).parent / "spot.urdf"
 
-# Spot reports poses in its gravity-agnostic "vision" frame; body is the moving
-# base frame. These mirror the bosdyn frame-helper constants, inlined so this
-# file imports without the SDK.
-VISION_FRAME = "vision"
-BODY_FRAME = "body"
+# Stream-name suffix per camera mount, ordered to match the fisheye/depth source
+# lists in SpotHighLevel. Names the grayscale_image_* / depth_image_* streams by position.
+CAMERA_STREAM_SUFFIXES = ["front_left", "front_right", "left", "right", "back"]
 
-
-def default_candidate_ips() -> list[str]:
-    return [SPOT_WIFI_AP_IP, SPOT_ETHERNET_IP]
-
-
-async def is_reachable(ip: str) -> bool:
-    try:
-        _, writer = await asyncio.wait_for(
-            asyncio.open_connection(ip, SPOT_API_PORT),
-            timeout=REACHABILITY_PROBE_TIMEOUT_S,
-        )
-    except (OSError, asyncio.TimeoutError):
-        return False
-    # Reachable — a successful TCP handshake is all we need. Close without
-    # awaiting wait_closed(); the API port speaks TLS and never completes a
-    # clean plaintext close, which would otherwise hang the probe.
-    writer.close()
-    return True
-
-
-async def resolve_ip(candidate_ips: list[str]) -> str:
-    for candidate in candidate_ips:
-        if await is_reachable(candidate):
-            logger.info(f"Spot reachable at {candidate}")
-            return candidate
-    described = " or ".join(
-        f"{candidate} ({IP_LABELS[candidate]})" if candidate in IP_LABELS else candidate
-        for candidate in candidate_ips
-    )
-    raise ConnectionError(
-        f"I'm unable to connect to {described}. Did you forget to connect to "
-        "Spot's WiFi or plug in an Ethernet cable to Spot?"
-    )
-
-
-def resolve_credentials(username: str | None, password: str | None) -> tuple[str, str]:
-    if not username or not password:
-        raise ValueError(
-            "Spot credentials missing — pass username/password in config "
-            "(-o <module>.username=... -o <module>.password=...)"
-        )
-    return username, password
+# Spot's body fisheye + depth cameras top out around 15 Hz. Poll at that rate so
+# we never miss a frame; the acquisition_time dedup in SpotHighLevel drops any
+# repeat returned by polling faster than a given camera actually refreshes.
+CAMERA_MAX_HZ = 15.0

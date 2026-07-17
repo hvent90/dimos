@@ -1,8 +1,6 @@
 <?xml version="1.0" ?>
 <!-- =================================================================================== -->
-<!-- Boston Dynamics Spot base URDF. Flattened by xacro from the spot_description        -->
-<!-- package (github.com/clearpathrobotics/spot_ros). Mesh paths are relative (meshes/); -->
-<!-- the .dae/.stl assets are not vendored here. Arm/accessories/OutdoorNav are omitted. -->
+<!-- derived from github.com/clearpathrobotics/spot_ros -->
 <!-- =================================================================================== -->
 <robot name="spot">
   <link name="body">
@@ -295,8 +293,70 @@
     <parent link="body"/>
     <child link="cover"/>
   </joint>
-  <!-- This file is a placeholder which is included by default from
-       spot.urdf.xacro. If a robot is being customized and requires
-       additional URDF, set the SPOT_URDF_EXTRAS environment variable
-       to the full path of the file you would like included. -->
+  <!-- Static fisheye camera mounts. Boston Dynamics does not ship camera frames
+       in spot_description, so these are the CoSTAR/subt estimates (osrf/subt
+       bosdyn_spot), which were fit against a real Spot. Each position has a
+       gazebo camera_link (X-forward, Y-left, Z-up) and a ROS optical child
+       (Z-forward, X-right, Y-down; the canonical rpy="-pi/2 0 -pi/2"). The same
+       physical mount feeds both the grayscale and depth stream at that position. -->
+  <link name="frontleft_camera"/>
+  <joint name="frontleft_camera_joint" type="fixed">
+    <origin rpy="1.355558 0.353917 -0.554196" xyz="0.415 0.037 -0.01"/>
+    <parent link="body"/>
+    <child link="frontleft_camera"/>
+  </joint>
+  <link name="frontleft_camera_optical"/>
+  <joint name="frontleft_camera_optical_joint" type="fixed">
+    <origin rpy="-1.5707963 0 -1.5707963" xyz="0 0 0"/>
+    <parent link="frontleft_camera"/>
+    <child link="frontleft_camera_optical"/>
+  </joint>
+  <link name="frontright_camera"/>
+  <joint name="frontright_camera_joint" type="fixed">
+    <origin rpy="-1.355558 0.353917 0.554196" xyz="0.415 -0.037 -0.01"/>
+    <parent link="body"/>
+    <child link="frontright_camera"/>
+  </joint>
+  <link name="frontright_camera_optical"/>
+  <joint name="frontright_camera_optical_joint" type="fixed">
+    <origin rpy="-1.5707963 0 -1.5707963" xyz="0 0 0"/>
+    <parent link="frontright_camera"/>
+    <child link="frontright_camera_optical"/>
+  </joint>
+  <link name="left_camera"/>
+  <joint name="left_camera_joint" type="fixed">
+    <origin rpy="0 0.2 1.5707963" xyz="-0.125 0.12 0.035"/>
+    <parent link="body"/>
+    <child link="left_camera"/>
+  </joint>
+  <link name="left_camera_optical"/>
+  <joint name="left_camera_optical_joint" type="fixed">
+    <origin rpy="-1.5707963 0 -1.5707963" xyz="0 0 0"/>
+    <parent link="left_camera"/>
+    <child link="left_camera_optical"/>
+  </joint>
+  <link name="right_camera"/>
+  <joint name="right_camera_joint" type="fixed">
+    <origin rpy="0 0.2 -1.5707963" xyz="-0.125 -0.12 0.035"/>
+    <parent link="body"/>
+    <child link="right_camera"/>
+  </joint>
+  <link name="right_camera_optical"/>
+  <joint name="right_camera_optical_joint" type="fixed">
+    <origin rpy="-1.5707963 0 -1.5707963" xyz="0 0 0"/>
+    <parent link="right_camera"/>
+    <child link="right_camera_optical"/>
+  </joint>
+  <link name="back_camera"/>
+  <joint name="back_camera_joint" type="fixed">
+    <origin rpy="0 0.3 -3.1415927" xyz="-0.425 0 0.01"/>
+    <parent link="body"/>
+    <child link="back_camera"/>
+  </joint>
+  <link name="back_camera_optical"/>
+  <joint name="back_camera_optical_joint" type="fixed">
+    <origin rpy="-1.5707963 0 -1.5707963" xyz="0 0 0"/>
+    <parent link="back_camera"/>
+    <child link="back_camera_optical"/>
+  </joint>
 </robot>

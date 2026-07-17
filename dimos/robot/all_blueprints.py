@@ -81,7 +81,6 @@ all_blueprints = {
     "openarm-planner-coordinator": "dimos.robot.manipulators.openarm.blueprints.planner:openarm_planner_coordinator",
     "path-planner-eval": "dimos.navigation.nav_3d.evaluator.blueprints:path_planner_eval",
     "spot": "dimos.robot.bosdyn.spot.blueprints.spot:spot",
-    "spot-cameras": "dimos.robot.bosdyn.spot.blueprints.spot_cameras:spot_cameras",
     "spot-record": "dimos.robot.bosdyn.spot.blueprints.spot_record:spot_record",
     "teleop-hosted-go2": "dimos.teleop.quest_hosted.blueprints:teleop_hosted_go2",
     "teleop-hosted-go2-transport": "dimos.teleop.quest_hosted.blueprints:teleop_hosted_go2_transport",

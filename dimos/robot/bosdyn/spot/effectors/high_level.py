@@ -19,10 +19,16 @@ connection it owns it: acquires the lease/E-stop, powers on and stands, drives
 from a `cmd_vel` Twist stream, and streams every onboard camera plus body
 odometry:
 
-- `grayscale_image_1..5` — the five fisheye body cameras (front-left, front-right,
-  left, right, back), in that order.
-- `depth_image_1..5` — the matching depth cameras, same ordering.
-- `odom` — body pose + velocity in Spot's `vision` frame, also broadcast on TF.
+- `grayscale_image_{front_left,front_right,left,right,back}` — the five fisheye
+  body cameras.
+- `depth_image_{front_left,front_right,left,right,back}` — the matching depth cameras.
+- `odom` — base pose + velocity, published live as `odom`->`base_link` on TF
+  (frame names configurable via `odom_frame_id` / `base_frame_id`).
+
+The fixed camera mounts (`base_link`->`{pos}_camera_optical`) come from the URDF
+at `SPOT_URDF_PATH` instead of Spot's live snapshot: `SpotHighLevel` subclasses
+`StaticTfPublisher`, which republishes those static extrinsics on an interval so
+the moving odom edge and rigid mounts together anchor every recorded frame.
 
 `bosdyn` is an optional extra (`uv sync --extra spot`); its imports live inside
 methods so this file stays importable — and blueprint discovery keeps working —
@@ -37,43 +43,46 @@ from dataclasses import field
 import time
 from typing import Any
 
-import numpy as np
-
 from dimos.agents.annotation import skill
 from dimos.core.core import rpc
-from dimos.core.module import Module, ModuleConfig
 from dimos.core.stream import In, Out
 from dimos.msgs.geometry_msgs.Pose import Pose
+from dimos.msgs.geometry_msgs.Quaternion import Quaternion
+from dimos.msgs.geometry_msgs.Transform import Transform
 from dimos.msgs.geometry_msgs.Twist import Twist
 from dimos.msgs.geometry_msgs.Vector3 import Vector3
 from dimos.msgs.nav_msgs.Odometry import Odometry
-from dimos.msgs.sensor_msgs.Image import Image, ImageFormat
+from dimos.msgs.sensor_msgs.CameraInfo import CameraInfo
+from dimos.msgs.sensor_msgs.Image import Image
+from dimos.protocol.tf.static_tf_publisher import StaticTfPublisher, StaticTfPublisherConfig
 from dimos.robot.bosdyn.spot.config import (
-    BODY_FRAME,
-    DEPTH_SOURCES,
-    GRAYSCALE_SOURCES,
+    CAMERA_MAX_HZ,
+    IP_LABELS,
     POWER_OFF_TIMEOUT_S,
     POWER_ON_TIMEOUT_S,
+    REACHABILITY_PROBE_TIMEOUT_S,
     SIT_TIMEOUT_S,
+    SPOT_API_PORT,
+    SPOT_URDF_PATH,
     STAND_TIMEOUT_S,
-    VISION_FRAME,
-    default_candidate_ips,
-    resolve_credentials,
-    resolve_ip,
+)
+from dimos.robot.bosdyn.spot.utils import (
+    camera_info_from_response,
+    camera_mount_transforms,
+    decode_image,
 )
 from dimos.utils.logging_config import setup_logger
 
 logger = setup_logger()
 
 
-class SpotHighLevelConfig(ModuleConfig):
-    """Connection, credentials, safety gating, and sensor capture for a Spot."""
+class SpotHighLevelConfig(StaticTfPublisherConfig):
+    """Cmd vel, sensors, credentials, and safety gating a Spot robot."""
 
-    # Explicit address always wins (`-o spothighlevel.ip=<addr>`). When left
-    # blank, main() probes `candidate_ips` and uses the first that answers on the
+    # When left blank, main() probes `candidate_ips` and uses the first that answers on the
     # API port — so plugging in over Ethernet or joining Spot's WiFi both work.
     ip: str = ""
-    candidate_ips: list[str] = field(default_factory=default_candidate_ips)
+    candidate_ips: list[str] = field(default_factory=lambda: list(IP_LABELS))
 
     # Auth — required. Startup fails fast if either is missing.
     username: str | None = None
@@ -94,45 +103,46 @@ class SpotHighLevelConfig(ModuleConfig):
     # window. 9.0 s matches the bosdyn-client default.
     estop_timeout: float = 9.0
 
-    # Which sources feed grayscale_image_N / depth_image_N (index N-1). Trim these
-    # to capture fewer cameras.
-    grayscale_sources: list[str] = field(default_factory=lambda: list(GRAYSCALE_SOURCES))
-    depth_sources: list[str] = field(default_factory=lambda: list(DEPTH_SOURCES))
+    # frame_id's
+    odom_frame_id: str = "odom"
+    base_frame_id: str = "base_link"
+    frontleft_camera_frame_id: str = "frontleft_camera_optical"
+    frontright_camera_frame_id: str = "frontright_camera_optical"
+    left_camera_frame_id: str = "left_camera_optical"
+    right_camera_frame_id: str = "right_camera_optical"
+    back_camera_frame_id: str = "back_camera_optical"
 
-    # Clockwise rotation (degrees, multiple of 90) applied to a camera's
-    # grayscale + depth before publishing, correcting for physically rotated
-    # fisheye mounts. Keyed by 1-based camera index.
-    image_rotations_cw: dict[int, int] = field(default_factory=lambda: {1: 90, 2: 90, 4: 180})
-
-    image_rate_hz: float = 5.0
+    # Poll at the camera's max rate; SpotHighLevel dedups repeats by acquisition_time.
+    image_rate_hz: float = CAMERA_MAX_HZ
     odom_rate_hz: float = 20.0
 
 
-class SpotHighLevel(Module):
+class SpotHighLevel(StaticTfPublisher):
     """Drives Spot and streams its fisheye cameras, depth cameras, and odometry."""
 
-    # A hardware-driving module gets its own worker process, matching the other
-    # robot connection modules (go2/b1/drone). Sharing a process with a GUI
-    # module like KeyboardTeleop wedges this module's RPC server at startup.
-    dedicated_worker = True
+    config: SpotHighLevelConfig
 
     cmd_vel: In[Twist]
 
-    grayscale_image_1: Out[Image]
-    grayscale_image_2: Out[Image]
-    grayscale_image_3: Out[Image]
-    grayscale_image_4: Out[Image]
-    grayscale_image_5: Out[Image]
+    grayscale_image_front_left: Out[Image]
+    grayscale_image_front_right: Out[Image]
+    grayscale_image_left: Out[Image]
+    grayscale_image_right: Out[Image]
+    grayscale_image_back: Out[Image]
 
-    depth_image_1: Out[Image]
-    depth_image_2: Out[Image]
-    depth_image_3: Out[Image]
-    depth_image_4: Out[Image]
-    depth_image_5: Out[Image]
+    depth_image_front_left: Out[Image]
+    depth_image_front_right: Out[Image]
+    depth_image_left: Out[Image]
+    depth_image_right: Out[Image]
+    depth_image_back: Out[Image]
+
+    # All five grayscale cameras share one lens model and all five depth cameras share another
+    grayscale_info: Out[CameraInfo]
+    depth_info: Out[CameraInfo]
 
     odom: Out[Odometry]
 
-    config: SpotHighLevelConfig
+    dedicated_worker = True
 
     def __init__(self, *args: Any, **kwargs: Any) -> None:
         super().__init__(*args, **kwargs)
@@ -149,9 +159,33 @@ class SpotHighLevel(Module):
         # never reaches a half-initialised SDK.
         self._ready = asyncio.Event()
 
+    def transforms(self) -> list[Transform]:
+        """Static base_link -> camera-optical extrinsics parsed from the URDF.
+
+        `StaticTfPublisher` republishes these on a fixed interval; the moving
+        odom->base_link edge stays live (see `_publish_odom`).
+        """
+        return camera_mount_transforms(
+            SPOT_URDF_PATH,
+            self.config.base_frame_id,
+            [
+                self.config.frontleft_camera_frame_id,
+                self.config.frontright_camera_frame_id,
+                self.config.left_camera_frame_id,
+                self.config.right_camera_frame_id,
+                self.config.back_camera_frame_id,
+            ],
+        )
+
     async def main(self) -> AsyncIterator[None]:
-        username, password = resolve_credentials(self.config.username, self.config.password)
-        ip = self.config.ip or await resolve_ip(self.config.candidate_ips)
+        username, password = self.config.username, self.config.password
+        if not username or not password:
+            raise ValueError(
+                "Spot credentials missing — pass username/password in config "
+                "(-o <module>.username=... -o <module>.password=...)"
+            )
+
+        ip = await self.resolve_ip()
 
         from bosdyn.client import create_standard_sdk  # type: ignore[import-not-found]
         from bosdyn.client.estop import (  # type: ignore[import-not-found]
@@ -176,7 +210,7 @@ class SpotHighLevel(Module):
         sdk = await asyncio.to_thread(create_standard_sdk, "dimos-spot")
         self._robot = await asyncio.to_thread(sdk.create_robot, ip)
         await asyncio.to_thread(self._robot.authenticate, username, password)
-        await asyncio.to_thread(self._robot.time_sync.wait_for_sync)
+        await self.sync_clocks()
 
         if self.config.enable_estop:
             estop_client = self._robot.ensure_client(EstopClient.default_service_name)
@@ -223,17 +257,7 @@ class SpotHighLevel(Module):
                 task.cancel()
 
         if self._standing:
-            try:
-                from bosdyn.client.robot_command import (  # type: ignore[import-not-found]
-                    blocking_sit,
-                )
-
-                await asyncio.to_thread(
-                    blocking_sit, self._command_client, timeout_sec=SIT_TIMEOUT_S
-                )
-            except Exception as error:
-                logger.error(f"Spot sit during teardown failed: {error}")
-            self._standing = False
+            await self.lie_down()
 
         if self.config.power_on_at_start and self._robot is not None:
             try:
@@ -259,61 +283,72 @@ class SpotHighLevel(Module):
     async def handle_cmd_vel(self, msg: Twist) -> None:
         if not self._ready.is_set():
             return
-        await self._send_velocity(msg.linear.x, msg.linear.y, msg.angular.z)
-
-    async def _send_velocity(
-        self, forward: float, strafe: float, yaw: float, duration: float = 0.0
-    ) -> bool:
-        from bosdyn.client.robot_command import (  # type: ignore[import-not-found]
-            RobotCommandBuilder,
-        )
-
-        command = RobotCommandBuilder.synchro_velocity_command(v_x=forward, v_y=strafe, v_rot=yaw)
-        window = duration if duration > 0 else self.config.cmd_vel_timeout
-        try:
-            await asyncio.to_thread(
-                self._command_client.robot_command,
-                command,
-                end_time_secs=time.time() + window,
-            )
-            return True
-        except Exception as error:
-            logger.error(f"Spot velocity command failed: {error}")
-            return False
-
-    def _grayscale_outputs(self) -> list[Out[Image]]:
-        return [
-            self.grayscale_image_1,
-            self.grayscale_image_2,
-            self.grayscale_image_3,
-            self.grayscale_image_4,
-            self.grayscale_image_5,
-        ]
-
-    def _depth_outputs(self) -> list[Out[Image]]:
-        return [
-            self.depth_image_1,
-            self.depth_image_2,
-            self.depth_image_3,
-            self.depth_image_4,
-            self.depth_image_5,
-        ]
+        await self.move(msg)
 
     async def _poll_images(self) -> None:
         period = 1.0 / self.config.image_rate_hz
-        sources = self.config.grayscale_sources + self.config.depth_sources
-        # source name -> (Out stream that carries it, np.rot90 k applied before publish).
-        routing: dict[str, tuple[Out[Image], int]] = {}
-        # Fewer configured sources than output streams is fine — extra streams
-        # just stay silent, so pair only as many as the shorter list.
-        for index, (source, out) in enumerate(
-            zip(self.config.grayscale_sources, self._grayscale_outputs(), strict=False)
-        ):
-            routing[source] = (out, self._rotation_k(index + 1))
-        for index, (source, out) in enumerate(
-            zip(self.config.depth_sources, self._depth_outputs(), strict=False)
-        ):
-            routing[source] = (out, self._rotation_k(index + 1))
+        config = self.config
+        # bosdyn source name -> (image Out, CameraInfo Out, frame_id). Images are
+        # published in Spot's native sensor orientation (no rotation); each image's
+        # frame_id names a URDF optical frame anchored by the static camera tf.
+        # Grayscale and depth at the same mount share that mount's optical frame.
+        routing: dict[str, tuple[Out[Image], Out[CameraInfo], str]] = {
+            "frontleft_fisheye_image": (
+                self.grayscale_image_front_left,
+                self.grayscale_info,
+                config.frontleft_camera_frame_id,
+            ),
+            "frontright_fisheye_image": (
+                self.grayscale_image_front_right,
+                self.grayscale_info,
+                config.frontright_camera_frame_id,
+            ),
+            "left_fisheye_image": (
+                self.grayscale_image_left,
+                self.grayscale_info,
+                config.left_camera_frame_id,
+            ),
+            "right_fisheye_image": (
+                self.grayscale_image_right,
+                self.grayscale_info,
+                config.right_camera_frame_id,
+            ),
+            "back_fisheye_image": (
+                self.grayscale_image_back,
+                self.grayscale_info,
+                config.back_camera_frame_id,
+            ),
+            "frontleft_depth": (
+                self.depth_image_front_left,
+                self.depth_info,
+                config.frontleft_camera_frame_id,
+            ),
+            "frontright_depth": (
+                self.depth_image_front_right,
+                self.depth_info,
+                config.frontright_camera_frame_id,
+            ),
+            "left_depth": (
+                self.depth_image_left,
+                self.depth_info,
+                config.left_camera_frame_id,
+            ),
+            "right_depth": (
+                self.depth_image_right,
+                self.depth_info,
+                config.right_camera_frame_id,
+            ),
+            "back_depth": (
+                self.depth_image_back,
+                self.depth_info,
+                config.back_camera_frame_id,
+            ),
+        }
+        sources = list(routing)
+        # Sensor capture time of the last frame published per source. Polling above
+        # the sensor's frame rate re-returns the same frame; matching acquisition
+        # time means it's a repeat, so skip it and never publish a frame twice.
+        last_published_ts: dict[str, float] = {}
 
         while True:
             start = time.monotonic()
@@ -321,6 +356,7 @@ class SpotHighLevel(Module):
                 responses = await asyncio.to_thread(
                     self._image_client.get_image_from_sources, sources
                 )
+                time_converter = self._robot.time_sync.get_robot_time_converter()
             except Exception as error:
                 logger.error(f"Spot image capture failed: {error}")
                 await asyncio.sleep(period)
@@ -331,20 +367,19 @@ class SpotHighLevel(Module):
                 route = routing.get(source_name)
                 if route is None:
                     continue
-                out, rotation_k = route
-                image = _decode_image(response, source_name)
+                out, info_out, frame_id = route
+                image = decode_image(response, frame_id, time_converter)
                 if image is None:
                     continue
-                if rotation_k:
-                    image = _rotate_image(image, rotation_k)
+                if last_published_ts.get(source_name) == image.ts:
+                    continue
+                last_published_ts[source_name] = image.ts
                 out.publish(image)
+                camera_info = camera_info_from_response(response, frame_id, image.ts)
+                if camera_info is not None:
+                    info_out.publish(camera_info)
 
             await asyncio.sleep(max(0.0, period - (time.monotonic() - start)))
-
-    def _rotation_k(self, camera_number: int) -> int:
-        """Convert a clockwise degree rotation into an np.rot90 k (0-3)."""
-        degrees_cw = self.config.image_rotations_cw.get(camera_number, 0)
-        return (-degrees_cw // 90) % 4
 
     async def _poll_odom(self) -> None:
         from bosdyn.client.frame_helpers import (  # type: ignore[import-not-found]
@@ -373,9 +408,6 @@ class SpotHighLevel(Module):
             await asyncio.sleep(max(0.0, period - (time.monotonic() - start)))
 
     def _publish_odom(self, vision_tform_body: Any, velocity: Any) -> None:
-        from dimos.msgs.geometry_msgs.Quaternion import Quaternion
-        from dimos.msgs.geometry_msgs.Transform import Transform
-
         now = time.time()
         pose = Pose(
             position=[vision_tform_body.x, vision_tform_body.y, vision_tform_body.z],
@@ -392,8 +424,8 @@ class SpotHighLevel(Module):
         )
         odometry = Odometry(
             ts=now,
-            frame_id=VISION_FRAME,
-            child_frame_id=BODY_FRAME,
+            frame_id=self.config.odom_frame_id,
+            child_frame_id=self.config.base_frame_id,
             pose=pose,
             twist=twist,
         )
@@ -407,8 +439,8 @@ class SpotHighLevel(Module):
                     vision_tform_body.rot.z,
                     vision_tform_body.rot.w,
                 ),
-                frame_id=VISION_FRAME,
-                child_frame_id=BODY_FRAME,
+                frame_id=self.config.odom_frame_id,
+                child_frame_id=self.config.base_frame_id,
                 ts=now,
             )
         )
@@ -416,7 +448,26 @@ class SpotHighLevel(Module):
     @rpc
     async def move(self, twist: Twist, duration: float = 0.0) -> bool:
         """Send a Twist as a body velocity command, optionally for `duration` seconds."""
-        return await self._send_velocity(twist.linear.x, twist.linear.y, twist.angular.z, duration)
+        if self._command_client is None:
+            return False
+        from bosdyn.client.robot_command import (  # type: ignore[import-not-found]
+            RobotCommandBuilder,
+        )
+
+        command = RobotCommandBuilder.synchro_velocity_command(
+            v_x=twist.linear.x, v_y=twist.linear.y, v_rot=twist.angular.z
+        )
+        window = duration if duration > 0 else self.config.cmd_vel_timeout
+        try:
+            await asyncio.to_thread(
+                self._command_client.robot_command,
+                command,
+                end_time_secs=time.time() + window,
+            )
+            return True
+        except Exception as error:
+            logger.error(f"Spot velocity command failed: {error}")
+            return False
 
     @rpc
     async def get_state(self) -> str:
@@ -428,6 +479,21 @@ class SpotHighLevel(Module):
         except Exception as error:
             logger.error(f"Spot get_state failed: {error}")
             return "UNKNOWN"
+
+    @skill
+    async def get_battery_soc(self) -> str:
+        """Report Spot's battery state of charge as a percentage."""
+        if self._state_client is None:
+            return "Spot is not connected."
+        try:
+            state = await asyncio.to_thread(self._state_client.get_robot_state)
+        except Exception as error:
+            logger.error(f"Spot get_battery_soc failed: {error}")
+            return "Failed to read Spot battery state."
+        for battery in state.battery_states:
+            if battery.HasField("charge_percentage"):
+                return f"Battery is at {battery.charge_percentage.value:.0f}%."
+        return "Battery charge is unavailable."
 
     @skill
     async def move_velocity(
@@ -466,8 +532,8 @@ class SpotHighLevel(Module):
             return f"Stand failed: {error}"
 
     @skill
-    async def sit(self) -> str:
-        """Make Spot sit down."""
+    async def lie_down(self) -> str:
+        """Make Spot lie down."""
         if self._command_client is None:
             return "Spot is not connected."
         try:
@@ -477,63 +543,49 @@ class SpotHighLevel(Module):
 
             await asyncio.to_thread(blocking_sit, self._command_client, timeout_sec=SIT_TIMEOUT_S)
             self._standing = False
-            return "Spot is sitting."
+            return "Spot is lying down."
         except Exception as error:
-            logger.error(f"Spot sit failed: {error}")
-            return f"Sit failed: {error}"
+            logger.error(f"Spot lie_down failed: {error}")
+            return f"Lie down failed: {error}"
 
+    async def resolve_ip(self) -> str:
+        """The Spot IP to connect to: explicit `config.ip`, else the first reachable candidate.
 
-def _rotate_image(image: Image, rotation_k: int) -> Image:
-    """Rotate an image counterclockwise by rotation_k * 90 degrees."""
-    rotated = np.ascontiguousarray(np.rot90(image.data, rotation_k))
-    return Image(data=rotated, format=image.format, frame_id=image.frame_id, ts=image.ts)
+        With no `config.ip`, each candidate gets a short TCP connect to the API
+        port and the first successful handshake wins — so Ethernet or Spot's WiFi
+        both work without configuration. Raises `ConnectionError` if none answer.
+        """
+        if self.config.ip:
+            return self.config.ip
+        for candidate in self.config.candidate_ips:
+            try:
+                _, writer = await asyncio.wait_for(
+                    asyncio.open_connection(candidate, SPOT_API_PORT),
+                    timeout=REACHABILITY_PROBE_TIMEOUT_S,
+                )
+            except (OSError, asyncio.TimeoutError):
+                continue
+            # A successful TCP handshake is all we need. Close without awaiting
+            # wait_closed(); the API port speaks TLS and never completes a clean
+            # plaintext close, which would otherwise hang the probe.
+            writer.close()
+            logger.info(f"Spot reachable at {candidate}")
+            return candidate
+        described = " or ".join(
+            f"{candidate} ({IP_LABELS[candidate]})" if candidate in IP_LABELS else candidate
+            for candidate in self.config.candidate_ips
+        )
+        raise ConnectionError(
+            f"I'm unable to connect to {described}. Did you forget to connect to "
+            "Spot's WiFi or plug in an Ethernet cable to Spot?"
+        )
 
+    async def sync_clocks(self) -> None:
+        """Establish time sync so robot-clock image timestamps convert to local time.
 
-def _decode_image(response: Any, source_name: str) -> Image | None:
-    """Turn a bosdyn ImageResponse into a dimos Image, or None if unsupported."""
-    from bosdyn.api import image_pb2  # type: ignore[import-not-found]
-
-    shot = response.shot.image
-    pixel_format = shot.pixel_format
-    now = time.time()
-
-    if shot.format == image_pb2.Image.FORMAT_JPEG:
-        import cv2
-
-        buffer = np.frombuffer(shot.data, dtype=np.uint8)
-        decoded = cv2.imdecode(buffer, cv2.IMREAD_UNCHANGED)
-        if decoded is None:
-            logger.error(f"Failed to decode JPEG image from {source_name}")
-            return None
-        image_format = ImageFormat.GRAY if decoded.ndim == 2 else ImageFormat.BGR
-        return Image.from_numpy(decoded, format=image_format, frame_id=source_name, ts=now)
-
-    if shot.format != image_pb2.Image.FORMAT_RAW:
-        logger.error(f"Unsupported Spot image encoding {shot.format} from {source_name}")
-        return None
-
-    dtype, channels, image_format = _raw_layout(pixel_format)
-    if dtype is None:
-        logger.error(f"Unsupported Spot pixel format {pixel_format} from {source_name}")
-        return None
-
-    array = np.frombuffer(shot.data, dtype=dtype)
-    array = (
-        array.reshape(shot.rows, shot.cols)
-        if channels == 1
-        else array.reshape(shot.rows, shot.cols, channels)
-    )
-    return Image.from_numpy(array, format=image_format, frame_id=source_name, ts=now)
-
-
-def _raw_layout(pixel_format: int) -> tuple[Any, int, ImageFormat]:
-    from bosdyn.api import image_pb2  # type: ignore[import-not-found]
-
-    layouts: dict[int, tuple[Any, int, ImageFormat]] = {
-        image_pb2.Image.PIXEL_FORMAT_GREYSCALE_U8: (np.uint8, 1, ImageFormat.GRAY),
-        image_pb2.Image.PIXEL_FORMAT_GREYSCALE_U16: (np.uint16, 1, ImageFormat.GRAY16),
-        image_pb2.Image.PIXEL_FORMAT_DEPTH_U16: (np.uint16, 1, ImageFormat.DEPTH16),
-        image_pb2.Image.PIXEL_FORMAT_RGB_U8: (np.uint8, 3, ImageFormat.RGB),
-        image_pb2.Image.PIXEL_FORMAT_RGBA_U8: (np.uint8, 4, ImageFormat.RGBA),
-    }
-    return layouts.get(pixel_format, (None, 0, ImageFormat.GRAY))
+        Touching `robot.time_sync` starts bosdyn's background sync thread, which keeps
+        re-estimating clock skew on an interval; this blocks until the first estimate
+        lands. `_poll_images` then pulls a live `RobotTimeConverter` each cycle rather
+        than freezing one offset here, since the skew drifts and would go stale.
+        """
+        await asyncio.to_thread(self._robot.time_sync.wait_for_sync)

@@ -24,16 +24,34 @@ from __future__ import annotations
 
 from pathlib import Path
 
+from pydantic import Field
+
 from dimos.core.stream import In
 from dimos.memory2.module import OnExisting, Recorder, RecorderConfig
 from dimos.msgs.nav_msgs.Odometry import Odometry
+from dimos.msgs.sensor_msgs.CameraInfo import CameraInfo
 from dimos.msgs.sensor_msgs.Image import Image
+from dimos.robot.bosdyn.spot.config import CAMERA_STREAM_SUFFIXES
+
+# jpeg codec quantises depth it to ~25cm and adds block artifacts (horrible)
+LOSSLESS_CODEC = "lz4+lcm"
 
 
 class SpotRecorderConfig(RecorderConfig):
     db_path: str | Path = "spot_recording.db"
     # Append into a populated db so re-runs add to the same recording.
     on_existing: OnExisting = OnExisting.APPEND
+    # The odom frame is the fixed root SpotHighLevel anchors against. It publishes
+    # odom->base_link and base_link->camera edges, so image/odom poses resolve
+    # against this root. Must match SpotHighLevelConfig.odom_frame_id.
+    root_frame: str = "odom"
+    stream_codecs: dict[str, str] = Field(
+        default_factory=lambda: {
+            f"{kind}_image_{suffix}": LOSSLESS_CODEC
+            for kind in ("grayscale", "depth")
+            for suffix in CAMERA_STREAM_SUFFIXES
+        }
+    )
 
 
 class SpotRecorder(Recorder):
@@ -41,16 +59,19 @@ class SpotRecorder(Recorder):
 
     config: SpotRecorderConfig
 
-    grayscale_image_1: In[Image]
-    grayscale_image_2: In[Image]
-    grayscale_image_3: In[Image]
-    grayscale_image_4: In[Image]
-    grayscale_image_5: In[Image]
+    grayscale_image_front_left: In[Image]
+    grayscale_image_front_right: In[Image]
+    grayscale_image_left: In[Image]
+    grayscale_image_right: In[Image]
+    grayscale_image_back: In[Image]
 
-    depth_image_1: In[Image]
-    depth_image_2: In[Image]
-    depth_image_3: In[Image]
-    depth_image_4: In[Image]
-    depth_image_5: In[Image]
+    depth_image_front_left: In[Image]
+    depth_image_front_right: In[Image]
+    depth_image_left: In[Image]
+    depth_image_right: In[Image]
+    depth_image_back: In[Image]
+
+    grayscale_info: In[CameraInfo]
+    depth_info: In[CameraInfo]
 
     odom: In[Odometry]

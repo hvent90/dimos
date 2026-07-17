@@ -35,17 +35,16 @@ Usage:
 from __future__ import annotations
 
 from dimos.core.coordination.blueprints import autoconnect
+from dimos.core.global_config import global_config
 from dimos.navigation.movement_manager.movement_manager import MovementManager
-from dimos.robot.bosdyn.spot.blueprints.spot_cameras import spot_camera_layout
 from dimos.robot.bosdyn.spot.effectors.high_level import SpotHighLevel
-from dimos.visualization.rerun.bridge import RerunBridgeModule
-from dimos.visualization.rerun.websocket_server import RerunWebSocketServer
+from dimos.robot.bosdyn.spot.rerun import spot_camera_layout
+from dimos.visualization.vis_module import vis_module
 
 spot = autoconnect(
     SpotHighLevel.blueprint(),
     MovementManager.blueprint(),
-    RerunBridgeModule.blueprint(blueprint=spot_camera_layout),
-    RerunWebSocketServer.blueprint(),
+    vis_module(global_config.viewer, rerun_config={"blueprint": spot_camera_layout}),
 ).remappings(
     [
         # No nav stack here, so MovementManager's goal/way_point/stop_movement
