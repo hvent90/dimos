@@ -139,6 +139,28 @@ dependencies = [
     # remove this once rerun is optional in core
     "rerun-sdk==0.32.0",
     "dimos-viewer==0.32.0a1",
+    # Declared because core code imports them directly, at module scope:
+    #   dimos/web/websocket_vis/websocket_vis_module.py -> socketio
+    #   dimos/visualization/rerun/websocket_server.py   -> websockets
+    # dimos/visualization/vis_module.py imports BOTH unconditionally, and every
+    # viewer setting (including "none") composes WebsocketVisModule. So without
+    # these, a core-only `pip install dimos` cannot run ANY blueprint that uses
+    # vis_module -- go2-basic, drone-basic, the G1 nav set, r1lite. It is
+    # invisible in a dev checkout because python-socketio was declared only in
+    # the `lint` group and default-groups = ["tests"] pulls it in anyway.
+    # Caught by deploying a core-only runtime image to a robot:
+    #   ModuleNotFoundError: No module named 'socketio'
+    # websockets currently arrives transitively; declare it too rather than
+    # rely on someone else's dependency tree for something we import outright.
+    # starlette/uvicorn are the same story: websocket_vis_module builds a
+    # Starlette app and runs it on uvicorn.Server at module scope. uvicorn was
+    # declared only in the `web` extra and starlette only ever arrived via
+    # fastapi. Plain uvicorn is enough -- the module uses uvicorn.Config/Server,
+    # not the [standard] extra.
+    "python-socketio>=5.16.1",
+    "websockets>=13",
+    "starlette>=0.40",
+    "uvicorn>=0.34.0",
     "toolz>=1.1.0",
     "protobuf>=6.33.5,<7",
     "psutil>=7.0.0",

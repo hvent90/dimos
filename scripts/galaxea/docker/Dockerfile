@@ -141,11 +141,22 @@ ENV PYTHONUNBUFFERED=1 \
     ROS_DOMAIN_ID=2
 
 # Smoke-test the image at BUILD time, as the runtime user, so a broken image
-# cannot be produced -- let alone reach a robot. `dimos list` imports the whole
-# blueprint registry, which is exactly what caught the unpinned-typer breakage
-# (typer 0.27 vs the lock's 0.23.1). Deliberately placed after USER so it also
+# cannot be produced -- let alone reach a robot. Placed after USER so it also
 # proves dimos can write its state dir ($HOME/.local/state/dimos) as uid 1000.
-RUN dimos list | grep -q r1lite-coordinator
+#
+# Two checks, because the first one alone was not enough:
+#   1. `dimos list` exercises the CLI. It caught the unpinned-typer breakage
+#      (typer 0.27 vs the lock's 0.23.1) -- but it only reads registry STRINGS
+#      and never imports a blueprint, so it passed happily on an image whose
+#      blueprint was unimportable (missing socketio). A green `list` proves the
+#      CLI works and nothing more.
+#   2. Importing the blueprint pulls the real graph -- connection module,
+#      coordinator, vis_module, and every transitive dependency -- which is the
+#      thing the robot actually runs. This is what would have caught socketio
+#      at build time instead of in a restart loop on the robot.
+RUN dimos list | grep -q r1lite-coordinator \
+    && python3 -c "from dimos.robot.galaxea.r1lite.blueprints.basic.r1lite_coordinator import r1lite_coordinator" \
+    && python3 -c "from dimos.robot.galaxea.r1lite.blueprints.basic.r1lite_keyboard_teleop import r1lite_keyboard_teleop"
 
 ENTRYPOINT ["/entrypoint.sh"]
 CMD ["run", "r1lite-coordinator"]
