@@ -629,21 +629,103 @@ when present. Nobody needs to think about Docker.
 The single most useful fact: **not every change needs a rebuild.** The system has
 three tiers, and the cost differs by ~100×.
 
-## 6.1 The change matrix
+## 6.1 The rule: is the file inside the sealed box?
 
-| What changed | Rebuild image? | Steps | Time |
+An image is a **photograph taken at build time**. Anything the Dockerfile
+`COPY`s or `pip install`s was photographed and frozen. Editing the original
+afterwards changes nothing — **the photo does not update**. Everything else
+lives on the robot's filesystem and is read fresh on every run.
+
+That single distinction decides every question below.
+
+```
+┌─ INSIDE the box — frozen at build ─────────────────────────────┐
+│  dimos/**          ALL Python: blueprints, connection module,  │
+│                    coordinator, rerun config (max_hz), …       │
+│  pyproject.toml    the dependency declaration                  │
+│  uv.lock           the ~150 pinned packages                    │
+│  Dockerfile        base digest, apt list, install steps        │
+│  entrypoint.sh     COPY'd in — surprising, see 6.1.2           │
+└─────────────────────────────────────────────────────────────────┘
+                       ⇩  REBUILD REQUIRED  ⇩
+
+┌─ OUTSIDE the box — live on the robot ──────────────────────────┐
+│  compose.yaml         → copied to /opt/dimos/compose.yaml      │
+│  .env                 → written to /opt/dimos/.env             │
+│  dimos-wrapper.sh     → installed to /usr/local/bin/dimos      │
+│  setup.sh, roslaunch.sh, run_r1lite.sh, scripts/r1lite_test/** │
+│                       → run straight from the robot's checkout │
+└─────────────────────────────────────────────────────────────────┘
+                       ⇩  GIT PULL IS ENOUGH  ⇩
+```
+
+To check any file yourself:
+
+```bash
+grep -nE "^(COPY|RUN pip|RUN.*uv pip install)" scripts/galaxea/docker/Dockerfile
+```
+
+If a file is reachable from those lines, it is in the image. If not, it is not.
+
+### 6.1.1 Why each thing lives where it does
+
+This split is deliberate, not incidental. The dividing question is:
+**does this define *what the software is*, or *how this particular robot runs
+it*?**
+
+| File | Where | Why it must be there |
+|---|---|---|
+| `dimos/**` (all Python) | **inside** | This *is* the software. If it could change without a rebuild, "version 0.0.14b1" would no longer identify what is running, and rollback would mean nothing. Reproducibility requires the code be immutable and content-addressed. |
+| `uv.lock` / `pyproject.toml` | **inside** | Same argument one level down. Code without its exact dependencies is not a version; it is a lottery ticket (see §4.3). |
+| `Dockerfile` | **inside** (by definition) | It *is* the build. |
+| `entrypoint.sh` | **inside** | The image must be self-contained: `docker run <image> list` has to work on a machine with no repo checkout. If the entrypoint were mounted from the host, the image would be a fragment that only runs next to the right git clone — exactly the coupling the design removes. |
+| `compose.yaml` | **outside** | Describes *how to run* the image on a host: ports, uid, limits, restart policy. Not a property of the software. A robot may legitimately need different limits without becoming a different version. Also: it must be editable when the image is *already broken*, which is impossible if it is inside the thing that is broken. |
+| `.env` | **outside** | The robot's identity: which version, which uid, which ROS domain. This is the *only* file that differs between two robots running the same release. Baking it in would mean one image per robot — the opposite of a fleet. |
+| `dimos-wrapper.sh` | **outside** | It runs *on the host* (`/usr/local/bin/dimos`) and its job is to invoke docker. It cannot live inside the container it launches. |
+| `setup.sh`, `roslaunch.sh`, test scripts | **outside** | Operator tools. `setup.sh` must run *before* any image exists. `roslaunch.sh` drives the vendor stack, which is not ours and not containerised. |
+
+The general principle: **immutable = what the software is; mutable = how this
+host runs it.** Anything that must be adjustable on a robot at 2am, without a
+build machine, belongs outside. Anything whose change would invalidate the
+version number belongs inside.
+
+### 6.1.2 The counter-intuitive cases
+
+- **`entrypoint.sh` needs a rebuild.** It is a shell script, which *feels* like
+  a deploy file, but it is `COPY`d into the image. Rationale in the table above:
+  self-containment beats editability here.
+- **`git pull` alone is NOT enough for `compose.yaml` or the wrapper.**
+  `setup.sh` *copied* them to `/opt/dimos` and `/usr/local/bin` at install time,
+  so editing the checkout does not touch the deployed copy. Pull **and** copy.
+- **`setup.sh` itself is pull-only**, because it runs from the checkout.
+- **A rebuild under the same tag needs `sudo rm /opt/dimos/.env`** — `.env` pins
+  the old digest, which still exists locally, so compose would keep running the
+  old image forever. See the warning in §6.5.
+
+## 6.2 The change matrix
+
+| What changed | Rebuild? | Steps | Time |
 |---|---|---|---|
 | **`.env`** (version pin, uid, domain, viewer) | ❌ | edit + `up -d` | **~10 s** |
-| **`compose.yaml`** (ports, limits, healthcheck, grace) | ❌ | `git pull`, copy to `/opt/dimos`, `up -d` | **~30 s** |
-| **`setup.sh` / `roslaunch.sh` / test scripts** | ❌ | `git pull` on the robot | **~5 s** |
-| **dimos Python code** (blueprint, connection, throttle) | ✅ | commit → build → save → scp → load → redeploy | **~15 min** |
-| **Dependencies** (`pyproject.toml`) | ✅ | + `uv lock` first | ~15 min |
+| **`compose.yaml`** (ports, limits, healthcheck, grace) | ❌ | `git pull` + copy to `/opt/dimos` + `up -d` | **~30 s** |
+| **`dimos-wrapper.sh`** | ❌ | `git pull` + `install` to `/usr/local/bin` | **~5 s** |
+| **`setup.sh` / `roslaunch.sh` / test scripts** | ❌ | `git pull` | **~5 s** |
+| **dimos Python code** (blueprint, connection, `max_hz`) | ✅ | commit → build → ship → redeploy | **~15 min** (tarball) / **~2 min** (registry) |
+| **Dependencies** (`pyproject.toml`) | ✅ | + `uv lock` first | same |
+| **`entrypoint.sh`** | ✅ | it is COPY'd into the image | same |
 | **Base OS** (new ROS base) | ✅ | + update the digest in the Dockerfile | ~30 min (cold) |
 
-The distinction is simply **what lives inside the sealed box**: Python code and
-dependencies are baked in; deploy files and configuration are not.
+Two real examples from this project:
 
-## 6.2 Tier 1 — configuration only (~10 seconds)
+- **The `max_hz` camera throttle** — three lines in `r1lite_coordinator.py`,
+  which lives under `dimos/` and is compiled into the wheel. **Inside the box →
+  full rebuild.** A `git pull` on the robot would update the checkout while the
+  container happily ignored it.
+- **The wrapper's `XAUTHORITY` fix** — `dimos-wrapper.sh` is never `COPY`d into
+  the image; `setup.sh` installs it to `/usr/local/bin/dimos`. **Outside the box
+  → `git pull` + re-install, ~5 seconds.**
+
+## 6.3 Tier 1 — configuration only (~10 seconds)
 
 ```bash
 sudo vi /opt/dimos/.env
@@ -653,7 +735,7 @@ docker compose -f /opt/dimos/compose.yaml up -d
 This is how you change version, uid, ROS domain, or viewer behaviour. **This is
 also how you upgrade and roll back** (§7, §8).
 
-## 6.3 Tier 2 — deploy files (~30 seconds)
+## 6.4 Tier 2 — deploy files (~30 seconds)
 
 ```bash
 cd ~/dimos && git pull
@@ -665,7 +747,7 @@ docker compose -f /opt/dimos/compose.yaml up -d --force-recreate
 limits, healthcheck, `stop_grace_period` and the uid mapping are all tunable
 without touching the image at all.
 
-## 6.4 Tier 3 — code or dependencies (~15 minutes)
+## 6.5 Tier 3 — code or dependencies (~15 minutes)
 
 ```bash
 # 1. laptop — change, and COMMIT (build.sh builds the last commit)
@@ -713,7 +795,82 @@ bash scripts/galaxea/r1lite/setup.sh --tar ~/dimos-r1lite.tar.gz
 > (`build.sh 2` → `…-r1lite.2`), so old and new are different references and
 > nothing needs deleting.
 
-## 6.5 Iterating quickly (the dev path)
+## 6.6 Is a full rebuild the right path for a small change?
+
+Honest answer: **for real code changes, yes — and the cost is mostly avoidable.
+For *tuning* changes, no, and reaching for a rebuild is a smell.**
+
+### It is right for code, and that is the whole point
+
+Rebuilding a 5.6 GB image to change three lines feels absurd. It is not. The
+moment a robot can run code that is not in the image, the version number stops
+meaning anything: "0.0.14b1" no longer identifies what is running, rollback
+cannot restore a known state, and a bug report cannot be tied to a commit. Every
+property in Part 8 rests on the image being the *complete, immutable* answer to
+"what is this robot running".
+
+The alternative — bind-mounting source over the image — is exactly the dev path
+(§6.7), and it trades that property away. That is a fine trade while
+experimenting and a terrible one on a fleet.
+
+### The 15 minutes is an artifact, not the design
+
+Look at where it actually goes:
+
+| Step | Tarball (today) | Registry (once published) |
+|---|---|---|
+| build (layers cached) | ~2 min | ~2 min |
+| `docker save` + gzip | ~2 min | — |
+| transfer | ~12 s/GB over the cable | — |
+| `docker load` | ~1 min | — |
+| `docker pull` | — | **~10 s** |
+| **total** | **~15 min** | **~2 min** |
+
+The reason is **layer deduplication**. A code-only change alters exactly one
+layer — the dimos wheel install. The ~5 GB of OS and dependencies underneath is
+byte-identical, so `docker pull` fetches **only the changed layer** (~100 MB),
+not 1.3 GB. `docker save | scp` cannot do this: it ships the entire image every
+time, because a tarball has no idea what the robot already has.
+
+**So "publish to a registry" is not just about removing the laptop — it makes
+Tier 3 roughly 7× cheaper.** It is the highest-leverage item outstanding.
+
+### For tuning values, a rebuild is the wrong answer
+
+Here is the sharper point, and the `max_hz` change is the example.
+
+`max_hz` is **not logic. It is a number you tune while looking at a robot.** It
+ended up costing a rebuild only because it was hard-coded in Python. That is a
+*code/config classification error*, not a deployment-model problem.
+
+The test: **would you change this value while standing next to the robot, based
+on what you see?** If yes, it is configuration and it belongs in `.env` (Tier 1,
+10 seconds). If no — it is logic, and it belongs in the image.
+
+By that test, several current constants are misfiled: camera throttle rates,
+`memory_limit`, teleop speeds, `cmd_vel_timeout_s`. `GlobalConfig` is a pydantic
+`BaseSettings`, so **any field it defines is already settable from `.env`** with
+no new machinery — `compose.yaml` passes `.env` into the container as
+environment, which is exactly how `VIEWER` and `RERUN_OPEN` already work.
+
+Promoting the genuine knobs to `GlobalConfig` fields would move them from Tier 3
+to Tier 1 — from 15 minutes to 10 seconds — **without weakening reproducibility
+at all**, because a value read from `.env` is still recorded in `.env`, which is
+the robot's declared identity.
+
+That is the recommendation: **do not loosen the image to make tuning fast — move
+the tunables out of the image.**
+
+### Summary of the right path per situation
+
+| Situation | Path |
+|---|---|
+| Exploring, changing code every few minutes | **Dev path** (§6.7) — bind-mounted, instant, not reproducible. Promote findings into the image afterwards. |
+| Tuning a number (rates, limits, speeds) | Should be **Tier 1** via `.env`. If it isn't, that is a bug in where the value lives — fix that, don't rebuild. |
+| Changing how the host runs it (ports, uid, limits) | **Tier 2** — already fast. |
+| Real code or dependency change | **Tier 3 rebuild. Correct and non-negotiable** — and ~2 min once images are published. |
+
+## 6.7 Iterating quickly (the dev path)
 
 Rebuilding for every experiment is too slow. For active development there is a
 second path — `scripts/r1lite_test/` — that bind-mounts your checkout into a dev
