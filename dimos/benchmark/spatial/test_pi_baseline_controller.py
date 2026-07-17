@@ -1,0 +1,483 @@
+# Copyright 2026 Dimensional Inc.
+import io
+import json
+import os
+from pathlib import Path
+import queue
+import subprocess
+import threading
+from threading import Event
+
+import pytest
+
+from dimos.benchmark.spatial.models import AnswerType
+from dimos.benchmark.spatial.pi_baseline.broker import CaseBroker
+import dimos.benchmark.spatial.pi_baseline.controller as controller_module
+from dimos.benchmark.spatial.pi_baseline.controller import (
+    TOOLS,
+    AdapterCleanupError,
+    AdapterController,
+    AdapterRunError,
+)
+from dimos.benchmark.spatial.pi_baseline.prompts import (
+    build_prompt_pair,
+    make_parity_manifest,
+    validate_parity,
+)
+from dimos.benchmark.spatial.pi_baseline.topology import PinnedDirectory
+from dimos.benchmark.spatial.pi_baseline.transaction import AnswerTransaction
+
+from .test_pi_baseline_broker import _Case
+
+
+def _operation_pair() -> tuple[threading.Event, threading.Lock]:
+    return threading.Event(), threading.Lock()
+
+
+class _Process:
+    def __init__(self, frames: list[dict[str, object]]) -> None:
+        self.stdin = io.StringIO()
+        self.stdout = io.StringIO("".join(json.dumps(frame) + "\n" for frame in frames))
+        self.stderr = io.StringIO()
+        self.wait_calls = 0
+
+    def wait(self, timeout: float) -> int:
+        self.wait_calls += 1
+        return 0
+
+
+def test_prompt_pair_has_only_visualization_delta() -> None:
+    pair = build_prompt_pair()
+    assert "online information or services" in pair.visualization_forbidden
+    assert "under /input" in pair.visualization_forbidden
+    assert "only under /work" in pair.visualization_forbidden
+    assert "sandbox_exec, read_generated_image, and submit_answer" in pair.visualization_forbidden
+    assert "submit_answer exactly once" in pair.visualization_forbidden
+    assert "package installation is allowed" in pair.visualization_forbidden
+    assert (
+        pair.visualization_forbidden.replace(
+            "Visualization is forbidden. Do not call `read_generated_image`.",
+            "Visualization is required for acceptance: generate an image under `/work` and successfully call the bounded `read_generated_image` operation at least once before submitting your answer.",
+        )
+        == pair.visualization_encouraged
+    )
+    left = make_parity_manifest(
+        model={"m": 1},
+        tools={"t": 1},
+        runtime={"r": 1},
+        dependencies={"d": 1},
+        mode="visualization_forbidden",
+        prompt=pair.visualization_forbidden,
+    )
+    right = make_parity_manifest(
+        model={"m": 1},
+        tools={"t": 1},
+        runtime={"r": 1},
+        dependencies={"d": 1},
+        mode="visualization_encouraged",
+        prompt=pair.visualization_encouraged,
+    )
+    validate_parity(left, right)
+
+
+def test_controller_runs_closed_dialogue_and_rejects_case_mismatch(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    frames = [
+        {
+            "version": 1,
+            "type": "run_started",
+            "id": "run",
+            "tools": ["sandbox_exec", "read_generated_image", "submit_answer"],
+        },
+        {"version": 1, "type": "transcript", "event": "turn_end"},
+        {
+            "version": 1,
+            "type": "tool_call",
+            "id": "tool-1",
+            "tool": "submit_answer",
+            "params": {"answer": True},
+        },
+        {"version": 1, "type": "transcript", "event": "continuation_requested", "delta": "continue"},
+        {"version": 1, "type": "run_complete", "id": "run", "ok": True, "reason": "submitted"},
+    ]
+    process = _Process(frames)
+    captured: dict[str, object] = {}
+
+    def launch(command: tuple[str, ...], **kwargs: object) -> _Process:
+        captured.update(kwargs)
+        return process
+
+    monkeypatch.setattr(subprocess, "Popen", launch)
+    broker = CaseBroker("case", _Case(tmp_path), AnswerTransaction("instance", AnswerType.BOOLEAN), "visualization-forbidden")
+    transcript = tmp_path / "transcript.ndjson"
+    run_start = {
+        "version": 1,
+        "type": "run_start",
+        "id": "run",
+        "prompt": "offline",
+        "budget": {"maxTurns": 2, "maxToolCalls": 2, "timeoutMs": 1000},
+        "config": {
+            "promptMode": "visualization_forbidden",
+            "answerType": "boolean",
+            "modelId": "gpt-5.6-luna",
+            "thinkingLevel": "medium",
+            "implementationDigests": {
+                "adapter": "adapter@sha256:" + "a" * 64,
+                "scorer": "scorer@sha256:" + "b" * 64,
+                "protocol": "protocol@sha256:" + "c" * 64,
+            },
+        },
+    }
+    terminal = AdapterController(
+        ("node", "adapter.js"), tmp_path / "private-auth", transcript
+    ).run("run", broker, run_start, *_operation_pair())
+    assert terminal.ok
+    assert terminal.tool_replies[0] == {
+        "version": 1,
+        "type": "tool_reply",
+        "id": "tool-1",
+        "ok": True,
+        "result": '{"accepted":true,"instance_id":"instance","answer_type":"boolean"}',
+    }
+    assert captured["env"]["PI_SPATIAL_AUTH_PATH"] == str(tmp_path / "private-auth")
+    assert "private-auth" not in transcript.read_text()
+    transcript_text = transcript.read_text()
+    assert "continuation_requested" in transcript_text
+    assert broker.transaction.prediction is not None
+
+    mismatch = _Process(
+        [
+            {
+                "version": 1,
+                "type": "run_started",
+                "id": "other",
+                "tools": ["sandbox_exec", "read_generated_image", "submit_answer"],
+            }
+        ]
+    )
+    monkeypatch.setattr(subprocess, "Popen", lambda *args, **kwargs: mismatch)
+    with pytest.raises(ValueError, match="run_started"):
+        AdapterController(("node",), tmp_path / "auth", tmp_path / "bad.ndjson").run(
+            "run", broker, run_start, *_operation_pair()
+        )
+
+
+def test_terminal_failure_is_rejected_and_stderr_is_bounded(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+    process = _Process([
+        {"version": 1, "type": "run_started", "id": "run", "tools": ["sandbox_exec", "read_generated_image", "submit_answer"]},
+        {"version": 1, "type": "run_complete", "id": "run", "ok": False, "reason": "session_error", "error": "secret/path"},
+    ])
+    process.stderr = io.StringIO("x" * 100_000)
+    monkeypatch.setattr(subprocess, "Popen", lambda *args, **kwargs: process)
+    broker = CaseBroker("case", _Case(tmp_path), AnswerTransaction("instance", AnswerType.BOOLEAN), "visualization-forbidden")
+    start = {"version": 1, "type": "run_start", "id": "run", "prompt": "offline", "budget": {"maxTurns": 1, "maxToolCalls": 1, "timeoutMs": 1000}, "config": {"promptMode": "visualization_forbidden", "answerType": "boolean", "modelId": "gpt-5.6-luna", "thinkingLevel": "medium", "implementationDigests": {"adapter": "adapter@sha256:" + "a" * 64, "scorer": "scorer@sha256:" + "b" * 64, "protocol": "protocol@sha256:" + "c" * 64}}}
+    with pytest.raises(AdapterRunError, match="adapter_run_failed"):
+        AdapterController(("node",), tmp_path / "auth", tmp_path / "transcript", max_stderr_bytes=128).run("run", broker, start, *_operation_pair())
+    assert (tmp_path / "transcript.stderr.log").stat().st_size <= 128
+    assert "secret/path" not in (tmp_path / "transcript").read_text()
+
+
+def test_transcript_symlink_in_pinned_leaf_fails_closed(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    escaped = tmp_path / "escaped-transcript.ndjson"
+    escaped.write_bytes(b"must remain unchanged")
+    transcript_root = tmp_path / "private"
+    transcript_root.mkdir()
+    (transcript_root / "adapter.transcript.ndjson").symlink_to(escaped)
+    process = _Process(
+        [{"version": 1, "type": "run_started", "id": "run", "tools": list(TOOLS)}]
+    )
+    monkeypatch.setattr(subprocess, "Popen", lambda *args, **kwargs: process)
+    pinned = PinnedDirectory.open(transcript_root)
+    try:
+        broker = CaseBroker(
+            "case",
+            _Case(tmp_path),
+            AnswerTransaction("instance", AnswerType.BOOLEAN),
+            "visualization-forbidden",
+        )
+        with pytest.raises(OSError):
+            AdapterController(("node",), tmp_path / "auth", pinned).run(
+                "run", broker, _minimal_start(), *_operation_pair()
+            )
+        assert escaped.read_bytes() == b"must remain unchanged"
+        assert (transcript_root / "adapter.transcript.ndjson").is_symlink()
+    finally:
+        pinned.close()
+
+
+def test_thread_start_failure_cleans_process_and_owned_transcript_fd(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    class Process(_Process):
+        def __init__(self) -> None:
+            super().__init__([])
+            self.terminated = False
+            self.killed = False
+
+        def poll(self) -> None:
+            return None
+
+        def terminate(self) -> None:
+            self.terminated = True
+
+        def kill(self) -> None:
+            self.killed = True
+
+    process = Process()
+    monkeypatch.setattr(subprocess, "Popen", lambda *args, **kwargs: process)
+    original_start = threading.Thread.start
+
+    def fail_start(thread: threading.Thread) -> None:
+        raise RuntimeError("forced thread-start failure")
+
+    monkeypatch.setattr(threading.Thread, "start", fail_start)
+    controller = AdapterController(("node",), tmp_path / "auth", tmp_path / "transcript")
+    owned_fd = controller.transcript_root.fd
+    with pytest.raises(RuntimeError, match="forced thread-start failure"):
+        controller.run("run", CaseBroker("case", _Case(tmp_path), AnswerTransaction("instance", AnswerType.BOOLEAN), "visualization-forbidden"), _minimal_start(), *_operation_pair())
+    assert process.terminated or process.killed
+    with pytest.raises(OSError):
+        os.fstat(owned_fd)
+    monkeypatch.setattr(threading.Thread, "start", original_start)
+
+
+def test_thread_constructor_failure_waits_and_closes_owned_transcript_fd(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    process = _Process([])
+    monkeypatch.setattr(subprocess, "Popen", lambda *args, **kwargs: process)
+
+    def fail_constructor(*args: object, **kwargs: object) -> threading.Thread:
+        raise RuntimeError("forced thread construction failure")
+
+    monkeypatch.setattr(threading, "Thread", fail_constructor)
+    controller = AdapterController(("node",), tmp_path / "auth", tmp_path / "transcript")
+    owned_fd = controller.transcript_root.fd
+    with pytest.raises(RuntimeError, match="forced thread construction failure"):
+        controller.run(
+            "run",
+            CaseBroker("case", _Case(tmp_path), AnswerTransaction("instance", AnswerType.BOOLEAN), "visualization-forbidden"),
+            _minimal_start(),
+            *_operation_pair(),
+        )
+    assert process.wait_calls
+    with pytest.raises(OSError):
+        os.fstat(owned_fd)
+
+
+def test_second_reader_start_failure_waits_and_closes_owned_transcript_fd(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    process = _Process([])
+    monkeypatch.setattr(subprocess, "Popen", lambda *args, **kwargs: process)
+    original_start = threading.Thread.start
+    start_calls = 0
+
+    def fail_second_start(thread: threading.Thread) -> None:
+        nonlocal start_calls
+        start_calls += 1
+        if start_calls == 1:
+            original_start(thread)
+            return
+        raise RuntimeError("forced second reader start failure")
+
+    monkeypatch.setattr(threading.Thread, "start", fail_second_start)
+    controller = AdapterController(("node",), tmp_path / "auth", tmp_path / "transcript")
+    owned_fd = controller.transcript_root.fd
+    with pytest.raises(RuntimeError, match="forced second reader start failure"):
+        controller.run(
+            "run",
+            CaseBroker("case", _Case(tmp_path), AnswerTransaction("instance", AnswerType.BOOLEAN), "visualization-forbidden"),
+            _minimal_start(),
+            *_operation_pair(),
+        )
+    assert process.wait_calls
+    with pytest.raises(OSError):
+        os.fstat(owned_fd)
+
+
+def test_cleanup_failure_still_waits_and_closes_owned_transcript_fd(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    process = _Process([])
+    monkeypatch.setattr(subprocess, "Popen", lambda *args, **kwargs: process)
+    monkeypatch.setattr(
+        controller_module,
+        "_terminate_then_kill",
+        lambda *args, **kwargs: (_ for _ in ()).throw(RuntimeError("forced cleanup failure")),
+    )
+    controller = AdapterController(("node",), tmp_path / "auth", tmp_path / "transcript")
+    owned_fd = controller.transcript_root.fd
+    with pytest.raises(AdapterCleanupError, match="cleanup failed"):
+        controller.run(
+            "run",
+            CaseBroker("case", _Case(tmp_path), AnswerTransaction("instance", AnswerType.BOOLEAN), "visualization-forbidden"),
+            _minimal_start(),
+            *_operation_pair(),
+        )
+    assert process.wait_calls
+    with pytest.raises(OSError):
+        os.fstat(owned_fd)
+
+
+def test_cleanup_preserves_caller_owned_transcript_fd(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    process = _Process([])
+    monkeypatch.setattr(subprocess, "Popen", lambda *args, **kwargs: process)
+    monkeypatch.setattr(
+        controller_module,
+        "_terminate_then_kill",
+        lambda *args, **kwargs: (_ for _ in ()).throw(RuntimeError("forced cleanup failure")),
+    )
+    private = tmp_path / "private"
+    private.mkdir()
+    pinned = PinnedDirectory.open(private)
+    try:
+        with pytest.raises(AdapterCleanupError):
+            AdapterController(("node",), tmp_path / "auth", pinned).run(
+                "run",
+                CaseBroker("case", _Case(tmp_path), AnswerTransaction("instance", AnswerType.BOOLEAN), "visualization-forbidden"),
+                _minimal_start(),
+                *_operation_pair(),
+            )
+        os.fstat(pinned.fd)
+        assert process.wait_calls
+    finally:
+        pinned.close()
+
+
+def test_reader_quiescence_closes_a_blocked_real_reader_before_reporting_failure() -> None:
+    entered = Event()
+    release = Event()
+    closed = Event()
+
+    class BlockingReader:
+        def __iter__(self) -> "BlockingReader":
+            entered.set()
+            release.wait(1)
+            return self
+
+        def __next__(self) -> str:
+            raise StopIteration
+
+        def close(self) -> None:
+            closed.set()
+
+    stream = BlockingReader()
+    reader = threading.Thread(target=controller_module._queue_lines, args=(stream, queue.Queue()))
+    reader.start()
+    assert entered.wait(1)
+    process = type("Process", (), {"stdout": stream, "stderr": io.StringIO()})()
+    assert not controller_module._quiesce_readers(process, reader, None, 0.01)
+    assert closed.is_set()
+    release.set()
+    reader.join(1)
+    assert not reader.is_alive()
+
+
+def test_peer_frames_reject_adapter_only_metadata() -> None:
+    with pytest.raises(ValueError, match="run_started"):
+        AdapterController._validate_run_started(
+            {
+                "version": 1,
+                "type": "run_started",
+                "id": "run",
+                "tools": list(("sandbox_exec", "read_generated_image", "submit_answer")),
+                "model": "gpt-5.6-luna",
+            },
+            "run",
+        )
+    with pytest.raises(ValueError, match="transcript"):
+        AdapterController._validate_transcript(
+            {"version": 1, "type": "transcript", "event": "turn_end", "thinkingLevel": "medium"}
+        )
+    with pytest.raises(ValueError, match="run_complete"):
+        AdapterController._validate_run_complete(
+            {"version": 1, "type": "run_complete", "id": "run", "ok": True, "thinkingLevel": "medium"},
+            "run",
+        )
+
+
+def test_integer_answer_type_matches_corpus_wire_value() -> None:
+    frame = {
+        "version": 1,
+        "type": "run_start",
+        "id": "run",
+        "prompt": "offline",
+        "budget": {"maxTurns": 1, "maxToolCalls": 1, "timeoutMs": 1000},
+        "config": {
+            "promptMode": "visualization_forbidden",
+            "answerType": "integer",
+            "modelId": "gpt-5.6-luna",
+            "thinkingLevel": "medium",
+            "implementationDigests": {
+                "adapter": "adapter@sha256:" + "a" * 64,
+                "scorer": "scorer@sha256:" + "b" * 64,
+                "protocol": "protocol@sha256:" + "c" * 64,
+            },
+        },
+    }
+    assert AdapterController._validate_run_start("run", frame)["config"]["answerType"] == "integer"  # type: ignore[index]
+
+
+def test_controller_returns_stable_policy_errors(tmp_path: Path) -> None:
+    controller = AdapterController(("node",), tmp_path / "auth", tmp_path / "transcript")
+    encouraged = CaseBroker("case", _Case(tmp_path), AnswerTransaction("instance", AnswerType.BOOLEAN), "visualization-encouraged")
+    forbidden = CaseBroker("case", _Case(tmp_path), AnswerTransaction("instance", AnswerType.BOOLEAN), "visualization-forbidden")
+    submit = {"version": 1, "type": "tool_call", "id": "s", "tool": "submit_answer", "params": {"answer": True}}
+    image = {"version": 1, "type": "tool_call", "id": "i", "tool": "read_generated_image", "params": {"path": "x.png"}}
+    assert controller._tool_reply(submit, encouraged, Event())["error"] == "visualization_required_before_submission"
+    assert controller._tool_reply(image, forbidden, Event())["error"] == "visualization_forbidden"
+
+
+def _minimal_start() -> dict[str, object]:
+    return {
+        "version": 1,
+        "type": "run_start",
+        "id": "run",
+        "prompt": "offline",
+        "budget": {"maxTurns": 1, "maxToolCalls": 1, "timeoutMs": 1000},
+        "config": {
+            "promptMode": "visualization_forbidden",
+            "answerType": "boolean",
+            "modelId": "gpt-5.6-luna",
+            "thinkingLevel": "medium",
+            "implementationDigests": {
+                "adapter": "adapter@sha256:" + "a" * 64,
+                "scorer": "scorer@sha256:" + "b" * 64,
+                "protocol": "protocol@sha256:" + "c" * 64,
+            },
+        },
+    }
+
+
+def test_controller_rejects_premature_successful_completion(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    process = _Process([
+        {"version": 1, "type": "run_started", "id": "run", "tools": list(TOOLS)},
+        {"version": 1, "type": "run_complete", "id": "run", "ok": True, "reason": "submitted"},
+    ])
+    monkeypatch.setattr(subprocess, "Popen", lambda *args, **kwargs: process)
+    broker = CaseBroker("case", _Case(tmp_path), AnswerTransaction("instance", AnswerType.BOOLEAN), "visualization-forbidden")
+    with pytest.raises(AdapterRunError, match="without_answer"):
+        AdapterController(("node",), tmp_path / "auth", tmp_path / "transcript").run("run", broker, _minimal_start(), *_operation_pair())
+
+
+def test_controller_accepts_exhausted_budget_as_failed_terminal(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    process = _Process([
+        {"version": 1, "type": "run_started", "id": "run", "tools": list(TOOLS)},
+        {"version": 1, "type": "transcript", "event": "turn_end"},
+        {"version": 1, "type": "run_complete", "id": "run", "ok": False, "reason": "max_turns", "error": "private"},
+    ])
+    monkeypatch.setattr(subprocess, "Popen", lambda *args, **kwargs: process)
+    broker = CaseBroker("case", _Case(tmp_path), AnswerTransaction("instance", AnswerType.BOOLEAN), "visualization-forbidden")
+    with pytest.raises(AdapterRunError, match="adapter_run_failed"):
+        AdapterController(("node",), tmp_path / "auth", tmp_path / "transcript").run("run", broker, _minimal_start(), *_operation_pair())
+    assert "private" not in (tmp_path / "transcript").read_text()

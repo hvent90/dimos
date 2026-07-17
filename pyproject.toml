@@ -151,6 +151,7 @@ dimos = "dimos.robot.cli.dimos:cli_main"
 rerun-bridge = "dimos.visualization.rerun.bridge:app"
 doclinks = "dimos.utils.docs.doclinks:main"
 dtop = "dimos.utils.cli.dtop:main"
+pi-baseline = "dimos.benchmark.spatial.pi_baseline.cli:main"
 
 [project.urls]
 Homepage = "https://dimensionalos.com"
