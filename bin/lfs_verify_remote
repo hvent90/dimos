@@ -1,0 +1,29 @@
+#!/usr/bin/env python3
+"""Check remote availability of all LFS pointers in a commit."""
+
+import argparse
+from pathlib import Path
+import sys
+
+ROOT = Path(__file__).resolve().parent.parent
+sys.path.insert(0, str(ROOT))
+
+from dimos.utils.lfs_remote import LFSVerificationError, verify
+
+
+def main() -> int:
+    parser = argparse.ArgumentParser(description=__doc__)
+    parser.add_argument("target", nargs="?", default="HEAD")
+    parser.add_argument("--batch-size", type=int, default=100)
+    args = parser.parse_args()
+    try:
+        verify(args.target, batch_size=args.batch_size)
+    except LFSVerificationError as exc:
+        print(f"ERROR: {exc}", file=sys.stderr)
+        return 1
+    print(f"LFS remote availability verified for {args.target}")
+    return 0
+
+
+if __name__ == "__main__":
+    raise SystemExit(main())

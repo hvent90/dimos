@@ -193,6 +193,19 @@ The [`lfs_push`](/bin/lfs_push) script:
 
 A pre-commit hook ([`bin/hooks/lfs_check`](/bin/hooks/lfs_check#L26)) blocks commits if you have uncompressed directories in `data/` without a corresponding `.tar.gz` in `data/.lfs/`.
 
+## CI Availability Check
+
+Every pull request checks every Git LFS pointer in the commit against the
+repository's configured LFS server. The GitHub-hosted check uses the read-only
+LFS Batch API and does not download archive contents or require LFS credentials;
+this also applies to pull requests from forks.
+
+If the check reports a missing object, the referenced path and object ID identify
+an LFS pointer whose archive is not available remotely. Upload the archive with
+[`bin/lfs_push`](/bin/lfs_push), then stage and commit the resulting pointer (or
+update the pointer in the pull request) and rerun CI. A service or malformed
+response also fails the gate rather than being silently skipped.
+
 ## Location Resolution
 
 When running from:

@@ -230,6 +230,30 @@ jobs:
       #   working-directory: docs
       #   run: npm run validate
 
+  lfs-remote-availability:
+    # This is intentionally GitHub-hosted and credential-free so fork PRs can
+    # verify their pointers against the public read-only LFS endpoint.
+    timeout-minutes: 10
+    runs-on: ubuntu-latest
+    permissions:
+      contents: read
+
+    steps:
+      - name: Checkout without smudging LFS objects
+        uses: actions/checkout@v7
+        with:
+          lfs: false
+        env:
+          GIT_LFS_SKIP_SMUDGE: "1"
+      - name: Install uv
+        uses: astral-sh/setup-uv@v8.2.0
+      - name: Verify remote LFS object availability
+        # The verifier uses the configured LFS endpoint and only performs
+        # Batch API metadata requests; it must not download object payloads.
+        # --no-project avoids syncing the full project; --with provides the
+        # verifier's only third-party dependency in an ephemeral environment.
+        run: uv run --no-project --with requests ./bin/lfs_verify_remote
+
   tests:
     timeout-minutes: 20
     strategy:
@@ -718,6 +742,7 @@ jobs:
     - rust
     - md-babel
     - docs-validate
+    - lfs-remote-availability
     - tests
     - cmu-nav-natives
     - self-hosted-tests
