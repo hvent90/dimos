@@ -57,8 +57,8 @@ from dimos.msgs.geometry_msgs.Twist import Twist
 from dimos.msgs.geometry_msgs.Vector3 import Vector3
 from dimos.msgs.sensor_msgs.Image import Image
 from dimos.teleop.quest.quest_extensions import _push_jpeg
-from dimos.teleop.quest.quest_teleop_module import Hand, QuestTeleopConfig, QuestTeleopModule
-from dimos.teleop.quest.quest_types import Buttons, QuestControllerState
+from dimos.teleop.quest.quest_teleop_module import QuestTeleopConfig, QuestTeleopModule
+from dimos.teleop.quest.quest_types import Buttons, Hand, QuestControllerState
 from dimos.utils.logging_config import setup_logger
 from dimos.utils.transform_utils import matrix_to_pose, pose_to_matrix
 
