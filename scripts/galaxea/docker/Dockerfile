@@ -19,7 +19,18 @@
 # - Runs with network_mode:host + ipc:host (compose.yaml) so FastDDS
 #   shared-memory + multicast reach the vendor stack on the same box.
 
-ARG ROS_BASE=ros:humble-ros-base-jammy
+# Base pinned by DIGEST, not tag. `ros:humble-ros-base-jammy` is mutable and
+# gets rebuilt regularly, so a tag means "whatever upstream published today" --
+# the same reproducibility hole as letting pip resolve dependencies, one layer
+# down. Pinning the digest is what makes "same commit -> same image" true all
+# the way to the OS.
+#
+# Digest below == ros:humble-ros-base-jammy as of 2026-07-16.
+# To move it forward deliberately:
+#     docker pull ros:humble-ros-base-jammy
+#     docker image inspect ros:humble-ros-base-jammy --format '{{index .RepoDigests 0}}'
+# then paste the result here and rebuild.
+ARG ROS_BASE=ros@sha256:afb40d6be65331c20a114d4e229a7ef099fed1b17bf6370daee193514b32aa16
 
 # ---- builder: compiles the dimos wheel (throwaway layer) -------------------
 FROM ${ROS_BASE} AS builder
@@ -100,16 +111,41 @@ RUN pip install --no-cache-dir uv \
     && uv pip install --system --no-cache --no-deps /tmp/wheels/dimos-*.whl "pygame==2.6.1" \
     && pip uninstall -y uv \
     && rm -rf /tmp/wheels
-# Fail the build here rather than on a robot: exercise the CLI the way the
-# entrypoint will. `dimos list` imports the whole blueprint registry, which is
-# what caught the unpinned-typer breakage.
-RUN dimos list | grep -q r1lite-coordinator
 
 COPY scripts/galaxea/docker/entrypoint.sh /entrypoint.sh
 RUN chmod +x /entrypoint.sh
 
+# Run as uid 1000, NOT root. Two reasons, and the first is a data-loss bug:
+#
+# 1. FastDDS delivers same-host data by writing into the READER's /dev/shm
+#    segment. The Galaxea stack runs as `r1lite` (uid 1000). A root container
+#    creates root-owned reader segments that the vendor's uid-1000 publishers
+#    cannot write into: discovery succeeds over UDP, so topics are visible,
+#    and not one message ever arrives -- silently, with no error. Matching the
+#    vendor's uid keeps zero-copy shared memory working, which matters for the
+#    camera streams. (The dev path works around this with a UDP-only FastDDS
+#    profile instead; that costs zero-copy. See scripts/r1lite_test/.)
+# 2. Root in a container with --network=host and --ipc=host is root on most of
+#    the robot. There is no reason for it.
+#
+# uid 1000 is the first-user uid on Ubuntu and is what Galaxea ships. A robot
+# whose vendor uid differs can override via DIMOS_UID/DIMOS_GID in
+# /opt/dimos/.env -- but must then also make $HOME writable for that uid,
+# because dimos keeps its logs and run registry under
+# $HOME/.local/state/dimos (dimos/constants.py: STATE_DIR).
+RUN useradd --uid 1000 --user-group --create-home --shell /bin/bash dimos
+USER dimos
+ENV HOME=/home/dimos
+
 ENV PYTHONUNBUFFERED=1 \
     ROS_DOMAIN_ID=2
+
+# Smoke-test the image at BUILD time, as the runtime user, so a broken image
+# cannot be produced -- let alone reach a robot. `dimos list` imports the whole
+# blueprint registry, which is exactly what caught the unpinned-typer breakage
+# (typer 0.27 vs the lock's 0.23.1). Deliberately placed after USER so it also
+# proves dimos can write its state dir ($HOME/.local/state/dimos) as uid 1000.
+RUN dimos list | grep -q r1lite-coordinator
 
 ENTRYPOINT ["/entrypoint.sh"]
 CMD ["run", "r1lite-coordinator"]

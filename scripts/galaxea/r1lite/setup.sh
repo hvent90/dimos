@@ -86,14 +86,37 @@ fi
 step 5 "Deploy files -> $DEPLOY_DIR"
 sudo mkdir -p "$DEPLOY_DIR"
 sudo cp "$HERE/compose.yaml" "$DEPLOY_DIR/compose.yaml"
+
+# Prefer an immutable digest reference over the tag. Tags are mutable: someone
+# can push over `$TAG` and a "rollback to the known-good version" then silently
+# gets different bytes. A digest is the only reference that means one exact
+# image forever. Only images that came FROM a registry carry a RepoDigest; an
+# image loaded from a tarball or built here has none, so fall back to the tag
+# (which is local and cannot be overwritten from outside anyway).
+IMAGE_REF="$TAG"
+DIGEST_REF="$($DOCKER image inspect "$TAG" --format '{{if .RepoDigests}}{{index .RepoDigests 0}}{{end}}' 2>/dev/null || true)"
+if [ -n "$DIGEST_REF" ]; then
+    IMAGE_REF="$DIGEST_REF"
+    echo "    pinning by digest: $IMAGE_REF"
+else
+    echo "    no registry digest (image was loaded/built locally) — pinning by tag: $IMAGE_REF"
+fi
+
+# Match the container's uid to whoever owns the Galaxea stack. FastDDS writes
+# into the READER's /dev/shm segment, so a uid mismatch means topics are
+# visible and zero messages arrive — silently. setup.sh runs as the robot's own
+# user (Galaxea ships `r1lite`, uid 1000), so `id -u` is that uid by
+# construction, and this stays correct on a robot that ships something else.
 if [ ! -f "$DEPLOY_DIR/.env" ]; then
     sudo tee "$DEPLOY_DIR/.env" >/dev/null <<EOF
-DIMOS_IMAGE=$TAG
+DIMOS_IMAGE=$IMAGE_REF
+DIMOS_UID=$(id -u)
+DIMOS_GID=$(id -g)
 ROS_DOMAIN_ID=2
 VIEWER=rerun
 RERUN_OPEN=none
 EOF
-    echo "    wrote .env (image tag, domain 2, connect-only rerun viewer)"
+    echo "    wrote .env (image pin, uid $(id -u):$(id -g), domain 2, connect-only rerun viewer)"
 else
     echo "    .env exists — leaving it (edit DIMOS_IMAGE there to update/rollback)"
 fi

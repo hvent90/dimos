@@ -117,14 +117,36 @@ The rest of this document is the runtime path.
 
 `scripts/galaxea/docker/Dockerfile` — ~5.9 GB, two stages.
 
-### Public base, no private registry
+### Public base, pinned by digest
 ```dockerfile
-ARG ROS_BASE=ros:humble-ros-base-jammy
+ARG ROS_BASE=ros@sha256:afb40d6b…   # == ros:humble-ros-base-jammy, 2026-07-16
 ```
 `ros-base`, not `desktop` — no GUI stack, no RViz, no Gazebo. A customer
 robot can build or pull this with **zero credentials**. (Contrast: the dev
 image is private ghcr, which is why installing it onboard needs a
 `docker login` or a 15 GB `docker save | ssh` transfer.)
+
+Pinned by **digest**, not tag. `ros:humble-ros-base-jammy` is mutable and is
+rebuilt regularly, so a tag means "whatever upstream published that day" —
+the same reproducibility hole as letting pip resolve dependencies, one layer
+down. Reproducibility only counts if it holds all the way to the OS. To move
+it forward deliberately: `docker pull` the tag, read
+`docker image inspect --format '{{index .RepoDigests 0}}'`, paste, rebuild.
+
+### Reproducibility: the whole chain must be pinned
+Three references decide what a robot actually runs, and **all three must be
+immutable** or the guarantee is theatre:
+
+| Layer | Pinned by | If left loose |
+|---|---|---|
+| OS + ROS | `ARG ROS_BASE=ros@sha256:…` | base drifts under you |
+| ~150 Python deps | `uv.lock` → exported → `--no-deps` | pip takes latest-wins |
+| The image itself | `DIMOS_IMAGE=…@sha256:…` in `.env` | a tag can be pushed over |
+
+This was learned the hard way: the image once shipped `typer 0.27.0` against a
+lock pinning `0.23.1`, because `pip` neither reads `uv.lock` nor honours
+pyproject's `exclude-newer = "7 days"`. Every dimos command in that image died
+with `TypeError: issubclass() arg 1 must be a class`.
 
 ### Builder stage — compile the wheel, throw the stage away
 ```dockerfile
@@ -209,15 +231,64 @@ Tag: `dimos-r1lite:<pyproject-version>-r1lite.<rev>`, e.g.
 `dimos-r1lite:0.0.11-r1lite.1`. **Builds the last commit — uncommitted
 changes are not included.**
 
+### Runs as uid 1000, not root
+```dockerfile
+RUN useradd --uid 1000 --user-group --create-home --shell /bin/bash dimos
+USER dimos
+```
+Not only hygiene — root is a **data-loss bug** here. FastDDS delivers same-host
+data by writing into the **reader's** `/dev/shm` segment. The vendor stack runs
+as `r1lite` (uid 1000); a root container creates root-owned reader segments its
+uid-1000 publishers cannot write into. Discovery still works over UDP, so
+topics are visible and **not one message arrives** — silently, no error.
+
+Matching the uid keeps zero-copy shared memory, which matters for the camera
+streams. (The dev path instead uses a UDP-only FastDDS profile — uid-agnostic,
+but it gives up zero-copy.) `setup.sh` writes `DIMOS_UID`/`DIMOS_GID` from
+`id -u`/`id -g`, so it stays correct on a robot that ships a different uid.
+
+A non-1000 uid must also be able to write `$HOME` — dimos keeps logs and its
+run registry under `$HOME/.local/state/dimos` (`dimos/constants.py: STATE_DIR`).
+
+### Build-time smoke test
+```dockerfile
+RUN dimos list | grep -q r1lite-coordinator
+```
+Placed **after `USER dimos`**, so it proves the image works as the runtime user
+and can write its state dir. `dimos list` imports the whole blueprint registry —
+it is exactly what caught the typer breakage. A broken image now **fails the
+build** instead of reaching a robot.
+
 ### Compose — two services
 ```yaml
-network_mode: host   # DDS discovery/multicast with the vendor stack
-ipc: host            # FastDDS same-host SHARED MEMORY
+network_mode: host      # DDS discovery/multicast with the vendor stack
+ipc: host               # FastDDS same-host SHARED MEMORY
+user: "${DIMOS_UID:-1000}:${DIMOS_GID:-1000}"
 restart: unless-stopped
+stop_grace_period: 30s
+logging: { driver: json-file, options: { max-size: 10m, max-file: "3" } }
 ```
-- **`network_mode: host`** — DDS multicast must reach the vendor stack.
-- **`ipc: host`** — without it, FastDDS same-host shared memory fails and
-  you get the signature symptom: **topics visible, zero messages**.
+- **`network_mode: host`** — DDS multicast must reach the vendor stack;
+  docker's default bridge NAT drops it and no topics appear at all.
+- **`ipc: host`** — without it, FastDDS same-host shared memory fails and you
+  get the signature symptom: **topics visible, zero messages**. Necessary but
+  **not sufficient** — see `user:` above.
+- **`stop_grace_period: 30s`** — safety-critical. The chassis VCU **latches its
+  last velocity target** and has no dead-man of its own; `R1LiteConnection`
+  supplies one and sends a courtesy zero from `stop()`, which SIGTERM triggers.
+  Docker's default grace is **10s, then SIGKILL** — and a killed process sends
+  no zero, leaving a robot driving at its last commanded velocity. Teardown
+  joins publisher threads and shuts the sensor executor down, so give it room.
+- **`logging`** — docker's json-file driver is unbounded by default. An
+  always-on 100Hz coordinator fills the disk and takes the robot down weeks
+  later, at a customer site.
+- **`healthcheck`** — a TCP connect to 7779, deliberately not an HTTP GET
+  (`/` redirects to `/command-center`, which returns **503** unless the React
+  app was built — it isn't in this image, so an HTTP probe would call a healthy
+  robot unhealthy). Informational only: docker's restart policy does **not** act
+  on health, so a false negative cannot restart-loop a working robot. It exists
+  because `restart: unless-stopped` only catches a process that *exits*, never
+  one that is alive but wedged.
 - **viewer is a separate service** — dimos' in-process rerun web mode
   GIL-deadlocks inside forkserver workers (`rr.serve_grpc()` spins,
   starving worker 0; root-caused with py-spy, see BRINGUP_LOG). Running the
@@ -302,18 +373,37 @@ software.**
 
 ```bash
 # Update
-sudo vi /opt/dimos/.env                                  # DIMOS_IMAGE=<new tag>
+sudo vi /opt/dimos/.env                          # DIMOS_IMAGE=<new digest or tag>
 docker compose -f /opt/dimos/compose.yaml up -d
 
-# Rollback: put the old tag back, up -d again. Images are immutable
-# and versioned, so rollback is always available.
+# Rollback: put the previous reference back, up -d again.
 
 docker compose -f /opt/dimos/compose.yaml logs -f dimos
-docker compose -f /opt/dimos/compose.yaml ps
+docker compose -f /opt/dimos/compose.yaml ps            # STATUS shows health
 docker compose -f /opt/dimos/compose.yaml down          # remove
 ```
 `.env` is written once and never overwritten — a re-run of `setup.sh` won't
 clobber a robot's pinned version.
+
+**Pin by digest, not tag.** `setup.sh` writes a digest automatically when the
+image came from a registry:
+```
+DIMOS_IMAGE=ghcr.io/dimensionalos/dimos-r1lite@sha256:<digest>
+```
+Tags are **mutable** — anyone can push over `0.0.14b1-r1lite.1`, and then
+"rollback to the known-good version" silently gets different bytes. A digest is
+the only reference that means one exact image forever, which is what turns
+rollback from a hope into a guarantee. An image loaded from a tarball or built
+on the robot has no registry digest, so `setup.sh` falls back to the tag — which
+is local and cannot be overwritten from outside anyway.
+
+### Fleet upgrade
+
+Because the image is immutable and the robot's version is one line of `.env`,
+upgrading N robots is: publish a new tag → change one line per robot →
+`up -d`. Robots can sit on different versions deliberately (canary one, hold
+the rest). Nothing is built on a robot, and no robot's state depends on what
+was on someone's laptop that day.
 
 ---
 
@@ -321,7 +411,10 @@ clobber a robot's pinned version.
 
 | Symptom | Cause | Fix |
 |---|---|---|
-| Topics visible, **zero messages** | Container `/dev/shm` is private, or root container vs vendor's uid-1000 SHM segments | `ipc: host` (runtime) / UDP-only FastDDS profile (dev, `fastdds_udp_only.xml`) |
+| Topics visible, **zero messages** | Container `/dev/shm` is private, **or** root container vs vendor's uid-1000 SHM segments (needs both fixes) | `ipc: host` **and** `user: 1000:1000` (runtime) / UDP-only FastDDS profile (dev, `fastdds_udp_only.xml`) |
+| `TypeError: issubclass() arg 1 must be a class` on any `dimos` command | image built with pip resolving deps, ignoring `uv.lock` + `exclude-newer` → typer 0.27 vs the lock's 0.23.1 | install from the exported lock with `uv pip install --no-deps` |
+| Robot fine for weeks, then disk full | docker's json-file logs are unbounded | `logging: max-size/max-file` in compose |
+| Robot keeps driving after `compose down` | teardown exceeded docker's 10s grace → SIGKILL → no courtesy chassis zero | `stop_grace_period: 30s` |
 | `UNKNOWN-0.0.0` wheel, no packages | jammy setuptools 59 ignores `[project]` | pin `setuptools>=70` in builder |
 | `TypeError` in `canonicalize_version` | setuptools 70 × jammy packaging 21.3 | pin `packaging>=24` |
 | Illegal instruction on another robot | `-march=native` baked in | `CIBUILDWHEEL=1` |
