@@ -96,9 +96,36 @@ def _r1lite_rerun_blueprint() -> Any:
     )
 
 
+# Rerun ingests whatever the bridge logs, and R1LiteConnection decodes the
+# robot's /compressed camera topics to raw BGR before publishing
+# (_compressed_decode_loop -> cv2.imdecode). So the bridge sees SIX
+# uncompressed image streams -- 4 colour + 2 16-bit depth. Unthrottled that is
+# ~60 MB/s, measured on the robot: a connected viewer reported 6.2 GiB after
+# 1m44s and fell 45s behind live.
+#
+# Throttle per entity. The bridge drops frames above the rate before logging,
+# so this costs nothing but visual smoothness. Head-left is the driving view
+# and gets the best rate; the stereo partner and depth are for inspection, not
+# piloting. Entity paths are the bridge's default "world" prefix + LCM topic.
+_CAMERA_MAX_HZ = {
+    "world/r1lite/head_left_color": 10.0,
+    "world/r1lite/head_right_color": 2.0,
+    "world/r1lite/wrist_left_color": 5.0,
+    "world/r1lite/wrist_right_color": 5.0,
+    "world/r1lite/wrist_left_depth": 2.0,
+    "world/r1lite/wrist_right_depth": 2.0,
+}
+
 _rerun_config = {
     "blueprint": _r1lite_rerun_blueprint,
     "pubsubs": [LCM()],
+    "max_hz": _CAMERA_MAX_HZ,
+    # The bridge's gRPC proxy buffers history for viewers that connect later,
+    # and its default is "25%" -- a quarter of the robot's RAM. That is why a
+    # freshly connected viewer inherited 6.2 GiB and spent its time replaying
+    # the past instead of showing the present. Bound it: on a robot, live is
+    # what matters, and scrollback is what .rrd recordings are for.
+    "memory_limit": "1GB",
 }
 
 
