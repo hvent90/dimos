@@ -23,7 +23,7 @@
 [Installation](#installation) •
 [Agent CLI & MCP](#agent-cli-and-mcp) •
 [Blueprints](#blueprints) •
-[dimTELE: Remote Teleop](#remote-teleop) •
+[dimTELE: Remote Teleop](#dimtele-remote-teleop) •
 [Development](#development)
 
 ⚠️ **Pre-Release Beta** ⚠️
@@ -220,22 +220,23 @@ dimos stop                                # Shut down
 
 # dimTELE: Remote Teleop
 
-**dimTELE** is hosted teleoperation for DimOS robots: operate them remotely from any browser or Quest headset over WebRTC. The robot dials out to a hosted broker (teleop.dimensionalos.com), so you don't need to open any inbound ports on the robot's network. It works behind a home router, on Wi-Fi, wired LAN, or cellular.
+**dimTELE** is hosted teleoperation for DimOS robots: operate them remotely from any browser or Quest headset over WebRTC. The robot dials out to a hosted broker, so you don't need to open any inbound ports on the robot's network. It works behind a home router, on Wi-Fi, wired LAN, or cellular.
 
-- Open [teleop.dimensionalos.com](https://teleop.dimensionalos.com), log in, grab an API key and pass it as `TRANSPORTS__BROKER__API_KEY.`
-- Run a `teleop-hosted-go2-*` blueprint.
-- Your robot appears under **Available Robots** — click **Connect** and drive the robot from the browser.
+1. Open [teleop.dimensionalos.com](https://teleop.dimensionalos.com), log in, and grab an API key (**API Keys → + New Key**).
+2. Run a teleop blueprint on the robot, passing the key as `TRANSPORTS__BROKER__API_KEY`:
+
+   ```bash
+   # Robot dials out to the broker with your API key
+   TRANSPORTS__BROKER__API_KEY=<your-api-key> \
+   dimos run teleop-hosted-go2-transport
+   ```
+
+3. Your robot appears under **Available Robots** — click **Connect** and drive the robot from the browser.
 
 | Blueprint | Notes |
 |-----------|-------|
-| `teleop-hosted-go2-transport` | Drive + camera + minimap + click-to-nav (recommended) |
+| `teleop-hosted-go2-transport` | Browser teleop — drive + camera + minimap + click-to-nav (recommended) |
 | `teleop-hosted-go2-multicam` | Adds a second RealSense, operator-selectable, mux'd into one video track |
-
-```bash
-# Robot dials out to the broker with your API key
-TRANSPORTS__BROKER__API_KEY=dtk_live_... \
-dimos run teleop-hosted-go2-transport
-```
 
 > Full guide: [dimTELE](docs/capabilities/teleoperation/hosted.md) • [WebRTC internals](dimos/teleop/hosted/README.md)
 
