@@ -77,6 +77,16 @@ services:
     # GIL-deadlocks inside forkserver workers (rr.serve_grpc() spins and
     # starves worker 0 — root-caused with py-spy, see BRINGUP_LOG). A separate
     # process keeps the rust server off dimos' GIL entirely.
-    # Browser: http://<robot-ip>:9090?url=rerun%2Bhttp%3A%2F%2F<robot-ip>%3A9877%2Fproxy
+    #
+    # This service exists ONLY to host the web viewer app on 9090. The browser
+    # then points it at dimos' own gRPC stream:
+    #   http://<robot-ip>:9090?url=rerun%2Bhttp%3A%2F%2F<robot-ip>%3A9877%2Fproxy
+    #
+    # --port 9878, NOT 9877: `--serve-web` hosts a web viewer AND a gRPC server,
+    # and 9877 is dimos' (RERUN_GRPC_PORT). rerun 0.29 had the viewer listen on
+    # 9877 with dimos connecting to it; 0.32 inverted that — dimos serves and
+    # viewers connect. This service still used the old model, so it fought dimos
+    # for the port and crash-looped with "Address already in use (0.0.0.0:9090)"
+    # / 9877. Moving its unused proxy to 9878 leaves 9877 to dimos.
     entrypoint: ["rerun"]
-    command: ["--serve-web", "--port", "9877", "--memory-limit", "2GB"]
+    command: ["--serve-web", "--port", "9878", "--memory-limit", "2GB"]
