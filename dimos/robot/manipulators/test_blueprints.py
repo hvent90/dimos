@@ -19,9 +19,15 @@ from typing import Any
 import pytest
 
 from dimos.control.coordinator import ControlCoordinator, TaskConfig
-from dimos.control.tasks.teleop_task.teleop_task import TeleopIKTaskConfig
 from dimos.core.coordination.blueprints import Blueprint, autoconnect
 from dimos.core.global_config import global_config
+from dimos.hardware.sensors.camera.realsense.camera import RealSenseCamera
+from dimos.learning.collection.blueprint import (
+    learning_collect_quest_piper,
+    learning_collect_quest_piper_rerun,
+)
+from dimos.learning.collection.episode_monitor import EpisodeMonitorModule
+from dimos.learning.collection.recorder import CollectionRecorder, CollectionRecorderConfig
 from dimos.manipulation.manipulation_module import ManipulationModule, ManipulationModuleConfig
 from dimos.manipulation.visualization.config import NoManipulationVisualizationConfig
 from dimos.robot.manipulators.a1z.blueprints.teleop import (
@@ -63,6 +69,7 @@ from dimos.robot.manipulators.xarm.config import (
 )
 from dimos.robot.manipulators.xarm.simulation import _XArm6MujocoSimModule
 from dimos.teleop.keyboard.keyboard_teleop_module import KeyboardTeleopConfig, KeyboardTeleopModule
+from dimos.teleop.quest.blueprints import teleop_quest_piper
 from dimos.visualization.rerun.bridge import RerunBridgeModule
 from dimos.web.websocket_vis.websocket_vis_module import WebsocketVisModule
 
@@ -83,11 +90,59 @@ def _coordinator_tasks(blueprint: Blueprint) -> list[TaskConfig]:
     return _module_kwargs(blueprint, ControlCoordinator)["tasks"]
 
 
-def test_piper_teleop_uses_larger_joint_delta_limit_without_changing_default() -> None:
-    piper_task = _coordinator_tasks(coordinator_teleop_piper)[0]
+def test_piper_rerun_collection_composes_hardware_observability_stack() -> None:
+    modules = {atom.module for atom in learning_collect_quest_piper_rerun.blueprints}
+    assert RealSenseCamera in modules
+    assert EpisodeMonitorModule in modules
+    assert CollectionRecorder in modules
+    assert RerunBridgeModule in modules
+    assert ManipulationModule in modules
 
-    assert piper_task.params["max_joint_delta_deg"] == 15.0
-    assert TeleopIKTaskConfig.__dataclass_fields__["max_joint_delta_deg"].default == 5.0
+    camera_kwargs = _module_kwargs(learning_collect_quest_piper_rerun, RealSenseCamera)
+    assert camera_kwargs["enable_pointcloud"] is False
+    rerun_kwargs = _module_kwargs(learning_collect_quest_piper_rerun, RerunBridgeModule)
+    assert "world/status" in rerun_kwargs["visual_override"]
+
+
+def test_piper_rerun_collection_keeps_default_episode_controls() -> None:
+    monitor_config = _module_kwargs(learning_collect_quest_piper_rerun, EpisodeMonitorModule)[
+        "config"
+    ]
+    assert monitor_config.button_map == {"toggle": "B", "discard": "Y"}
+
+
+def test_piper_rerun_collection_propagates_task_label() -> None:
+    recorder_config = _module_kwargs(learning_collect_quest_piper_rerun, CollectionRecorder)[
+        "config"
+    ]
+    monitor_config = _module_kwargs(learning_collect_quest_piper_rerun, EpisodeMonitorModule)[
+        "config"
+    ]
+    assert isinstance(recorder_config, CollectionRecorderConfig)
+    assert recorder_config.task_label == "pick_and_place"
+    assert monitor_config == recorder_config.episode_monitor_config()
+    assert monitor_config.default_task_label == recorder_config.task_label
+
+
+def test_existing_piper_collector_has_no_rerun_stack() -> None:
+    assert RerunBridgeModule not in {
+        atom.module for atom in learning_collect_quest_piper.blueprints
+    }
+
+
+def test_quest_piper_teleop_composes_viser_manipulation() -> None:
+    kwargs = _manipulation_kwargs(teleop_quest_piper)
+    assert kwargs["robots"][0].name == "arm"
+    assert kwargs["visualization"] == {"backend": "viser"}
+
+
+def test_piper_teleop_publishes_joint_state_for_manipulation() -> None:
+    kwargs = _module_kwargs(coordinator_teleop_piper, ControlCoordinator)
+    assert kwargs["publish_joint_state"] is True
+
+
+def test_piper_keyboard_keeps_meshcat_manipulation() -> None:
+    assert _manipulation_kwargs(keyboard_teleop_piper)["visualization"] == {"backend": "meshcat"}
 
 
 def test_planner_helper_defaults_to_no_visualization() -> None:

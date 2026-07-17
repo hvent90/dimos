@@ -26,14 +26,26 @@ and `coordinator_joint_state` (observation), `status` (episode segmentation).
 from __future__ import annotations
 
 from dimos.core.stream import In
-from dimos.learning.collection.episode_monitor import EpisodeStatus
+from dimos.learning.collection.episode_monitor import EpisodeMonitorModuleConfig, EpisodeStatus
 from dimos.memory2.module import Recorder, RecorderConfig
 from dimos.msgs.sensor_msgs.Image import Image
 from dimos.msgs.sensor_msgs.JointState import JointState
 
 
 class CollectionRecorderConfig(RecorderConfig):
-    pass
+    """Configuration shared by a collection recorder and its episode monitor."""
+
+    task_label: str | None = None
+
+    def episode_monitor_config(self) -> EpisodeMonitorModuleConfig:
+        """Build the monitor config carrying this recording's task label.
+
+        The blueprint should pass this result to ``EpisodeMonitorModule`` and
+        this config to ``CollectionRecorder``. Keeping the conversion here
+        makes the cross-module propagation explicit and typed while retaining
+        the monitor's existing ``default_task_label`` API.
+        """
+        return EpisodeMonitorModuleConfig(default_task_label=self.task_label)
 
 
 class CollectionRecorder(Recorder):

@@ -79,7 +79,7 @@ def piper_hardware(
     hw_id: str = "arm",
     *,
     gripper: bool = True,
-    mock_without_address: bool = False,
+    mock_without_address: bool = True,
     home_joints: list[float] | None = None,
 ) -> HardwareComponent:
     if global_config.simulation:

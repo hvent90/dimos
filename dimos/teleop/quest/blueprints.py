@@ -22,11 +22,13 @@ hardware. The underlying coordinator blueprints branch on `global_config.simulat
 from dimos.constants import DEFAULT_CAPACITY_COLOR_IMAGE
 from dimos.core.coordination.blueprints import autoconnect
 from dimos.core.transport import LCMTransport, pSHMTransport
+from dimos.manipulation.manipulation_module import ManipulationModule
 from dimos.msgs.geometry_msgs.PoseStamped import PoseStamped
 from dimos.msgs.geometry_msgs.Twist import Twist
 from dimos.msgs.sensor_msgs.Image import Image
 from dimos.robot.manipulators.common.mixed import coordinator_teleop_dual
 from dimos.robot.manipulators.piper.blueprints.teleop import coordinator_teleop_piper
+from dimos.robot.manipulators.piper.config import make_piper_model_config
 from dimos.robot.manipulators.xarm.blueprints.teleop import (
     coordinator_teleop_xarm6,
     coordinator_teleop_xarm7,
@@ -79,6 +81,10 @@ teleop_quest_xarm7_video = (
 teleop_quest_piper = autoconnect(
     ArmTeleopModule.blueprint(task_names={"left": "teleop_piper"}),
     coordinator_teleop_piper,
+    ManipulationModule.blueprint(
+        robots=[make_piper_model_config()],
+        visualization={"backend": "viser"},
+    ),
 ).remappings([(ArmTeleopModule, "left_controller_output", "coordinator_cartesian_command")])
 
 

@@ -43,6 +43,7 @@ from dimos.learning.dataprep.core import (
     resolve_field,
     summarize_lengths,
 )
+from dimos.learning.dataprep.piper import piper_lerobot_config
 
 
 @pytest.mark.parametrize(
@@ -91,6 +92,9 @@ class _FakeStore:
 
     def list_streams(self) -> list[str]:
         return list(self._streams)
+
+    def stop(self) -> None:
+        pass
 
 
 @dataclass
@@ -150,6 +154,44 @@ def test_extract_start_save() -> None:
     assert eps[0].start_ts == 1.0 and eps[0].end_ts == 5.0
     assert eps[0].success is True
     assert eps[0].task_label == "pick"
+
+
+def test_piper_conversion_writes_saved_labeled_take_only(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """The public Piper config carries saved labels through the full writer path."""
+    image = [
+        _Obs(ts=1.0, data=np.zeros((4, 4, 3), dtype=np.uint8)),
+        _Obs(ts=1.0 + 1.0 / 30.0, data=np.ones((4, 4, 3), dtype=np.uint8)),
+    ]
+    joints = _scalar_stream([(1.0, 1.0), (1.0 + 1.0 / 30.0, 2.0)])
+    store = _FakeStore(
+        {
+            "status": _status(
+                [
+                    (0.0, "start", "discarded-task"),
+                    (0.5, "discard", "discarded-task"),
+                    (1.0, "start", "saved-task"),
+                    (1.1, "save", "saved-task"),
+                ]
+            ),
+            "color_image": image,
+            "coordinator_joint_state": joints,
+        }
+    )
+    monkeypatch.setattr("dimos.learning.dataprep.build.SqliteStore", lambda **_: store)
+
+    root = run_dataprep(piper_lerobot_config("session.db", tmp_path / "dataset"))
+
+    tasks = json.loads((root / "meta" / "info.json").read_text())
+    assert tasks["total_episodes"] == 1
+    assert tasks["total_frames"] == 1
+    assert "observation.images.image" in tasks["features"]
+    assert "observation.state" in tasks["features"]
+    assert "action" in tasks["features"]
+    assert json.loads((root / "dimos_meta.json").read_text())["episodes"][0]["task_label"] == (
+        "saved-task"
+    )
 
 
 def test_extract_discard_marks_failure() -> None:

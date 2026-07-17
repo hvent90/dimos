@@ -33,6 +33,7 @@ from dimos.learning.collection.episode_monitor import (
     EpisodeStatus,
     KeyPress,
 )
+from dimos.learning.collection.recorder import CollectionRecorderConfig
 from dimos.protocol.rpc.pubsubrpc import LCMRPC
 from dimos.teleop.quest.quest_types import BUTTON_ALIASES, Buttons
 
@@ -92,6 +93,19 @@ def test_toggle_starts_then_saves(make_monitor: Callable[..., EpisodeMonitorModu
     assert events[-1].state == "idle"
     assert events[-1].episodes_saved == 1
     assert events[-1].episodes_discarded == 0
+
+
+def test_recorder_task_label_propagates_to_lifecycle_statuses(
+    make_monitor: Callable[..., EpisodeMonitorModule],
+) -> None:
+    recorder_config = CollectionRecorderConfig(task_label="pick_and_place")
+    monitor_config = recorder_config.episode_monitor_config()
+    m = make_monitor(default_task_label=monitor_config.default_task_label)
+
+    _press(m, "B")
+    _press(m, "B")
+
+    assert [event.task_label for event in _events(m)] == ["pick_and_place", "pick_and_place"]
 
 
 def test_discard_does_not_count_as_saved(

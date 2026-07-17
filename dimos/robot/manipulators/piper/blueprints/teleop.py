@@ -72,6 +72,7 @@ _piper_teleop_hw = piper_hardware("arm")
 
 coordinator_teleop_piper = autoconnect(
     ControlCoordinator.blueprint(
+        publish_joint_state=True,
         hardware=[_piper_teleop_hw],
         tasks=[
             teleop_ik_task(
@@ -84,7 +85,7 @@ coordinator_teleop_piper = autoconnect(
                     "gripper_joint": make_gripper_joints("arm")[0],
                     "gripper_open_pos": 0.035,
                     "gripper_closed_pos": 0.0,
-                    "max_joint_delta_deg": 15.0,
+                    "max_joint_delta_deg": 50.0,
                 },
             ),
         ],

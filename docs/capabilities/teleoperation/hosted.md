@@ -144,3 +144,6 @@ model), see [`dimos/teleop/quest_hosted/README.md`](/dimos/teleop/quest_hosted/R
 - **No auto-reconnect.** If the link drops mid-session, the operator must click **Connect** again. The robot side stays up; reconnection is supported, just manual.
 - **Single camera** per robot today. Multi-camera support is roadmapped.
 - **Operator is in a fixed slot until clean disconnect** — a tab-close leaves the slot held until the broker's grace timeout fires (or the robot restarts).
+
+For local Piper demonstration capture with Quest, RealSense, Rerun, and the
+episode recorder, see the [Quest Piper Rerun data collection guide](/docs/capabilities/teleoperation/quest-piper-rerun-data-collection.md).

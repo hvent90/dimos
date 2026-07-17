@@ -28,11 +28,13 @@ from dimos.core.coordination.blueprints import Blueprint, autoconnect
 from dimos.core.global_config import global_config
 from dimos.hardware.sensors.camera.realsense.camera import RealSenseCamera
 from dimos.learning.collection.episode_monitor import EpisodeMonitorModule
-from dimos.learning.collection.recorder import CollectionRecorder
+from dimos.learning.collection.recorder import CollectionRecorder, CollectionRecorderConfig
 from dimos.teleop.quest.blueprints import (
     teleop_quest_piper,
     teleop_quest_xarm7,
 )
+from dimos.visualization.rerun.collection_status import collection_status_rerun_config
+from dimos.visualization.vis_module import vis_module
 
 
 def _session_db(robot: str) -> str:
@@ -65,4 +67,19 @@ learning_collect_quest_piper = autoconnect(
     *_camera_if_real(),
     EpisodeMonitorModule.blueprint(),  # default button_map: toggle=B, discard=Y
     CollectionRecorder.blueprint(db_path=_session_db("piper")),
+)
+
+
+# Separate physical collector: the existing Piper collector remains unchanged.
+_piper_rerun_recorder_config = CollectionRecorderConfig(
+    db_path=_session_db("piper_rerun"),
+    task_label="pick_and_place",
+)
+
+learning_collect_quest_piper_rerun = autoconnect(
+    teleop_quest_piper,
+    RealSenseCamera.blueprint(enable_pointcloud=False),
+    EpisodeMonitorModule.blueprint(config=_piper_rerun_recorder_config.episode_monitor_config()),
+    CollectionRecorder.blueprint(config=_piper_rerun_recorder_config),
+    vis_module("rerun", rerun_config=dict(collection_status_rerun_config())),
 )
