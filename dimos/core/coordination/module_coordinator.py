@@ -94,10 +94,19 @@ class ModuleCoordinator(Resource):
             self._coordinator_rpc.stop()
             self._coordinator_rpc = None
 
-        for module_class, module in reversed(self._deployed_modules.items()):
+        for module_class in reversed(list(self._deployed_modules)):
             logger.info("Stopping module...", module=module_class.__name__)
             try:
-                module.stop()
+                if module_class.deployment == "python":
+                    # undeploy_module is synchronous: the worker stops the
+                    # instance before acknowledging the request.  It also
+                    # removes the instance, so worker shutdown cannot stop it
+                    # a second time.
+                    self._unload_module(module_class)
+                else:
+                    # Keep non-Python deployment semantics unchanged until
+                    # their equivalent synchronous undeploy operation exists.
+                    self._deployed_modules[module_class].stop()
             except Exception:
                 logger.error("Error stopping module", module=module_class.__name__, exc_info=True)
             logger.info("Module stopped.", module=module_class.__name__)
@@ -419,15 +428,6 @@ class ModuleCoordinator(Resource):
 
         proxy = self._deployed_modules[module_class]
 
-        try:
-            proxy.stop()
-        except Exception:
-            logger.error(
-                "Error stopping module during unload",
-                module=module_class.__name__,
-                exc_info=True,
-            )
-
         python_wm = cast("WorkerManagerPython", self._managers["python"])
         try:
             python_wm.undeploy(proxy)
@@ -437,6 +437,21 @@ class ModuleCoordinator(Resource):
                 module=module_class.__name__,
                 exc_info=True,
             )
+        finally:
+            # RpcCall.stop() used to clean up the proxy's parent-side RPC
+            # client as a side effect.  Undeploy is now the synchronous
+            # worker-side stop path, so perform that transport cleanup
+            # explicitly after the worker has acknowledged the stop.
+            stop_rpc_client = getattr(proxy, "stop_rpc_client", None)
+            if callable(stop_rpc_client):
+                try:
+                    stop_rpc_client()
+                except Exception:
+                    logger.error(
+                        "Error stopping module RPC client",
+                        module=module_class.__name__,
+                        exc_info=True,
+                    )
 
         del self._deployed_modules[module_class]
         self._deployed_atoms.pop(module_class, None)

@@ -30,6 +30,7 @@ from dimos.hardware.manipulators.spec import (
     ManipulatorAdapter,
     ManipulatorInfo,
 )
+from dimos.utils.logging_config import setup_logger
 
 # Unit conversion constants
 # Piper uses 0.001 degrees (millidegrees) for angles
@@ -39,9 +40,21 @@ MM_TO_M = 0.001  # mm -> meters
 
 # Hardware specs
 GRIPPER_MAX_OPENING_M = 0.08  # Max gripper opening in meters
+GRIPPER_STROKE_UNITS_PER_M = 1_000_000
+SHUTDOWN_POSITION_TOLERANCE = 0.03
+SHUTDOWN_POLL_INTERVAL = 0.05
+SHUTDOWN_SPEED_RATE = 30
+SHUTDOWN_TIMEOUT = 5.0
+STARTUP_RESET_WAIT = 0.5
+STARTUP_ZERO_WAIT = 1.0
 
 # Default configurable parameters
 DEFAULT_GRIPPER_SPEED = 1000
+GRIPPER_DISABLE_CODE = 0x02
+
+__all__ = ["PiperAdapter"]
+
+logger = setup_logger()
 
 
 class PiperAdapter(ManipulatorAdapter):
@@ -70,6 +83,7 @@ class PiperAdapter(ManipulatorAdapter):
         self._sdk: Any = None
         self._connected: bool = False
         self._enabled: bool = False
+        self._gripper_initialized: bool = False
         self._control_mode: ControlMode = ControlMode.POSITION
 
     def connect(self) -> bool:
@@ -93,6 +107,9 @@ class PiperAdapter(ManipulatorAdapter):
             # Check connection by trying to get status
             status = self._sdk.GetArmStatus()
             if status is not None:
+                if not self._initialize_startup_state():
+                    self._close_failed_connection()
+                    return False
                 self._connected = True
                 print(f"Piper connected via CAN port {self._can_port}")
                 return True
@@ -107,19 +124,107 @@ class PiperAdapter(ManipulatorAdapter):
             print(f"ERROR: Failed to connect to Piper on {self._can_port}: {e}")
             return False
 
+    def _initialize_startup_state(self) -> bool:
+        """Run Piper's fixed reset, zero-pose, and startup settle sequence."""
+        sdk = self._sdk
+        if sdk is None:
+            return False
+
+        for reset_number in range(2):
+            try:
+                sdk.MotionCtrl_1(0x02, 0, 0)
+            except Exception:
+                logger.exception(f"Piper startup reset {reset_number + 1} failed")
+                return False
+            time.sleep(STARTUP_RESET_WAIT)
+
+        try:
+            sdk.MotionCtrl_2(
+                ctrl_mode=0x01,
+                move_mode=0x01,
+                move_spd_rate_ctrl=SHUTDOWN_SPEED_RATE,
+                is_mit_mode=0x00,
+            )
+            sdk.JointCtrl(0, 0, 0, 0, 0, 0)
+        except Exception:
+            logger.exception("Failed to command Piper startup zero pose")
+            return False
+
+        if hasattr(sdk, "GripperCtrl"):
+            try:
+                sdk.GripperCtrl(0, DEFAULT_GRIPPER_SPEED, 0x01, 0)
+                self._gripper_initialized = True
+            except Exception:
+                logger.warning("Piper gripper startup command failed; continuing arm startup")
+
+        time.sleep(STARTUP_ZERO_WAIT)
+        return True
+
+    def _enable_piper(self) -> bool:
+        """Enable Piper with the SDK retry policy, without changing mode."""
+        sdk = self._sdk
+        if sdk is None:
+            return False
+        try:
+            for attempt in range(50):
+                if sdk.EnablePiper():
+                    self._enabled = True
+                    return True
+                if attempt < 49:
+                    time.sleep(0.01)
+        except Exception:
+            logger.exception("Piper SDK enable command failed")
+        return False
+
+    def _close_failed_connection(self) -> None:
+        """Release a CAN connection after mandatory startup initialization fails."""
+        sdk = self._sdk
+        if sdk is not None:
+            if self._enabled:
+                try:
+                    sdk.DisablePiper()
+                except Exception:
+                    logger.exception("Failed to disable Piper after startup failure")
+            try:
+                sdk.DisconnectPort()
+            except Exception:
+                logger.exception("Failed to disconnect Piper after startup failure")
+        self._sdk = None
+        self._connected = False
+        self._enabled = False
+        self._gripper_initialized = False
+
     def disconnect(self) -> None:
         """Disconnect from Piper."""
-        if self._sdk:
-            try:
-                if self._enabled:
-                    self._sdk.DisablePiper()
-                    self._enabled = False
-                self._sdk.DisconnectPort()
-            except Exception:
-                pass
-            finally:
-                self._sdk = None
-                self._connected = False
+        sdk = self._sdk
+        if sdk is None:
+            self._connected = False
+            self._enabled = False
+            self._gripper_initialized = False
+            return
+        try:
+            if not self._move_to_zero_position():
+                logger.error("Piper did not reach its zero position before disconnect")
+        except Exception:
+            logger.exception("Error homing Piper before disconnect")
+        try:
+            if not self._deactivate_gripper():
+                logger.error("Failed to deactivate Piper gripper")
+        except Exception:
+            logger.exception("Error deactivating Piper gripper")
+        try:
+            sdk.DisablePiper()
+        except Exception:
+            logger.exception("Error disabling Piper")
+        try:
+            sdk.DisconnectPort()
+        except Exception:
+            logger.exception("Error disconnecting Piper CAN port")
+        finally:
+            self._sdk = None
+            self._connected = False
+            self._enabled = False
+            self._gripper_initialized = False
 
     def is_connected(self) -> bool:
         """Check if connected to Piper."""
@@ -136,9 +241,15 @@ class PiperAdapter(ManipulatorAdapter):
         return self.write_enable(True)
 
     def deactivate(self) -> bool:
+        """Stop motion without disabling servos.
+
+        Servo power must remain on until ``disconnect`` has completed the
+        bounded home-to-zero movement.
+        """
         stopped = self.write_stop()
-        disabled = self.write_enable(False)
-        return stopped and disabled
+        if not stopped:
+            logger.error("Failed to stop Piper motion during deactivation")
+        return stopped
 
     def get_info(self) -> ManipulatorInfo:
         """Get Piper information."""
@@ -337,19 +448,66 @@ class PiperAdapter(ManipulatorAdapter):
         return False
 
     def write_stop(self) -> bool:
-        """Emergency stop."""
+        """Gracefully stop Piper motion."""
         if not self._sdk:
             return False
 
         try:
-            if hasattr(self._sdk, "EmergencyStop"):
-                self._sdk.EmergencyStop()
-                return True
+            self._sdk.MotionCtrl_1(0x01, 0, 0)
+            return True
         except Exception:
-            pass
+            return False
 
-        # Fallback: disable arm
-        return self.write_enable(False)
+    def _move_to_zero_position(self) -> bool:
+        """Move all arm joints to zero before disabling the servos."""
+        if not self._sdk:
+            return False
+
+        try:
+            self._sdk.MotionCtrl_2(
+                ctrl_mode=0x01,
+                move_mode=0x01,
+                move_spd_rate_ctrl=SHUTDOWN_SPEED_RATE,
+                is_mit_mode=0x00,
+            )
+            self._sdk.JointCtrl(0, 0, 0, 0, 0, 0)
+        except Exception:
+            return False
+
+        deadline = time.monotonic() + SHUTDOWN_TIMEOUT
+        while time.monotonic() < deadline:
+            try:
+                if (
+                    max(abs(position) for position in self.read_joint_positions())
+                    <= SHUTDOWN_POSITION_TOLERANCE
+                ):
+                    return True
+            except Exception:
+                return False
+            time.sleep(SHUTDOWN_POLL_INTERVAL)
+        return False
+
+    def _initialize_gripper(self) -> bool:
+        """Initialize the gripper in its enabled, closed position."""
+        if not self._sdk or not hasattr(self._sdk, "GripperCtrl"):
+            return False
+        try:
+            self._sdk.GripperCtrl(0, self._gripper_speed, GRIPPER_DISABLE_CODE, 0)
+            self._sdk.GripperCtrl(0, self._gripper_speed, 0x01, 0)
+            self._gripper_initialized = True
+            return True
+        except Exception:
+            return False
+
+    def _deactivate_gripper(self) -> bool:
+        """Disable gripper control before disconnecting the arm."""
+        if not self._sdk or not hasattr(self._sdk, "GripperCtrl"):
+            return True
+        try:
+            self._sdk.GripperCtrl(0, self._gripper_speed, GRIPPER_DISABLE_CODE, 0)
+            return True
+        except Exception:
+            return False
 
     def write_enable(self, enable: bool) -> bool:
         """Enable or disable servos."""
@@ -358,28 +516,17 @@ class PiperAdapter(ManipulatorAdapter):
 
         try:
             if enable:
-                # Enable with retries (500ms max)
-                attempts = 0
-                max_attempts = 50
-                success = False
-                while attempts < max_attempts:
-                    if self._sdk.EnablePiper():
-                        success = True
-                        break
-                    time.sleep(0.01)
-                    attempts += 1
-
-                if success:
-                    self._enabled = True
-                    # Set control mode
-                    self._sdk.MotionCtrl_2(
-                        ctrl_mode=0x01,
-                        move_mode=0x01,
-                        move_spd_rate_ctrl=30,
-                        is_mit_mode=0x00,
-                    )
+                if self._enabled:
                     return True
-                return False
+                if not self._enable_piper():
+                    return False
+                self._sdk.MotionCtrl_2(
+                    ctrl_mode=0x01,
+                    move_mode=0x01,
+                    move_spd_rate_ctrl=30,
+                    is_mit_mode=0x00,
+                )
+                return True
             else:
                 self._sdk.DisablePiper()
                 self._enabled = False
@@ -456,25 +603,30 @@ class PiperAdapter(ManipulatorAdapter):
             if hasattr(self._sdk, "GetArmGripperMsgs"):
                 gripper_msgs = self._sdk.GetArmGripperMsgs()
                 if gripper_msgs and gripper_msgs.gripper_state:
-                    # Piper gripper position is 0-100 percentage
+                    # Piper gripper position is in 0.001 mm units.
                     pos: float = gripper_msgs.gripper_state.grippers_angle
-                    return (pos / 100.0) * GRIPPER_MAX_OPENING_M
+                    return min(
+                        GRIPPER_MAX_OPENING_M,
+                        max(0.0, pos / GRIPPER_STROKE_UNITS_PER_M),
+                    )
         except Exception:
             pass
 
         return None
 
     def write_gripper_position(self, position: float) -> bool:
-        """Write gripper position (meters -> percentage)."""
+        """Write gripper position (meters -> 0.001 mm units)."""
         if not self._sdk:
             return False
 
         try:
             if hasattr(self._sdk, "GripperCtrl"):
-                # Convert meters to percentage (0-100)
-                percentage = int((position / GRIPPER_MAX_OPENING_M) * 100)
-                percentage = max(0, min(100, percentage))
-                self._sdk.GripperCtrl(percentage, self._gripper_speed, 0x01, 0)
+                if not self._gripper_initialized and not self._initialize_gripper():
+                    return False
+                gripper_position = round(
+                    max(0.0, min(GRIPPER_MAX_OPENING_M, position)) * GRIPPER_STROKE_UNITS_PER_M
+                )
+                self._sdk.GripperCtrl(gripper_position, self._gripper_speed, 0x01, 0)
                 return True
         except Exception:
             pass

@@ -28,6 +28,10 @@ from dimos.constants import STATE_DIR
 from dimos.core.coordination.process_lifecycle import kill_run_processes
 from dimos.utils.logging_config import setup_logger
 
+# Piper's disconnect path may spend its full five-second bounded home timeout.
+# Leave a small margin for signal delivery and coordinator/worker teardown.
+GRACEFUL_STOP_TIMEOUT = 7.0
+
 logger = setup_logger()
 
 REGISTRY_DIR = STATE_DIR / "runs"
@@ -163,7 +167,7 @@ def stop_entry(entry: RunEntry, force: bool = False) -> tuple[str, bool]:
         return ("Process already dead, cleaning registry", True)
 
     if not force:
-        for _ in range(50):  # 5 seconds
+        for _ in range(round(GRACEFUL_STOP_TIMEOUT / 0.1)):
             if not is_pid_alive(entry.pid):
                 break
             time.sleep(0.1)

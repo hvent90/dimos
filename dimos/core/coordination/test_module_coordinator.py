@@ -199,6 +199,27 @@ def test_build_happy_path() -> None:
         coordinator.stop()
 
 
+def test_stop_undeploys_python_modules_synchronously_without_proxy_stop(mocker) -> None:
+    """Coordinator shutdown uses worker undeploy, whose reply waits for stop()."""
+    coordinator = ModuleCoordinator(g=GlobalConfig(n_workers=0, viewer="none"))
+    coordinator.start()
+    proxy = mocker.Mock()
+    undeploy = mocker.patch.object(
+        coordinator._managers["python"],
+        "undeploy",
+        side_effect=lambda module: module.stop.assert_not_called(),
+    )
+    coordinator._deployed_modules[ModuleA] = proxy
+
+    try:
+        coordinator.stop()
+    finally:
+        coordinator.stop()
+
+    undeploy.assert_called_once_with(proxy)
+    proxy.stop.assert_not_called()
+
+
 def test_name_conflicts_are_reported() -> None:
     class ModuleA(Module):
         shared_data: Out[Data1]
