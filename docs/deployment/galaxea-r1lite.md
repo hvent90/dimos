@@ -415,6 +415,9 @@ was on someone's laptop that day.
 | `TypeError: issubclass() arg 1 must be a class` on any `dimos` command | image built with pip resolving deps, ignoring `uv.lock` + `exclude-newer` → typer 0.27 vs the lock's 0.23.1 | install from the exported lock with `uv pip install --no-deps` |
 | Robot fine for weeks, then disk full | docker's json-file logs are unbounded | `logging: max-size/max-file` in compose |
 | Robot keeps driving after `compose down` | teardown exceeded docker's 10s grace → SIGKILL → no courtesy chassis zero | `stop_grace_period: 30s` |
+| `ModuleNotFoundError: socketio` (or `starlette`) on any blueprint | core code imports them but pyproject declared them only in the `lint` group / `web` extra — invisible in a dev checkout, fatal in a core-only install | declared in core deps; the image's build-time smoke test now imports blueprints |
+| Viewer shows old frames, `Latency: 45s`, GiBs of recording | six **uncompressed** streams logged unthrottled (dimos decodes the robot's JPEG to raw), and the proxy buffers 25% of RAM for late viewers | per-entity `max_hz` + `memory_limit: 1GB` in the blueprint's rerun config |
+| Viewer connects but renders stale data; dimos `healthy` anyway | another process (e.g. a leftover dev container) already owns 9877, so the bridge never bound it — the healthcheck probes 7779, not rerun | one path per robot; check `sudo ss -tlnp \| grep 9877` is owned by the dimos container |
 | `UNKNOWN-0.0.0` wheel, no packages | jammy setuptools 59 ignores `[project]` | pin `setuptools>=70` in builder |
 | `TypeError` in `canonicalize_version` | setuptools 70 × jammy packaging 21.3 | pin `packaging>=24` |
 | Illegal instruction on another robot | `-march=native` baked in | `CIBUILDWHEEL=1` |
@@ -486,13 +489,41 @@ than trusting a green CI.
 
 ## 8. Status
 
-Hardware-validated on a real R1 Lite (2026-07): plain-ROS bring-up suite
-passes onboard, and `r1lite-coordinator` runs against the live vendor stack.
+**Hardware-validated end-to-end on a real R1 Lite (2026-07-17).** The runtime
+path in this document has been executed on the robot:
 
-Not yet validated: the runtime image rebuilt against current `main` — the
-image predates a large rebase and the deps/viewer changes that came with it.
-Rebuild and re-run `setup.sh`'s step-7 DDS check before trusting it on a
-customer robot.
+| | |
+|---|---|
+| Image built from current `main` + branch | ✅ `dimos-r1lite:0.0.14b1-r1lite.1` |
+| `setup.sh --tar` on the robot | ✅ idempotent, prompts honoured |
+| Step-7 DDS check | ✅ **1600 msgs/8s** (~185Hz, full rate) |
+| Services | ✅ `dimos` **Up (healthy)**, `viewer` Up |
+| Zero-copy shared memory as uid 1000 | ✅ no UDP-only profile needed |
+| Live camera feed to a laptop viewer | ✅ no perceptible lag after throttling |
+| Chassis driven under dimos (dev path) | ✅ WASD → `/cmd_vel` → VCU |
+
+Known gaps:
+
+- **Not published to a registry.** The image ships by `docker save | scp` +
+  `setup.sh --tar`, so a laptop is still in the loop. Publishing to ghcr —
+  ideally from CI on merge — is what makes a blank robot `git clone &&
+  setup.sh`. See §4.
+- **The WASD panel does not drive.** `RerunWebSocketServer` is composed and
+  reachable, but `tele_cmd_vel` → `/cmd_vel` is unwired pending a measurement
+  of the panel's baked-in speed (it is compiled into `dimos-viewer` and not
+  tunable from Python).
+- **Nothing in CI builds the 3.10 floor or a core-only install.** That is why
+  this deployment kept finding packaging bugs — see §7.
+- **Raw frames on the wire.** `R1LiteConnection` decodes the robot's JPEG to
+  raw BGR, so rerun carries ~31 MB/s even throttled. Fine on the cable; the
+  real fix (keep frames compressed for transport) matters for WiFi, more
+  cameras, or higher rates.
+
+> ⚠️ **Do not run the dev path and the runtime path on the same robot.** A
+> leftover `dimos-dev-r1lite` container held ports 9877/9090 for 8 hours, so
+> dimos never bound its gRPC port **while still reporting `healthy`** (the
+> healthcheck probes 7779, not rerun) and a laptop viewer silently rendered
+> stale code. `docker stop dimos-dev-r1lite` before deploying.
 
 The full evidence trail — every hypothesis, test, and conclusion, including
 the dead ends — is in

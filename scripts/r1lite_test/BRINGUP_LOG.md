@@ -775,3 +775,228 @@ export ROS_DOMAIN_ID=2 && ros2 topic echo /controller --once
 (dimos itself is unaffected — it defines its own message classes and reads
 /hdas/* fine; it is only the ROS **CLI** inside the container that can't decode
 vendor types.)
+
+---
+
+# Day 5 — 2026-07-16/17: clean branch off main + RUNTIME image deployed onboard
+
+Two goals: a merge-ready branch on current `main` (the old branch was 274
+commits behind and based on Mustafa's r1pro branch, not main), and the FIRST
+execution of the *runtime* deployment path (`scripts/galaxea/`: versioned
+image + compose + `/opt/dimos`) as opposed to the dev path (bind-mounted
+checkout + venv) that Day 4 validated.
+
+**Result: both done.** `krishna/task/r1lite-integration-v2` off current main,
+hardware-validated. dimos runs onboard from an immutable image, `Up (healthy)`,
+DDS gauntlet **1600 msgs/8s**, live camera feed with no perceptible lag.
+
+The theme of the day: **every bug was something declared but never verified.**
+A permissive dev environment (`uv sync --all-extras` + `default-groups =
+["tests"]`) is a superset that hides every violation of the contract dimos
+publishes. The runtime image is the first thing that ever took that contract
+literally, so it found four years of drift in one session.
+
+## 1. Port mechanism: content-port, not cherry-pick
+
+41 commits, ~11 of them Mustafa's r1pro base. No clean subset to pick: single
+commits mixed both robots (`all_blueprints.py`, `pyproject.toml`). Branched off
+`origin/main`, `git checkout <old-branch> -- <r1lite paths>`, regenerated
+`uv.lock`, recommitted as logical commits. R1 Lite verified independent of
+r1pro (only docstring references) and `catalog/galaxea.py` is pure r1pro and
+imported by nothing — dropped.
+
+**Cherry-pick would have given FALSE confidence**: r1lite is ~95% new files and
+new files never conflict, so a pick reports "clean" while the code is stale
+against 274 commits of drift. Proven immediately — `_resolve_viewer_mode` no
+longer exists on main and both blueprints failed to import. Only tests catch
+this class; git cannot.
+
+## 2. **Python 3.10 is broken on main — three separate packages**
+
+pyproject declares `requires-python = ">=3.10,<3.13"`, ROS 2 Humble's rclpy is
+cp310, and **nothing in CI ever builds a 3.10 venv**. So it rots:
+
+| package | failure |
+|---|---|
+| `onnxruntime` / `onnxruntime-gpu` | unbounded → 1.24+ dropped cp310 wheels |
+| `a750-control` | single cp312-only wheel, no python marker |
+| `gtsam-extended` | only cp310 wheel is macOS-arm64; linux is cp311/312 |
+
+All three bounded/markered. `gtsam` is NOT opt-out-able: `unitree` depends on
+`dimos[base,mapping]`, so `--no-extra mapping` is a no-op (tried; still failed).
+
+Scanned the whole lock across BOTH axes (python tag AND platform tag, honouring
+abi3 + sdist fallback) — these were the only real hits; `pywin32` is win32-gated.
+
+## 3. Viewer API drift (three instances of one flip)
+
+rerun 0.29 → 0.32 inverted the model: the **viewer used to listen** on 9877 and
+dimos connected to it; now **dimos serves** and viewers connect.
+
+- `_resolve_viewer_mode` deleted from `bridge.py` → blueprints unimportable.
+  Fix: `vis_module(global_config.viewer, ...)`, the current house idiom — which
+  also composes `RerunWebSocketServer` (the WASD panel's receiver).
+- `ViewerBackend` collapsed to `rerun|none`; `rerun-connect`/`rerun-web` are
+  gone. `GlobalConfig` is pydantic, so a stale `VIEWER=rerun-connect` does not
+  degrade — it **raises at startup**. `run_r1lite.sh` and the onboard
+  `setup.sh` both still exported it: dead on arrival. Now `VIEWER=rerun` +
+  `RERUN_OPEN=none`.
+- compose's viewer sidecar ran `rerun --serve-web --port 9877` — still the 0.29
+  model — so it fought dimos for 9877 and crash-looped. Its unused proxy moved
+  to 9878; it exists only to host the web app on 9090.
+
+## 4. X11: the cookie is keyed by (hostname, display)
+
+`dimos run r1lite-keyboard-teleop` → `Authorization required, but no
+authorization protocol specified` → `pygame.error: x11 not available`. SDL
+reports an auth failure as a capability failure; the real error is the line
+above.
+
+Mounting `~/.Xauthority` is necessary but NOT sufficient: under docker's default
+hostname the cookie inside is addressed to a different host, the lookup misses,
+and no credentials are sent. Fix: `--hostname "$(hostname)"`. Both creation
+paths were broken differently — `run_r1lite.sh` never mounted the cookie at all;
+the installer mounted it but not the hostname (so `ssh -X` teleop would fail
+onboard). Escape hatch for existing containers: `xhost +local:`.
+
+## 5. **The image was non-reproducible and shipped untested software**
+
+`pip install dimos-*.whl` resolves dependencies itself: it ignores `uv.lock` AND
+pyproject's deliberate `exclude-newer = "7 days"`. It took latest-wins and
+installed **typer 0.27.0** against a lock pinning **0.23.1**. typer 0.27 changed
+annotation introspection; dimos builds its CLI options from GlobalConfig's
+`Literal` fields, so **every** dimos command in the image died:
+
+    TypeError: issubclass() arg 1 must be a class
+
+The dev venv never saw it — uv honours the lock. **The deeper bug: building the
+same commit twice on different days produced different software**, which makes
+the immutable-tag rollback promise a lie.
+
+Fix: export the lock in the builder, install with `uv pip install --no-deps`.
+Three details, each found by a failed build:
+- **`--no-default-groups`, not `--no-dev`**: `default-groups = ["tests"]` means
+  `--no-dev` still exports the whole test suite (torch/mujoco/ultralytics) and
+  fails outright on `pyaudio` (no linux wheel; wants portaudio.h + a compiler).
+  **149 packages, not 377.**
+- **uv, not pip**: the export carries hashes → pip enters `--require-hashes`,
+  where every requirement must be `==`-pinned; transitive extras are not
+  (`chromadb` wants `uvicorn[standard]>=0.18.3`) → pip aborts.
+- **`--no-deps`, not resolving**: pyproject uses `override-dependencies` to
+  force versions past what packages declare (moondream pins pillow<11; the lock
+  ships pillow 12). Those overrides are not in the exported file, so a resolver
+  rediscovers a conflict the lock already settled.
+
+## 6. **Four undeclared imports: `pip install dimos` cannot run vis_module**
+
+`vis_module` imports `WebsocketVisModule` unconditionally (every viewer setting,
+including `none`, composes it) and that module imports `socketio`, `starlette`
+and `uvicorn` at module scope. In pyproject: `python-socketio` was in the
+**`lint` group** (mypy stubs), `starlette` **nowhere** (arrived via fastapi),
+`uvicorn` in the **`web` extra**, `websockets` **nowhere**.
+
+So a core-only install cannot run **any** blueprint using `vis_module` —
+go2-basic, drone-basic, the G1 nav set, r1lite. **Not an R1 Lite bug.** Nobody
+had ever installed dimos the way it ships. All four declared in core.
+
+Found by deploying to the robot, where it restart-looped. Then confirmed the
+rest by AST-walking the import graph (including function-level imports) against
+the core export.
+
+## 7. The smoke test that wasn't
+
+`RUN dimos list | grep -q r1lite-coordinator` passed on an image whose blueprint
+could not import — `list` only reads registry **strings**, it never imports a
+blueprint. It caught the typer breakage and nothing else.
+
+Now the build imports both r1lite blueprints, i.e. the real graph the robot
+runs. That is what would have caught socketio at build time. It works: the next
+build **failed**, so no broken image was produced. Also moved below `USER dimos`
+so it proves the runtime user can write `$HOME/.local/state/dimos`.
+
+## 8. Production hardening (before first fleet use)
+
+Three of these are the same mistake in different layers — we pinned the thing we
+were looking at and left the thing underneath floating:
+
+| fix | why |
+|---|---|
+| base pinned by **digest** | `ros:humble-ros-base-jammy` is mutable and rebuilt regularly; we pinned 149 python deps then built them on a shifting OS |
+| **`user: 1000`** | see §9 — a data-loss bug, not hygiene |
+| **`stop_grace_period: 30s`** | VCU latches its last velocity; SIGTERM triggers the courtesy zero, docker SIGKILLs at 10s, and a killed process sends no zero → **robot keeps driving** |
+| log rotation | json-file is unbounded; a 100Hz robot fills its disk weeks later at a customer site |
+| healthcheck (TCP 7779) | `restart: unless-stopped` only catches processes that EXIT, never wedged-but-alive |
+| `.env` prefers **digest** over tag | tags are mutable; "rollback to known-good" silently gets different bytes |
+
+Healthcheck is a TCP connect, deliberately **not** an HTTP GET: `/` redirects to
+`/command-center`, which 503s unless the React app was built (it isn't, in this
+image) — an HTTP probe would report healthy robots as unhealthy.
+
+## 9. **SHM/uid: SOLVED — `ipc: host` + `user: 1000` → 1600 msgs/8s** ✅
+
+Day 4 (§3) found root containers cannot receive via shared memory and worked
+around it with a UDP-only FastDDS profile — **at the cost of zero-copy**. The
+runtime path fixes it properly instead: run the container as the vendor's own
+uid.
+
+- `ipc: host` alone is **necessary but NOT sufficient** — sharing `/dev/shm`
+  doesn't help if our reader segments are root-owned and uid-1000 publishers
+  can't write them.
+- `user: "${DIMOS_UID:-1000}:${DIMOS_GID:-1000}"`, with `setup.sh` writing
+  `id -u`/`id -g` — correct by construction on a robot shipping a different uid.
+
+**Result: 1483 then 1600 msgs/8s (~185Hz = full rate), zero-copy intact.** No
+UDP-only profile needed on the runtime path.
+
+## 10. A stale dev container silently owned 9877 for 8 hours
+
+`dimos-dev-r1lite` (the Day-4 dev path) was still up, holding 9877 and 9090. So
+**dimos never bound 9877 while reporting `healthy`** — the healthcheck probes
+7779 (WebsocketVisModule), not rerun. A laptop viewer connecting to the robot
+would have rendered last week's code with no way to tell.
+
+Lessons: **the dev path and the runtime path must not both run on a robot**, and
+a green healthcheck proves the process is up, not that the bridge is serving.
+
+## 11. Camera latency 45s → live. **The network was never the problem.**
+
+Symptom: a connected viewer reported `Latency: 45.3 s` and **6.2 GiB after
+1m44s** (~60 MB/s), replaying the past instead of showing the present.
+
+- **Hypothesis (WRONG): the robot→laptop DDS hop is saturated by raw depth.**
+  Prediction: running dimos onboard fixes it.
+- **Test:** deployed onboard. **Latency got WORSE: 15s → 45s.**
+- **Conclusion:** onboard took the heavy traffic OFF DDS and put it ON the rerun
+  stream, which now crosses the network instead. The bottleneck was always the
+  rerun path.
+
+Two causes, both defaults nobody had revisited:
+1. `R1LiteConnection._compressed_decode_loop` runs `cv2.imdecode` on the robot's
+   `/compressed` topics and republishes **raw BGR** — so the bridge logs six
+   *uncompressed* streams (4 colour + 2 16-bit depth). r1lite passed **no
+   `max_hz`**, so every frame of all six went to the viewer.
+2. The bridge's gRPC proxy buffers history for late-connecting viewers, default
+   **`memory_limit = "25%"`** — a quarter of the robot's RAM. That is the 6.2 GiB
+   a fresh viewer inherits and must chew through before reaching live.
+
+Fix: per-entity `max_hz` (head-left 10Hz — the driving view; stereo partner and
+depth 2Hz; wrists 5Hz) + `memory_limit: "1GB"`. **60 MB/s → ~31 MB/s, latency
+indicator gone (rerun only draws it when behind), live hand motion in all
+panels.**
+
+Still open: we ship raw BGR at all. The robot had JPEG and we throw it away.
+Keeping frames compressed for transport is the real fix (a change to
+`R1LiteConnection`, not a knob) if more cameras / higher rates / WiFi are ever
+wanted.
+
+## Open
+
+- Runtime image not published to a registry → the laptop is still in the loop
+  (`docker save | scp`). Publishing to ghcr (ideally from CI on merge) is what
+  makes a blank robot `git clone && setup.sh`.
+- WASD panel still doesn't drive: `RerunWebSocketServer` is composed, but
+  `tele_cmd_vel` → `/cmd_vel` is unwired. Needs the panel's baked-in speed
+  measured first (it is not tunable from Python).
+- **No CI builds the 3.10 floor or a core-only install.** Four of today's bug
+  classes would have been caught by one job: install core-only on 3.10, import
+  every blueprint. Worth filing on its own merit.
