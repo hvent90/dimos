@@ -135,6 +135,8 @@ def test_keyup_publishes_directly_without_timeout_wait(
 def test_set_gripper_position_publishes_partial_joint_state_only_on_change(
     module: KeyboardTeleopModule, mocker
 ) -> None:
+    assert module.config.gripper_open_position == GRIPPER_OPEN_POSITION
+
     publish = mocker.patch.object(module.joint_command, "publish")
 
     module._set_gripper_position(GRIPPER_OPEN_POSITION)

@@ -71,6 +71,7 @@ class KeyboardTeleopConfig(ModuleConfig):
     task_name: str = EEF_TWIST_TASK_NAME
     linear_speed: float = LINEAR_SPEED
     angular_speed: float = ANGULAR_SPEED
+    gripper_open_position: float = GRIPPER_OPEN_POSITION
 
 
 def _motion_key_codes() -> frozenset[int]:
@@ -220,7 +221,7 @@ class KeyboardTeleopModule(Module):
             if event.key in _motion_key_codes():
                 held_motion_keys.add(event.key)
             elif event.key == pygame.K_LEFTBRACKET:
-                self._set_gripper_position(GRIPPER_OPEN_POSITION)
+                self._set_gripper_position(self.config.gripper_open_position)
             elif event.key == pygame.K_RIGHTBRACKET:
                 self._set_gripper_position(GRIPPER_CLOSED_POSITION)
         elif event.type == pygame.KEYUP and event.key in _motion_key_codes():

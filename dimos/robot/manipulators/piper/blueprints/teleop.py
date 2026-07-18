@@ -17,7 +17,7 @@
 from __future__ import annotations
 
 from dimos.control.components import make_gripper_joints
-from dimos.control.coordinator import ControlCoordinator
+from dimos.control.coordinator import ControlCoordinator, TaskConfig
 from dimos.core.coordination.blueprints import autoconnect
 from dimos.core.global_config import global_config
 from dimos.manipulation.manipulation_module import ManipulationModule
@@ -45,13 +45,22 @@ _piper_keyboard_hw = make_piper_hardware(
 )
 
 keyboard_teleop_piper = autoconnect(
-    KeyboardTeleopModule.blueprint(),
+    KeyboardTeleopModule.blueprint(gripper_open_position=0.07),
     ControlCoordinator.blueprint(
         tick_rate=100.0,
         publish_joint_state=True,
         joint_state_frame_id="coordinator",
         hardware=[_piper_keyboard_hw],
-        tasks=[eef_twist_task(_piper_keyboard_hw, model_path=PIPER_FK_MODEL, ee_joint_id=6)],
+        tasks=[
+            eef_twist_task(_piper_keyboard_hw, model_path=PIPER_FK_MODEL, ee_joint_id=6),
+            TaskConfig(
+                name="servo_gripper",
+                type="servo",
+                joint_names=["arm/gripper"],
+                priority=20,
+                params={"timeout": 0.0, "default_positions": [0.0]},
+            ),
+        ],
     ),
     ManipulationModule.blueprint(
         robots=[make_piper_model_config()],
@@ -84,7 +93,7 @@ coordinator_teleop_piper = autoconnect(
                 name="teleop_piper",
                 params={
                     "gripper_joint": make_gripper_joints("arm")[0],
-                    "gripper_open_pos": 0.035,
+                    "gripper_open_pos": 0.07,
                     "gripper_closed_pos": 0.0,
                     "max_joint_delta_deg": 50.0,
                 },
