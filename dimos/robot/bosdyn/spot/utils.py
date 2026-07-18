@@ -74,6 +74,29 @@ def camera_mount_transforms(
     return transforms
 
 
+def rotate_image_quarter_turns(image: Image, quarter_turns: int) -> Image:
+    """Rotate an Image by `quarter_turns` * 90° CCW (negative for CW)."""
+    rotated = np.rot90(image.data, k=quarter_turns)
+    return Image.from_numpy(rotated, format=image.format, frame_id=image.frame_id, ts=image.ts)
+
+
+def rotate_camera_info_quarter_turns(info: CameraInfo, quarter_turns: int) -> CameraInfo:
+    """Rotate a pinhole CameraInfo to match `rotate_image_quarter_turns`.
+
+    Each CCW quarter turn swaps the focal lengths and remaps the principal point so
+    the intrinsics stay consistent with the rotated pixel grid (width/height swap).
+    """
+    fx, fy, cx, cy = info.K[0], info.K[4], info.K[2], info.K[5]
+    width, height = info.width, info.height
+    for _ in range(quarter_turns % 4):
+        fx, fy = fy, fx
+        cx, cy = cy, (width - 1) - cx
+        width, height = height, width
+    return CameraInfo.from_intrinsics(
+        fx=fx, fy=fy, cx=cx, cy=cy, width=width, height=height, frame_id=info.frame_id
+    ).with_ts(info.ts)
+
+
 def camera_info_from_response(response: Any, source_name: str, ts: float) -> CameraInfo | None:
     """Build a CameraInfo from a bosdyn image response's pinhole intrinsics."""
     source = response.source

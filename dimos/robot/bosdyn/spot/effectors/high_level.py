@@ -57,10 +57,12 @@ from dimos.msgs.sensor_msgs.Image import Image
 from dimos.protocol.tf.static_tf_publisher import StaticTfPublisher, StaticTfPublisherConfig
 from dimos.robot.bosdyn.spot.config import (
     CAMERA_MAX_HZ,
+    FRONT_CAMERA_ROTATE_UPRIGHT,
     IP_LABELS,
     POWER_OFF_TIMEOUT_S,
     POWER_ON_TIMEOUT_S,
     REACHABILITY_PROBE_TIMEOUT_S,
+    RIGHT_CAMERA_ROTATE_UPRIGHT,
     SIT_TIMEOUT_S,
     SPOT_API_PORT,
     SPOT_URDF_PATH,
@@ -70,6 +72,8 @@ from dimos.robot.bosdyn.spot.utils import (
     camera_info_from_response,
     camera_mount_transforms,
     decode_image,
+    rotate_camera_info_quarter_turns,
+    rotate_image_quarter_turns,
 )
 from dimos.utils.logging_config import setup_logger
 
@@ -288,60 +292,67 @@ class SpotHighLevel(StaticTfPublisher):
     async def _poll_images(self) -> None:
         period = 1.0 / self.config.image_rate_hz
         config = self.config
-        # bosdyn source name -> (image Out, CameraInfo Out, frame_id). Images are
-        # published in Spot's native sensor orientation (no rotation); each image's
-        # frame_id names a URDF optical frame anchored by the static camera tf.
-        # Grayscale and depth at the same mount share that mount's optical frame.
-        routing: dict[str, tuple[Out[Image], Out[CameraInfo], str]] = {
+        # bosdyn source name -> (image Out, CameraInfo Out, frame_id, quarter_turns).
+        routing: dict[str, tuple[Out[Image], Out[CameraInfo], str, int]] = {
             "frontleft_fisheye_image": (
                 self.grayscale_image_front_left,
                 self.grayscale_info,
                 config.frontleft_camera_frame_id,
+                FRONT_CAMERA_ROTATE_UPRIGHT,
             ),
             "frontright_fisheye_image": (
                 self.grayscale_image_front_right,
                 self.grayscale_info,
                 config.frontright_camera_frame_id,
+                FRONT_CAMERA_ROTATE_UPRIGHT,
             ),
             "left_fisheye_image": (
                 self.grayscale_image_left,
                 self.grayscale_info,
                 config.left_camera_frame_id,
+                0,
             ),
             "right_fisheye_image": (
                 self.grayscale_image_right,
                 self.grayscale_info,
                 config.right_camera_frame_id,
+                RIGHT_CAMERA_ROTATE_UPRIGHT,
             ),
             "back_fisheye_image": (
                 self.grayscale_image_back,
                 self.grayscale_info,
                 config.back_camera_frame_id,
+                0,
             ),
             "frontleft_depth": (
                 self.depth_image_front_left,
                 self.depth_info,
                 config.frontleft_camera_frame_id,
+                FRONT_CAMERA_ROTATE_UPRIGHT,
             ),
             "frontright_depth": (
                 self.depth_image_front_right,
                 self.depth_info,
                 config.frontright_camera_frame_id,
+                FRONT_CAMERA_ROTATE_UPRIGHT,
             ),
             "left_depth": (
                 self.depth_image_left,
                 self.depth_info,
                 config.left_camera_frame_id,
+                0,
             ),
             "right_depth": (
                 self.depth_image_right,
                 self.depth_info,
                 config.right_camera_frame_id,
+                RIGHT_CAMERA_ROTATE_UPRIGHT,
             ),
             "back_depth": (
                 self.depth_image_back,
                 self.depth_info,
                 config.back_camera_frame_id,
+                0,
             ),
         }
         sources = list(routing)
@@ -367,15 +378,19 @@ class SpotHighLevel(StaticTfPublisher):
                 route = routing.get(source_name)
                 if route is None:
                     continue
-                out, info_out, frame_id = route
+                out, info_out, frame_id, quarter_turns = route
                 image = decode_image(response, frame_id, time_converter)
                 if image is None:
                     continue
                 if last_published_ts.get(source_name) == image.ts:
                     continue
                 last_published_ts[source_name] = image.ts
-                out.publish(image)
                 camera_info = camera_info_from_response(response, frame_id, image.ts)
+                if quarter_turns:
+                    image = rotate_image_quarter_turns(image, quarter_turns)
+                    if camera_info is not None:
+                        camera_info = rotate_camera_info_quarter_turns(camera_info, quarter_turns)
+                out.publish(image)
                 if camera_info is not None:
                     info_out.publish(camera_info)
 

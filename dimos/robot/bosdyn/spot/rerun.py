@@ -45,21 +45,21 @@ def spot_camera_layout() -> rrb.Blueprint:
         line_grid=rrb.LineGrid3D(plane=rr.components.Plane3D.XY.with_distance(0.0)),
     )
 
-    front_right_gray = _camera_view(_grayscale_origin("front_right"), "front right")
-    front_left_gray = _camera_view(_grayscale_origin("front_left"), "front left")
-    front_right_depth = _camera_view(_depth_origin("front_right"), "front right (depth)")
-    front_left_depth = _camera_view(_depth_origin("front_left"), "front left (depth)")
-
+    # Each rrb view may live in exactly one place in the blueprint tree, so every
+    # container below builds its own fresh view instances rather than sharing one.
     front_tab = rrb.Horizontal(
-        front_right_gray,
-        front_left_gray,
-        front_right_depth,
-        front_left_depth,
+        _camera_view(_grayscale_origin("front_right"), "front right"),
+        _camera_view(_grayscale_origin("front_left"), "front left"),
+        _camera_view(_depth_origin("front_right"), "front right (depth)"),
+        _camera_view(_depth_origin("front_left"), "front left (depth)"),
         name="front",
     )
 
     grayscale_tab = rrb.Vertical(
-        rrb.Horizontal(front_right_gray, front_left_gray),
+        rrb.Horizontal(
+            _camera_view(_grayscale_origin("front_right"), "front right"),
+            _camera_view(_grayscale_origin("front_left"), "front left"),
+        ),
         rrb.Horizontal(
             _camera_view(_grayscale_origin("left"), "left"),
             _camera_view(_grayscale_origin("right"), "right"),
@@ -69,7 +69,10 @@ def spot_camera_layout() -> rrb.Blueprint:
     )
 
     depth_tab = rrb.Vertical(
-        rrb.Horizontal(front_right_depth, front_left_depth),
+        rrb.Horizontal(
+            _camera_view(_depth_origin("front_right"), "front right (depth)"),
+            _camera_view(_depth_origin("front_left"), "front left (depth)"),
+        ),
         rrb.Horizontal(
             _camera_view(_depth_origin("left"), "left"),
             _camera_view(_depth_origin("right"), "right"),
