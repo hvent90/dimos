@@ -40,7 +40,7 @@ from dimos.robot.unitree.g1.quest_teleop import G1QuestTeleopModule
 
 def _realsense_present() -> bool:
     try:
-        import pyrealsense2 as rs
+        import pyrealsense2 as rs  # type: ignore[import-untyped]
 
         return len(rs.context().devices) > 0
     except Exception:
