@@ -1,0 +1,59 @@
+# Copyright 2026 Dimensional Inc.
+#
+# Licensed under the Apache License, Version 2.0 (the "License");
+# you may not use this file except in compliance with the License.
+# You may obtain a copy of the License at
+#
+#     http://www.apache.org/licenses/LICENSE-2.0
+#
+# Unless required by applicable law or agreed to in writing, software
+# distributed under the License is distributed on an "AS IS" BASIS,
+# WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
+# See the License for the specific language governing permissions and
+# limitations under the License.
+
+"""Basic OpenYAM coordinator blueprints."""
+
+from __future__ import annotations
+
+from dimos.control.coordinator import ControlCoordinator
+from dimos.core.coordination.blueprints import autoconnect
+from dimos.robot.manipulators.common.blueprints import coordinator, planner, trajectory_task
+from dimos.robot.manipulators.openyam.config import (
+    make_openyam_hardware,
+    make_openyam_model_config,
+)
+
+_openyam_bare_planner_hw = make_openyam_hardware("arm", has_gripper=False)
+
+openyam_bare_planner_coordinator = autoconnect(
+    planner(robots=[make_openyam_model_config(name="arm", has_gripper=False)]),
+    coordinator(
+        hardware=[_openyam_bare_planner_hw],
+        tasks=[trajectory_task(_openyam_bare_planner_hw)],
+    ),
+)
+
+_openyam_gripper_planner_hw = make_openyam_hardware("arm", has_gripper=True)
+
+openyam_gripper_planner_coordinator = autoconnect(
+    planner(robots=[make_openyam_model_config(name="arm", has_gripper=True)]),
+    coordinator(
+        hardware=[_openyam_gripper_planner_hw],
+        tasks=[trajectory_task(_openyam_gripper_planner_hw)],
+    ),
+)
+
+_openyam_bare_hw = make_openyam_hardware("arm", has_gripper=False)
+
+coordinator_openyam_bare = ControlCoordinator.blueprint(
+    hardware=[_openyam_bare_hw],
+    tasks=[trajectory_task(_openyam_bare_hw)],
+)
+
+_openyam_gripper_hw = make_openyam_hardware("arm", has_gripper=True)
+
+coordinator_openyam_gripper = ControlCoordinator.blueprint(
+    hardware=[_openyam_gripper_hw],
+    tasks=[trajectory_task(_openyam_gripper_hw)],
+)
