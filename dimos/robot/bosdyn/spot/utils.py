@@ -32,6 +32,10 @@ from dimos.utils.logging_config import setup_logger
 logger = setup_logger()
 
 
+def clamp(value: float, low: float, high: float) -> float:
+    return max(low, min(high, value))
+
+
 def joint_to_transform(joint: JointDescription) -> Transform:
     return Transform(
         translation=Vector3(*joint.origin_xyz),

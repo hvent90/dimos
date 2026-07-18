@@ -59,6 +59,8 @@ from dimos.robot.bosdyn.spot.config import (
     CAMERA_MAX_HZ,
     FRONT_CAMERA_ROTATE_UPRIGHT,
     IP_LABELS,
+    MAX_ANGULAR_VELOCITY,
+    MAX_LINEAR_VELOCITY,
     POWER_OFF_TIMEOUT_S,
     POWER_ON_TIMEOUT_S,
     REACHABILITY_PROBE_TIMEOUT_S,
@@ -71,6 +73,7 @@ from dimos.robot.bosdyn.spot.config import (
 from dimos.robot.bosdyn.spot.utils import (
     camera_info_from_response,
     camera_mount_transforms,
+    clamp,
     decode_image,
     rotate_camera_info_quarter_turns,
     rotate_image_quarter_turns,
@@ -473,7 +476,9 @@ class SpotHighLevel(StaticTfPublisher):
         )
 
         command = RobotCommandBuilder.synchro_velocity_command(
-            v_x=twist.linear.x, v_y=twist.linear.y, v_rot=twist.angular.z
+            v_x=clamp(twist.linear.x, -MAX_LINEAR_VELOCITY, MAX_LINEAR_VELOCITY),
+            v_y=clamp(twist.linear.y, -MAX_LINEAR_VELOCITY, MAX_LINEAR_VELOCITY),
+            v_rot=clamp(twist.angular.z, -MAX_ANGULAR_VELOCITY, MAX_ANGULAR_VELOCITY),
         )
         window = duration if duration > 0 else self.config.cmd_vel_timeout
         try:
