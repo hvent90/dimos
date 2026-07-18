@@ -12,23 +12,21 @@
 # See the License for the specific language governing permissions and
 # limitations under the License.
 
-"""Pink and legacy Pinocchio backends for coordinator Cartesian control."""
+"""Pink differential IK for coordinator Cartesian control."""
 
 from __future__ import annotations
 
 from collections.abc import Mapping
 from dataclasses import dataclass
 from pathlib import Path
-from typing import Literal
 
 import numpy as np
 from numpy.typing import NDArray
 import pink
-from pink.limits import ConfigurationLimit, Limit, VelocityLimit
+from pink.limits import ConfigurationLimit, VelocityLimit
 import pinocchio
 from pydantic import Field, field_validator
 
-from dimos.manipulation.planning.kinematics.pinocchio_ik import PinocchioIK
 from dimos.manipulation.planning.spec.config import RobotModelConfig
 from dimos.manipulation.planning.utils.mesh_utils import prepare_urdf_for_drake
 from dimos.msgs.geometry_msgs.PoseStamped import PoseStamped
@@ -41,8 +39,7 @@ _POSITION_LIMIT_EPSILON_RAD = 1e-5
 class PinkControlIKConfig(BaseConfig):
     """Typed configuration for the control IK backend."""
 
-    backend: Literal["pink", "pinocchio"] = "pink"
-    robot_model: RobotModelConfig | None = None
+    robot_model: RobotModelConfig
     solver: str = "proxqp"
     max_velocity: float = 10.0
     lm_damping: float = 1e-4
@@ -56,8 +53,8 @@ class PinkControlIKConfig(BaseConfig):
 
     @field_validator("robot_model", mode="before")
     @classmethod
-    def _rebuild_robot_model(cls, value: object) -> RobotModelConfig | None:
-        if value is None or isinstance(value, RobotModelConfig):
+    def _rebuild_robot_model(cls, value: object) -> RobotModelConfig:
+        if isinstance(value, RobotModelConfig):
             return value
         if not isinstance(value, Mapping):
             raise ValueError("Pink robot_model must be a serialized RobotModelConfig")
@@ -79,7 +76,6 @@ class PinkControlIKConfig(BaseConfig):
     def validate_settings(
         self,
         joint_count: int,
-        ee_joint_id: int | None,
         model_path: str | Path | None = None,
     ) -> None:
         numeric = (
@@ -101,20 +97,15 @@ class PinkControlIKConfig(BaseConfig):
             raise ValueError("control IK dt bounds must be positive and ordered")
         if any(not np.isfinite(value) for value in self.qpsolver_options.values()):
             raise ValueError("control IK QP options must be finite")
-        if self.backend == "pink":
-            if self.robot_model is None:
-                raise ValueError("Pink control requires a RobotModelConfig")
-            if not self.robot_model.end_effector_link:
-                raise ValueError("Pink control requires a named end-effector frame")
-            if len(self.robot_model.joint_names) != joint_count:
-                raise ValueError("RobotModelConfig and control task joint counts differ")
-            if (
-                model_path is not None
-                and Path(self.robot_model.model_path).resolve() != Path(model_path).resolve()
-            ):
-                raise ValueError("Pink RobotModelConfig must use the authoritative model path")
-        elif not isinstance(ee_joint_id, int) or isinstance(ee_joint_id, bool):
-            raise ValueError("Pinocchio control requires a numeric ee_joint_id")
+        if not self.robot_model.end_effector_link:
+            raise ValueError("Pink control requires a named end-effector frame")
+        if len(self.robot_model.joint_names) != joint_count:
+            raise ValueError("RobotModelConfig and control task joint counts differ")
+        if (
+            model_path is not None
+            and Path(self.robot_model.model_path).resolve() != Path(model_path).resolve()
+        ):
+            raise ValueError("Pink RobotModelConfig must use the authoritative model path")
 
 
 @dataclass(frozen=True)
@@ -128,33 +119,17 @@ class PinkControlRuntimeError(RuntimeError):
 
 
 class PinkControlIK:
-    """One-step Pink control IK with explicit legacy Pinocchio compatibility."""
+    """One-step Pink control IK for Cartesian control."""
 
     def __init__(
         self,
         model_path: str | Path,
-        ee_joint_id: int | None,
         joint_names: list[str],
         config: PinkControlIKConfig,
     ) -> None:
         self._config = config
         self._joint_names = list(joint_names)
-        self._config.validate_settings(len(self._joint_names), ee_joint_id, model_path)
-        self._is_pinocchio = config.backend == "pinocchio"
-        self._legacy_ik: PinocchioIK | None = None
-
-        if self._is_pinocchio:
-            if ee_joint_id is None:
-                raise ValueError("Pinocchio control requires an explicit ee_joint_id")
-            self._legacy_ik = PinocchioIK.from_model_path(model_path, ee_joint_id)
-            self._model = self._legacy_ik.model
-            self._data = self._model.createData()
-            self._q_indices: list[int] = []
-            self._v_indices: list[int] = []
-            self._configuration = None
-            self._frame_task = None
-            self._limits: list[Limit] = []
-            return
+        self._config.validate_settings(len(self._joint_names), model_path)
 
         robot = config.robot_model
         if robot is None:  # guarded by validate_settings; retained for narrowing
@@ -213,17 +188,9 @@ class PinkControlIK:
     @property
     def nq(self) -> int:
         """Number of controlled coordinates, matching the task contract."""
-        if self._is_pinocchio:
-            if self._legacy_ik is None:
-                raise PinkControlRuntimeError("Pinocchio control backend is unavailable")
-            return self._legacy_ik.nq
         return len(self._joint_names)
 
     def forward_kinematics(self, q: NDArray[np.float64]) -> pinocchio.SE3:
-        if self._is_pinocchio:
-            if self._legacy_ik is None:
-                raise PinkControlRuntimeError("Pinocchio control backend is unavailable")
-            return self._legacy_ik.forward_kinematics(q)
         full_q = self._full_q(q)
         pinocchio.forwardKinematics(self._model, self._data, full_q)
         pinocchio.updateFramePlacements(self._model, self._data)
@@ -241,11 +208,6 @@ class PinkControlIK:
         if not np.isfinite(dt) or dt <= 0.0:
             raise ValueError("control IK dt must be finite and positive")
         dt = min(max(dt, self._config.min_dt), self._config.max_dt)
-        if self._is_pinocchio:
-            if self._legacy_ik is None:
-                raise PinkControlRuntimeError("Pinocchio control backend is unavailable")
-            positions, _, _ = self._legacy_ik.solve(target, measured)
-            return ControlIKResult(np.asarray(positions, dtype=np.float64), positions - measured)
 
         configuration = self._configuration
         frame_task = self._frame_task

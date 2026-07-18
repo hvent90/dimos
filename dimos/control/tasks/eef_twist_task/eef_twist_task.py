@@ -128,10 +128,9 @@ class EEFTwistTask(CartesianIKTask):
 
 class EEFTwistTaskParams(BaseConfig):
     model_path: str | Path
-    ee_joint_id: int | None = None
     timeout: float = 0.3
     max_joint_delta_deg: float = 15.0
-    control_ik: PinkControlIKConfig = PinkControlIKConfig()
+    control_ik: PinkControlIKConfig
 
 
 def create_task(cfg: TaskConfig, hardware: object) -> EEFTwistTask:
@@ -141,7 +140,6 @@ def create_task(cfg: TaskConfig, hardware: object) -> EEFTwistTask:
         EEFTwistTaskConfig(
             joint_names=cfg.joint_names,
             model_path=params.model_path,
-            ee_joint_id=params.ee_joint_id,
             priority=cfg.priority,
             timeout=params.timeout,
             max_joint_delta_deg=params.max_joint_delta_deg,

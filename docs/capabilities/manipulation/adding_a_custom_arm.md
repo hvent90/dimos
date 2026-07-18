@@ -571,12 +571,10 @@ yourarm_planner = manipulation_module(
 
 ### 4d. Configure Cartesian and EEF-twist control IK
 
-Pink is the default backend for Cartesian and EEF-twist control. The legacy
-Pinocchio backend is available only through an explicit
-`backend="pinocchio"` setting. Pink control and manipulation planning are
-separate: planning uses `WorldSpec` and its selected planning backend, while
-control performs one local differential-IK step and does not use `WorldSpec` as
-a control input.
+Pink is the only backend for Cartesian and EEF-twist control. Pink control and
+manipulation planning are separate: planning uses `WorldSpec` and its selected
+planning backend, while control performs one local differential-IK step and
+does not use `WorldSpec` as a control input.
 
 Use the same `RobotModelConfig` for the control model and planning robot
 metadata. Its `model_path` points to the direct URDF or Xacro, `package_paths`
@@ -607,18 +605,8 @@ twist_task = eef_twist_task(
 )
 ```
 
-Do not provide `ee_joint_id` for Pink tasks. To retain the legacy path during
-migration, select it explicitly and provide its numeric EEF ID:
-
-```python skip
-legacy_control_ik = PinkControlIKConfig(backend="pinocchio")
-legacy_task = cartesian_ik_task(
-    hardware,
-    model_path=legacy_model_path,
-    ee_joint_id=6,
-    control_ik=legacy_control_ik,
-)
-```
+Pink control tasks use the named `RobotModelConfig.end_effector_link`; they do
+not accept a numeric `ee_joint_id` or a legacy backend selector.
 
 At every coordinator tick, Pink re-anchors to measured joints, derives the EEF
 target from measured FK for twist input, clamps `dt`, updates one `FrameTask`,

@@ -23,8 +23,11 @@ import pytest
 from dimos.control.task import ControlMode, CoordinatorState, JointStateSnapshot
 from dimos.control.tasks.cartesian_ik_task.pink_control_ik import (
     ControlIKResult,
+    PinkControlIKConfig,
 )
 from dimos.control.tasks.eef_twist_task.eef_twist_task import EEFTwistTask, EEFTwistTaskConfig
+from dimos.manipulation.planning.spec.config import RobotModelConfig
+from dimos.msgs.geometry_msgs.PoseStamped import PoseStamped
 from dimos.msgs.geometry_msgs.TwistStamped import TwistStamped
 
 
@@ -77,7 +80,16 @@ def task(fake_ik: FakeIK) -> EEFTwistTask:
         EEFTwistTaskConfig(
             joint_names=["arm/joint1", "arm/joint2", "arm/joint3"],
             model_path="fake.urdf",
-            ee_joint_id=3,
+            control_ik=PinkControlIKConfig(
+                robot_model=RobotModelConfig(
+                    name="fake",
+                    model_path="fake.urdf",
+                    base_pose=PoseStamped(position=[0, 0, 0], orientation=[0, 0, 0, 1]),
+                    joint_names=["arm/joint1", "arm/joint2", "arm/joint3"],
+                    end_effector_link="tool",
+                    home_joints=[0.0, 0.0, 0.0],
+                )
+            ),
             timeout=0.3,
             max_joint_delta_deg=15.0,
         ),

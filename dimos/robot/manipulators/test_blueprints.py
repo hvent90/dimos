@@ -94,8 +94,8 @@ def test_xarm_planner_blueprints_default_to_no_visualization() -> None:
 def test_eef_twist_task_helper_requires_pink_robot_model() -> None:
     hardware = make_xarm_hardware("arm", 6, adapter_type="mock")
 
-    with pytest.raises(ValueError, match="authoritative RobotModelConfig"):
-        eef_twist_task(hardware, model_path=Path("fake.urdf"), ee_joint_id=6)
+    with pytest.raises(ValueError, match="robot_model"):
+        eef_twist_task(hardware, model_path=Path("fake.urdf"))
 
 
 @pytest.mark.parametrize(
@@ -140,9 +140,8 @@ def test_shipped_eef_twist_blueprints_use_pink_with_named_models(
     task = next(task for task in _coordinator_tasks(blueprint) if task.type == "eef_twist")
     control_ik = task.params["control_ik"]
 
-    assert control_ik["backend"] == "pink"
     assert control_ik["robot_model"]["end_effector_link"]
-    assert task.params["ee_joint_id"] is None
+    assert "ee_joint_id" not in task.params
     assert not str(task.params["model_path"]).endswith((".xml", ".mjcf"))
 
 
@@ -160,10 +159,9 @@ def test_piper_pink_task_uses_xacro_and_gripper_base() -> None:
         )
         control_ik = task.params["control_ik"]
         assert task.params["model_path"] == PIPER_MODEL_PATH
-        assert control_ik["backend"] == "pink"
         assert control_ik["robot_model"]["model_path"] == str(PIPER_MODEL_PATH)
         assert control_ik["robot_model"]["end_effector_link"] == "gripper_base"
-        assert task.params["ee_joint_id"] is None
+        assert "ee_joint_id" not in task.params
         assert "self_collision_enabled" not in control_ik
 
         reconstructed = PinkControlIKConfig.model_validate(control_ik)

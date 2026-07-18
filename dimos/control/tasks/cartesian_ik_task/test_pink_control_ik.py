@@ -15,7 +15,6 @@
 from pathlib import Path
 
 import numpy as np
-import pinocchio
 import pytest
 
 from dimos.control.coordinator import TaskConfig
@@ -29,7 +28,6 @@ from dimos.control.tasks.cartesian_ik_task.pink_control_ik import (
     PinkControlIK,
     PinkControlIKConfig,
     PinkControlRuntimeError,
-    PinocchioIK,
 )
 from dimos.control.tasks.registry import control_task_registry
 from dimos.manipulation.planning.spec.config import RobotModelConfig
@@ -107,12 +105,9 @@ def _write_urdf(tmp_path: Path, name: str = "tiny.urdf", content: str = _URDF) -
     return path
 
 
-def test_pink_is_default_and_requires_robot_model() -> None:
-    config = PinkControlIKConfig()
-
-    assert config.backend == "pink"
-    with pytest.raises(ValueError, match="RobotModelConfig"):
-        config.validate_settings(2, None)
+def test_pink_requires_robot_model() -> None:
+    with pytest.raises(ValueError, match="robot_model"):
+        PinkControlIKConfig()
 
 
 def test_pink_prepares_xacro_with_package_paths_and_arguments(
@@ -151,7 +146,6 @@ def test_pink_prepares_xacro_with_package_paths_and_arguments(
 
     PinkControlIK(
         tmp_path / "robot.xacro",
-        None,
         ["joint1", "joint2"],
         PinkControlIKConfig(robot_model=robot),
     )
@@ -170,7 +164,6 @@ def test_pink_validates_named_frame_and_exact_joint_mapping(tmp_path: Path) -> N
     with pytest.raises(ValueError, match="end-effector frame"):
         PinkControlIK(
             model_path,
-            None,
             ["joint1", "joint2"],
             PinkControlIKConfig(robot_model=_robot(model_path, frame="missing")),
         )
@@ -181,7 +174,6 @@ def test_pink_validates_named_frame_and_exact_joint_mapping(tmp_path: Path) -> N
     with pytest.raises(ValueError, match="exactly match"):
         PinkControlIK(
             model_path,
-            None,
             ["joint1", "joint2"],
             PinkControlIKConfig(robot_model=mismatched),
         )
@@ -193,7 +185,6 @@ def test_pink_reanchors_measured_state_and_runs_one_frame_task_step(
     model_path = _write_urdf(tmp_path)
     backend = PinkControlIK(
         model_path,
-        None,
         ["joint1", "joint2"],
         PinkControlIKConfig(robot_model=_robot(model_path)),
     )
@@ -224,7 +215,6 @@ def test_pink_backend_clamps_dt_from_backend_configuration(
     model_path = _write_urdf(tmp_path)
     backend = PinkControlIK(
         model_path,
-        None,
         ["joint1", "joint2"],
         PinkControlIKConfig(robot_model=_robot(model_path), min_dt=0.01, max_dt=0.02),
     )
@@ -252,7 +242,6 @@ def test_pink_rejects_uncontrolled_end_effector_chain_without_reference(
     with pytest.raises(ValueError, match="reference_q.*uncontrolled joint"):
         PinkControlIK(
             model_path,
-            None,
             ["joint1", "joint2"],
             PinkControlIKConfig(robot_model=_robot(model_path)),
         )
@@ -265,7 +254,6 @@ def test_continuous_joint_scalar_limits_fail_with_actionable_diagnostic(tmp_path
     with pytest.raises(ValueError, match="continuous joints.*tangent-space"):
         PinkControlIK(
             model_path,
-            None,
             ["joint1"],
             PinkControlIKConfig(robot_model=robot),
         )
@@ -275,7 +263,6 @@ def test_continuous_joint_scalar_limits_fail_with_actionable_diagnostic(tmp_path
     )
     backend = PinkControlIK(
         model_path,
-        None,
         ["joint1"],
         PinkControlIKConfig(robot_model=roundtrip_robot),
     )
@@ -292,7 +279,6 @@ def test_pink_applies_position_velocity_limits_and_finite_output(tmp_path: Path)
     )
     backend = PinkControlIK(
         model_path,
-        None,
         ["joint1", "joint2"],
         PinkControlIKConfig(robot_model=robot, max_velocity=0.2),
     )
@@ -314,7 +300,7 @@ def test_pink_clamps_tiny_position_limit_overshoot(
         update={"joint_limits_lower": [-1.22, -0.25], "joint_limits_upper": [1.22, 0.25]}
     )
     backend = PinkControlIK(
-        model_path, None, ["joint1", "joint2"], PinkControlIKConfig(robot_model=robot)
+        model_path, ["joint1", "joint2"], PinkControlIKConfig(robot_model=robot)
     )
     measured = np.array([1.22, 0.1])
 
@@ -340,7 +326,7 @@ def test_pink_rejects_material_position_limit_violation(
         update={"joint_limits_lower": [-1.22, -0.25], "joint_limits_upper": [1.22, 0.25]}
     )
     backend = PinkControlIK(
-        model_path, None, ["joint1", "joint2"], PinkControlIKConfig(robot_model=robot)
+        model_path, ["joint1", "joint2"], PinkControlIKConfig(robot_model=robot)
     )
     measured = np.array([1.22, 0.1])
 
@@ -369,6 +355,7 @@ def test_cartesian_pipeline_bounds_dt_and_holds_on_expected_error(
         CartesianIKTaskConfig(
             joint_names=["j1", "j2"],
             model_path="unused.urdf",
+            control_ik=PinkControlIKConfig(robot_model=_robot(Path("unused.urdf"))),
             timeout=0.2,
         ),
     )
@@ -398,44 +385,17 @@ def test_factory_rejects_invalid_default_pink_configuration() -> None:
         params={"model_path": "unused.urdf"},
     )
 
-    with pytest.raises(ValueError, match="RobotModelConfig"):
+    with pytest.raises(ValueError, match="control_ik"):
         control_task_registry.create("cartesian_ik", config, hardware={})
 
 
-def test_explicit_pinocchio_selection_does_not_fallback_from_pink(
-    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
-) -> None:
+@pytest.mark.parametrize("legacy_field", ["backend", "ee_joint_id"])
+def test_pink_rejects_legacy_configuration_fields(tmp_path: Path, legacy_field: str) -> None:
     model_path = _write_urdf(tmp_path)
-    legacy = _FakeLegacyIK(pinocchio.buildModelFromUrdf(str(model_path)))
-
-    def load(path: Path, ee_joint_id: int) -> _FakeLegacyIK:
-        legacy.calls.append((path, ee_joint_id))
-        return legacy
-
-    monkeypatch.setattr(PinocchioIK, "from_model_path", staticmethod(load))
-
-    backend = PinkControlIK(
-        model_path,
-        2,
-        ["joint1", "joint2"],
-        PinkControlIKConfig(backend="pinocchio"),
-    )
-
-    assert backend._is_pinocchio
-    assert legacy.calls == [(model_path, 2)]
-    with pytest.raises(ValueError, match="RobotModelConfig"):
-        PinkControlIK(model_path, None, ["joint1", "joint2"], PinkControlIKConfig())
-
-
-class _FakeLegacyIK:
-    nq = 2
-
-    def __init__(self, model: pinocchio.Model) -> None:
-        self.model = model
-        self.calls: list[tuple[Path, int]] = []
-
-    def forward_kinematics(self, q: np.ndarray) -> pinocchio.SE3:
-        return pinocchio.SE3.Identity()
+    with pytest.raises(ValueError, match=legacy_field):
+        PinkControlIKConfig.model_validate(
+            {"robot_model": _robot(model_path), legacy_field: "pinocchio"}
+        )
 
 
 class _FakeControlIK:

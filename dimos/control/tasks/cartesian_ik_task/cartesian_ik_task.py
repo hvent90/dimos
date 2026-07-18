@@ -21,14 +21,13 @@ Participates in joint-level arbitration.
 
 from __future__ import annotations
 
-from dataclasses import dataclass, field
+from dataclasses import dataclass
 from pathlib import Path
 import threading
 from typing import TYPE_CHECKING
 
 import numpy as np
 import pinocchio
-from pydantic import Field
 
 from dimos.control.coordinator import TaskConfig
 from dimos.control.task import (
@@ -64,8 +63,7 @@ class CartesianIKTaskConfig:
 
     Attributes:
         joint_names: List of joint names this task controls (must match model DOF)
-        model_path: Path to the direct Pink or legacy Pinocchio model
-        ee_joint_id: Legacy Pinocchio end-effector joint ID, when selected
+        model_path: Path to the direct Pink URDF or Xacro model
         priority: Priority for arbitration (higher wins)
         timeout: If no command received for this many seconds, go inactive (0 = never)
         max_joint_delta_deg: Maximum allowed joint change per tick (safety limit)
@@ -73,15 +71,14 @@ class CartesianIKTaskConfig:
 
     joint_names: list[str]
     model_path: str | Path
-    ee_joint_id: int | None = None
+    control_ik: PinkControlIKConfig
     priority: int = 10
     timeout: float = 0.5
     max_joint_delta_deg: float = 15.0  # ~1500°/s at 100Hz
-    control_ik: PinkControlIKConfig = field(default_factory=PinkControlIKConfig)
 
 
 class CartesianIKTask(BaseControlTask):
-    """Cartesian control task with selectable Pink or legacy Pinocchio IK.
+    """Cartesian control task with Pink differential IK.
 
     Accepts streaming cartesian poses via on_cartesian_command() and computes IK
     internally to output joint commands. Pink re-anchors each solve to the
@@ -139,7 +136,6 @@ class CartesianIKTask(BaseControlTask):
         # Create IK solver from model
         self._ik = PinkControlIK(
             config.model_path,
-            config.ee_joint_id,
             self._joint_names_list,
             config.control_ik,
         )
@@ -159,7 +155,7 @@ class CartesianIKTask(BaseControlTask):
 
         logger.info(
             f"CartesianIKTask {name} initialized with model: {config.model_path}, "
-            f"ee_joint_id={config.ee_joint_id}, joints={config.joint_names}"
+            f"joints={config.joint_names}"
         )
 
     @property
@@ -396,8 +392,7 @@ class CartesianIKTask(BaseControlTask):
 
 class CartesianIKTaskParams(BaseConfig):
     model_path: str | Path
-    ee_joint_id: int | None = None
-    control_ik: PinkControlIKConfig = Field(default_factory=PinkControlIKConfig)
+    control_ik: PinkControlIKConfig
 
 
 def create_task(cfg: TaskConfig, hardware: object) -> CartesianIKTask:
@@ -407,7 +402,6 @@ def create_task(cfg: TaskConfig, hardware: object) -> CartesianIKTask:
         CartesianIKTaskConfig(
             joint_names=cfg.joint_names,
             model_path=params.model_path,
-            ee_joint_id=params.ee_joint_id,
             priority=cfg.priority,
             control_ik=params.control_ik,
         ),

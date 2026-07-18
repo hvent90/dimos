@@ -52,22 +52,13 @@ def trajectory_task(
 def _resolve_control_ik(
     hardware: HardwareComponent,
     model_path: Path,
-    ee_joint_id: int | None,
     control_ik: PinkControlIKConfig | None,
     robot_model: RobotModelConfig | None,
 ) -> PinkControlIKConfig:
     resolved = control_ik or PinkControlIKConfig(robot_model=robot_model)
-    if resolved.backend == "pink":
-        if robot_model is not None and resolved.robot_model is None:
-            resolved = resolved.model_copy(update={"robot_model": robot_model})
-        elif robot_model is not None and resolved.robot_model is not None:
-            if resolved.robot_model != robot_model:
-                raise ValueError("conflicting Pink RobotModelConfig values")
-        elif resolved.robot_model is None:
-            raise ValueError("Pink helper requires an authoritative RobotModelConfig")
-    elif not isinstance(ee_joint_id, int) or isinstance(ee_joint_id, bool):
-        raise ValueError("Pinocchio helper requires a numeric ee_joint_id")
-    resolved.validate_settings(len(hardware.joints), ee_joint_id, model_path)
+    if robot_model is not None and resolved.robot_model != robot_model:
+        raise ValueError("conflicting Pink RobotModelConfig values")
+    resolved.validate_settings(len(hardware.joints), model_path)
     return resolved
 
 
@@ -118,15 +109,12 @@ def cartesian_ik_task(
     hardware: HardwareComponent,
     *,
     model_path: Path,
-    ee_joint_id: int | None = None,
     name: str = CARTESIAN_IK_TASK_NAME,
     priority: int = 10,
     control_ik: PinkControlIKConfig | None = None,
     robot_model: RobotModelConfig | None = None,
 ) -> TaskConfig:
-    resolved_control_ik = _resolve_control_ik(
-        hardware, model_path, ee_joint_id, control_ik, robot_model
-    )
+    resolved_control_ik = _resolve_control_ik(hardware, model_path, control_ik, robot_model)
     return TaskConfig(
         name=name,
         type="cartesian_ik",
@@ -134,7 +122,6 @@ def cartesian_ik_task(
         priority=priority,
         params={
             "model_path": model_path,
-            "ee_joint_id": ee_joint_id,
             **({"control_ik": _serialize_control_ik(resolved_control_ik)}),
         },
     )
@@ -144,15 +131,12 @@ def eef_twist_task(
     hardware: HardwareComponent,
     *,
     model_path: Path,
-    ee_joint_id: int | None = None,
     name: str = EEF_TWIST_TASK_NAME,
     priority: int = 10,
     control_ik: PinkControlIKConfig | None = None,
     robot_model: RobotModelConfig | None = None,
 ) -> TaskConfig:
-    resolved_control_ik = _resolve_control_ik(
-        hardware, model_path, ee_joint_id, control_ik, robot_model
-    )
+    resolved_control_ik = _resolve_control_ik(hardware, model_path, control_ik, robot_model)
     return TaskConfig(
         name=name,
         type="eef_twist",
@@ -160,7 +144,6 @@ def eef_twist_task(
         priority=priority,
         params={
             "model_path": model_path,
-            "ee_joint_id": ee_joint_id,
             **({"control_ik": _serialize_control_ik(resolved_control_ik)}),
         },
     )

@@ -121,8 +121,8 @@ request. For example, `planner_name=roboplan` requires
 ### Cartesian control IK
 
 Cartesian and keyboard EEF-twist tasks use generic Pink control IK by default.
-Select the legacy Pinocchio backend only explicitly with
-`backend="pinocchio"`; a failed Pink setup does not silently select Pinocchio.
+Pink is the only control IK backend; a failed Pink setup does not silently select
+another solver.
 
 Pink control uses the direct URDF/Xacro model from `RobotModelConfig`. Package
 paths and Xacro arguments are prepared before startup. The configuration names
@@ -152,17 +152,6 @@ task = cartesian_ik_task(
     model_path=robot_model.model_path,
     robot_model=robot_model,
     control_ik=control_ik,
-)
-```
-
-The compatibility path remains explicit and uses the legacy numeric EEF ID:
-
-```python skip
-legacy_task = cartesian_ik_task(
-    hardware,
-    model_path=legacy_model_path,
-    ee_joint_id=6,
-    control_ik=PinkControlIKConfig(backend="pinocchio"),
 )
 ```
 
