@@ -13,6 +13,8 @@
 # limitations under the License.
 
 from pathlib import Path
+import subprocess
+import sys
 from typing import cast
 
 import numpy as np
@@ -30,6 +32,7 @@ from dimos.control.tasks.cartesian_ik_task.pink_control_ik import (
     IKControlRuntimeError,
     PinkControlIKConfig,
 )
+from dimos.control.tasks.eef_twist_task.eef_twist_task import create_task as _eef_create_task
 from dimos.control.tasks.registry import control_task_registry
 from dimos.manipulation.planning.spec.config import RobotModelConfig
 from dimos.msgs.geometry_msgs.PoseStamped import PoseStamped
@@ -123,6 +126,41 @@ def test_factory_rejects_invalid_default_pink_configuration() -> None:
     )
     with pytest.raises(ValueError, match="control_ik"):
         control_task_registry.create("cartesian_ik", config, hardware={})
+
+
+def test_cartesian_and_eef_modules_import_without_pink() -> None:
+    script = """
+import sys
+
+class BlockPink:
+    def find_spec(self, fullname, path=None, target=None):
+        if fullname == "pink":
+            raise ModuleNotFoundError("No module named 'pink'", name="pink")
+        return None
+
+sys.meta_path.insert(0, BlockPink())
+import dimos.control.tasks.cartesian_ik_task.cartesian_ik_task
+import dimos.control.tasks.eef_twist_task.eef_twist_task
+"""
+    subprocess.run([sys.executable, "-c", script], check=True, capture_output=True, text=True)
+
+
+def test_pink_factories_fail_actionably_when_pink_is_absent(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    import dimos.control.tasks.cartesian_ik_task.pink_control_ik as pink_control_ik
+
+    robot = _robot(tmp_path / "unused.urdf")
+    params = {"control_ik": {"robot_model": robot}}
+    monkeypatch.setattr(pink_control_ik, "pink", None)
+
+    for task_type in ("cartesian_ik", "eef_twist"):
+        config = TaskConfig(name=task_type, type=task_type, joint_names=["joint1"], params=params)
+        with pytest.raises(ModuleNotFoundError, match="uv sync --extra manipulation"):
+            if task_type == "cartesian_ik":
+                control_task_registry.create("cartesian_ik", config, hardware={})
+            else:
+                _eef_create_task(config, {})
 
 
 def test_cartesian_runtime_error_is_a_measured_state_hold(
