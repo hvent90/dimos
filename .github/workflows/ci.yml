@@ -55,6 +55,17 @@ jobs:
         run: uv sync --only-group lint --frozen
       - name: Mypy
         run: uv run mypy
+
+      # The deno-fmt pre-commit hook needs deno on PATH.
+      - name: Extract Deno version
+        id: deno-version
+        run: echo "version=$(grep -oP 'DENO_VERSION = "\K[^"]+' dimos/utils/deno.py)" >> "$GITHUB_OUTPUT"
+
+      - uses: denoland/setup-deno@v2
+        with:
+          deno-version: ${{ steps.deno-version.outputs.version }}
+          cache: true
+
       - name: Run pre-commit
         uses: pre-commit/action@v3.0.1
 
@@ -229,6 +240,32 @@ jobs:
       # - name: Validate Mintlify docs
       #   working-directory: docs
       #   run: npm run validate
+
+  web:
+    timeout-minutes: 15
+    runs-on: ubuntu-latest
+    permissions:
+      contents: read  # For checkout
+
+    steps:
+      - uses: actions/checkout@v7
+
+      - name: Extract Deno version
+        id: deno-version
+        run: echo "version=$(grep -oP 'DENO_VERSION = "\K[^"]+' dimos/utils/deno.py)" >> "$GITHUB_OUTPUT"
+
+      - uses: denoland/setup-deno@v2
+        with:
+          deno-version: ${{ steps.deno-version.outputs.version }}
+          cache: true
+
+      - name: Deno fmt, lint, check, test
+        working-directory: web
+        run: |
+          deno fmt --check
+          deno lint
+          deno task check
+          deno task test
 
   tests:
     timeout-minutes: 20
@@ -729,6 +766,7 @@ jobs:
     - rust
     - md-babel
     - docs-validate
+    - web
     - tests
     - cmu-nav-natives
     - self-hosted-tests
