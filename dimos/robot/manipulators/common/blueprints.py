@@ -16,13 +16,12 @@
 
 from __future__ import annotations
 
-from collections.abc import Sequence
+from collections.abc import Mapping, Sequence
 from pathlib import Path
 from typing import Any
 
 from dimos.control.components import HardwareComponent
 from dimos.control.coordinator import ControlCoordinator, TaskConfig
-from dimos.control.tasks.cartesian_ik_task.pink_control_ik import PinkControlIKConfig
 from dimos.core.coordination.blueprints import Blueprint
 from dimos.manipulation.manipulation_module import ManipulationModule
 from dimos.manipulation.planning.spec.config import RobotModelConfig
@@ -51,78 +50,71 @@ def trajectory_task(
 
 def _resolve_control_ik(
     hardware: HardwareComponent,
-    model_path: Path,
-    control_ik: PinkControlIKConfig | None,
-    robot_model: RobotModelConfig | None,
-) -> PinkControlIKConfig:
-    resolved = control_ik or PinkControlIKConfig(robot_model=robot_model)
-    if robot_model is not None and resolved.robot_model != robot_model:
-        raise ValueError("conflicting Pink RobotModelConfig values")
-    resolved.validate_settings(len(hardware.joints), model_path)
-    return resolved
-
-
-def _serialize_control_ik(config: PinkControlIKConfig) -> dict[str, object]:
-    """Serialize solver settings without runtime-only module transport objects."""
-    payload: dict[str, object] = config.model_dump(mode="json", exclude={"robot_model"})
-    robot_model = config.robot_model
-    if robot_model is not None:
-        base_pose = robot_model.base_pose
-        robot_payload: dict[str, object] = {
-            "name": robot_model.name,
-            "model_path": str(robot_model.model_path),
-            "base_pose": {
-                "ts": float(base_pose.ts),
-                "frame_id": base_pose.frame_id,
-                "position": [base_pose.position.x, base_pose.position.y, base_pose.position.z],
-                "orientation": [
-                    base_pose.orientation.x,
-                    base_pose.orientation.y,
-                    base_pose.orientation.z,
-                    base_pose.orientation.w,
-                ],
-            },
-            "joint_names": list(robot_model.joint_names),
-            "end_effector_link": robot_model.end_effector_link,
-            "base_link": robot_model.base_link,
-            "package_paths": {name: str(path) for name, path in robot_model.package_paths.items()},
-            "joint_limits_lower": robot_model.joint_limits_lower,
-            "joint_limits_upper": robot_model.joint_limits_upper,
-            "velocity_limits": robot_model.velocity_limits,
-            "auto_convert_meshes": robot_model.auto_convert_meshes,
-            "xacro_args": dict(robot_model.xacro_args),
-            "collision_exclusion_pairs": list(robot_model.collision_exclusion_pairs),
-            "max_velocity": robot_model.max_velocity,
-            "max_acceleration": robot_model.max_acceleration,
-            "joint_name_mapping": dict(robot_model.joint_name_mapping),
-            "coordinator_task_name": robot_model.coordinator_task_name,
-            "gripper_hardware_id": robot_model.gripper_hardware_id,
-            "tf_extra_links": list(robot_model.tf_extra_links),
-            "home_joints": robot_model.home_joints,
-            "pre_grasp_offset": robot_model.pre_grasp_offset,
-        }
-        payload["robot_model"] = robot_payload
+    robot_model: RobotModelConfig,
+    control_ik: Mapping[str, object] | None,
+) -> dict[str, object]:
+    coordinator_joints = robot_model.get_coordinator_joint_names()
+    if hardware.joints != coordinator_joints:
+        raise ValueError("hardware joints must match RobotModelConfig coordinator joints")
+    payload = dict(control_ik or {})
+    payload["robot_model"] = _serialize_robot_model(robot_model)
     return payload
+
+
+def _serialize_robot_model(robot_model: RobotModelConfig) -> dict[str, object]:
+    """Serialize the authoritative robot model without runtime-only objects."""
+    base_pose = robot_model.base_pose
+    return {
+        "name": robot_model.name,
+        "model_path": str(robot_model.model_path),
+        "base_pose": {
+            "ts": float(base_pose.ts),
+            "frame_id": base_pose.frame_id,
+            "position": [base_pose.position.x, base_pose.position.y, base_pose.position.z],
+            "orientation": [
+                base_pose.orientation.x,
+                base_pose.orientation.y,
+                base_pose.orientation.z,
+                base_pose.orientation.w,
+            ],
+        },
+        "joint_names": list(robot_model.joint_names),
+        "end_effector_link": robot_model.end_effector_link,
+        "base_link": robot_model.base_link,
+        "package_paths": {name: str(path) for name, path in robot_model.package_paths.items()},
+        "joint_limits_lower": robot_model.joint_limits_lower,
+        "joint_limits_upper": robot_model.joint_limits_upper,
+        "velocity_limits": robot_model.velocity_limits,
+        "auto_convert_meshes": robot_model.auto_convert_meshes,
+        "xacro_args": dict(robot_model.xacro_args),
+        "collision_exclusion_pairs": list(robot_model.collision_exclusion_pairs),
+        "max_velocity": robot_model.max_velocity,
+        "max_acceleration": robot_model.max_acceleration,
+        "joint_name_mapping": dict(robot_model.joint_name_mapping),
+        "coordinator_task_name": robot_model.coordinator_task_name,
+        "gripper_hardware_id": robot_model.gripper_hardware_id,
+        "tf_extra_links": list(robot_model.tf_extra_links),
+        "home_joints": robot_model.home_joints,
+        "pre_grasp_offset": robot_model.pre_grasp_offset,
+    }
 
 
 def cartesian_ik_task(
     hardware: HardwareComponent,
     *,
-    model_path: Path,
     name: str = CARTESIAN_IK_TASK_NAME,
     priority: int = 10,
-    control_ik: PinkControlIKConfig | None = None,
-    robot_model: RobotModelConfig | None = None,
+    control_ik: Mapping[str, object] | None = None,
+    robot_model: RobotModelConfig,
 ) -> TaskConfig:
-    resolved_control_ik = _resolve_control_ik(hardware, model_path, control_ik, robot_model)
+    resolved_control_ik = _resolve_control_ik(hardware, robot_model, control_ik)
     return TaskConfig(
         name=name,
         type="cartesian_ik",
         joint_names=hardware.joints,
         priority=priority,
         params={
-            "model_path": model_path,
-            **({"control_ik": _serialize_control_ik(resolved_control_ik)}),
+            "control_ik": resolved_control_ik,
         },
     )
 
@@ -130,21 +122,19 @@ def cartesian_ik_task(
 def eef_twist_task(
     hardware: HardwareComponent,
     *,
-    model_path: Path,
     name: str = EEF_TWIST_TASK_NAME,
     priority: int = 10,
-    control_ik: PinkControlIKConfig | None = None,
-    robot_model: RobotModelConfig | None = None,
+    control_ik: Mapping[str, object] | None = None,
+    robot_model: RobotModelConfig,
 ) -> TaskConfig:
-    resolved_control_ik = _resolve_control_ik(hardware, model_path, control_ik, robot_model)
+    resolved_control_ik = _resolve_control_ik(hardware, robot_model, control_ik)
     return TaskConfig(
         name=name,
         type="eef_twist",
         joint_names=hardware.joints,
         priority=priority,
         params={
-            "model_path": model_path,
-            **({"control_ik": _serialize_control_ik(resolved_control_ik)}),
+            "control_ik": resolved_control_ik,
         },
     )
 

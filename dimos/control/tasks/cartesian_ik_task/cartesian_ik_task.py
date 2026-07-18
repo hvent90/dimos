@@ -22,7 +22,6 @@ Participates in joint-level arbitration.
 from __future__ import annotations
 
 from dataclasses import dataclass
-from pathlib import Path
 import threading
 from typing import TYPE_CHECKING
 
@@ -63,14 +62,12 @@ class CartesianIKTaskConfig:
 
     Attributes:
         joint_names: List of joint names this task controls (must match model DOF)
-        model_path: Path to the direct Pink URDF or Xacro model
         priority: Priority for arbitration (higher wins)
         timeout: If no command received for this many seconds, go inactive (0 = never)
         max_joint_delta_deg: Maximum allowed joint change per tick (safety limit)
     """
 
     joint_names: list[str]
-    model_path: str | Path
     control_ik: PinkControlIKConfig
     priority: int = 10
     timeout: float = 0.5
@@ -88,15 +85,11 @@ class CartesianIKTask(BaseControlTask):
     outputs JointCommandOutput and participates in joint-level arbitration.
 
     Example:
-        >>> from dimos.robot.manipulators.piper.config import (
-        ...     PIPER_MODEL_PATH,
-        ...     make_piper_model_config,
-        ... )
+        >>> from dimos.robot.manipulators.piper.config import make_piper_model_config
         >>> task = CartesianIKTask(
         ...     name="cartesian_arm",
         ...     config=CartesianIKTaskConfig(
         ...         joint_names=["joint1", "joint2", "joint3", "joint4", "joint5", "joint6"],
-        ...         model_path=PIPER_MODEL_PATH,
         ...         control_ik=PinkControlIKConfig(
         ...             robot_model=make_piper_model_config(),
         ...         ),
@@ -120,8 +113,6 @@ class CartesianIKTask(BaseControlTask):
         """
         if not config.joint_names or len(set(config.joint_names)) != len(config.joint_names):
             raise ValueError(f"CartesianIKTask '{name}' requires at least one joint")
-        if not config.model_path:
-            raise ValueError(f"CartesianIKTask '{name}' requires model_path for IK solver")
         if not np.isfinite(config.timeout) or config.timeout < 0.0:
             raise ValueError("CartesianIKTask timeout must be finite and non-negative")
         if not np.isfinite(config.max_joint_delta_deg) or config.max_joint_delta_deg <= 0.0:
@@ -132,13 +123,14 @@ class CartesianIKTask(BaseControlTask):
         self._joint_names = frozenset(config.joint_names)
         self._joint_names_list = list(config.joint_names)
         self._num_joints = len(config.joint_names)
+        expected_joints = config.control_ik.robot_model.get_coordinator_joint_names()
+        if config.joint_names != expected_joints:
+            raise ValueError(
+                f"CartesianIKTask {name}: task joints must match RobotModelConfig coordinator joints"
+            )
 
         # Create IK solver from model
-        self._ik = PinkControlIK(
-            config.model_path,
-            self._joint_names_list,
-            config.control_ik,
-        )
+        self._ik = PinkControlIK(config.control_ik)
 
         # Validate DOF matches joint names
         if self._ik.nq != self._num_joints:
@@ -154,7 +146,8 @@ class CartesianIKTask(BaseControlTask):
         self._active = False
 
         logger.info(
-            f"CartesianIKTask {name} initialized with model: {config.model_path}, "
+            f"CartesianIKTask {name} initialized with model: "
+            f"{config.control_ik.robot_model.model_path}, "
             f"joints={config.joint_names}"
         )
 
@@ -391,7 +384,6 @@ class CartesianIKTask(BaseControlTask):
 
 
 class CartesianIKTaskParams(BaseConfig):
-    model_path: str | Path
     control_ik: PinkControlIKConfig
 
 
@@ -401,7 +393,6 @@ def create_task(cfg: TaskConfig, hardware: object) -> CartesianIKTask:
         cfg.name,
         CartesianIKTaskConfig(
             joint_names=cfg.joint_names,
-            model_path=params.model_path,
             priority=cfg.priority,
             control_ik=params.control_ik,
         ),

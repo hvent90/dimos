@@ -65,7 +65,6 @@ keyboard_teleop_xarm6 = autoconnect(
         tasks=[
             eef_twist_task(
                 _xarm6_hw,
-                model_path=_xarm6_model.model_path,
                 robot_model=_xarm6_model,
             )
         ],
@@ -86,7 +85,6 @@ keyboard_teleop_xarm7 = autoconnect(
         tasks=[
             eef_twist_task(
                 _xarm7_hw,
-                model_path=_xarm7_model.model_path,
                 robot_model=_xarm7_model,
             )
         ],

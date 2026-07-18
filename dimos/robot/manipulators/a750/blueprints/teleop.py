@@ -20,7 +20,6 @@ from dimos.control.coordinator import ControlCoordinator
 from dimos.core.coordination.blueprints import autoconnect
 from dimos.manipulation.manipulation_module import ManipulationModule
 from dimos.robot.manipulators.a750.config import (
-    A750_MODEL_PATH,
     a750_hardware,
     make_a750_model_config,
 )
@@ -40,7 +39,6 @@ keyboard_teleop_a750 = autoconnect(
         tasks=[
             eef_twist_task(
                 _a750_hw,
-                model_path=A750_MODEL_PATH,
                 robot_model=_a750_model,
             )
         ],

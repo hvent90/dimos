@@ -145,8 +145,6 @@ def test_pink_prepares_xacro_with_package_paths_and_arguments(
     )
 
     PinkControlIK(
-        tmp_path / "robot.xacro",
-        ["joint1", "joint2"],
         PinkControlIKConfig(robot_model=robot),
     )
 
@@ -163,18 +161,14 @@ def test_pink_validates_named_frame_and_exact_joint_mapping(tmp_path: Path) -> N
 
     with pytest.raises(ValueError, match="end-effector frame"):
         PinkControlIK(
-            model_path,
-            ["joint1", "joint2"],
             PinkControlIKConfig(robot_model=_robot(model_path, frame="missing")),
         )
 
     mismatched = _robot(model_path).model_copy(
-        update={"joint_name_mapping": {"arm/joint1": "joint1", "arm/joint2": "joint2"}}
+        update={"joint_name_mapping": {"joint1": "missing", "joint2": "joint2"}}
     )
-    with pytest.raises(ValueError, match="exactly match"):
+    with pytest.raises(ValueError, match="unknown joint"):
         PinkControlIK(
-            model_path,
-            ["joint1", "joint2"],
             PinkControlIKConfig(robot_model=mismatched),
         )
 
@@ -184,8 +178,6 @@ def test_pink_reanchors_measured_state_and_runs_one_frame_task_step(
 ) -> None:
     model_path = _write_urdf(tmp_path)
     backend = PinkControlIK(
-        model_path,
-        ["joint1", "joint2"],
         PinkControlIKConfig(robot_model=_robot(model_path)),
     )
     measured = np.array([0.3, 0.1])
@@ -205,7 +197,8 @@ def test_pink_reanchors_measured_state_and_runs_one_frame_task_step(
 
     assert np.array_equal(result.positions, measured)
     assert len(calls) == 1
-    assert len(calls[0][1]) == 1
+    assert len(calls[0][1]) == 2
+    assert np.array_equal(calls[0][1][1].target_q, backend._full_q(measured))
     assert calls[0][2] == 0.01
 
 
@@ -214,8 +207,6 @@ def test_pink_backend_clamps_dt_from_backend_configuration(
 ) -> None:
     model_path = _write_urdf(tmp_path)
     backend = PinkControlIK(
-        model_path,
-        ["joint1", "joint2"],
         PinkControlIKConfig(robot_model=_robot(model_path), min_dt=0.01, max_dt=0.02),
     )
     calls: list[float] = []
@@ -235,14 +226,32 @@ def test_pink_backend_clamps_dt_from_backend_configuration(
     assert calls == [0.02]
 
 
+def test_pink_posture_task_can_be_disabled(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+    model_path = _write_urdf(tmp_path)
+    backend = PinkControlIK(PinkControlIKConfig(robot_model=_robot(model_path), posture_cost=0.0))
+    calls: list[list[object]] = []
+
+    def solve(
+        configuration: object, tasks: list[object], dt: float, **kwargs: object
+    ) -> np.ndarray:
+        calls.append(tasks)
+        return np.zeros(backend._model.nv)
+
+    monkeypatch.setattr(
+        "dimos.control.tasks.cartesian_ik_task.pink_control_ik.pink.solve_ik", solve
+    )
+    measured = np.array([0.3, 0.1])
+    backend.solve(backend.forward_kinematics(measured), measured, 0.01)
+
+    assert calls and len(calls[0]) == 1
+
+
 def test_pink_rejects_uncontrolled_end_effector_chain_without_reference(
     tmp_path: Path,
 ) -> None:
     model_path = _write_urdf(tmp_path, "uncontrolled.urdf", _UNCONTROLLED_URDF)
     with pytest.raises(ValueError, match="reference_q.*uncontrolled joint"):
         PinkControlIK(
-            model_path,
-            ["joint1", "joint2"],
             PinkControlIKConfig(robot_model=_robot(model_path)),
         )
 
@@ -253,8 +262,6 @@ def test_continuous_joint_scalar_limits_fail_with_actionable_diagnostic(tmp_path
 
     with pytest.raises(ValueError, match="continuous joints.*tangent-space"):
         PinkControlIK(
-            model_path,
-            ["joint1"],
             PinkControlIKConfig(robot_model=robot),
         )
 
@@ -262,8 +269,6 @@ def test_continuous_joint_scalar_limits_fail_with_actionable_diagnostic(tmp_path
         update={"joint_limits_lower": None, "joint_limits_upper": None}
     )
     backend = PinkControlIK(
-        model_path,
-        ["joint1"],
         PinkControlIKConfig(robot_model=roundtrip_robot),
     )
     angle = np.array([3.0])
@@ -278,8 +283,6 @@ def test_pink_applies_position_velocity_limits_and_finite_output(tmp_path: Path)
         update={"joint_limits_lower": [-0.5, -0.25], "joint_limits_upper": [0.5, 0.25]}
     )
     backend = PinkControlIK(
-        model_path,
-        ["joint1", "joint2"],
         PinkControlIKConfig(robot_model=robot, max_velocity=0.2),
     )
 
@@ -299,9 +302,7 @@ def test_pink_clamps_tiny_position_limit_overshoot(
     robot = _robot(model_path).model_copy(
         update={"joint_limits_lower": [-1.22, -0.25], "joint_limits_upper": [1.22, 0.25]}
     )
-    backend = PinkControlIK(
-        model_path, ["joint1", "joint2"], PinkControlIKConfig(robot_model=robot)
-    )
+    backend = PinkControlIK(PinkControlIKConfig(robot_model=robot))
     measured = np.array([1.22, 0.1])
 
     def solve(
@@ -325,9 +326,7 @@ def test_pink_rejects_material_position_limit_violation(
     robot = _robot(model_path).model_copy(
         update={"joint_limits_lower": [-1.22, -0.25], "joint_limits_upper": [1.22, 0.25]}
     )
-    backend = PinkControlIK(
-        model_path, ["joint1", "joint2"], PinkControlIKConfig(robot_model=robot)
-    )
+    backend = PinkControlIK(PinkControlIKConfig(robot_model=robot))
     measured = np.array([1.22, 0.1])
 
     def solve(
@@ -354,8 +353,11 @@ def test_cartesian_pipeline_bounds_dt_and_holds_on_expected_error(
         "cartesian",
         CartesianIKTaskConfig(
             joint_names=["j1", "j2"],
-            model_path="unused.urdf",
-            control_ik=PinkControlIKConfig(robot_model=_robot(Path("unused.urdf"))),
+            control_ik=PinkControlIKConfig(
+                robot_model=_robot(Path("unused.urdf")).model_copy(
+                    update={"joint_names": ["j1", "j2"]}
+                )
+            ),
             timeout=0.2,
         ),
     )
@@ -382,7 +384,7 @@ def test_factory_rejects_invalid_default_pink_configuration() -> None:
         type="cartesian_ik",
         joint_names=["j1", "j2"],
         priority=10,
-        params={"model_path": "unused.urdf"},
+        params={},
     )
 
     with pytest.raises(ValueError, match="control_ik"):

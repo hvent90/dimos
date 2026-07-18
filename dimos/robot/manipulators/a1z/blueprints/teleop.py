@@ -36,7 +36,6 @@ keyboard_teleop_a1z = autoconnect(
         tasks=[
             eef_twist_task(
                 _a1z_keyboard_hw,
-                model_path=_a1z_model.model_path,
                 robot_model=_a1z_model,
             )
         ],

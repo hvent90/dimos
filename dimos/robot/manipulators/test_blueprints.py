@@ -12,7 +12,6 @@
 # See the License for the specific language governing permissions and
 # limitations under the License.
 
-from pathlib import Path
 from typing import cast
 
 import pytest
@@ -45,7 +44,11 @@ from dimos.robot.manipulators.xarm.blueprints.teleop import (
     keyboard_teleop_xarm6,
     keyboard_teleop_xarm7,
 )
-from dimos.robot.manipulators.xarm.config import make_xarm7_model_config, make_xarm_hardware
+from dimos.robot.manipulators.xarm.config import (
+    make_xarm6_model_config,
+    make_xarm7_model_config,
+    make_xarm_hardware,
+)
 from dimos.teleop.keyboard.keyboard_teleop_module import KeyboardTeleopModule
 
 
@@ -91,11 +94,13 @@ def test_xarm_planner_blueprints_default_to_no_visualization() -> None:
         assert isinstance(config.visualization, NoManipulationVisualizationConfig)
 
 
-def test_eef_twist_task_helper_requires_pink_robot_model() -> None:
+def test_eef_twist_task_helper_serializes_authoritative_robot_model() -> None:
     hardware = make_xarm_hardware("arm", 6, adapter_type="mock")
 
-    with pytest.raises(ValueError, match="robot_model"):
-        eef_twist_task(hardware, model_path=Path("fake.urdf"))
+    task = eef_twist_task(hardware, robot_model=make_xarm6_model_config(add_gripper=False))
+
+    assert "model_path" not in task.params
+    assert task.params["control_ik"]["robot_model"]["model_path"]
 
 
 @pytest.mark.parametrize(
@@ -142,7 +147,7 @@ def test_shipped_eef_twist_blueprints_use_pink_with_named_models(
 
     assert control_ik["robot_model"]["end_effector_link"]
     assert "ee_joint_id" not in task.params
-    assert not str(task.params["model_path"]).endswith((".xml", ".mjcf"))
+    assert not str(control_ik["robot_model"]["model_path"]).endswith((".xml", ".mjcf"))
 
 
 def test_piper_pink_task_uses_xacro_and_gripper_base() -> None:
@@ -158,7 +163,7 @@ def test_piper_pink_task_uses_xacro_and_gripper_base() -> None:
             if task.type in ("eef_twist", "cartesian_ik")
         )
         control_ik = task.params["control_ik"]
-        assert task.params["model_path"] == PIPER_MODEL_PATH
+        assert control_ik["robot_model"]["model_path"] == str(PIPER_MODEL_PATH)
         assert control_ik["robot_model"]["model_path"] == str(PIPER_MODEL_PATH)
         assert control_ik["robot_model"]["end_effector_link"] == "gripper_base"
         assert "ee_joint_id" not in task.params

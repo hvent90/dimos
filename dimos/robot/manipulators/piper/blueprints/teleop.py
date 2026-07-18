@@ -29,7 +29,6 @@ from dimos.robot.manipulators.common.blueprints import (
 from dimos.robot.manipulators.common.sim import mujoco_if_sim
 from dimos.robot.manipulators.piper.config import (
     PIPER_FK_MODEL,
-    PIPER_MODEL_PATH,
     PIPER_SIM_PATH,
     make_piper_hardware,
     make_piper_model_config,
@@ -56,7 +55,6 @@ keyboard_teleop_piper = autoconnect(
         tasks=[
             eef_twist_task(
                 _piper_keyboard_hw,
-                model_path=PIPER_MODEL_PATH,
                 robot_model=_piper_model,
             )
         ],
@@ -77,7 +75,6 @@ coordinator_cartesian_ik_mock = ControlCoordinator.blueprint(
     tasks=[
         cartesian_ik_task(
             _piper_mock_cartesian_hw,
-            model_path=PIPER_MODEL_PATH,
             robot_model=_piper_model,
         )
     ],
@@ -118,7 +115,6 @@ coordinator_cartesian_ik_piper = ControlCoordinator.blueprint(
     tasks=[
         cartesian_ik_task(
             _piper_cartesian_hw,
-            model_path=PIPER_MODEL_PATH,
             robot_model=_piper_model,
         )
     ],

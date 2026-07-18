@@ -583,25 +583,19 @@ frame, and `joint_name_mapping` maps coordinator joints to URDF joints. Pink
 validates the prepared model, named frame, and exact ordered joint mapping at
 startup.
 
-The common helper passes that typed configuration to Pink:
+The common helper passes that typed configuration to Pink and derives the model
+path and coordinator joint order from it:
 
 ```python skip
-from dimos.control.tasks.cartesian_ik_task.pink_control_ik import PinkControlIKConfig
 from dimos.robot.manipulators.common.blueprints import cartesian_ik_task, eef_twist_task
-
-control_ik = PinkControlIKConfig(robot_model=robot_model)
 
 cartesian_task = cartesian_ik_task(
     hardware,
-    model_path=robot_model.model_path,
     robot_model=robot_model,
-    control_ik=control_ik,
 )
 twist_task = eef_twist_task(
     hardware,
-    model_path=robot_model.model_path,
     robot_model=robot_model,
-    control_ik=control_ik,
 )
 ```
 

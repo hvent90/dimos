@@ -79,7 +79,6 @@ def task(fake_ik: FakeIK) -> EEFTwistTask:
         "eef",
         EEFTwistTaskConfig(
             joint_names=["arm/joint1", "arm/joint2", "arm/joint3"],
-            model_path="fake.urdf",
             control_ik=PinkControlIKConfig(
                 robot_model=RobotModelConfig(
                     name="fake",

@@ -17,7 +17,6 @@
 from __future__ import annotations
 
 from dataclasses import dataclass
-from pathlib import Path
 import threading
 from typing import TYPE_CHECKING
 
@@ -127,7 +126,6 @@ class EEFTwistTask(CartesianIKTask):
 
 
 class EEFTwistTaskParams(BaseConfig):
-    model_path: str | Path
     timeout: float = 0.3
     max_joint_delta_deg: float = 15.0
     control_ik: PinkControlIKConfig
@@ -139,7 +137,6 @@ def create_task(cfg: TaskConfig, hardware: object) -> EEFTwistTask:
         cfg.name,
         EEFTwistTaskConfig(
             joint_names=cfg.joint_names,
-            model_path=params.model_path,
             priority=cfg.priority,
             timeout=params.timeout,
             max_joint_delta_deg=params.max_joint_delta_deg,

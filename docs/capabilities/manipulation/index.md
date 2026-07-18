@@ -131,7 +131,9 @@ frames, mismatched mappings, or an invalid prepared model fail initialization.
 
 Each control tick starts from measured joints, clamps `dt`, updates one Pink
 `FrameTask`, solves and integrates one local differential-IK step, and applies
-position and velocity limits. Non-finite or unsafe output is rejected. Expected
+position and velocity limits. A configurable `posture_cost` (default `1e-3`)
+regularizes only the null space toward the current measured configuration and
+can be disabled with zero. Non-finite or unsafe output is rejected. Expected
 runtime solve errors produce a bounded safe hold instead of an invalid command.
 
 The control backend is separate from manipulation planning. It does not use
@@ -139,19 +141,15 @@ The control backend is separate from manipulation planning. It does not use
 avoidance claim. `WorldSpec` and its Pink/Drake backends remain responsible for
 planning behavior.
 
-For a custom robot, the current helper API passes the typed model configuration
-to Pink without a numeric EEF ID:
+For a custom robot, the helper API derives the Pink model and joint mapping from
+the typed model configuration:
 
 ```python skip
-from dimos.control.tasks.cartesian_ik_task.pink_control_ik import PinkControlIKConfig
 from dimos.robot.manipulators.common.blueprints import cartesian_ik_task
 
-control_ik = PinkControlIKConfig(robot_model=robot_model)
 task = cartesian_ik_task(
     hardware,
-    model_path=robot_model.model_path,
     robot_model=robot_model,
-    control_ik=control_ik,
 )
 ```
 

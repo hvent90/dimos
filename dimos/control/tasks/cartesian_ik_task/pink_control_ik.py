@@ -25,7 +25,7 @@ from numpy.typing import NDArray
 import pink
 from pink.limits import ConfigurationLimit, VelocityLimit
 import pinocchio
-from pydantic import Field, field_validator
+from pydantic import Field, field_validator, model_validator
 
 from dimos.manipulation.planning.spec.config import RobotModelConfig
 from dimos.manipulation.planning.utils.mesh_utils import prepare_urdf_for_drake
@@ -41,13 +41,14 @@ class PinkControlIKConfig(BaseConfig):
 
     robot_model: RobotModelConfig
     solver: str = "proxqp"
-    max_velocity: float = 10.0
-    lm_damping: float = 1e-4
-    task_gain: float = 1.0
-    position_cost: float = 1.0
-    orientation_cost: float = 1.0
-    min_dt: float = 1e-4
-    max_dt: float = 0.05
+    max_velocity: float = Field(10.0, gt=0.0)
+    lm_damping: float = Field(1e-4, gt=0.0)
+    task_gain: float = Field(1.0, gt=0.0)
+    position_cost: float = Field(1.0, ge=0.0)
+    orientation_cost: float = Field(1.0, ge=0.0)
+    posture_cost: float = Field(1e-3, ge=0.0)
+    min_dt: float = Field(1e-4, gt=0.0)
+    max_dt: float = Field(0.05, gt=0.0)
     reference_q: list[float] | None = None
     qpsolver_options: dict[str, float] = Field(default_factory=dict)
 
@@ -73,39 +74,55 @@ class PinkControlIKConfig(BaseConfig):
             )
         return RobotModelConfig.model_validate(payload)
 
-    def validate_settings(
-        self,
-        joint_count: int,
-        model_path: str | Path | None = None,
-    ) -> None:
-        numeric = (
-            self.max_velocity,
-            self.lm_damping,
-            self.task_gain,
-            self.position_cost,
-            self.orientation_cost,
-            self.min_dt,
-            self.max_dt,
-        )
-        if not all(np.isfinite(value) for value in numeric):
+    @field_validator(
+        "max_velocity",
+        "lm_damping",
+        "task_gain",
+        "position_cost",
+        "orientation_cost",
+        "posture_cost",
+        "min_dt",
+        "max_dt",
+    )
+    @classmethod
+    def _finite_numeric_setting(cls, value: float) -> float:
+        if not np.isfinite(value):
             raise ValueError("control IK numeric settings must be finite")
-        if self.max_velocity <= 0.0 or self.lm_damping <= 0.0 or self.task_gain <= 0.0:
-            raise ValueError("control IK velocity, damping, and gain must be positive")
-        if self.position_cost < 0.0 or self.orientation_cost < 0.0:
-            raise ValueError("control IK task costs must not be negative")
-        if self.min_dt <= 0.0 or self.max_dt < self.min_dt:
-            raise ValueError("control IK dt bounds must be positive and ordered")
-        if any(not np.isfinite(value) for value in self.qpsolver_options.values()):
+        return value
+
+    @field_validator("qpsolver_options")
+    @classmethod
+    def _finite_qpsolver_options(cls, value: dict[str, float]) -> dict[str, float]:
+        if any(not np.isfinite(option) for option in value.values()):
             raise ValueError("control IK QP options must be finite")
-        if not self.robot_model.end_effector_link:
+        return value
+
+    @model_validator(mode="after")
+    def _validate_robot_settings(self) -> PinkControlIKConfig:
+        robot = self.robot_model
+        if not robot.end_effector_link:
             raise ValueError("Pink control requires a named end-effector frame")
-        if len(self.robot_model.joint_names) != joint_count:
-            raise ValueError("RobotModelConfig and control task joint counts differ")
-        if (
-            model_path is not None
-            and Path(self.robot_model.model_path).resolve() != Path(model_path).resolve()
+        if self.max_dt < self.min_dt:
+            raise ValueError("control IK dt bounds must be ordered")
+        joint_count = len(robot.get_coordinator_joint_names())
+        if (robot.joint_limits_lower is None) != (robot.joint_limits_upper is None):
+            raise ValueError("both configured joint limit bounds are required")
+        for bounds in (robot.joint_limits_lower, robot.joint_limits_upper, robot.velocity_limits):
+            if bounds is not None and len(bounds) != joint_count:
+                raise ValueError("RobotModelConfig limits must match coordinator joints")
+        if robot.joint_limits_lower is not None and robot.joint_limits_upper is not None:
+            if any(
+                not np.isfinite(lower) or not np.isfinite(upper) or lower >= upper
+                for lower, upper in zip(
+                    robot.joint_limits_lower, robot.joint_limits_upper, strict=True
+                )
+            ):
+                raise ValueError("configured joint limits must be finite and ordered")
+        if robot.velocity_limits is not None and any(
+            not np.isfinite(limit) or limit <= 0.0 for limit in robot.velocity_limits
         ):
-            raise ValueError("Pink RobotModelConfig must use the authoritative model path")
+            raise ValueError("configured velocity limits are invalid")
+        return self
 
 
 @dataclass(frozen=True)
@@ -123,17 +140,11 @@ class PinkControlIK:
 
     def __init__(
         self,
-        model_path: str | Path,
-        joint_names: list[str],
         config: PinkControlIKConfig,
     ) -> None:
         self._config = config
-        self._joint_names = list(joint_names)
-        self._config.validate_settings(len(self._joint_names), model_path)
-
         robot = config.robot_model
-        if robot is None:  # guarded by validate_settings; retained for narrowing
-            raise ValueError("Pink control requires a RobotModelConfig")
+        self._joint_names = robot.get_coordinator_joint_names()
         prepared_path = Path(
             prepare_urdf_for_drake(
                 robot.model_path,
@@ -151,7 +162,7 @@ class PinkControlIK:
         self._ee_frame_id = self._validate_frame(robot.end_effector_link)
         self._apply_limits(robot)
         full_reference_q = self._build_reference_q()
-        controlled_joint_ids = set(self._controlled_joint_ids)
+        controlled_joint_ids = self._controlled_joint_ids
         locked_joint_ids = [
             joint_id
             for joint_id in range(1, len(self._model.joints))
@@ -183,6 +194,9 @@ class PinkControlIK:
             orientation_cost=config.orientation_cost,
             lm_damping=config.lm_damping,
             gain=config.task_gain,
+        )
+        self._posture_task = (
+            pink.tasks.PostureTask(cost=config.posture_cost) if config.posture_cost > 0.0 else None
         )
 
     @property
@@ -216,9 +230,13 @@ class PinkControlIK:
         try:
             configuration.update(self._full_q(measured))
             frame_task.set_target(target)
+            tasks: list[object] = [frame_task]
+            if self._posture_task is not None:
+                self._posture_task.set_target(configuration.q.copy())
+                tasks.append(self._posture_task)
             velocity = pink.solve_ik(
                 configuration,
-                [frame_task],
+                tasks,
                 dt,
                 solver=self._config.solver,
                 damping=self._config.lm_damping,
@@ -302,7 +320,7 @@ class PinkControlIK:
         indices: list[int] = []
         velocity_indices: list[int] = []
         self._q_widths: list[int] = []
-        self._controlled_joint_ids: list[int] = []
+        self._controlled_joint_ids: set[int] = set()
         for urdf_name in (robot.get_urdf_joint_name(name) for name in coordinator_names):
             if not self._model.existJointName(urdf_name):
                 raise ValueError(f"control joint mapping references unknown joint: {urdf_name}")
@@ -315,7 +333,7 @@ class PinkControlIK:
             indices.append(int(joint.idx_q))
             velocity_indices.append(int(joint.idx_v))
             self._q_widths.append(int(joint.nq))
-            self._controlled_joint_ids.append(joint_id)
+            self._controlled_joint_ids.add(joint_id)
         return indices, velocity_indices
 
     def _build_reference_q(self, use_config_reference: bool = True) -> NDArray[np.float64]:

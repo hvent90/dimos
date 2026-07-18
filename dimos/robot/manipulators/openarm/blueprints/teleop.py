@@ -37,7 +37,6 @@ keyboard_teleop_openarm_mock = autoconnect(
         tasks=[
             eef_twist_task(
                 _teleop_hw,
-                model_path=_openarm_model.model_path,
                 robot_model=_openarm_model,
             )
         ],
@@ -57,7 +56,6 @@ keyboard_teleop_openarm = autoconnect(
         tasks=[
             eef_twist_task(
                 _teleop_real_hw,
-                model_path=_openarm_model.model_path,
                 robot_model=_openarm_model,
             )
         ],
