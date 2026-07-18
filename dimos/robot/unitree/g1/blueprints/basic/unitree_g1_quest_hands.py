@@ -14,15 +14,16 @@
 
 """Unitree G1 GR00T WBC + Quest hands-only teleop.
 
-The groot WBC stack plus the Quest module, nothing else: hold both index
-triggers and the robot's arms track your hands through the dual-arm IK
-task (joint targets flow out the coordinator's joint_command JointState
-stream). Thumbstick locomotion is disconnected — the robot balances in
-place; the only motion is the arms.
+The groot WBC stack plus the Quest module: hold both index triggers and
+the robot's arms track your hands through the dual-arm IK task (joint
+targets flow out the coordinator's joint_command JointState stream).
+Quest thumbstick locomotion is disconnected — the robot balances in
+place; the only headset-driven motion is the arms.
 
-Real hardware boots unarmed + dry-run and this blueprint has no arming UI;
-use ``unitree-g1-teleop-demo`` (WASD panel, Enter to arm) when driving the
-real robot. In sim the policy auto-arms and this runs standalone.
+The pygame panel is included as the operator console (real hardware boots
+unarmed + dry-run): Enter = arm (10 s ramp), K = disarm, Space = e-stop.
+Its WASD keys can still walk the robot, but that stays with the operator
+at the keyboard, not the headset.
 
 Usage:
     dimos --simulation mujoco run unitree-g1-quest-hands  # sim
@@ -33,16 +34,19 @@ from __future__ import annotations
 
 from dimos.core.coordination.blueprints import autoconnect
 from dimos.robot.unitree.g1.blueprints.basic.unitree_g1_groot_wbc import unitree_g1_groot_wbc
+from dimos.robot.unitree.g1.g1_groot_wbc_teleop import G1GrootWbcTeleop
 from dimos.robot.unitree.g1.quest_teleop import G1QuestTeleopModule
 
 unitree_g1_quest_hands = autoconnect(
     unitree_g1_groot_wbc,
     G1QuestTeleopModule.blueprint(),
+    G1GrootWbcTeleop.blueprint(),
 ).remappings(
     [
         (G1QuestTeleopModule, "left_controller_output", "coordinator_cartesian_command"),
         (G1QuestTeleopModule, "right_controller_output", "coordinator_cartesian_command"),
         # Park the thumbstick twists on an unconsumed stream: hands only.
         (G1QuestTeleopModule, "cmd_vel", "quest_cmd_vel_unused"),
+        (G1GrootWbcTeleop, "cmd_vel", "tele_cmd_vel"),
     ]
 )
