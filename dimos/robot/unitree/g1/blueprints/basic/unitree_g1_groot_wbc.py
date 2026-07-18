@@ -298,8 +298,6 @@ if global_config.simulation == "mujoco":
         (ControlCoordinator, "twist_command", "cmd_vel"),
     ]
 else:
-    from dimos.hardware.sensors.lidar.pointlio.module import PointLio
-    from dimos.mapping.ray_tracing.module import RayTracingVoxelMap
     from dimos.robot.unitree.g1.wholebody_connection import G1WholeBodyConnection
 
     # Real-hw backend: DDS connection module + transport_lcm adapter.
@@ -327,32 +325,12 @@ else:
         auto_start=True,
         params={"default_positions": ARM_DEFAULT_POSE},
     )
-    # Same nav middle as unitree-g1-nav-simple, fed by Point-LIO from the
-    # MID-360, executed through the coordinator's twist_command.
-    _nav_stack = autoconnect(
-        PointLio.blueprint(),
-        RayTracingVoxelMap.blueprint(
-            voxel_size=_G1_REAL_NAV_VOXEL_RESOLUTION,
-            emit_every=0,  # no local_map consumer here
-            global_emit_every=4,  # ~1 Hz global map; also paces the costmap
-            # Clearing matched to go2 nav_3d.
-            max_health=10,
-            graze_cos=0.85,
-        ),
-        CostMapper.blueprint(
-            config=HeightCostConfig(
-                resolution=_G1_REAL_NAV_VOXEL_RESOLUTION,
-                can_pass_under=G1.height_clearance + _G1_NAV_OVERHEAD_SAFETY_MARGIN,
-                can_climb=_G1_NAV_MAX_STEP_HEIGHT,
-            ),
-            initial_safe_radius_meters=G1.width_clearance + _G1_NAV_SAFE_RADIUS_MARGIN,
-        ),
-        ReplanningAStarPlanner.blueprint(
-            robot_width=G1.width_clearance,
-            robot_rotation_diameter=_G1_NAV_ROTATION_DIAMETER,
-        ),
-        MovementManager.blueprint(),
-    )
+    # Demo branch: the nav middle (PointLio + RayTracingVoxelMap + costmap +
+    # planner) is dropped on real hardware — pointlio_native fails its nix
+    # build on this base and tears the whole stack down at launch (same
+    # workaround as Krishna's b6eec195d). Teleop only needs MovementManager
+    # for tele_cmd_vel arbitration.
+    _nav_stack = MovementManager.blueprint()
     _remappings = [(ControlCoordinator, "twist_command", "cmd_vel")]
 
 

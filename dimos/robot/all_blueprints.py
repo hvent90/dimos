@@ -112,6 +112,7 @@ all_blueprints = {
     "unitree-g1-nav-sim": "dimos.robot.unitree.g1.blueprints.navigation.unitree_g1_nav_sim:unitree_g1_nav_sim",
     "unitree-g1-nav-simple": "dimos.robot.unitree.g1.blueprints.navigation.unitree_g1_nav_simple:unitree_g1_nav_simple",
     "unitree-g1-primitive-no-nav": "dimos.robot.unitree.g1.blueprints.primitive.unitree_g1_primitive_no_nav:unitree_g1_primitive_no_nav",
+    "unitree-g1-quest-hands": "dimos.robot.unitree.g1.blueprints.basic.unitree_g1_quest_hands:unitree_g1_quest_hands",
     "unitree-g1-shm": "dimos.robot.unitree.g1.blueprints.perceptive.unitree_g1_shm:unitree_g1_shm",
     "unitree-g1-sim": "dimos.robot.unitree.g1.blueprints.perceptive.unitree_g1_sim:unitree_g1_sim",
     "unitree-g1-teleop": "dimos.robot.unitree.g1.blueprints.basic.unitree_g1_teleop:unitree_g1_teleop",
