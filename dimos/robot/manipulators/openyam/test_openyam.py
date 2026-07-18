@@ -25,18 +25,14 @@ from dimos.manipulation.manipulation_module import ManipulationModule, Manipulat
 from dimos.manipulation.planning.spec.config import RobotModelConfig
 from dimos.manipulation.planning.utils.mesh_utils import clear_cache, prepare_urdf_for_drake
 from dimos.robot.manipulators.openyam.blueprints.basic import (
-    coordinator_openyam_bare,
-    coordinator_openyam_gripper,
-    openyam_bare_planner_coordinator,
-    openyam_gripper_planner_coordinator,
+    coordinator_openyam,
+    openyam_planner_coordinator,
 )
 from dimos.robot.manipulators.openyam.blueprints.teleop import (
-    keyboard_teleop_openyam_bare,
-    keyboard_teleop_openyam_gripper,
+    keyboard_teleop_openyam,
 )
 from dimos.robot.manipulators.openyam.config import (
     OPENYAM_DOF,
-    OPENYAM_FLANGE_MODEL_PATH,
     OPENYAM_MODEL_PATH,
     OPENYAM_PACKAGE_PATHS,
     make_openyam_hardware,
@@ -86,25 +82,23 @@ _EXPECTED_VISUAL_RPY = {
 }
 
 
-@pytest.mark.parametrize("has_gripper", [False, True], ids=["bare", "gripper"])
-def test_openyam_model_config_has_expected_links_and_mapping(has_gripper: bool) -> None:
-    config = make_openyam_model_config(name="arm", has_gripper=has_gripper)
-    urdf_prefix = "yam_" if has_gripper else ""
+def test_openyam_model_config_has_expected_links_and_mapping() -> None:
+    config = make_openyam_model_config(name="arm")
 
-    assert config.joint_names == [f"{urdf_prefix}joint{i}" for i in range(1, OPENYAM_DOF + 1)]
+    assert config.joint_names == [f"yam_joint{i}" for i in range(1, OPENYAM_DOF + 1)]
     assert config.joint_name_mapping == {
-        f"arm/joint{i}": f"{urdf_prefix}joint{i}" for i in range(1, OPENYAM_DOF + 1)
+        f"arm/joint{i}": f"yam_joint{i}" for i in range(1, OPENYAM_DOF + 1)
     }
-    assert config.base_link == ("yam_base_link" if has_gripper else "base_link")
-    assert config.end_effector_link == ("yam_hand_tcp" if has_gripper else "link_6")
+    assert config.base_link == "yam_base_link"
+    assert config.end_effector_link == "yam_hand_tcp"
     assert list(config.package_paths) == list(OPENYAM_PACKAGE_PATHS)
-    assert config.model_path is (OPENYAM_MODEL_PATH if has_gripper else OPENYAM_FLANGE_MODEL_PATH)
-    assert config.gripper_hardware_id == ("arm" if has_gripper else None)
+    assert config.model_path is OPENYAM_MODEL_PATH
+    assert config.gripper_hardware_id == "arm"
 
 
-@pytest.mark.parametrize("has_gripper", [False, True], ids=["bare", "gripper"])
-def test_openyam_assets_prepare_and_parse_from_lfs_archive(has_gripper: bool) -> None:
-    config = make_openyam_model_config(name="arm", has_gripper=has_gripper)
+@pytest.mark.self_hosted
+def test_openyam_assets_prepare_and_parse_from_lfs_archive() -> None:
+    config = make_openyam_model_config(name="arm")
 
     prepared_path = prepare_urdf_for_drake(
         config.model_path,
@@ -123,16 +117,14 @@ def test_openyam_assets_prepare_and_parse_from_lfs_archive(has_gripper: bool) ->
     assert len(config.joint_name_mapping) == OPENYAM_DOF
 
 
-@pytest.mark.parametrize("has_gripper", [False, True], ids=["bare", "gripper"])
-def test_openyam_visual_origins_match_mujoco_without_changing_arm_metadata(
-    has_gripper: bool,
-) -> None:
-    config = make_openyam_model_config(name="arm", has_gripper=has_gripper)
+@pytest.mark.self_hosted
+def test_openyam_visual_origins_match_mujoco_without_changing_arm_metadata() -> None:
+    config = make_openyam_model_config(name="arm")
     archive_root = _archive_model_root(config)
     clear_cache()
     prepared_path = prepare_urdf_for_drake(config.model_path, package_paths=config.package_paths)
     prepared_root = ET.parse(prepared_path).getroot()
-    link_prefix = "yam_" if has_gripper else ""
+    link_prefix = "yam_"
 
     for link_number, expected_rpy in _EXPECTED_VISUAL_RPY.items():
         link_name = _arm_link_name(link_prefix, link_number)
@@ -161,13 +153,12 @@ def test_openyam_visual_origins_match_mujoco_without_changing_arm_metadata(
         )
 
 
-@pytest.mark.parametrize("has_gripper", [False, True], ids=["bare", "gripper"])
-def test_openyam_mock_hardware_has_conditional_gripper(has_gripper: bool) -> None:
-    hardware = make_openyam_hardware("arm", has_gripper=has_gripper)
+def test_openyam_mock_hardware_has_gripper() -> None:
+    hardware = make_openyam_hardware("arm")
 
     assert hardware.adapter_type == "mock"
     assert hardware.joints == [f"arm/joint{i}" for i in range(1, OPENYAM_DOF + 1)]
-    assert hardware.gripper_joints == (["arm/gripper"] if has_gripper else [])
+    assert hardware.gripper_joints == ["arm/gripper"]
 
 
 def test_openyam_mock_adapter_set_get_behavior() -> None:
@@ -182,44 +173,27 @@ def test_openyam_mock_adapter_set_get_behavior() -> None:
     assert adapter.read_gripper_position() == 0.25
 
 
-@pytest.mark.parametrize(
-    "blueprint,has_gripper",
-    [
-        (openyam_bare_planner_coordinator, False),
-        (openyam_gripper_planner_coordinator, True),
-    ],
-    ids=["bare", "gripper"],
-)
-def test_openyam_planner_blueprints_preserve_model_config(
-    blueprint: Blueprint, has_gripper: bool
-) -> None:
+def test_openyam_planner_blueprint_preserves_model_config() -> None:
+    blueprint = openyam_planner_coordinator
     kwargs = _module_kwargs(blueprint, ManipulationModule)
     config = ManipulationModuleConfig(**kwargs).robots[0]
 
-    assert config == make_openyam_model_config(name="arm", has_gripper=has_gripper)
+    assert config == make_openyam_model_config(name="arm")
     task = _coordinator_kwargs(blueprint)["tasks"][0]
     assert task.type == "trajectory"
     assert task.joint_names == [f"arm/joint{i}" for i in range(1, OPENYAM_DOF + 1)]
 
 
-@pytest.mark.parametrize(
-    "blueprint",
-    [coordinator_openyam_bare, coordinator_openyam_gripper],
-    ids=["bare", "gripper"],
-)
-def test_openyam_coordinator_blueprints_use_six_arm_joints(blueprint: Blueprint) -> None:
+def test_openyam_coordinator_blueprint_uses_six_arm_joints() -> None:
+    blueprint = coordinator_openyam
     kwargs = _coordinator_kwargs(blueprint)
     assert len(kwargs["hardware"]) == 1
     assert len(kwargs["hardware"][0].joints) == OPENYAM_DOF
     assert kwargs["tasks"][0].joint_names == kwargs["hardware"][0].joints
 
 
-@pytest.mark.parametrize(
-    "blueprint",
-    [keyboard_teleop_openyam_bare, keyboard_teleop_openyam_gripper],
-    ids=["bare", "gripper"],
-)
-def test_openyam_teleop_blueprints_construct_with_eef_twist(blueprint: Blueprint) -> None:
+def test_openyam_teleop_blueprint_constructs_with_eef_twist() -> None:
+    blueprint = keyboard_teleop_openyam
     task = next(
         task for task in _coordinator_kwargs(blueprint)["tasks"] if task.type == "eef_twist"
     )

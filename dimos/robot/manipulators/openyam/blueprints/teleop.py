@@ -22,48 +22,28 @@ from dimos.manipulation.manipulation_module import ManipulationModule
 from dimos.robot.manipulators.common.blueprints import eef_twist_task
 from dimos.robot.manipulators.openyam.config import (
     OPENYAM_DOF,
-    OPENYAM_FK_MODEL,
+    OPENYAM_MODEL_PATH,
     make_openyam_hardware,
     make_openyam_model_config,
 )
 from dimos.teleop.keyboard.keyboard_teleop_module import KeyboardTeleopModule
 
-_openyam_bare_keyboard_hw = make_openyam_hardware("arm", has_gripper=False)
+_openyam_keyboard_hw = make_openyam_hardware("arm")
 
-keyboard_teleop_openyam_bare = autoconnect(
+keyboard_teleop_openyam = autoconnect(
     KeyboardTeleopModule.blueprint(),
     ControlCoordinator.blueprint(
-        hardware=[_openyam_bare_keyboard_hw],
+        hardware=[_openyam_keyboard_hw],
         tasks=[
             eef_twist_task(
-                _openyam_bare_keyboard_hw,
-                model_path=OPENYAM_FK_MODEL,
+                _openyam_keyboard_hw,
+                model_path=OPENYAM_MODEL_PATH,
                 ee_joint_id=OPENYAM_DOF,
             )
         ],
     ),
     ManipulationModule.blueprint(
-        robots=[make_openyam_model_config(name="arm", has_gripper=False)],
-        visualization={"backend": "viser"},
-    ),
-)
-
-_openyam_gripper_keyboard_hw = make_openyam_hardware("arm", has_gripper=True)
-
-keyboard_teleop_openyam_gripper = autoconnect(
-    KeyboardTeleopModule.blueprint(),
-    ControlCoordinator.blueprint(
-        hardware=[_openyam_gripper_keyboard_hw],
-        tasks=[
-            eef_twist_task(
-                _openyam_gripper_keyboard_hw,
-                model_path=OPENYAM_FK_MODEL,
-                ee_joint_id=OPENYAM_DOF,
-            )
-        ],
-    ),
-    ManipulationModule.blueprint(
-        robots=[make_openyam_model_config(name="arm", has_gripper=True)],
+        robots=[make_openyam_model_config(name="arm")],
         visualization={"backend": "viser"},
     ),
 )

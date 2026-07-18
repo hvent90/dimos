@@ -30,17 +30,12 @@ from dimos.utils.data import LfsPath
 OPENYAM_DOF = 6
 OPENYAM_PACKAGE = LfsPath("yam_description")
 OPENYAM_MODEL_PATH = OPENYAM_PACKAGE / "urdf/yam_gripper.urdf.xacro"
-OPENYAM_FLANGE_MODEL_PATH = OPENYAM_PACKAGE / "yam.urdf"
-OPENYAM_FK_MODEL = OPENYAM_FLANGE_MODEL_PATH
 OPENYAM_PACKAGE_PATHS: dict[str, Path] = {"yam_description": OPENYAM_PACKAGE}
 
 
 def make_openyam_hardware(
     hw_id: str = "arm",
     *,
-    adapter_type: str = "mock",
-    address: str | None = None,
-    has_gripper: bool = True,
     auto_enable: bool = True,
     home_joints: list[float] | None = None,
 ) -> HardwareComponent:
@@ -52,10 +47,10 @@ def make_openyam_hardware(
         hardware_id=hw_id,
         hardware_type=HardwareType.MANIPULATOR,
         joints=make_joints(hw_id, OPENYAM_DOF),
-        adapter_type=adapter_type,
-        address=address,
+        adapter_type="mock",
+        address=None,
         auto_enable=auto_enable,
-        gripper_joints=[f"{hw_id}/gripper"] if has_gripper else [],
+        gripper_joints=[f"{hw_id}/gripper"],
         adapter_kwargs=adapter_kwargs,
     )
 
@@ -63,30 +58,27 @@ def make_openyam_hardware(
 def openyam_hardware(
     hw_id: str = "arm",
     *,
-    has_gripper: bool = True,
     home_joints: list[float] | None = None,
 ) -> HardwareComponent:
     """Create mock OpenYAM hardware for simulation and configuration checks."""
-    return make_openyam_hardware(hw_id, has_gripper=has_gripper, home_joints=home_joints)
+    return make_openyam_hardware(hw_id, home_joints=home_joints)
 
 
 def make_openyam_model_config(
     name: str = "arm",
     *,
-    has_gripper: bool = True,
     joint_prefix: str | None = None,
     coordinator_task_name: str | None = None,
     home_joints: list[float] | None = None,
 ) -> RobotModelConfig:
-    """Build a planning config for bare or gripper-equipped OpenYAM."""
-    urdf_prefix = "yam_" if has_gripper else ""
+    """Build a planning config for the gripper-equipped OpenYAM."""
     return RobotModelConfig(
         name=name,
-        model_path=OPENYAM_MODEL_PATH if has_gripper else OPENYAM_FLANGE_MODEL_PATH,
+        model_path=OPENYAM_MODEL_PATH,
         base_pose=base_pose(),
-        joint_names=joint_names(OPENYAM_DOF, prefix=f"{urdf_prefix}joint"),
-        end_effector_link="yam_hand_tcp" if has_gripper else "link_6",
-        base_link="yam_base_link" if has_gripper else "base_link",
+        joint_names=joint_names(OPENYAM_DOF, prefix="yam_joint"),
+        end_effector_link="yam_hand_tcp",
+        base_link="yam_base_link",
         package_paths=OPENYAM_PACKAGE_PATHS,
         auto_convert_meshes=True,
         collision_exclusion_pairs=[],
@@ -94,9 +86,9 @@ def make_openyam_model_config(
             name,
             OPENYAM_DOF,
             joint_prefix=joint_prefix,
-            urdf_joint_prefix=urdf_prefix,
+            urdf_joint_prefix="yam_",
         ),
         coordinator_task_name=coordinator_task_name or f"traj_{name}",
-        gripper_hardware_id=name if has_gripper else None,
+        gripper_hardware_id=name,
         home_joints=home_joints or [0.0] * OPENYAM_DOF,
     )
