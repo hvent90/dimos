@@ -95,6 +95,7 @@ all_blueprints = {
     "teleop-quest-piper": "dimos.teleop.quest.blueprints:teleop_quest_piper",
     "teleop-quest-rerun": "dimos.teleop.quest.blueprints:teleop_quest_rerun",
     "teleop-quest-xarm6": "dimos.teleop.quest.blueprints:teleop_quest_xarm6",
+    "teleop-quest-xarm6-vrtraj": "dimos.teleop.quest.blueprints:teleop_quest_xarm6_vrtraj",
     "teleop-quest-xarm7": "dimos.teleop.quest.blueprints:teleop_quest_xarm7",
     "teleop-quest-xarm7-video": "dimos.teleop.quest.blueprints:teleop_quest_xarm7_video",
     "unitree-g1": "dimos.robot.unitree.g1.blueprints.perceptive.unitree_g1:unitree_g1",

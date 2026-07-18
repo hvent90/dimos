@@ -6,6 +6,33 @@ window.onerror = (msg, url, line, col, error) => {
 
 import { geometry_msgs, std_msgs, sensor_msgs } from "https://esm.sh/jsr/@dimos/msgs@0.1.4";
 
+// LCM fingerprint (first 8 bytes) of a UInt32, used to recognise inbound replay
+// progress messages vs JPEG frames. Computed once by encoding a sample.
+let PROGRESS_FINGERPRINT = null;
+try {
+    PROGRESS_FINGERPRINT = new Uint8Array(new std_msgs.UInt32({ data: 0 }).encode()).slice(0, 8);
+} catch (e) {
+    console.error('could not compute UInt32 fingerprint', e);
+}
+
+function matchesFingerprint(buf, fp) {
+    if (buf.byteLength < fp.length) return false;
+    const head = new Uint8Array(buf, 0, fp.length);
+    for (let i = 0; i < fp.length; i++) if (head[i] !== fp[i]) return false;
+    return true;
+}
+
+// Fraction [0,1] of the drawn line already consumed by an in-progress replay.
+let replayProgress = 0;
+function onReplayProgress(fraction) {
+    replayProgress = Math.max(0, Math.min(1, fraction));
+    if (replayProgress >= 1) {
+        // Replay done — clear the line so it fully vanishes.
+        clearLine();
+        replayProgress = 0;
+    }
+}
+
 // WebSocket and VR state
 let ws = null;
 let xrSession = null;
@@ -32,6 +59,36 @@ const PANEL_POS_Y = 1.4;   // ~eye height
 const PANEL_POS_Z = -1.5;  // 1.5m in front of starting position
 const PANEL_HEIGHT = 0.9;
 
+// Line-drawing state — the trajectory the operator sketches while holding grip.
+// Points are captured in the same local-floor reference space used to render,
+// so u_model is identity and the line floats in passthrough where drawn.
+let lineProgram = null;
+let lineVbo = null;
+let ribbonVbo = null;
+let axesVbo = null;
+let lineAttribs = null;
+let lineUniforms = null;
+const LINE_MAX_POINTS = 4096;
+const lineVerts = new Float32Array(LINE_MAX_POINTS * 3);  // xyz per point
+// Ribbon: 2 triangles per drawn point (as a TRIANGLE_STRIP), 3 floats each.
+const ribbonVerts = new Float32Array(LINE_MAX_POINTS * 2 * 3);
+let lineCount = 0;         // points currently in the buffer
+let lineDirty = false;     // true when new points need re-upload to the VBO
+let drawing = false;       // true while the grip button is held
+// Half-width of the drawn line, in metres. The ribbon is built camera-facing so
+// this reads as a roughly constant thickness regardless of viewing angle.
+// Tuned for how it looks in the passthrough video — nudge to taste.
+const LINE_HALF_WIDTH = 0.0035;
+const identityMatrix = new Float32Array([
+    1, 0, 0, 0,
+    0, 1, 0, 0,
+    0, 0, 1, 0,
+    0, 0, 0, 1,
+]);
+// Only append a point once the controller has moved this far (metres) from the
+// last one — keeps the polyline from piling up thousands of near-duplicate verts.
+const LINE_MIN_STEP = 0.005;
+
 // UI elements
 const statusEl = document.getElementById('status');
 const connectBtn = document.getElementById('connectBtn');
@@ -50,7 +107,9 @@ function setupWebSocket() {
 
         setStatus('Connecting to server...');
         ws = new WebSocket(wsUrl);
-        ws.binaryType = 'blob';
+        // arraybuffer so we can peek the first 8 bytes (LCM fingerprint) to tell
+        // a small control message (replay progress) from a JPEG video frame.
+        ws.binaryType = 'arraybuffer';
 
         ws.onopen = () => {
             setStatus('Server connected');
@@ -64,12 +123,22 @@ function setupWebSocket() {
         ws.onclose = () => {
             setStatus('WebSocket closed');
         };
-        // Defer revoking the previous blob URL by one message — revoking
-        // immediately after setting src can race with the browser's load
-        // on some engines, briefly dropping naturalWidth to 0.
         ws.onmessage = (e) => {
-            if (!(e.data instanceof Blob)) return;
-            const newUrl = URL.createObjectURL(e.data);
+            const buf = e.data;
+            if (!(buf instanceof ArrayBuffer)) return;
+            // Dispatch by LCM fingerprint: a UInt32 is replay progress; anything
+            // else is a JPEG frame (JPEG starts with 0xFFD8, never our fingerprint).
+            if (PROGRESS_FINGERPRINT && matchesFingerprint(buf, PROGRESS_FINGERPRINT)) {
+                try {
+                    const permille = std_msgs.UInt32.decode(new Uint8Array(buf)).data;
+                    onReplayProgress(permille / 1000);
+                } catch (err) {
+                    console.error('progress decode failed', err);
+                }
+                return;
+            }
+            // JPEG path: wrap the bytes back into a Blob for the <img> loader.
+            const newUrl = URL.createObjectURL(new Blob([buf], { type: 'image/jpeg' }));
             if (prevBlobUrl) URL.revokeObjectURL(prevBlobUrl);
             prevBlobUrl = videoEl.src.startsWith('blob:') ? videoEl.src : null;
             videoEl.src = newUrl;
@@ -88,6 +157,197 @@ function initGL() {
     }
     gl.clearColor(0, 0, 0, 0); // Transparent background for passthrough
     initVideoPanel();
+    initLine();
+}
+
+// Compile + link a plain colored-line pipeline for the drawn trajectory.
+// Vertices are world-space (local-floor) points, so u_model is identity.
+function initLine() {
+    const vsSrc = `
+        attribute vec3 a_pos;
+        uniform mat4 u_proj;
+        uniform mat4 u_view;
+        uniform mat4 u_model;
+        uniform float u_pointSize;
+        void main() {
+            gl_Position = u_proj * u_view * u_model * vec4(a_pos, 1.0);
+            gl_PointSize = u_pointSize;
+        }`;
+    const fsSrc = `
+        precision mediump float;
+        uniform vec4 u_color;
+        void main() {
+            gl_FragColor = u_color;
+        }`;
+
+    const compile = (type, src) => {
+        const sh = gl.createShader(type);
+        gl.shaderSource(sh, src);
+        gl.compileShader(sh);
+        if (!gl.getShaderParameter(sh, gl.COMPILE_STATUS)) {
+            throw new Error('Line shader compile failed: ' + gl.getShaderInfoLog(sh));
+        }
+        return sh;
+    };
+    const vs = compile(gl.VERTEX_SHADER, vsSrc);
+    const fs = compile(gl.FRAGMENT_SHADER, fsSrc);
+    lineProgram = gl.createProgram();
+    gl.attachShader(lineProgram, vs);
+    gl.attachShader(lineProgram, fs);
+    gl.linkProgram(lineProgram);
+    if (!gl.getProgramParameter(lineProgram, gl.LINK_STATUS)) {
+        throw new Error('Line program link failed: ' + gl.getProgramInfoLog(lineProgram));
+    }
+
+    lineVbo = gl.createBuffer();
+    gl.bindBuffer(gl.ARRAY_BUFFER, lineVbo);
+    // Allocate the full buffer up front; we bufferSubData the used prefix each frame.
+    gl.bufferData(gl.ARRAY_BUFFER, lineVerts.byteLength, gl.DYNAMIC_DRAW);
+
+    // Ribbon buffer: rebuilt on the CPU each frame (needs the camera position),
+    // so it's DYNAMIC_DRAW and allocated to the worst case.
+    ribbonVbo = gl.createBuffer();
+    gl.bindBuffer(gl.ARRAY_BUFFER, ribbonVbo);
+    gl.bufferData(gl.ARRAY_BUFFER, ribbonVerts.byteLength, gl.DYNAMIC_DRAW);
+
+    lineAttribs = { pos: gl.getAttribLocation(lineProgram, 'a_pos') };
+    lineUniforms = {
+        proj:  gl.getUniformLocation(lineProgram, 'u_proj'),
+        view:  gl.getUniformLocation(lineProgram, 'u_view'),
+        model: gl.getUniformLocation(lineProgram, 'u_model'),
+        color: gl.getUniformLocation(lineProgram, 'u_color'),
+        pointSize: gl.getUniformLocation(lineProgram, 'u_pointSize'),
+    };
+
+    // World-axis gizmo at the origin: X/Y/Z as 0.3 m segments (red/green/blue),
+    // so the operator always has an orientation reference regardless of how the
+    // headset is turned. Static geometry, drawn with the same shader.
+    axesVbo = gl.createBuffer();
+    gl.bindBuffer(gl.ARRAY_BUFFER, axesVbo);
+    const L = 0.3;
+    gl.bufferData(gl.ARRAY_BUFFER, new Float32Array([
+        0, 0, 0,  L, 0, 0,   // X
+        0, 0, 0,  0, L, 0,   // Y
+        0, 0, 0,  0, 0, L,   // Z
+    ]), gl.STATIC_DRAW);
+}
+
+function renderAxes(view, viewport) {
+    gl.viewport(viewport.x, viewport.y, viewport.width, viewport.height);
+    gl.useProgram(lineProgram);
+    gl.bindBuffer(gl.ARRAY_BUFFER, axesVbo);
+    gl.enableVertexAttribArray(lineAttribs.pos);
+    gl.vertexAttribPointer(lineAttribs.pos, 3, gl.FLOAT, false, 0, 0);
+    gl.uniformMatrix4fv(lineUniforms.proj,  false, view.projectionMatrix);
+    gl.uniformMatrix4fv(lineUniforms.view,  false, view.transform.inverse.matrix);
+    gl.uniformMatrix4fv(lineUniforms.model, false, identityMatrix);
+    gl.uniform1f(lineUniforms.pointSize, 1.0);
+
+    const depthWasOn = gl.isEnabled(gl.DEPTH_TEST);
+    gl.disable(gl.DEPTH_TEST);
+    gl.uniform4f(lineUniforms.color, 1.0, 0.2, 0.2, 1.0); // X red
+    gl.drawArrays(gl.LINES, 0, 2);
+    gl.uniform4f(lineUniforms.color, 0.2, 1.0, 0.2, 1.0); // Y green
+    gl.drawArrays(gl.LINES, 2, 2);
+    gl.uniform4f(lineUniforms.color, 0.3, 0.5, 1.0, 1.0); // Z blue
+    gl.drawArrays(gl.LINES, 4, 2);
+    if (depthWasOn) gl.enable(gl.DEPTH_TEST);
+}
+
+// Reset the drawn line (called on a fresh grip-press).
+function clearLine() {
+    lineCount = 0;
+    lineDirty = true;
+}
+
+// Append a world-space point if it's far enough from the last one.
+function appendLinePoint(x, y, z) {
+    if (lineCount >= LINE_MAX_POINTS) return;
+    if (lineCount > 0) {
+        const i = (lineCount - 1) * 3;
+        const dx = x - lineVerts[i];
+        const dy = y - lineVerts[i + 1];
+        const dz = z - lineVerts[i + 2];
+        if (dx * dx + dy * dy + dz * dz < LINE_MIN_STEP * LINE_MIN_STEP) return;
+    }
+    const o = lineCount * 3;
+    lineVerts[o] = x;
+    lineVerts[o + 1] = y;
+    lineVerts[o + 2] = z;
+    lineCount++;
+    lineDirty = true;
+}
+
+// Build a camera-facing ribbon (TRIANGLE_STRIP) from the polyline points in
+// [startIdx, lineCount). Each point becomes two vertices offset ± a "side"
+// vector perpendicular to both the segment and the view direction, so the line
+// keeps a roughly constant on-screen thickness. Returns the vertex count.
+function buildRibbon(startIdx, camX, camY, camZ) {
+    let v = 0;
+    for (let i = startIdx; i < lineCount; i++) {
+        const p = i * 3;
+        const px = lineVerts[p], py = lineVerts[p + 1], pz = lineVerts[p + 2];
+
+        // Tangent: direction to the next point (or previous for the last one).
+        let tx, ty, tz;
+        if (i < lineCount - 1) {
+            const n = (i + 1) * 3;
+            tx = lineVerts[n] - px; ty = lineVerts[n + 1] - py; tz = lineVerts[n + 2] - pz;
+        } else {
+            const m = (i - 1) * 3;
+            tx = px - lineVerts[m]; ty = py - lineVerts[m + 1]; tz = pz - lineVerts[m + 2];
+        }
+
+        // View vector from the point toward the camera.
+        const vx = camX - px, vy = camY - py, vz = camZ - pz;
+
+        // side = normalize(tangent × view) — perpendicular to both, i.e. the
+        // screen-horizontal offset that makes the ribbon face the camera.
+        let sx = ty * vz - tz * vy;
+        let sy = tz * vx - tx * vz;
+        let sz = tx * vy - ty * vx;
+        const len = Math.hypot(sx, sy, sz);
+        if (len > 1e-6) { sx /= len; sy /= len; sz /= len; }
+        sx *= LINE_HALF_WIDTH; sy *= LINE_HALF_WIDTH; sz *= LINE_HALF_WIDTH;
+
+        ribbonVerts[v++] = px - sx; ribbonVerts[v++] = py - sy; ribbonVerts[v++] = pz - sz;
+        ribbonVerts[v++] = px + sx; ribbonVerts[v++] = py + sy; ribbonVerts[v++] = pz + sz;
+    }
+    return v / 3;
+}
+
+function renderLine(view, viewport) {
+    if (lineCount < 2) return;
+
+    // During replay, skip the consumed prefix so the line vanishes as the arm
+    // retraces it — only the not-yet-played tail is drawn.
+    const startIdx = Math.min(lineCount - 2, Math.floor(replayProgress * lineCount));
+    if (lineCount - startIdx < 2) return;
+
+    // Camera world position for this eye (last column of the view transform).
+    const cam = view.transform.position;
+    const nVerts = buildRibbon(startIdx, cam.x, cam.y, cam.z);
+    if (nVerts < 3) return;
+
+    gl.viewport(viewport.x, viewport.y, viewport.width, viewport.height);
+    gl.useProgram(lineProgram);
+
+    gl.bindBuffer(gl.ARRAY_BUFFER, ribbonVbo);
+    gl.bufferSubData(gl.ARRAY_BUFFER, 0, ribbonVerts.subarray(0, nVerts * 3));
+    gl.enableVertexAttribArray(lineAttribs.pos);
+    gl.vertexAttribPointer(lineAttribs.pos, 3, gl.FLOAT, false, 0, 0);
+
+    gl.uniformMatrix4fv(lineUniforms.proj,  false, view.projectionMatrix);
+    gl.uniformMatrix4fv(lineUniforms.view,  false, view.transform.inverse.matrix);
+    gl.uniformMatrix4fv(lineUniforms.model, false, identityMatrix);
+    gl.uniform4f(lineUniforms.color, 0.1, 1.0, 0.3, 1.0);  // bright green
+    gl.uniform1f(lineUniforms.pointSize, 1.0);
+
+    // Overlay on top of passthrough + video panel.
+    const depthWasOn = gl.isEnabled(gl.DEPTH_TEST);
+    gl.disable(gl.DEPTH_TEST);
+    gl.drawArrays(gl.TRIANGLE_STRIP, 0, nVerts);
+    if (depthWasOn) gl.enable(gl.DEPTH_TEST);
 }
 
 // Compile + link a textured-quad pipeline that renders the camera
@@ -240,6 +500,26 @@ function processTracking(frame) {
         const pos = pose.transform.position;
         const rot = pose.transform.orientation;
 
+        // Line drawing: while the RIGHT grip is held, record the controller's
+        // world-space (local-floor) position into the drawn polyline. This is
+        // purely visual — the backend records its own delta trajectory from the
+        // same grip window. Grip is gamepad.buttons[1].
+        if (handedness === 'right') {
+            const gp = inputSource.gamepad;
+            const drawHeld = !!(gp && gp.buttons[1] && gp.buttons[1].pressed);
+            if (drawHeld && !drawing) {
+                clearLine();          // fresh line on each new grip-press
+                drawing = true;
+                console.log('[line] collection STARTED (grip)');
+            } else if (!drawHeld && drawing) {
+                drawing = false;
+                console.log('[line] collection ENDED — ' + lineCount + ' points');
+            }
+            if (drawing) {
+                appendLinePoint(pos.x, pos.y, pos.z);
+            }
+        }
+
         const nowMs = Date.now();
         const poseStamped = new geometry_msgs.PoseStamped({
             header: new std_msgs.Header({
@@ -311,9 +591,8 @@ function onXRFrame(_time, frame) {
     gl.bindFramebuffer(gl.FRAMEBUFFER, glLayer.framebuffer);
     gl.clear(gl.COLOR_BUFFER_BIT | gl.DEPTH_BUFFER_BIT);
 
-    if (!videoReady) return;
-    // Keep rendering the existing texture between loads to avoid blinking.
-    if (videoDirty && videoEl.naturalWidth) {
+    // Upload a fresh video frame if one arrived (line renders regardless).
+    if (videoReady && videoDirty && videoEl.naturalWidth) {
         uploadVideoTexture();
         videoDirty = false;
     }
@@ -321,7 +600,10 @@ function onXRFrame(_time, frame) {
     const pose = frame.getViewerPose(xrRefSpace);
     if (pose) {
         for (const view of pose.views) {
-            renderVideoPanel(view, glLayer.getViewport(view));
+            const viewport = glLayer.getViewport(view);
+            if (videoReady) renderVideoPanel(view, viewport);
+            renderAxes(view, viewport);
+            renderLine(view, viewport);
         }
     }
 }

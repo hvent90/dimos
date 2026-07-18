@@ -26,6 +26,7 @@ from typing import Any
 
 from fastapi import WebSocket
 from pydantic import Field
+from reactivex.disposable import Disposable
 
 from dimos.core.core import rpc
 from dimos.core.stream import In, Out
@@ -34,6 +35,7 @@ from dimos.msgs.geometry_msgs.Twist import Twist
 from dimos.msgs.geometry_msgs.TwistStamped import TwistStamped
 from dimos.msgs.geometry_msgs.Vector3 import Vector3
 from dimos.msgs.sensor_msgs.Image import Image
+from dimos.msgs.std_msgs.UInt32 import UInt32
 from dimos.teleop.quest.quest_teleop_module import QuestTeleopConfig, QuestTeleopModule
 from dimos.teleop.quest.quest_types import Buttons, Hand, QuestControllerState
 from dimos.utils.logging_config import setup_logger
@@ -50,14 +52,14 @@ async def _ws_send_jpeg(ws: WebSocket, data: bytes) -> None:
         pass
 
 
-def _push_jpeg(module: QuestTeleopModule, msg: Image, quality: int) -> None:
-    """JPEG-encode an Image and push it to all of module's connected /ws clients.
+def _push_bytes(module: QuestTeleopModule, data: bytes) -> None:
+    """Broadcast raw bytes to all of module's connected /ws clients.
 
     Runs on the RX thread; sends are scheduled on the asyncio loop captured by
-    QuestTeleopModule when the first client connected.
+    QuestTeleopModule when the first client connected. Used for both JPEG frames
+    and small LCM-encoded control messages (the client dispatches inbound blobs
+    by LCM fingerprint, falling back to JPEG).
     """
-    # Snapshot clients under the lock to avoid concurrent set mutation from
-    # the uvicorn thread. Skip the encode entirely if nobody is listening.
     loop = module._ws_loop
     if loop is None:
         return
@@ -65,15 +67,24 @@ def _push_jpeg(module: QuestTeleopModule, msg: Image, quality: int) -> None:
         clients = tuple(module._connected_clients)
     if not clients:
         return
+    for ws in clients:
+        asyncio.run_coroutine_threadsafe(_ws_send_jpeg(ws, data), loop)
 
+
+def _push_jpeg(module: QuestTeleopModule, msg: Image, quality: int) -> None:
+    """JPEG-encode an Image and push it to all of module's connected /ws clients."""
+    # Skip the encode entirely if nobody is listening.
+    if module._ws_loop is None:
+        return
+    with module._clients_lock:
+        if not module._connected_clients:
+            return
     try:
         jpeg = msg.to_jpeg_bytes(quality=quality)
     except Exception:
         logger.exception("Failed to encode camera frame")
         return
-
-    for ws in clients:
-        asyncio.run_coroutine_threadsafe(_ws_send_jpeg(ws, jpeg), loop)
+    _push_bytes(module, jpeg)
 
 
 class TwistTeleopConfig(QuestTeleopConfig):
@@ -193,6 +204,62 @@ class ArmTeleopModule(QuestTeleopModule):
             right=right.trigger if right is not None else 0.0,
         )
         self.teleop_buttons.publish(buttons)
+
+
+class DrawArmTeleopModule(ArmTeleopModule):
+    """ArmTeleopModule where the grip button ALSO engages the controller pose stream.
+
+    The base module only publishes ``*_controller_output`` while a hand is
+    engaged, and only the primary (X/A) button engages. For the VR draw-a-line
+    feature the operator sketches with the *grip* button (arm stays frozen —
+    a downstream TrajectoryReplayModule gates the poses away from the arm), so
+    the pose stream must also flow while grip is held, otherwise there are no
+    poses to record.
+
+    This overrides engage so a hand engages when **primary OR grip** is held.
+    The engage-time reference pose is captured on whichever edge fires first, so
+    deltas are relative to where the gesture began. The trigger is left free for
+    its usual gripper role. Live X/A teleop behaves exactly as before.
+
+    Also relays a downstream replay-progress signal (permille [0,1000]) to the
+    headset over ``/ws`` so the web app can consume the drawn line as the arm
+    retraces it.
+
+    Inputs:
+        - replay_progress: In[UInt32] (optional — wire to a TrajectoryReplayModule)
+    """
+
+    replay_progress: In[UInt32]
+
+    @rpc
+    def start(self) -> None:
+        super().start()
+        self.register_disposable(Disposable(self.replay_progress.subscribe(self._on_progress)))
+
+    def _on_progress(self, msg: UInt32) -> None:
+        """Relay replay progress to the headset as an LCM-encoded UInt32.
+
+        The web client dispatches inbound blobs by LCM fingerprint (UInt32 →
+        progress) and otherwise treats them as JPEG frames.
+        """
+        try:
+            _push_bytes(self, msg.lcm_encode())
+        except Exception:
+            logger.exception("Failed to push replay progress to headset")
+
+    def _handle_engage(self) -> None:
+        for hand in Hand:
+            controller = self._controllers.get(hand)
+            if controller is None:
+                continue
+            # Either gesture holds the hand engaged; release both to disengage.
+            active = controller.primary or controller.grip > 0.5
+            if active:
+                if not self._is_engaged[hand]:
+                    self._engage(hand)
+            else:
+                if self._is_engaged[hand]:
+                    self._disengage(hand)
 
 
 class VideoArmTeleopConfig(ArmTeleopConfig):
