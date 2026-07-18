@@ -61,7 +61,7 @@ def _manipulation_kwargs(blueprint: Blueprint) -> dict[str, object]:
 
 
 def _manipulation_config(blueprint: Blueprint) -> ManipulationModuleConfig:
-    return ManipulationModuleConfig(**_manipulation_kwargs(blueprint))
+    return ManipulationModuleConfig.model_validate(_manipulation_kwargs(blueprint))
 
 
 def _coordinator_tasks(blueprint: Blueprint) -> list[TaskConfig]:
@@ -72,7 +72,7 @@ def test_planner_helper_defaults_to_no_visualization() -> None:
     blueprint = planner(robots=[make_xarm7_model_config(name="arm", add_gripper=True)])
 
     kwargs = _manipulation_kwargs(blueprint)
-    config = ManipulationModuleConfig(**kwargs)
+    config = _manipulation_config(blueprint)
 
     assert "visualization" not in kwargs
     assert isinstance(config.visualization, NoManipulationVisualizationConfig)
@@ -94,13 +94,14 @@ def test_xarm_planner_blueprints_default_to_no_visualization() -> None:
         assert isinstance(config.visualization, NoManipulationVisualizationConfig)
 
 
-def test_eef_twist_task_helper_serializes_authoritative_robot_model() -> None:
+def test_eef_twist_task_helper_passes_authoritative_robot_model() -> None:
     hardware = make_xarm_hardware("arm", 6, adapter_type="mock")
+    robot_model = make_xarm6_model_config(add_gripper=False)
 
-    task = eef_twist_task(hardware, robot_model=make_xarm6_model_config(add_gripper=False))
+    task = eef_twist_task(hardware, robot_model=robot_model)
 
     assert "model_path" not in task.params
-    assert task.params["control_ik"]["robot_model"]["model_path"]
+    assert task.params["control_ik"]["robot_model"] is robot_model
 
 
 @pytest.mark.parametrize(
@@ -145,9 +146,9 @@ def test_shipped_eef_twist_blueprints_use_pink_with_named_models(
     task = next(task for task in _coordinator_tasks(blueprint) if task.type == "eef_twist")
     control_ik = task.params["control_ik"]
 
-    assert control_ik["robot_model"]["end_effector_link"]
+    assert control_ik["robot_model"].end_effector_link
     assert "ee_joint_id" not in task.params
-    assert not str(control_ik["robot_model"]["model_path"]).endswith((".xml", ".mjcf"))
+    assert not str(control_ik["robot_model"].model_path).endswith((".xml", ".mjcf"))
 
 
 def test_piper_pink_task_uses_xacro_and_gripper_base() -> None:
@@ -163,13 +164,13 @@ def test_piper_pink_task_uses_xacro_and_gripper_base() -> None:
             if task.type in ("eef_twist", "cartesian_ik")
         )
         control_ik = task.params["control_ik"]
-        assert control_ik["robot_model"]["model_path"] == str(PIPER_MODEL_PATH)
-        assert control_ik["robot_model"]["model_path"] == str(PIPER_MODEL_PATH)
-        assert control_ik["robot_model"]["end_effector_link"] == "gripper_base"
+        assert control_ik["robot_model"].model_path == PIPER_MODEL_PATH
+        assert control_ik["robot_model"].model_path == PIPER_MODEL_PATH
+        assert control_ik["robot_model"].end_effector_link == "gripper_base"
         assert "ee_joint_id" not in task.params
         assert "self_collision_enabled" not in control_ik
 
         reconstructed = PinkControlIKConfig.model_validate(control_ik)
-        assert reconstructed.robot_model is not None
+        assert reconstructed.robot_model is control_ik["robot_model"]
         assert reconstructed.robot_model.model_path == PIPER_MODEL_PATH
         assert reconstructed.robot_model.end_effector_link == "gripper_base"

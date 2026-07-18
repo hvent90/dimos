@@ -25,9 +25,9 @@ from dimos.control.tasks.cartesian_ik_task.cartesian_ik_task import (
 )
 from dimos.control.tasks.cartesian_ik_task.pink_control_ik import (
     ControlIKResult,
+    IKControlRuntimeError,
     PinkControlIK,
     PinkControlIKConfig,
-    PinkControlRuntimeError,
 )
 from dimos.control.tasks.registry import control_task_registry
 from dimos.manipulation.planning.spec.config import RobotModelConfig
@@ -108,6 +108,22 @@ def _write_urdf(tmp_path: Path, name: str = "tiny.urdf", content: str = _URDF) -
 def test_pink_requires_robot_model() -> None:
     with pytest.raises(ValueError, match="robot_model"):
         PinkControlIKConfig()
+
+
+def test_pink_settings_use_finite_declarative_validation(tmp_path: Path) -> None:
+    robot = _robot(_write_urdf(tmp_path))
+
+    with pytest.raises(ValueError, match="finite"):
+        PinkControlIKConfig(robot_model=robot, max_velocity=np.inf)
+    with pytest.raises(ValueError, match="finite"):
+        PinkControlIKConfig(robot_model=robot, qpsolver_options={"eps": np.nan})
+    with pytest.raises(ValueError, match="ordered"):
+        CartesianIKTaskConfig(
+            joint_names=["joint1", "joint2"],
+            control_ik=PinkControlIKConfig(robot_model=robot),
+            min_dt=0.1,
+            max_dt=0.01,
+        )
 
 
 def test_pink_prepares_xacro_with_package_paths_and_arguments(
@@ -198,6 +214,7 @@ def test_pink_reanchors_measured_state_and_runs_one_frame_task_step(
     assert np.array_equal(result.positions, measured)
     assert len(calls) == 1
     assert len(calls[0][1]) == 2
+    assert calls[0][1] is backend._tasks
     assert np.array_equal(calls[0][1][1].target_q, backend._full_q(measured))
     assert calls[0][2] == 0.01
 
@@ -207,7 +224,7 @@ def test_pink_backend_clamps_dt_from_backend_configuration(
 ) -> None:
     model_path = _write_urdf(tmp_path)
     backend = PinkControlIK(
-        PinkControlIKConfig(robot_model=_robot(model_path), min_dt=0.01, max_dt=0.02),
+        PinkControlIKConfig(robot_model=_robot(model_path)),
     )
     calls: list[float] = []
 
@@ -223,7 +240,7 @@ def test_pink_backend_clamps_dt_from_backend_configuration(
     measured = np.array([0.3, 0.1])
     backend.solve(backend.forward_kinematics(measured), measured, 1.0)
 
-    assert calls == [0.02]
+    assert calls == [1.0]
 
 
 def test_pink_posture_task_can_be_disabled(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
@@ -274,7 +291,7 @@ def test_continuous_joint_scalar_limits_fail_with_actionable_diagnostic(tmp_path
     angle = np.array([3.0])
 
     assert backend._q_widths == [2]
-    assert np.allclose(backend._controlled_q(backend._full_q(angle), angle), angle)
+    assert np.allclose(backend._project_controlled_positions(backend._full_q(angle), angle), angle)
 
 
 def test_pink_applies_position_velocity_limits_and_finite_output(tmp_path: Path) -> None:
@@ -337,7 +354,7 @@ def test_pink_rejects_material_position_limit_violation(
     monkeypatch.setattr(
         "dimos.control.tasks.cartesian_ik_task.pink_control_ik.pink.solve_ik", solve
     )
-    with pytest.raises(PinkControlRuntimeError, match="out-of-bounds"):
+    with pytest.raises(IKControlRuntimeError, match="out-of-bounds"):
         backend.solve(backend.forward_kinematics(measured), measured, 0.01)
 
 
@@ -364,7 +381,7 @@ def test_cartesian_pipeline_bounds_dt_and_holds_on_expected_error(
     pose = PoseStamped(position=[0, 0, 0], orientation=[0, 0, 0, 1])
     assert task.on_cartesian_command(pose, 1.0)
     assert task.compute(_cartesian_state(1.01, dt=1.0)) is not None
-    assert backend.dt_calls == [task._config.control_ik.max_dt]
+    assert backend.dt_calls == [task._config.max_dt]
 
     invalid_dt_hold = task.compute(_cartesian_state(1.02, dt=0.0))
     assert invalid_dt_hold is not None

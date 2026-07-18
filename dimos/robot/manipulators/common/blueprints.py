@@ -57,46 +57,8 @@ def _resolve_control_ik(
     if hardware.joints != coordinator_joints:
         raise ValueError("hardware joints must match RobotModelConfig coordinator joints")
     payload = dict(control_ik or {})
-    payload["robot_model"] = _serialize_robot_model(robot_model)
+    payload["robot_model"] = robot_model
     return payload
-
-
-def _serialize_robot_model(robot_model: RobotModelConfig) -> dict[str, object]:
-    """Serialize the authoritative robot model without runtime-only objects."""
-    base_pose = robot_model.base_pose
-    return {
-        "name": robot_model.name,
-        "model_path": str(robot_model.model_path),
-        "base_pose": {
-            "ts": float(base_pose.ts),
-            "frame_id": base_pose.frame_id,
-            "position": [base_pose.position.x, base_pose.position.y, base_pose.position.z],
-            "orientation": [
-                base_pose.orientation.x,
-                base_pose.orientation.y,
-                base_pose.orientation.z,
-                base_pose.orientation.w,
-            ],
-        },
-        "joint_names": list(robot_model.joint_names),
-        "end_effector_link": robot_model.end_effector_link,
-        "base_link": robot_model.base_link,
-        "package_paths": {name: str(path) for name, path in robot_model.package_paths.items()},
-        "joint_limits_lower": robot_model.joint_limits_lower,
-        "joint_limits_upper": robot_model.joint_limits_upper,
-        "velocity_limits": robot_model.velocity_limits,
-        "auto_convert_meshes": robot_model.auto_convert_meshes,
-        "xacro_args": dict(robot_model.xacro_args),
-        "collision_exclusion_pairs": list(robot_model.collision_exclusion_pairs),
-        "max_velocity": robot_model.max_velocity,
-        "max_acceleration": robot_model.max_acceleration,
-        "joint_name_mapping": dict(robot_model.joint_name_mapping),
-        "coordinator_task_name": robot_model.coordinator_task_name,
-        "gripper_hardware_id": robot_model.gripper_hardware_id,
-        "tf_extra_links": list(robot_model.tf_extra_links),
-        "home_joints": robot_model.home_joints,
-        "pre_grasp_offset": robot_model.pre_grasp_offset,
-    }
 
 
 def cartesian_ik_task(
@@ -104,6 +66,8 @@ def cartesian_ik_task(
     *,
     name: str = CARTESIAN_IK_TASK_NAME,
     priority: int = 10,
+    min_dt: float = 1e-4,
+    max_dt: float = 0.05,
     control_ik: Mapping[str, object] | None = None,
     robot_model: RobotModelConfig,
 ) -> TaskConfig:
@@ -115,6 +79,8 @@ def cartesian_ik_task(
         priority=priority,
         params={
             "control_ik": resolved_control_ik,
+            "min_dt": min_dt,
+            "max_dt": max_dt,
         },
     )
 
@@ -124,6 +90,8 @@ def eef_twist_task(
     *,
     name: str = EEF_TWIST_TASK_NAME,
     priority: int = 10,
+    min_dt: float = 1e-4,
+    max_dt: float = 0.05,
     control_ik: Mapping[str, object] | None = None,
     robot_model: RobotModelConfig,
 ) -> TaskConfig:
@@ -135,6 +103,8 @@ def eef_twist_task(
         priority=priority,
         params={
             "control_ik": resolved_control_ik,
+            "min_dt": min_dt,
+            "max_dt": max_dt,
         },
     )
 

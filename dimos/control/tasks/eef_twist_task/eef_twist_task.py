@@ -22,6 +22,7 @@ from typing import TYPE_CHECKING
 
 import numpy as np
 import pinocchio
+from pydantic import FiniteFloat
 
 from dimos.control.coordinator import TaskConfig
 from dimos.control.task import CoordinatorState
@@ -128,6 +129,8 @@ class EEFTwistTask(CartesianIKTask):
 class EEFTwistTaskParams(BaseConfig):
     timeout: float = 0.3
     max_joint_delta_deg: float = 15.0
+    min_dt: FiniteFloat = 1e-4
+    max_dt: FiniteFloat = 0.05
     control_ik: PinkControlIKConfig
 
 
@@ -140,6 +143,8 @@ def create_task(cfg: TaskConfig, hardware: object) -> EEFTwistTask:
             priority=cfg.priority,
             timeout=params.timeout,
             max_joint_delta_deg=params.max_joint_delta_deg,
+            min_dt=params.min_dt,
+            max_dt=params.max_dt,
             control_ik=params.control_ik,
         ),
     )

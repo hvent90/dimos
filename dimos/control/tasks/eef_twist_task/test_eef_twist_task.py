@@ -91,6 +91,8 @@ def task(fake_ik: FakeIK) -> EEFTwistTask:
             ),
             timeout=0.3,
             max_joint_delta_deg=15.0,
+            min_dt=0.02,
+            max_dt=0.03,
         ),
     )
 
@@ -161,6 +163,7 @@ def test_integration_uses_current_fk_and_coordinator_dt(
 
     assert first is not None
     assert second is not None
+    assert fake_ik.dt_calls == [0.02, 0.02]
     assert fake_ik.solve_calls[1].translation[0] > fake_ik.solve_calls[0].translation[0]
 
 

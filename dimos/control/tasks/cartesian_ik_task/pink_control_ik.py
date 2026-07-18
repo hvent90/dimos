@@ -16,7 +16,6 @@
 
 from __future__ import annotations
 
-from collections.abc import Mapping
 from dataclasses import dataclass
 from pathlib import Path
 
@@ -25,11 +24,10 @@ from numpy.typing import NDArray
 import pink
 from pink.limits import ConfigurationLimit, VelocityLimit
 import pinocchio
-from pydantic import Field, field_validator, model_validator
+from pydantic import Field, FiniteFloat, field_validator
 
 from dimos.manipulation.planning.spec.config import RobotModelConfig
 from dimos.manipulation.planning.utils.mesh_utils import prepare_urdf_for_drake
-from dimos.msgs.geometry_msgs.PoseStamped import PoseStamped
 from dimos.protocol.service.spec import BaseConfig
 
 # Pink's integration/QP boundary tolerance is small but larger than machine epsilon.
@@ -41,88 +39,21 @@ class PinkControlIKConfig(BaseConfig):
 
     robot_model: RobotModelConfig
     solver: str = "proxqp"
-    max_velocity: float = Field(10.0, gt=0.0)
-    lm_damping: float = Field(1e-4, gt=0.0)
-    task_gain: float = Field(1.0, gt=0.0)
-    position_cost: float = Field(1.0, ge=0.0)
-    orientation_cost: float = Field(1.0, ge=0.0)
-    posture_cost: float = Field(1e-3, ge=0.0)
-    min_dt: float = Field(1e-4, gt=0.0)
-    max_dt: float = Field(0.05, gt=0.0)
+    max_velocity: FiniteFloat = Field(10.0, gt=0.0)
+    lm_damping: FiniteFloat = Field(1e-4, gt=0.0)
+    task_gain: FiniteFloat = Field(1.0, gt=0.0)
+    position_cost: FiniteFloat = Field(1.0, ge=0.0)
+    orientation_cost: FiniteFloat = Field(1.0, ge=0.0)
+    posture_cost: FiniteFloat = Field(1e-3, ge=0.0)
     reference_q: list[float] | None = None
-    qpsolver_options: dict[str, float] = Field(default_factory=dict)
+    qpsolver_options: dict[str, FiniteFloat] = Field(default_factory=dict)
 
     @field_validator("robot_model", mode="before")
     @classmethod
-    def _rebuild_robot_model(cls, value: object) -> RobotModelConfig:
-        if isinstance(value, RobotModelConfig):
-            return value
-        if not isinstance(value, Mapping):
-            raise ValueError("Pink robot_model must be a serialized RobotModelConfig")
-        payload = dict(value)
-        base_pose = payload.get("base_pose")
-        if isinstance(base_pose, Mapping):
-            position = base_pose.get("position")
-            orientation = base_pose.get("orientation")
-            if not isinstance(position, list) or not isinstance(orientation, list):
-                raise ValueError("serialized RobotModelConfig base_pose is invalid")
-            payload["base_pose"] = PoseStamped(
-                ts=float(base_pose.get("ts", 0.0)),
-                frame_id=str(base_pose.get("frame_id", "")),
-                position=position,
-                orientation=orientation,
-            )
-        return RobotModelConfig.model_validate(payload)
-
-    @field_validator(
-        "max_velocity",
-        "lm_damping",
-        "task_gain",
-        "position_cost",
-        "orientation_cost",
-        "posture_cost",
-        "min_dt",
-        "max_dt",
-    )
-    @classmethod
-    def _finite_numeric_setting(cls, value: float) -> float:
-        if not np.isfinite(value):
-            raise ValueError("control IK numeric settings must be finite")
+    def _accept_robot_model(cls, value: object) -> RobotModelConfig:
+        if not isinstance(value, RobotModelConfig):
+            raise TypeError("Pink robot_model must be a RobotModelConfig instance")
         return value
-
-    @field_validator("qpsolver_options")
-    @classmethod
-    def _finite_qpsolver_options(cls, value: dict[str, float]) -> dict[str, float]:
-        if any(not np.isfinite(option) for option in value.values()):
-            raise ValueError("control IK QP options must be finite")
-        return value
-
-    @model_validator(mode="after")
-    def _validate_robot_settings(self) -> PinkControlIKConfig:
-        robot = self.robot_model
-        if not robot.end_effector_link:
-            raise ValueError("Pink control requires a named end-effector frame")
-        if self.max_dt < self.min_dt:
-            raise ValueError("control IK dt bounds must be ordered")
-        joint_count = len(robot.get_coordinator_joint_names())
-        if (robot.joint_limits_lower is None) != (robot.joint_limits_upper is None):
-            raise ValueError("both configured joint limit bounds are required")
-        for bounds in (robot.joint_limits_lower, robot.joint_limits_upper, robot.velocity_limits):
-            if bounds is not None and len(bounds) != joint_count:
-                raise ValueError("RobotModelConfig limits must match coordinator joints")
-        if robot.joint_limits_lower is not None and robot.joint_limits_upper is not None:
-            if any(
-                not np.isfinite(lower) or not np.isfinite(upper) or lower >= upper
-                for lower, upper in zip(
-                    robot.joint_limits_lower, robot.joint_limits_upper, strict=True
-                )
-            ):
-                raise ValueError("configured joint limits must be finite and ordered")
-        if robot.velocity_limits is not None and any(
-            not np.isfinite(limit) or limit <= 0.0 for limit in robot.velocity_limits
-        ):
-            raise ValueError("configured velocity limits are invalid")
-        return self
 
 
 @dataclass(frozen=True)
@@ -131,7 +62,7 @@ class ControlIKResult:
     velocity: NDArray[np.float64]
 
 
-class PinkControlRuntimeError(RuntimeError):
+class IKControlRuntimeError(RuntimeError):
     """A runtime solver/model failure that should produce a bounded hold."""
 
 
@@ -198,6 +129,9 @@ class PinkControlIK:
         self._posture_task = (
             pink.tasks.PostureTask(cost=config.posture_cost) if config.posture_cost > 0.0 else None
         )
+        self._tasks: list[object] = [self._frame_task]
+        if self._posture_task is not None:
+            self._tasks.append(self._posture_task)
 
     @property
     def nq(self) -> int:
@@ -221,22 +155,19 @@ class PinkControlIK:
             raise ValueError("measured joint state is invalid")
         if not np.isfinite(dt) or dt <= 0.0:
             raise ValueError("control IK dt must be finite and positive")
-        dt = min(max(dt, self._config.min_dt), self._config.max_dt)
 
         configuration = self._configuration
         frame_task = self._frame_task
         if configuration is None or frame_task is None:
-            raise PinkControlRuntimeError("Pink control backend is unavailable")
+            raise IKControlRuntimeError("Pink control backend is unavailable")
         try:
             configuration.update(self._full_q(measured))
             frame_task.set_target(target)
-            tasks: list[object] = [frame_task]
             if self._posture_task is not None:
                 self._posture_task.set_target(configuration.q.copy())
-                tasks.append(self._posture_task)
             velocity = pink.solve_ik(
                 configuration,
-                tasks,
+                self._tasks,
                 dt,
                 solver=self._config.solver,
                 damping=self._config.lm_damping,
@@ -245,17 +176,17 @@ class PinkControlIK:
             )
             velocity = np.asarray(velocity, dtype=np.float64).reshape(-1)
             if velocity.size != self._model.nv or not np.all(np.isfinite(velocity)):
-                raise PinkControlRuntimeError("Pink produced an invalid velocity")
+                raise IKControlRuntimeError("Pink produced an invalid velocity")
             configuration.integrate_inplace(velocity, dt)
-            candidate = self._controlled_q(configuration.q, measured)
+            candidate = self._project_controlled_positions(configuration.q, measured)
             if candidate.size != measured.size or not np.all(np.isfinite(candidate)):
-                raise PinkControlRuntimeError("Pink produced an invalid joint candidate")
+                raise IKControlRuntimeError("Pink produced an invalid joint candidate")
             candidate = self._clamp_position_limits(candidate)
             return ControlIKResult(candidate, self._controlled_velocity(velocity))
-        except PinkControlRuntimeError:
+        except IKControlRuntimeError:
             raise
         except Exception as exc:
-            raise PinkControlRuntimeError(f"Pink control solve failed: {exc}") from exc
+            raise IKControlRuntimeError(f"Pink control solve failed: {exc}") from exc
 
     def _full_q(self, controlled: NDArray[np.float64]) -> NDArray[np.float64]:
         q = self._reference_q.copy()
@@ -267,9 +198,10 @@ class PinkControlIK:
                 q[index] = value
         return q
 
-    def _controlled_q(
+    def _project_controlled_positions(
         self, full_q: NDArray[np.float64], reference: NDArray[np.float64] | None = None
     ) -> NDArray[np.float64]:
+        """Project model coordinates to coordinator joints and unwrap continuous angles."""
         positions = np.array(
             [
                 np.arctan2(full_q[index + 1], full_q[index]) if width == 2 else full_q[index]
@@ -297,16 +229,16 @@ class PinkControlIK:
             lower = self._model.lowerPositionLimit[q_index]
             upper = self._model.upperPositionLimit[q_index]
             value = bounded[index]
-            if np.isfinite(lower) and value < lower:
+            if value < lower:
                 if lower - value <= _POSITION_LIMIT_EPSILON_RAD:
                     bounded[index] = lower
                 else:
-                    raise PinkControlRuntimeError("Pink produced an out-of-bounds joint candidate")
-            elif np.isfinite(upper) and value > upper:
+                    raise IKControlRuntimeError("Pink produced an out-of-bounds joint candidate")
+            elif value > upper:
                 if value - upper <= _POSITION_LIMIT_EPSILON_RAD:
                     bounded[index] = upper
                 else:
-                    raise PinkControlRuntimeError("Pink produced an out-of-bounds joint candidate")
+                    raise IKControlRuntimeError("Pink produced an out-of-bounds joint candidate")
         return bounded
 
     def _build_mapping(self, robot: RobotModelConfig) -> tuple[list[int], list[int]]:

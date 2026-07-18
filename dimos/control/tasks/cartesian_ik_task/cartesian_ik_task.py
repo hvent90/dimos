@@ -27,6 +27,7 @@ from typing import TYPE_CHECKING
 
 import numpy as np
 import pinocchio
+from pydantic import FiniteFloat
 
 from dimos.control.coordinator import TaskConfig
 from dimos.control.task import (
@@ -72,6 +73,19 @@ class CartesianIKTaskConfig:
     priority: int = 10
     timeout: float = 0.5
     max_joint_delta_deg: float = 15.0  # ~1500°/s at 100Hz
+    min_dt: FiniteFloat = 1e-4
+    max_dt: FiniteFloat = 0.05
+
+    def __post_init__(self) -> None:
+        if (
+            not np.isfinite(self.min_dt)
+            or not np.isfinite(self.max_dt)
+            or self.min_dt <= 0.0
+            or self.max_dt <= 0.0
+        ):
+            raise ValueError("CartesianIKTask dt bounds must be finite and positive")
+        if self.max_dt < self.min_dt:
+            raise ValueError("CartesianIKTask dt bounds must be ordered")
 
 
 class CartesianIKTask(BaseControlTask):
@@ -202,9 +216,10 @@ class CartesianIKTask(BaseControlTask):
         if not np.all(np.isfinite(q_current)):
             logger.error("CartesianIKTask %s: measured joint state is non-finite", self._name)
             return None
-        dt = self._clamped_dt(state.dt)
-        if dt is None:
+        raw_dt = state.dt
+        if not np.isfinite(raw_dt) or raw_dt <= 0.0:
             return self._hold(q_current)
+        dt = min(max(raw_dt, self._config.min_dt), self._config.max_dt)
         try:
             target_pose = self._prepare_target(state, q_current, dt)
         except (FloatingPointError, RuntimeError, ValueError) as exc:
@@ -287,12 +302,6 @@ class CartesianIKTask(BaseControlTask):
         if not np.all(np.isfinite(values)):
             return None
         return target
-
-    def _clamped_dt(self, dt: float) -> float | None:
-        if not np.isfinite(dt) or dt <= 0.0:
-            return None
-        bounds = self._config.control_ik
-        return min(max(dt, bounds.min_dt), bounds.max_dt)
 
     def _on_timeout(self) -> None:
         """Hook for target sources with state outside the Cartesian pose cache."""
@@ -385,6 +394,8 @@ class CartesianIKTask(BaseControlTask):
 
 class CartesianIKTaskParams(BaseConfig):
     control_ik: PinkControlIKConfig
+    min_dt: FiniteFloat = 1e-4
+    max_dt: FiniteFloat = 0.05
 
 
 def create_task(cfg: TaskConfig, hardware: object) -> CartesianIKTask:
@@ -394,6 +405,8 @@ def create_task(cfg: TaskConfig, hardware: object) -> CartesianIKTask:
         CartesianIKTaskConfig(
             joint_names=cfg.joint_names,
             priority=cfg.priority,
+            min_dt=params.min_dt,
+            max_dt=params.max_dt,
             control_ik=params.control_ik,
         ),
     )
