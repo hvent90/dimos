@@ -483,6 +483,7 @@ def pick_case(
         dataset,
         final.occupied,
         turbo_by_height(final.occupied),
+        final.voxel_size,
         foot,
         suite.cases,
         save_pair,

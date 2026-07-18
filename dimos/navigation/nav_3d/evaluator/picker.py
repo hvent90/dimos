@@ -29,7 +29,7 @@ from __future__ import annotations
 
 from dataclasses import dataclass
 import threading
-from typing import TYPE_CHECKING, Literal, cast
+from typing import TYPE_CHECKING
 
 import numpy as np
 
@@ -76,6 +76,62 @@ INSTRUCTIONS = """**shift+click** picks START then GOAL, repeated per case.
 **click** an endpoint sphere to highlight and open its case.
 Plain drag orbits, scroll zooms, right-drag pans.
 """
+
+# three.js ACES filmic tone mapping, the fitted curve and its color
+# matrices. Applied by the viewer to mesh materials but not to the point
+# and line shaders.
+_ACES_INPUT = np.array(
+    [
+        [0.59719, 0.35458, 0.04823],
+        [0.07600, 0.90834, 0.13383],
+        [0.02840, 0.01566, 0.83777],
+    ]
+)
+_ACES_OUTPUT = np.array(
+    [
+        [1.60475, -0.53108, -0.07367],
+        [-0.10208, 1.10813, -0.00605],
+        [-0.00327, -0.07276, 1.07602],
+    ]
+)
+# White scene lights, bright enough that inverse-tone-mapped albedos fit
+# in [0, 1]. LIGHT_REFERENCE is the ambient plus directional total on a
+# typical face; faces above or below it shade brighter or darker.
+_AMBIENT_INTENSITY = 3.5
+_DIRECTIONAL_INTENSITY = 2.0
+_LIGHT_REFERENCE = 4.6
+
+
+def _prelit_albedo(srgb: NDArray[np.uint8]) -> NDArray[np.float64]:
+    """Linear albedo that tone-maps back to the wanted sRGB color when lit.
+
+    Voxel cubes are lit meshes, so the viewer runs them through ACES tone
+    mapping and would desaturate the height colormap. Feeding the inverse
+    curve through the material albedo cancels that out at the reference
+    light level.
+    """
+    c = srgb.astype(np.float64) / 255.0
+    lin = np.where(c <= 0.04045, c / 12.92, ((c + 0.055) / 1.055) ** 2.4)
+    t = np.clip(lin @ np.linalg.inv(_ACES_OUTPUT).T, 0.0, 0.99)
+    a2 = 1.0 - 0.983729 * t
+    a1 = 0.0245786 - 0.4329510 * t
+    a0 = -0.000090537 - 0.238081 * t
+    v = (-a1 + np.sqrt(a1 * a1 - 4.0 * a2 * a0)) / (2.0 * a2)
+    x = 0.6 * (v @ np.linalg.inv(_ACES_INPUT).T)
+    return np.clip(x / _LIGHT_REFERENCE, 0.0, 1.0)
+
+
+def _cube_colors(srgb: NDArray[np.uint8]) -> NDArray[np.uint8]:
+    """Per-instance cube colors. The viewer reads these as linear RGB."""
+    return np.asarray((_prelit_albedo(srgb) * 255.0).round(), dtype=np.uint8)
+
+
+def _marker_color(srgb: tuple[int, int, int]) -> tuple[int, int, int]:
+    """Marker mesh color. The viewer reads this as sRGB."""
+    albedo = _prelit_albedo(np.array(srgb, dtype=np.uint8))
+    out = np.where(albedo <= 0.0031308, albedo * 12.92, 1.055 * albedo ** (1 / 2.4) - 0.055)
+    r, g, b = (out * 255.0).round().astype(int)
+    return int(r), int(g), int(b)
 
 
 def pick_along_ray(
@@ -316,6 +372,7 @@ def pick_cases(
     dataset: str,
     map_points: NDArray[np.float32],
     map_colors: NDArray[np.uint8],
+    voxel_size: float,
     walked: NDArray[np.float32],
     cases: Sequence[Case],
     save_pair: SavePair,
@@ -329,13 +386,48 @@ def pick_cases(
     server.gui.configure_theme(dark_mode=True)
     server.scene.set_background_image(np.full((1, 1, 3), 14, dtype=np.uint8))
     server.scene.set_up_direction("+z")
-    cloud = server.scene.add_point_cloud(
+    # Neutral white lighting instead of the default HDRI environment map,
+    # which tints the height colormap.
+    server.scene.configure_environment_map(None)
+    server.scene.configure_default_lights(enabled=False)
+    server.scene.add_light_ambient("/lights/ambient", intensity=_AMBIENT_INTENSITY)
+    server.scene.add_light_directional(
+        "/lights/sun", intensity=_DIRECTIONAL_INTENSITY, position=(1.0, 2.0, 3.0)
+    )
+    # Cubes sit slightly under the voxel size so neighbors show a seam
+    # instead of z-fighting, keeping individual voxels distinguishable.
+    half = 0.42 * voxel_size
+    corners = half * np.array(
+        [[x, y, z] for x in (-1, 1) for y in (-1, 1) for z in (-1, 1)], dtype=np.float32
+    )
+    cube_faces = np.array(
+        [
+            [0, 1, 3],
+            [0, 3, 2],
+            [4, 6, 7],
+            [4, 7, 5],
+            [0, 4, 5],
+            [0, 5, 1],
+            [2, 3, 7],
+            [2, 7, 6],
+            [0, 2, 6],
+            [0, 6, 4],
+            [1, 5, 7],
+            [1, 7, 3],
+        ]
+    )
+    identity_quats = np.zeros((len(map_points), 4), dtype=np.float32)
+    identity_quats[:, 0] = 1.0
+    server.scene.add_batched_meshes_simple(
         "/map",
-        map_points,
-        map_colors,
-        point_size=0.025,
-        point_shape="circle",
-        precision="float32",
+        corners,
+        cube_faces,
+        batched_wxyzs=identity_quats,
+        batched_positions=map_points,
+        batched_colors=_cube_colors(map_colors),
+        flat_shading=True,
+        cast_shadow=False,
+        receive_shadow=False,
     )
     if len(walked) >= 2:
         segments = np.stack([walked[:-1], walked[1:]], axis=1)
@@ -353,29 +445,6 @@ def pick_cases(
 
     server.gui.add_markdown(INSTRUCTIONS)
     selected_line = server.gui.add_markdown("selected: —")
-    with server.gui.add_folder("display", expand_by_default=False):
-        size_slider = server.gui.add_slider(
-            "point size", min=0.005, max=0.08, step=0.0025, initial_value=cloud.point_size
-        )
-        shape_dropdown = server.gui.add_dropdown(
-            "shape", ("circle", "rounded", "square", "diamond"), initial_value="circle"
-        )
-        shaded_box = server.gui.add_checkbox("shaded", True)
-
-        @size_slider.on_update
-        def _(_event: object) -> None:
-            cloud.point_size = size_slider.value
-
-        @shape_dropdown.on_update
-        def _(_event: object) -> None:
-            cloud.point_shape = cast(
-                "Literal['circle', 'rounded', 'square', 'diamond']", shape_dropdown.value
-            )
-
-        @shaded_box.on_update
-        def _(_event: object) -> None:
-            cloud.point_shading = "gradient" if shaded_box.value else "flat"
-
     undo_button = server.gui.add_button("undo last pick")
     save_all_button = server.gui.add_button("save all unsaved")
     exit_button = server.gui.add_button("save all & exit")
@@ -412,7 +481,7 @@ def pick_cases(
         return server.scene.add_icosphere(
             f"/picks/m{marker_seq}",
             radius=0.09,
-            color=color,
+            color=_marker_color(color),
             position=(float(point[0]), float(point[1]), float(point[2]) + 0.05),
         )
 
