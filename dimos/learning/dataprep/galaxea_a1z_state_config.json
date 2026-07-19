@@ -5,6 +5,10 @@
     "status_stream": "status"
   },
   "observation": {
+    "image": {
+      "stream": "color_image",
+      "field": "data"
+    },
     "joint_state": {
       "stream": "coordinator_joint_state",
       "field": "position"
@@ -17,9 +21,9 @@
     }
   },
   "sync": {
-    "anchor": "joint_state",
-    "rate_hz": 50.0,
-    "tolerance_ms": 20.0,
+    "anchor": "image",
+    "rate_hz": 15.0,
+    "tolerance_ms": 80.0,
     "action_shift": 1
   },
   "output": {

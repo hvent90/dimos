@@ -43,6 +43,12 @@ def teach(
         help="Memory2 .db output (default: timestamped file under the DimOS state directory)",
     ),
     task: str | None = typer.Option(None, "--task", help="Task label stored with each episode"),
+    camera_index: int = typer.Option(
+        0,
+        "--camera-index",
+        min=0,
+        help="Linux camera index N for /dev/videoN",
+    ),
 ) -> None:
     """Hand-teach episodes into one Memory2 recording."""
     from dimos.core.coordination.module_coordinator import ModuleCoordinator
@@ -58,6 +64,7 @@ def teach(
 
     typer.echo("A1Z hand-teach mode")
     typer.echo(f"Recording: {db_path}")
+    typer.echo(f"Camera: /dev/video{camera_index} (640x480 at 15 FPS)")
     typer.echo("The arm and gripper will become hand-drivable after startup.")
     typer.echo("Keep the arm supported: it has no brakes and can fall when motors disable.\n")
 
@@ -65,7 +72,11 @@ def teach(
     recording = False
     try:
         coordinator = ModuleCoordinator.build(
-            make_a1z_teach_blueprint(db_path, task_label=task),
+            make_a1z_teach_blueprint(
+                db_path,
+                task_label=task,
+                camera_index=camera_index,
+            ),
             {},
         )
         monitor: Any = coordinator.get_instance(EpisodeMonitorModule)

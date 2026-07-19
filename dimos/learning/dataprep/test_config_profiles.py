@@ -22,7 +22,8 @@ def test_a1z_dataprep_profile_is_valid() -> None:
 
     config = DataPrepConfig.model_validate_json(path.read_text())
 
-    assert config.sync.anchor == "joint_state"
-    assert set(config.observation) == {"joint_state"}
+    assert config.sync.anchor == "image"
+    assert config.sync.rate_hz == 15.0
+    assert set(config.observation) == {"image", "joint_state"}
     assert set(config.action) == {"joint_target"}
     assert config.output.metadata["robot"] == "galaxea_a1z"

@@ -19,10 +19,19 @@ from pathlib import Path
 import numpy as np
 import pytest
 
+from dimos.hardware.sensors.camera.module import CameraModule
+from dimos.hardware.sensors.camera.webcam import Webcam
 from dimos.learning.collection.episode_monitor import EpisodeStatus
+from dimos.learning.collection.recorder import CollectionRecorder
 from dimos.learning.dataprep.core import Episode
 from dimos.memory2.store.sqlite import SqliteStore
 from dimos.msgs.sensor_msgs.JointState import JointState
+from dimos.robot.manipulators.galaxea_a1z.blueprints.basic import (
+    A1Z_TEACH_CAMERA_FPS,
+    A1Z_TEACH_CAMERA_HEIGHT,
+    A1Z_TEACH_CAMERA_WIDTH,
+    make_a1z_teach_blueprint,
+)
 from dimos.robot.manipulators.galaxea_a1z.teach_replay import (
     A1Z_JOINT_NAMES,
     RecordedEpisode,
@@ -45,6 +54,27 @@ def _recorded(positions: np.ndarray, period: float = 0.1) -> RecordedEpisode:
         timestamps=timestamps,
         positions=positions,
     )
+
+
+def test_teach_blueprint_records_from_configured_webcam(tmp_path: Path) -> None:
+    blueprint = make_a1z_teach_blueprint(tmp_path / "teach.db", camera_index=3)
+    camera_atom = next(atom for atom in blueprint.blueprints if atom.module is CameraModule)
+    recorder_atom = next(atom for atom in blueprint.blueprints if atom.module is CollectionRecorder)
+
+    camera = camera_atom.kwargs["hardware"]()
+
+    assert isinstance(camera, Webcam)
+    assert camera.config.camera_index == 3
+    assert (camera.config.width, camera.config.height, camera.config.fps) == (
+        A1Z_TEACH_CAMERA_WIDTH,
+        A1Z_TEACH_CAMERA_HEIGHT,
+        A1Z_TEACH_CAMERA_FPS,
+    )
+    assert camera.config.frame_id_prefix is None
+    transform = camera_atom.kwargs["transform"]
+    assert (transform.frame_id, transform.child_frame_id) == ("coordinator", "camera_link")
+    assert recorder_atom.kwargs["tf_tolerance"] == 1.5
+    assert blueprint.blueprints.index(camera_atom) > blueprint.blueprints.index(recorder_atom)
 
 
 def test_loads_saved_memory2_episode_and_orders_joints(tmp_path: Path) -> None:

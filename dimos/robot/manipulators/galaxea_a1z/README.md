@@ -34,3 +34,40 @@ driver patch built for their exact kernel.
 
 The A1Z has no brakes. Support the arm and keep the workspace clear before
 starting a hardware blueprint. Enabling the G1Z also initializes the gripper.
+
+## Camera, teach, replay, and LeRobot export
+
+The teach command uses a standard Linux UVC camera through DimOS's generic
+`Webcam` and `CameraModule`. The default camera is `/dev/video0`; select another
+video device with `--camera-index N`. Each saved episode contains 640x480 RGB
+images at 15 Hz plus the measured six arm joints and gripper position.
+
+After the CAN setup check passes, record one or more episodes:
+
+```bash
+uv run dimos a1z teach --task "pick up the object"
+```
+
+The command prints the Memory2 `.db` path. Replay a saved episode by passing
+that path (the latest saved episode is selected by default):
+
+```bash
+uv run dimos a1z replay ~/.local/state/dimos/recordings/a1z_teach_<timestamp>.db
+```
+
+Convert the same recording into a LeRobot v3 dataset with synchronized video,
+seven-element observation state, and seven-element action:
+
+```bash
+uv run dimos dataprep build \
+  --source ~/.local/state/dimos/recordings/a1z_teach_<timestamp>.db \
+  --output ./a1z_lerobot_dataset \
+  --format lerobot \
+  --config dimos/learning/dataprep/galaxea_a1z_state_config.json
+
+uv run dimos dataprep inspect ./a1z_lerobot_dataset
+```
+
+The LeRobot output stores images as
+`observation.images.image`, the measured arm and gripper state as
+`observation.state`, and the next measured state as `action`.
