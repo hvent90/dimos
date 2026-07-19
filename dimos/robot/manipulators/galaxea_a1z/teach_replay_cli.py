@@ -27,6 +27,12 @@ from dimos.constants import STATE_DIR
 
 app = typer.Typer(help="Record and replay Galaxea A1Z hand-taught episodes")
 
+_TEACH_HARDWARE_ID = "arm"
+# Matches the adapter's default G1Z max opening; the adapter clamps to the
+# configured range, so a full-open command stays correct if that changes.
+_GRIPPER_OPEN_M = 0.1
+_GRIPPER_CLOSED_M = 0.0
+
 
 def _default_recording_path() -> Path:
     return STATE_DIR / "recordings" / f"a1z_teach_{datetime.now():%Y%m%d_%H%M%S}.db"
@@ -34,6 +40,38 @@ def _default_recording_path() -> Path:
 
 def _press_enter(message: str) -> None:
     typer.prompt(message, default="", show_default=False)
+
+
+def _read_key(message: str) -> str:
+    """Read one keypress without waiting for ENTER.
+
+    Returns the lowercased character; ENTER is normalized to "". Falls back
+    to line input when stdin is not an interactive terminal.
+    """
+    import sys
+
+    typer.echo(message)
+    if not sys.stdin.isatty():
+        line = sys.stdin.readline()
+        if not line:
+            raise EOFError
+        return line.strip().lower()[:1]
+
+    import termios
+    import tty
+
+    fd = sys.stdin.fileno()
+    saved = termios.tcgetattr(fd)
+    try:
+        tty.setcbreak(fd)
+        key = sys.stdin.read(1)
+    finally:
+        termios.tcsetattr(fd, termios.TCSADRAIN, saved)
+    if key == "\x03":  # Ctrl-C arrives as a literal byte in cbreak mode
+        raise KeyboardInterrupt
+    if key in ("\r", "\n"):
+        return ""
+    return key.lower()
 
 
 @app.command()
@@ -49,8 +87,15 @@ def teach(
         min=0,
         help="Linux camera index N for /dev/videoN",
     ),
+    gripper_free_drive: bool = typer.Option(
+        False,
+        "--gripper-free-drive",
+        help="Zero-torque gripper you pinch by hand (legacy); default keeps the "
+        "gripper powered and toggled with g so your hand stays out of the camera",
+    ),
 ) -> None:
     """Hand-teach episodes into one Memory2 recording."""
+    from dimos.control.coordinator import ControlCoordinator
     from dimos.core.coordination.module_coordinator import ModuleCoordinator
     from dimos.learning.collection.episode_monitor import EpisodeMonitorModule
     from dimos.robot.manipulators.galaxea_a1z.blueprints.basic import (
@@ -65,54 +110,72 @@ def teach(
     typer.echo("A1Z hand-teach mode")
     typer.echo(f"Recording: {db_path}")
     typer.echo(f"Camera: /dev/video{camera_index} (640x480 at 15 FPS)")
-    typer.echo("The arm and gripper will become hand-drivable after startup.")
+    typer.echo("The arm will become hand-drivable after startup.")
+    if gripper_free_drive:
+        typer.echo("Gripper: free drive (open and close it by hand).")
+    else:
+        typer.echo("Gripper: powered; type g then ENTER to toggle open/closed.")
     typer.echo("Keep the arm supported: it has no brakes and can fall when motors disable.\n")
 
     coordinator: ModuleCoordinator | None = None
     recording = False
+    gripper_open: bool | None = None
+
     try:
         coordinator = ModuleCoordinator.build(
             make_a1z_teach_blueprint(
                 db_path,
                 task_label=task,
                 camera_index=camera_index,
+                gripper_free_drive=gripper_free_drive,
             ),
             {},
         )
         monitor: Any = coordinator.get_instance(EpisodeMonitorModule)
+        control: Any = coordinator.get_instance(ControlCoordinator)
+        if not gripper_free_drive:
+            measured = control.get_gripper_position(_TEACH_HARDWARE_ID)
+            gripper_open = measured is not None and measured > _GRIPPER_OPEN_M / 2
         typer.echo("Ready. Move only after starting an episode.")
+
+        def _toggle_gripper() -> None:
+            nonlocal gripper_open
+            if gripper_free_drive:
+                typer.echo("Gripper is in free drive; open and close it by hand.")
+                return
+            target_open = not gripper_open
+            target = _GRIPPER_OPEN_M if target_open else _GRIPPER_CLOSED_M
+            if control.set_gripper_position(_TEACH_HARDWARE_ID, target):
+                gripper_open = target_open
+                typer.echo(f"Gripper {'opening' if target_open else 'closing'}.")
+            else:
+                typer.echo("Gripper command rejected; check hardware state.", err=True)
 
         while True:
             if not recording:
-                command = (
-                    typer.prompt(
-                        "Press ENTER to start an episode, or q to finish",
-                        default="",
-                        show_default=False,
-                    )
-                    .strip()
-                    .lower()
+                command = _read_key(
+                    "Press ENTER to start an episode, g to toggle the gripper, or q to finish"
                 )
                 if command == "q":
                     break
+                if command == "g":
+                    _toggle_gripper()
+                    continue
                 if command:
-                    typer.echo("Use ENTER to start or q to finish.")
+                    typer.echo("Use ENTER to start, g for the gripper, or q to finish.")
                     continue
                 monitor.start_episode()
                 recording = True
-                typer.echo("RECORDING — move the arm and gripper by hand.")
+                typer.echo("RECORDING — move the arm by hand; g toggles the gripper.")
                 continue
 
-            command = (
-                typer.prompt(
-                    "Press ENTER to save, d to discard, or q to discard and finish",
-                    default="",
-                    show_default=False,
-                )
-                .strip()
-                .lower()
+            command = _read_key(
+                "Press ENTER to save, g to toggle the gripper, d to discard, "
+                "or q to discard and finish"
             )
-            if command == "d":
+            if command == "g":
+                _toggle_gripper()
+            elif command == "d":
                 monitor.discard_episode()
                 recording = False
                 typer.echo("Episode discarded.")
@@ -126,7 +189,7 @@ def teach(
                 recording = False
                 typer.echo(f"Episode saved ({status.episodes_saved} total).")
             else:
-                typer.echo("Use ENTER to save, d to discard, or q to finish.")
+                typer.echo("Use ENTER to save, g for the gripper, d to discard, or q to finish.")
     except KeyboardInterrupt:
         if coordinator is not None and recording:
             monitor = coordinator.get_instance(EpisodeMonitorModule)

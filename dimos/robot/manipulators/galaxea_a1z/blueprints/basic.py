@@ -61,15 +61,22 @@ def make_a1z_teach_blueprint(
     *,
     task_label: str | None = None,
     camera_index: int = 0,
+    gripper_free_drive: bool = False,
 ) -> Blueprint:
-    """Record camera and measured arm/gripper state while hand-drivable."""
+    """Record camera and measured arm/gripper state while hand-drivable.
+
+    The arm is always hand-drivable (zero gravity). The gripper defaults to
+    powered position control so it can be opened/closed from the keyboard,
+    keeping the operator's hand out of the wrist camera; pass
+    gripper_free_drive=True for the legacy pinch-by-hand behavior.
+    """
     hardware = galaxea_a1z_hardware(
         "arm",
         gripper=True,
         dynamics_urdf_path=_A1Z_DYNAMICS_URDF,
         adapter_kwargs={
             "zero_gravity": True,
-            "gripper_free_drive": True,
+            "gripper_free_drive": gripper_free_drive,
         },
     )
     return autoconnect(
