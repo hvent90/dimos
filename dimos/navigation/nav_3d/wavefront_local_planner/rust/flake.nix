@@ -1,5 +1,5 @@
 {
-  description = "dimos-repulsive-field: native Rust repulsive-field local planner";
+  description = "dimos-wavefront: native Rust wavefront local planner";
 
   inputs = {
     nixpkgs.url = "github:NixOS/nixpkgs/nixos-unstable";
@@ -10,7 +10,7 @@
     # viable alternative for reaching local path deps outside the flake dir currently
     # presumably an alternative will be added before this is removed.
     # This crate is 5 dirs below repo root
-    # (dimos/navigation/nav_3d/repulsive_local_planner/rust), so go up 5.
+    # (dimos/navigation/nav_3d/wavefront_local_planner/rust), so go up 5.
     # Track this feature branch: its dimos-module differs from main and is the
     # version this crate compiles against.
     dimos-repo = { url = "git+file:../../../../..?ref=jeff/feat/local_plan"; flake = false; };
@@ -22,12 +22,12 @@
         overlays = [ (import rust-overlay) ];
         pkgs = import nixpkgs { inherit system overlays; };
 
-        cargoRoot = "dimos/navigation/nav_3d/repulsive_local_planner/rust";
+        cargoRoot = "dimos/navigation/nav_3d/wavefront_local_planner/rust";
 
         # Assemble a source tree that also contains the two local path deps
         # (dimos-module + dimos-module-macros) the crate references via
         # ../../../../../native/rust. Shared by native + cross builds.
-        src = pkgs.runCommand "dimos-repulsive-field-src" {} ''
+        src = pkgs.runCommand "dimos-wavefront-src" {} ''
           mkdir -p $out/${cargoRoot}
           cp -r ${./src} $out/${cargoRoot}/src
           cp ${./Cargo.toml} $out/${cargoRoot}/Cargo.toml
@@ -58,20 +58,20 @@
         };
 
         commonArgs = {
-          pname = "dimos-repulsive-field";
+          pname = "dimos-wavefront";
           version = "0.1.0";
           inherit src;
           inherit cargoRoot;
           buildAndTestSubdir = cargoRoot;
-          cargoHash = "sha256-2g1oWdr4RyMFoujGo+QPd52661oNt6hAsuHBwzGNOdQ=";
-          meta.mainProgram = "repulsive_field";
+          cargoHash = "sha256-sRzHsjVWzmL7HE9TOsg+/v49psLkfSzFEAckIcban+4=";
+          meta.mainProgram = "wavefront";
         };
 
         # ── native build (host system) ──────────────────────────────────────
-        # Binary-only: just the repulsive_field bin (native feature is the
+        # Binary-only: just the wavefront bin (native feature is the
         # default, and the bin requires it). No lib/wasm/web, no tests.
         buildNative = pkgs.rustPlatform.buildRustPackage (commonArgs // {
-          cargoBuildFlags = [ "--bin" "repulsive_field" ];
+          cargoBuildFlags = [ "--bin" "wavefront" ];
           doCheck = false;
           postInstall = ''
             rm -rf $out/lib
@@ -89,19 +89,19 @@
             ccPrefix    = ccPkgs.stdenv.cc.targetPrefix;
           in
           rustPlatform.buildRustPackage (commonArgs // {
-            pname = "dimos-repulsive-field-${rustTarget}";
+            pname = "dimos-wavefront-${rustTarget}";
             doCheck = false;
 
             buildPhase = ''
               runHook preBuild
-              ( cd ${cargoRoot} && cargo build --release --target ${rustTarget} --bin repulsive_field )
+              ( cd ${cargoRoot} && cargo build --release --target ${rustTarget} --bin wavefront )
               runHook postBuild
             '';
 
             installPhase = ''
               runHook preInstall
               mkdir -p $out/bin
-              install -m755 ${cargoRoot}/target/${rustTarget}/release/repulsive_field $out/bin/repulsive_field
+              install -m755 ${cargoRoot}/target/${rustTarget}/release/wavefront $out/bin/wavefront
               # Keep the output binary-only.
               rm -rf $out/lib
               runHook postInstall
@@ -121,7 +121,7 @@
       in {
         packages = {
           default = buildNative;
-          repulsive_field-aarch64 =
+          wavefront-aarch64 =
             buildCross "aarch64-unknown-linux-musl" pkgsCrossArm64;
         };
       });

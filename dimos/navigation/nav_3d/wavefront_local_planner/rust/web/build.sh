@@ -5,5 +5,5 @@ set -euo pipefail
 cd "$(dirname "$0")/.."
 cargo build --release --target wasm32-unknown-unknown --no-default-features --features wasm
 wasm-bindgen --target web --out-dir web/pkg \
-    target/wasm32-unknown-unknown/release/dimos_repulsive_field.wasm
+    target/wasm32-unknown-unknown/release/dimos_wavefront.wasm
 echo "serve with: python3 -m http.server -d web 8094"

@@ -15,7 +15,7 @@
 // Copyright 2026 Dimensional Inc.
 // SPDX-License-Identifier: Apache-2.0
 
-//! Native repulsive-field local planner: GENUINE high-rate solves.
+//! Native wavefront local planner: GENUINE high-rate solves.
 //!
 //! The Python module re-anchored a cached plan at 60 Hz and only re-SOLVED at
 //! ~2-4 Hz (a solve was 200-300 ms of numpy); the stability machinery that grew
@@ -36,8 +36,8 @@ use std::sync::{Arc, Mutex};
 use std::time::{Duration, Instant, SystemTime, UNIX_EPOCH};
 
 use dimos_module::{error_throttled, native_config, run, Input, LcmTransport, Module, Output};
-use dimos_repulsive_field::costmap::{self, CostmapConfig, LevelTracker};
-use dimos_repulsive_field::solver::{self, SolverConfig};
+use dimos_wavefront::costmap::{self, CostmapConfig, LevelTracker};
+use dimos_wavefront::solver::{self, SolverConfig};
 use lcm_msgs::geometry_msgs::{Point, Pose, PoseStamped, Quaternion};
 use lcm_msgs::nav_msgs::{Odometry, Path};
 use lcm_msgs::sensor_msgs::{PointCloud2, PointField};
@@ -122,7 +122,7 @@ pub struct Config {
 
     /// Stop publishing local_path once the robot is within this distance of the
     /// final goal AND the solve can no longer make forward progress toward it
-    /// (arrived, or as close as the repulsion field allows). Solves continue at
+    /// (arrived, or as close as the clearance cost allows). Solves continue at
     /// solve_hz so publishing resumes the instant the goal moves or a path opens
     /// up — this only silences the steady stream of near-zero-length paths that
     /// otherwise churns the trajectory follower at the goal.
@@ -198,7 +198,7 @@ struct SharedState {
 
 #[derive(Module)]
 #[module(setup = spawn_worker, teardown = stop_worker)]
-struct RepulsiveField {
+struct Wavefront {
     #[input(decode = PointCloud2::decode, handler = on_terrain_map)]
     terrain_map: Input<PointCloud2>,
 
@@ -224,7 +224,7 @@ struct RepulsiveField {
     worker: Option<tokio::task::JoinHandle<()>>,
 }
 
-impl RepulsiveField {
+impl Wavefront {
     async fn spawn_worker(&mut self) {
         let worker = Worker {
             state: Arc::clone(&self.state),
@@ -323,27 +323,6 @@ impl RepulsiveField {
     }
 }
 
-/// Drop terrain points inside the robot's oriented footprint at `pose` (x, y, yaw).
-/// We are standing there, so those returns are the robot/ground, not obstacles;
-/// removing them stops a phantom self-return from blocking the planner's start.
-fn drop_footprint_points(
-    points: &mut Vec<[f32; 3]>,
-    pose: (f32, f32, f32),
-    half_len: f32,
-    half_w: f32,
-    offset: f32,
-) {
-    let (c, s) = (pose.2.cos(), pose.2.sin());
-    let cx = pose.0 + offset * c;
-    let cy = pose.1 + offset * s;
-    points.retain(|p| {
-        let (lx, ly) = (p[0] - cx, p[1] - cy);
-        let along = lx * c + ly * s;
-        let lat = -lx * s + ly * c;
-        !(along.abs() <= half_len && lat.abs() <= half_w)
-    });
-}
-
 struct Worker {
     state: Shared<SharedState>,
     config: Config,
@@ -417,7 +396,7 @@ impl Worker {
                 // return inside the robot's own oriented footprint is the robot or
                 // the ground under it, never an obstacle. Drop those points before
                 // the build so a phantom self-return can't wall off the start cell.
-                drop_footprint_points(
+                costmap::drop_footprint_points(
                     &mut points,
                     pose,
                     self.config.robot_length * 0.5,
@@ -425,12 +404,20 @@ impl Worker {
                     self.config.footprint_offset,
                 );
                 let reference = level.update(robot.z, costmap_cfg.level_hysteresis);
-                map = Some(costmap::build(
-                    &points,
-                    (pose.0, pose.1, robot.z),
-                    reference,
-                    &costmap_cfg,
-                ));
+                let mut built =
+                    costmap::build(&points, (pose.0, pose.1, robot.z), reference, &costmap_cfg);
+                // ... and clear any lethal CELL under the footprint after the
+                // build: dropping the points leaves boundary-straddling cells
+                // with only their outside returns, which can read as a cliff
+                // edge at the robot's own nose and wall in the stance.
+                costmap::clear_footprint_cells(
+                    &mut built,
+                    pose,
+                    self.config.robot_length * 0.5,
+                    self.config.robot_width * 0.5,
+                    self.config.footprint_offset,
+                );
+                map = Some(built);
                 terrain_at = Some(Instant::now());
             }
             let Some(map_ref) = map.as_ref() else {
@@ -533,7 +520,7 @@ impl Worker {
 
             // Arrival: once within arrival_stop_radius of the goal AND the solve
             // can no longer advance toward it (arrived, or pinned as close as the
-            // repulsion field allows), stop publishing local_path. Solves keep
+            // clearance field allows), stop publishing local_path. Solves keep
             // running at solve_hz, so publishing resumes the instant the goal
             // moves or a path opens up — this only silences the stream of
             // near-zero-length paths that otherwise churns the trajectory
@@ -773,5 +760,5 @@ async fn main() {
     let transport = LcmTransport::new()
         .await
         .expect("failed to create LCM transport");
-    run::<RepulsiveField, _>(transport).await;
+    run::<Wavefront, _>(transport).await;
 }

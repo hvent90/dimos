@@ -1,4 +1,4 @@
-/* @ts-self-types="./dimos_repulsive_field.d.ts" */
+/* @ts-self-types="./dimos_wavefront.d.ts" */
 
 export class DemoPlanner {
     __destroy_into_raw() {
@@ -115,7 +115,7 @@ function __wbg_get_imports() {
     };
     return {
         __proto__: null,
-        "./dimos_repulsive_field_bg.js": import0,
+        "./dimos_wavefront_bg.js": import0,
     };
 }
 
@@ -264,7 +264,7 @@ async function __wbg_init(module_or_path) {
     }
 
     if (module_or_path === undefined) {
-        module_or_path = new URL('dimos_repulsive_field_bg.wasm', import.meta.url);
+        module_or_path = new URL('dimos_wavefront_bg.wasm', import.meta.url);
     }
     const imports = __wbg_get_imports();
 

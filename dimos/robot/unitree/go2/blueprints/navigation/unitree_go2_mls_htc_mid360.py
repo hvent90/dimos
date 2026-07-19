@@ -17,7 +17,7 @@
 voxel mapping, MLS planning, and holonomic trajectory control.
 
 This is the Mid-360 counterpart to ``unitree_go2_mls_htc``: it keeps the
-DanHolonomicTC follower but swaps in the rust ``RepulsiveFieldNative`` local
+DanHolonomicTC follower but swaps in the rust ``WavefrontNative`` (wavefront) local
 planner and replaces the Go2's onboard L1 lidar (over WebRTC) with the
 head-mounted Mid-360 driven by PointLIO, matching the sensing front-end of
 ``unitree_go2_nav_3d``.
@@ -48,8 +48,8 @@ from dimos.navigation.movement_manager.movement_manager import MovementManager
 from dimos.navigation.nav_3d.mls_planner.goal_relay import GoalRelay
 from dimos.navigation.nav_3d.mls_planner.mls_planner_native import MLSPlannerNative
 from dimos.navigation.nav_3d.mls_planner.odom_body_frame import OdomBodyFrame
-from dimos.navigation.nav_3d.repulsive_local_planner.repulsive_field_native import (
-    RepulsiveFieldNative,
+from dimos.navigation.nav_3d.wavefront_local_planner.wavefront_native import (
+    WavefrontNative,
 )
 from dimos.robot.unitree.go2.blueprints.basic.unitree_go2_basic import rerun_config
 from dimos.robot.unitree.go2.connection import GO2Connection
@@ -147,7 +147,7 @@ def _render_path(msg: Any) -> Any:
 
 
 def _render_costmap(msg: Any) -> Any:
-    # RepulsiveFieldNative publishes its internal costmap's lethal cells (the
+    # WavefrontNative publishes its internal costmap's lethal cells (the
     # cells the solver actually repels from) as a flat point slice below the
     # robot. Draw them as red voxel boxes so the obstacle field is legible.
     return msg.to_rerun(colors=[255, 0, 0], mode="boxes", voxel_size=0.1)
@@ -295,7 +295,7 @@ unitree_go2_mls_htc_mid360 = autoconnect(
         ],
     ),
     GoalRelay.blueprint().remappings([(GoalRelay, "odometry", "body_odometry")]),
-    RepulsiveFieldNative.blueprint(
+    WavefrontNative.blueprint(
         world_frame="odom",
         output_base_frame=False,
         # Oriented bounding-box footprint (replaces the isotropic vehicle_width
@@ -306,13 +306,10 @@ unitree_go2_mls_htc_mid360 = autoconnect(
         resolution=0.1,  # voxel size
     ).remappings(
         [
-            (RepulsiveFieldNative, "terrain_map", "local_map"),
-            (RepulsiveFieldNative, "global_path", "planner_path"),
-            # route_tail is fed the same stream as global_path (treat them alike),
-            # so it lands on the same resolved topic, planner_path.
-            (RepulsiveFieldNative, "route_tail", "planner_path"),
-            (RepulsiveFieldNative, "local_path", "path"),
-            (RepulsiveFieldNative, "odometry", "body_odometry"),
+            (WavefrontNative, "terrain_map", "local_map"),
+            (WavefrontNative, "global_path", "planner_path"),
+            (WavefrontNative, "local_path", "path"),
+            (WavefrontNative, "odometry", "body_odometry"),
         ]
     ),
     # DanHolonomicTC tracks on a PoseStamped `odom`; GoalRelay's `start_pose` is the

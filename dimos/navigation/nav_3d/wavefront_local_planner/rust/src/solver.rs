@@ -16,8 +16,8 @@
 // SPDX-License-Identifier: Apache-2.0
 
 //! Navigation-function local planner — a faithful port of the measured Python
-//! `plan_path` in `repulsive_field/local_planner.py`: one Dijkstra wavefront
-//! rooted at the robot over a repulsive cost field (travel + clearance +
+//! `plan_path` in `wavefront/local_planner.py`: one Dijkstra wavefront
+//! rooted at the robot over a clearance-shaped cost field (travel + clearance +
 //! global-path adherence + temporal commitment), targeted at a route "carrot"
 //! (furthest reachable point along the global path within an arc budget, with
 //! a bounded gap hop for reachability flicker), backtracked, horizon-truncated,
@@ -157,7 +157,7 @@ fn polyline_distance_field(map: &Costmap, polyline: &[(f32, f32)]) -> Vec<f32> {
         }
     }
     if !any {
-        if let Some(&(x, y)) = polyline.first().map(|p| p) {
+        if let Some(&(x, y)) = polyline.first() {
             if let Some((r, c)) = map.cell(x, y) {
                 seed[r * map.width + c] = crate::costmap::LETHAL;
             }
@@ -173,6 +173,21 @@ pub struct Plan {
 
 /// One full solve (port of plan_path). The global path's last point is the
 /// goal; the planner steers toward a carrot chosen along the densified path.
+///
+/// Solves on the strict (keep-out-clear) mask first; if that makes no
+/// meaningful progress ALONG THE ROUTE while the goal is still far, re-solves
+/// on the relaxed (any non-lethal) mask and keeps whichever advances further.
+/// The start-selection fallback inside the solve only relaxes when the ROBOT
+/// has no strict cell nearby — it cannot help when a strict pocket exists
+/// behind the robot but the way FORWARD is sub-clearance (the stairs, where
+/// the terrain slice reads the treads at ~0.1 m clearance).
+///
+/// Progress is measured along the route, not as raw reach: when only the
+/// pocket BEHIND is strict-reachable, the carrot fallback emits a plan that
+/// walks meters AWAY from the goal — a healthy-looking reach pointing the
+/// wrong way. Alternating those with forward relaxed solves is exactly the
+/// flip-flopping local path seen on the stairs climb (2026-07-19): headings
+/// swinging 90-180 deg tick to tick.
 pub fn plan(
     map: &Costmap,
     global_path: &[(f32, f32)],
@@ -184,11 +199,40 @@ pub fn plan(
     if global_path.is_empty() {
         return Plan { poses: Vec::new() };
     }
-    let (carrot_budget, radius, horizon) = cfg.scaled(speed);
+    let scan_path = densify_path(global_path);
+    let first = plan_masked(map, &scan_path, robot, speed, previous_path, cfg, false);
+    let goal_far = global_path
+        .last()
+        .map(|g| (g.0 - robot.0).hypot(g.1 - robot.1) > 1.0)
+        .unwrap_or(false);
+    if goal_far {
+        // Degenerate two ways: no progress ALONG the route (a healthy-reach plan
+        // pointing the wrong way), or no reach at all (a stub, whose snapped
+        // route projection can overshoot its true progress by a scan vertex).
+        let p_first = route_progress(&scan_path, robot, &first);
+        let reach_first = first
+            .poses
+            .last()
+            .map(|e| (e.0 - robot.0).hypot(e.1 - robot.1))
+            .unwrap_or(0.0);
+        if p_first < DEGENERATE_REACH || reach_first < DEGENERATE_REACH {
+            let relaxed = plan_masked(map, &scan_path, robot, speed, previous_path, cfg, true);
+            if route_progress(&scan_path, robot, &relaxed) > p_first {
+                return relaxed;
+            }
+        }
+    }
+    first
+}
 
-    // Densify the path (0.25 m): the carrot scan and the gap-hop walk path
-    // POINTS, so sparse vertices (a 2-point straight route) would blow the arc
-    // budget in one stride and collapse the carrot to the robot cell.
+/// A plan that advances less than this along the route is a stub — the same
+/// threshold the module's degenerate-plan recovery uses for reach.
+const DEGENERATE_REACH: f32 = 0.3;
+
+/// Densify a route to ~0.25 m spacing: the carrot scan and the gap-hop walk
+/// path POINTS, so sparse vertices (a 2-point straight route) would blow the
+/// arc budget in one stride and collapse the carrot to the robot cell.
+fn densify_path(global_path: &[(f32, f32)]) -> Vec<(f32, f32)> {
     let mut scan_path: Vec<(f32, f32)> = vec![global_path[0]];
     for pair in global_path.windows(2) {
         let (a, b) = (pair[0], pair[1]);
@@ -199,6 +243,71 @@ pub fn plan(
             scan_path.push((a.0 + (b.0 - a.0) * f, a.1 + (b.1 - a.1) * f));
         }
     }
+    scan_path
+}
+
+/// Signed arc-length progress of `plan`'s endpoint along the densified route,
+/// measured from the route point nearest the robot. Negative = the plan ends
+/// BEHIND the robot's route anchor (walking away from the goal). The endpoint
+/// is matched only within the plan's own arc length of the anchor: a route
+/// that folds back near itself in 2D (a stairs switchback) would otherwise
+/// snap a short stub onto a far fold and report meters of phantom progress.
+fn route_progress(scan_path: &[(f32, f32)], robot: (f32, f32, f32), plan: &Plan) -> f32 {
+    let Some(&(ex, ey, _)) = plan.poses.last() else {
+        return 0.0;
+    };
+    let plan_len: f32 = plan
+        .poses
+        .windows(2)
+        .map(|w| (w[1].0 - w[0].0).hypot(w[1].1 - w[0].1))
+        .sum();
+    // Cumulative arc length along the route.
+    let mut arc = Vec::with_capacity(scan_path.len());
+    let mut acc = 0.0f32;
+    arc.push(0.0);
+    for pair in scan_path.windows(2) {
+        acc += (pair[1].0 - pair[0].0).hypot(pair[1].1 - pair[0].1);
+        arc.push(acc);
+    }
+    let mut anchor = 0usize;
+    let mut best_d = f32::MAX;
+    for (i, &(px, py)) in scan_path.iter().enumerate() {
+        let d = (px - robot.0).hypot(py - robot.1);
+        if d < best_d {
+            best_d = d;
+            anchor = i;
+        }
+    }
+    let window = plan_len + 0.5;
+    let mut end = anchor;
+    best_d = f32::MAX;
+    for (i, &(px, py)) in scan_path.iter().enumerate() {
+        if (arc[i] - arc[anchor]).abs() > window {
+            continue;
+        }
+        let d = (px - ex).hypot(py - ey);
+        if d < best_d {
+            best_d = d;
+            end = i;
+        }
+    }
+    arc[end] - arc[anchor]
+}
+
+#[allow(clippy::too_many_arguments)]
+fn plan_masked(
+    map: &Costmap,
+    scan_path: &[(f32, f32)],
+    robot: (f32, f32, f32),
+    speed: f32,
+    previous_path: Option<&[(f32, f32)]>,
+    cfg: &SolverConfig,
+    relax: bool,
+) -> Plan {
+    if scan_path.is_empty() {
+        return Plan { poses: Vec::new() };
+    }
+    let (carrot_budget, radius, horizon) = cfg.scaled(speed);
     let goal = *scan_path.last().unwrap();
 
     if (robot.0 - goal.0).hypot(robot.1 - goal.1) <= cfg.goal_tolerance {
@@ -227,21 +336,35 @@ pub fn plan(
     // fall back to traversing any non-lethal cell so it can still crawl toward
     // open space instead of returning a dead stub. The clearance term in `entry`
     // biases that crawl toward the widest opening, and the oriented-box validation
-    // keeps it from physically clipping a wall on the way.
-    let (robot_cell, free) = match nearest_free_cell(map, &free_strict, robot.0, robot.1) {
-        Some(c) => (c, free_strict),
-        None => {
-            let free_relaxed: Vec<bool> = (0..n).map(|i| map.cost[i] < LETHAL_THRESHOLD).collect();
-            match nearest_free_cell(map, &free_relaxed, robot.0, robot.1) {
-                Some(c) => (c, free_relaxed),
-                None => return Plan { poses: Vec::new() },
+    // keeps it from physically clipping a wall on the way. With `relax` the whole
+    // solve runs on the non-lethal mask (see `plan`: the strict solve stubbed).
+    let relaxed_mask = || {
+        (0..n)
+            .map(|i| map.cost[i] < LETHAL_THRESHOLD)
+            .collect::<Vec<bool>>()
+    };
+    let (robot_cell, free) = if relax {
+        let free_relaxed = relaxed_mask();
+        match nearest_free_cell(map, &free_relaxed, robot.0, robot.1) {
+            Some(c) => (c, free_relaxed),
+            None => return Plan { poses: Vec::new() },
+        }
+    } else {
+        match nearest_free_cell(map, &free_strict, robot.0, robot.1) {
+            Some(c) => (c, free_strict),
+            None => {
+                let free_relaxed = relaxed_mask();
+                match nearest_free_cell(map, &free_relaxed, robot.0, robot.1) {
+                    Some(c) => (c, free_relaxed),
+                    None => return Plan { poses: Vec::new() },
+                }
             }
         }
     };
 
     // Entry cost: travel + clearance ramp within influence_radius past the
     // body + adherence to the REAL global path + temporal commitment.
-    let path_dist = polyline_distance_field(map, global_path);
+    let path_dist = polyline_distance_field(map, scan_path);
     let prev_dist = previous_path
         .filter(|p| p.len() >= 2 && cfg.commitment_weight > 0.0)
         .map(|p| polyline_distance_field(map, p));
@@ -472,10 +595,41 @@ pub fn plan(
     // so the long axis could still sweep a pose's footprint over an obstacle. Walk
     // the poses and cut the plan at the first one whose oriented box overlaps a
     // lethal cell — commit only as far as the WHOLE robot actually fits.
+    //
+    // ESCAPE EXCEPTION: a robot whose CURRENT stance is collision-free may
+    // always execute the first body-length of the plan. The box gate tests
+    // each pose at its final PLANNED heading, but a departing robot's
+    // orientation is transient — vetoing the first poses on that heading
+    // deadlocks it: parked snug against a wall, every solve wants to turn
+    // away, the turned box's tail sweeps the wall, the plan truncates to a
+    // stub, and the robot never moves again (the wp3 cross-wall and stairs
+    // freezes, 2026-07-15; on stairs the terrain slice additionally renders
+    // the not-yet-visible upper steps as walls, boxing the stance in on every
+    // side but the climb direction). The search's centerline is non-lethal by
+    // construction and the stance proves the robot fits here, so one body
+    // length of it is safe to commit; solves re-run continuously, so the full
+    // gate re-engages as the robot advances. A robot that genuinely cannot
+    // fit (its stance box itself overlaps lethal, e.g. wider than the gap)
+    // gets no exception and still refuses to commit. Beyond the escape
+    // segment the planned heading is what the robot will actually hold, so
+    // the gate is unchanged.
     let half_len = cfg.robot_length * 0.5;
     let half_w = cfg.robot_width * 0.5;
+    let stance_clear = !box_hits_lethal(
+        map,
+        robot.0,
+        robot.1,
+        robot.2,
+        half_len,
+        half_w,
+        cfg.footprint_offset,
+    );
+    let escape = cfg.robot_length;
     let mut safe = poses.len();
     for (k, &(px, py, pyaw)) in poses.iter().enumerate() {
+        if stance_clear && (px - robot.0).hypot(py - robot.1) <= escape {
+            continue;
+        }
         if box_hits_lethal(map, px, py, pyaw, half_len, half_w, cfg.footprint_offset) {
             safe = k.max(1); // always keep the robot's own (footprint-cleared) pose
             break;
@@ -635,6 +789,105 @@ mod tests {
             too_wide.poses.len() < 2,
             "0.9-wide box cannot fit, got {}",
             too_wide.poses.len()
+        );
+    }
+
+    // Regression (wp3 cross-wall freeze, 2026-07-15): a robot parked snug beside a
+    // wall — CURRENT-heading box clear by millimetres, but any turn-away pose's box
+    // sweeps its tail through the wall. The box veto on the planned heading used to
+    // truncate every plan to a 1-pose stub, freezing the robot in place forever.
+    // The escape exception must let it drive out along the route instead.
+    #[test]
+    fn escape_turn_beside_a_wall_is_not_vetoed() {
+        // Open 7 x 4 m field, one wall row at y = 0.2 spanning x >= 3.4
+        // (cell centers = origin + idx * res, row 22 -> y = 0.2).
+        let (res, width, height) = (0.1f32, 70usize, 40usize);
+        let mut cost = vec![0i8; width * height];
+        for c in 34..width {
+            cost[22 * width + c] = LETHAL;
+        }
+        let distance = chamfer_distance(&cost, width, height, res);
+        let map = Costmap {
+            width,
+            height,
+            resolution: res,
+            origin: (0.0, -2.0),
+            cost,
+            distance,
+        };
+        // Robot 0.19 m south of the wall, heading along it; route turns away NW.
+        let robot = (3.5f32, 0.01f32, 0.0f32);
+        let path = &[(3.5, 0.01), (2.6, 0.85), (1.5, 1.5)];
+        let c = cfg(0.33, 0.1);
+        // Preconditions that make this THE freeze geometry: the current-heading
+        // box clears the wall, the turn-away (path-heading) box does not.
+        let (half_len, half_w) = (c.robot_length * 0.5, c.robot_width * 0.5);
+        assert!(
+            !box_hits_lethal(&map, robot.0, robot.1, robot.2, half_len, half_w, 0.0),
+            "precondition: the robot's current stance is clear"
+        );
+        let turn = f32::atan2(path[1].1 - path[0].1, path[1].0 - path[0].0);
+        assert!(
+            box_hits_lethal(&map, robot.0, robot.1, turn, half_len, half_w, 0.0),
+            "precondition: the turned box sweeps the wall"
+        );
+        let out = plan(&map, path, robot, 0.0, None, &c);
+        let reach = out
+            .poses
+            .last()
+            .map(|p| (p.0 - robot.0).hypot(p.1 - robot.1))
+            .unwrap_or(0.0);
+        assert!(
+            out.poses.len() >= 2 && reach >= 1.0,
+            "escape from a snug wall must not be vetoed: {} poses, reach {:.2} m",
+            out.poses.len(),
+            reach
+        );
+    }
+
+    // Regression (stairs wedge 2026-07-15 + flip-flop 2026-07-19): a strict-free
+    // pocket BEHIND the robot with a passable-but-sub-clearance corridor AHEAD.
+    // Start selection finds the strict pocket and the strict solve emits a plan
+    // TOWARD it — a backward stub whose raw reach can look healthy (the robot
+    // sits deep enough in the corridor that walking back to the pocket covers
+    // >0.3 m). Selecting by reach alternated backward-strict with forward-
+    // relaxed solves tick to tick: the local path swung 90-180 deg on the
+    // stairs climb. Route-PROGRESS selection must pick the forward relaxed plan.
+    #[test]
+    fn strict_pocket_behind_does_not_stub_a_passable_corridor() {
+        let (res, width, height) = (0.1f32, 70usize, 40usize);
+        let mid = height / 2;
+        let mut cost = vec![0i8; width * height];
+        // Open (strict-clear) field for x < 2.0; beyond it a 4-row corridor:
+        // 0.2 m centerline clearance — under the 0.265 m strict keep-out, over
+        // the 0.165 m box half-width, so it is passable but never strict.
+        for r in 0..height {
+            let in_band = (mid - 1..=mid + 2).contains(&r);
+            if !in_band {
+                for c in 20..width {
+                    cost[r * width + c] = LETHAL;
+                }
+            }
+        }
+        let distance = chamfer_distance(&cost, width, height, res);
+        let map = Costmap {
+            width,
+            height,
+            resolution: res,
+            origin: (0.0, -2.0),
+            cost,
+            distance,
+        };
+        let c = cfg(0.33, 0.1); // inflate 0.265 > corridor edge 0.25 -> corridor is not strict
+        let robot = (2.6f32, 0.0f32, 0.0f32); // deep enough that the backward stub has reach
+        let out = plan(&map, &[(2.6, 0.0), (6.0, 0.0)], robot, 0.0, None, &c);
+        let last = out.poses.last().copied().unwrap_or((robot.0, robot.1, 0.0));
+        assert!(
+            last.0 - robot.0 >= 1.0,
+            "must advance down the passable corridor, not stub toward the strict pocket \
+             behind: {} poses, forward {:.2} m",
+            out.poses.len(),
+            last.0 - robot.0
         );
     }
 

@@ -12,7 +12,7 @@
 # See the License for the specific language governing permissions and
 # limitations under the License.
 
-"""Closed-loop dynamic-obstacle tests for the repulsive-field local planner.
+"""Closed-loop dynamic-obstacle tests for the wavefront local planner.
 
 Each test runs a small simulation: a moving obstacle is painted into a fresh
 costmap every tick, the planner replans, and the robot advances along the new
@@ -29,8 +29,8 @@ import math
 
 import numpy as np
 
-from dimos.navigation.nav_3d.repulsive_local_planner.local_planner import (
-    RepulsiveFieldParams,
+from dimos.navigation.nav_3d.wavefront_local_planner.local_planner import (
+    WavefrontParams,
     plan_path,
 )
 
@@ -101,11 +101,11 @@ def simulate_dynamic(
     *,
     ticks: int = 120,
     robot_step: float = 0.12,
-    params: RepulsiveFieldParams | None = None,
+    params: WavefrontParams | None = None,
     global_path=None,
 ) -> DynResult:
     """Run the closed loop and collect safety/progress metrics."""
-    params = params or RepulsiveFieldParams()
+    params = params or WavefrontParams()
     height, width = grid_shape
     base = np.zeros((height, width), dtype=np.float64)
     for w in static_walls:
@@ -249,7 +249,7 @@ def test_commitment_weight_stops_oscillation_under_wiggling_obstacles():
         (1.0, 3.5),
         (11.5, 3.5),
         ticks=140,
-        params=RepulsiveFieldParams(commitment_weight=3.0),
+        params=WavefrontParams(commitment_weight=3.0),
     )
     # Baseline genuinely misbehaves (this is the bug the refinement targets).
     assert base.heading_reversals >= 4, "expected the baseline to oscillate here"
@@ -275,7 +275,7 @@ def test_safety_margin_increases_clearance():
         blocker,
         (1.0, 3.5),
         (11.5, 3.5),
-        params=RepulsiveFieldParams(safety_margin=0.25),
+        params=WavefrontParams(safety_margin=0.25),
     )
     assert plain.reached and margin.reached
     assert margin.min_clearance > plain.min_clearance + 0.1, (

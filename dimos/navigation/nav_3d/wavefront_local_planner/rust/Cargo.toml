@@ -1,18 +1,18 @@
 [package]
-name = "dimos-repulsive-field"
+name = "dimos-wavefront"
 version = "0.1.0"
 edition = "2021"
-description = "Native Rust repulsive-field (navigation-function) local planner for dimos"
+description = "Native Rust wavefront (navigation-function) local planner for dimos"
 license = "Apache-2.0"
 
 [lib]
 # Must match the #[pymodule] fn name in python.rs.
-name = "dimos_repulsive_field"
+name = "dimos_wavefront"
 path = "src/lib.rs"
 crate-type = ["cdylib", "rlib"]
 
 [[bin]]
-name = "repulsive_field"
+name = "wavefront"
 path = "src/main.rs"
 required-features = ["native"]
 

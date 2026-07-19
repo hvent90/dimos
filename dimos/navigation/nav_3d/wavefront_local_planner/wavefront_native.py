@@ -12,7 +12,16 @@
 # See the License for the specific language governing permissions and
 # limitations under the License.
 
-"""Rust repulsive-field local planner (native module)."""
+"""Rust wavefront local planner (native module).
+
+GENUINE high-rate solves: the Python module (kept as the reference
+implementation in ``local_planner.py``) re-anchored a cached plan at 60 Hz but
+re-SOLVED at only ~2-4 Hz, and grew stability machinery to survive that
+latency. The Rust port solves fresh every tick and owns its costmap internally
+(consumes ``terrain_map`` directly — no CostMapper module needed) at higher
+resolution. Config field names mirror the Python configs; the measured
+rationale for each value lives in the reference implementation's comments.
+"""
 
 from __future__ import annotations
 
@@ -25,9 +34,9 @@ from dimos.msgs.nav_msgs.Path import Path
 from dimos.msgs.sensor_msgs.PointCloud2 import PointCloud2
 
 
-class RepulsiveFieldNativeConfig(NativeModuleConfig):
+class WavefrontNativeConfig(NativeModuleConfig):
     cwd: str | None = "rust"
-    executable: str = "result/bin/repulsive_field"
+    executable: str = "result/bin/wavefront"
     build_command: str | None = None
     stdin_config: bool = True
 
@@ -59,6 +68,20 @@ class RepulsiveFieldNativeConfig(NativeModuleConfig):
     # failure); raise together with the mapper voxel size.
     resolution: float = 0.1
     can_pass_under: float = 0.6
+    # Traversable grade (rise/run) scaling the Sobel gradient cost; a cell's
+    # cost = measured_gradient / max_grade * 100 (lethal at half of it). This
+    # replaces `can_climb` (rise-per-cell): can_climb == max_grade x resolution.
+    # CAVEAT — cell values are NOT physical robot grades: sub-cell risers
+    # quantize onto the 0.1 m grid, so the 31-degree warehouse staircase
+    # (0.17 m risers) measures 2-3x its true slope. 3.0 is the go2-physical
+    # setting (Jeff, 2026-07-11: "0.3 m per cell for this robot"): it keeps
+    # real-scale stairs open (climb corridor 95% free on the warehouse
+    # recording) while sub-storey clutter finally scores lethal. History of
+    # the old knob: 1.2 -> 0.6 caught cherry-picker-class clutter (recall
+    # 5% -> 26%); 0.6 -> 0.3 catches the 0.35-0.7 m suitcase class. The
+    # dim_city sim staircase is steeper than this robot could physically
+    # climb (its terrain map reads ~0.3 m rise per cell) — the sim blueprint
+    # overrides max_grade back to 6.0.
     max_grade: float = 3.0
     # Body-band occupancy gate (OPT-IN, body_min_points=0 disables): >=
     # body_min_points returns between body_step and can_pass_under above a
@@ -118,16 +141,16 @@ class RepulsiveFieldNativeConfig(NativeModuleConfig):
     face_forward_weight: float = 0.8
     # Stop publishing local_path once within this distance of the final goal and
     # the solve can no longer advance (arrived, or pinned as close as the
-    # repulsion field allows). Solves keep running at solve_hz so publishing
+    # clearance field allows). Solves keep running at solve_hz so publishing
     # resumes the instant the goal moves — this only silences the near-zero paths
     # that would otherwise churn the trajectory follower at rest on the goal.
     arrival_stop_radius_m: float = 0.6
 
 
-class RepulsiveFieldNative(NativeModule):
-    """Rust-backed repulsive-field local planner — jnav LocalPlanner spec."""
+class WavefrontNative(NativeModule):
+    """Rust-backed wavefront local planner — jnav LocalPlanner spec."""
 
-    config: RepulsiveFieldNativeConfig
+    config: WavefrontNativeConfig
 
     terrain_map: In[PointCloud2]
     global_path: In[Path]

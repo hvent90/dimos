@@ -1,4 +1,18 @@
 // Copyright 2026 Dimensional Inc.
+//
+// Licensed under the Apache License, Version 2.0 (the "License");
+// you may not use this file except in compliance with the License.
+// You may obtain a copy of the License at
+//
+//     http://www.apache.org/licenses/LICENSE-2.0
+//
+// Unless required by applicable law or agreed to in writing, software
+// distributed under the License is distributed on an "AS IS" BASIS,
+// WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
+// See the License for the specific language governing permissions and
+// limitations under the License.
+
+// Copyright 2026 Dimensional Inc.
 // SPDX-License-Identifier: Apache-2.0
 
 //! pyo3 bindings for offline parity tests against the Python reference planner.
@@ -65,6 +79,88 @@ fn plan_once_prev(
     Ok(plan.poses)
 }
 
+/// plan_once with the full costmap config exposed and the module's footprint
+/// self-clear applied — a LIVE-FAITHFUL offline replay of one worker tick.
+/// `plan_once`/`plan_once_prev` build from CostmapConfig::default(), which is
+/// NOT what a blueprint-configured module ran (e.g. dim_city overrides
+/// max_grade), and they skip drop_footprint_points; this replays a recorded
+/// tick with the same inputs the live solve saw.
+#[pyfunction]
+#[allow(clippy::too_many_arguments)]
+#[pyo3(signature = (points, robot, robot_z, global_path, speed, previous=None,
+                    drop_footprint=true, resolution=0.1, can_pass_under=0.6,
+                    max_grade=3.0, max_safe_fall=0.5, void_depth_lethal=2.5,
+                    slice_below=1.1, slice_above=1.5, half_extent=8.0, level_hysteresis=0.25,
+                    body_step=0.35, body_min_points=0, body_min_extent=0.1, max_step=0.3))]
+fn plan_once_full(
+    points: PyReadonlyArray2<f32>,
+    robot: (f32, f32, f32),
+    robot_z: f32,
+    global_path: Vec<(f32, f32)>,
+    speed: f32,
+    previous: Option<Vec<(f32, f32)>>,
+    drop_footprint: bool,
+    resolution: f32,
+    can_pass_under: f32,
+    max_grade: f32,
+    max_safe_fall: f32,
+    void_depth_lethal: f32,
+    slice_below: f32,
+    slice_above: f32,
+    half_extent: f32,
+    level_hysteresis: f32,
+    body_step: f32,
+    body_min_points: u16,
+    body_min_extent: f32,
+    max_step: f32,
+) -> PyResult<Vec<(f32, f32, f32)>> {
+    let mut pts: Vec<[f32; 3]> = points
+        .as_array()
+        .rows()
+        .into_iter()
+        .map(|r| [r[0], r[1], r[2]])
+        .collect();
+    let scfg = SolverConfig::default();
+    if drop_footprint {
+        costmap::drop_footprint_points(
+            &mut pts,
+            robot,
+            scfg.robot_length * 0.5,
+            scfg.robot_width * 0.5,
+            scfg.footprint_offset,
+        );
+    }
+    let ccfg = CostmapConfig {
+        resolution,
+        can_pass_under,
+        can_climb: max_grade * resolution,
+        max_safe_fall,
+        void_depth_lethal,
+        slice_below,
+        slice_above,
+        half_extent,
+        level_hysteresis,
+        body_step,
+        body_min_points,
+        body_min_extent,
+        max_step,
+        ..CostmapConfig::default()
+    };
+    let mut map = costmap::build(&pts, (robot.0, robot.1, robot_z), robot_z, &ccfg);
+    if drop_footprint {
+        costmap::clear_footprint_cells(
+            &mut map,
+            robot,
+            scfg.robot_length * 0.5,
+            scfg.robot_width * 0.5,
+            scfg.footprint_offset,
+        );
+    }
+    let prev = previous.filter(|p| p.len() >= 2);
+    let plan = solver::plan(&map, &global_path, robot, speed, prev.as_deref(), &scfg);
+    Ok(plan.poses)
+}
+
 /// Build the internal costmap alone and return (cost HxW i8, (origin_x, origin_y), resolution).
 ///
 /// The knobs mirror CostmapConfig so offline tuning sweeps them from Python
@@ -122,9 +218,10 @@ fn build_costmap<'py>(
 }
 
 #[pymodule]
-fn dimos_repulsive_field(m: &Bound<'_, PyModule>) -> PyResult<()> {
+fn dimos_wavefront(m: &Bound<'_, PyModule>) -> PyResult<()> {
     m.add_function(wrap_pyfunction!(plan_once, m)?)?;
     m.add_function(wrap_pyfunction!(plan_once_prev, m)?)?;
+    m.add_function(wrap_pyfunction!(plan_once_full, m)?)?;
     m.add_function(wrap_pyfunction!(build_costmap, m)?)?;
     Ok(())
 }

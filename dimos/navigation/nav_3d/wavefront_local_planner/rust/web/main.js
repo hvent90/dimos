@@ -1,9 +1,9 @@
-// Interactive demo of the Rust repulsive-field local planner compiled to WASM.
+// Interactive demo of the Rust wavefront local planner compiled to WASM.
 // Drag obstacles / the goal; the costmap and path recompute live (a genuine
 // solve per frame, same code the robot runs).
 import * as THREE from "https://esm.sh/three@0.170.0"
 import { OrbitControls } from "https://esm.sh/three@0.170.0/examples/jsm/controls/OrbitControls.js"
-import init, { DemoPlanner } from "./pkg/dimos_repulsive_field.js"
+import init, { DemoPlanner } from "./pkg/dimos_wavefront.js"
 
 await init()
 

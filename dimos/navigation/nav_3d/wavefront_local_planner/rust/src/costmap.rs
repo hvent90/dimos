@@ -1,4 +1,18 @@
 // Copyright 2026 Dimensional Inc.
+//
+// Licensed under the Apache License, Version 2.0 (the "License");
+// you may not use this file except in compliance with the License.
+// You may obtain a copy of the License at
+//
+//     http://www.apache.org/licenses/LICENSE-2.0
+//
+// Unless required by applicable law or agreed to in writing, software
+// distributed under the License is distributed on an "AS IS" BASIS,
+// WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
+// See the License for the specific language governing permissions and
+// limitations under the License.
+
+// Copyright 2026 Dimensional Inc.
 // SPDX-License-Identifier: Apache-2.0
 
 //! Level-aware height-cost occupancy — a faithful port of the measured Python
@@ -33,7 +47,7 @@ pub struct CostmapConfig {
     pub can_climb: f32,
     /// Body-band occupancy gate: a cell with >= `body_min_points` returns
     /// between `body_step` and `can_pass_under` above its own floor, spanning
-    /// >= `body_min_extent` of vertical extent, is LETHAL outright. The
+    /// at least `body_min_extent` of vertical extent, is LETHAL outright. The
     /// gradient cost alone only trips lethal for ~storey-scale steps (the
     /// Sobel spreads a step across its kernel, so with can_climb 1.2 a wall
     /// must rise >1.2 m in one cell) — real-world clutter at 0.4-1.5 m
@@ -182,7 +196,12 @@ impl LevelTracker {
 ///
 /// `points` is (x, y, z) triples; `robot` the current pose used for the window
 /// and the storey band. Points outside the window are ignored.
-pub fn build(points: &[[f32; 3]], robot: (f32, f32, f32), reference_z: f32, cfg: &CostmapConfig) -> Costmap {
+pub fn build(
+    points: &[[f32; 3]],
+    robot: (f32, f32, f32),
+    reference_z: f32,
+    cfg: &CostmapConfig,
+) -> Costmap {
     let res = cfg.resolution;
     let half = cfg.half_extent;
     let min_x = robot.0 - half;
@@ -215,7 +234,9 @@ pub fn build(points: &[[f32; 3]], robot: (f32, f32, f32), reference_z: f32, cfg:
 
     // Pass 1: height extrema per cell, split by band.
     for p in points {
-        let Some(i) = cell_of(p[0], p[1]) else { continue };
+        let Some(i) = cell_of(p[0], p[1]) else {
+            continue;
+        };
         let z = p[2];
         if z < z_lo {
             if z > below_h[i] {
@@ -234,7 +255,9 @@ pub fn build(points: &[[f32; 3]], robot: (f32, f32, f32), reference_z: f32, cfg:
     }
     // Pass 2: mid-band counts (overhang detection needs min_h from pass 1).
     for p in points {
-        let Some(i) = cell_of(p[0], p[1]) else { continue };
+        let Some(i) = cell_of(p[0], p[1]) else {
+            continue;
+        };
         let z = p[2];
         if z < z_lo || z > z_hi || min_h[i].is_nan() {
             continue;
@@ -317,7 +340,11 @@ pub fn build(points: &[[f32; 3]], robot: (f32, f32, f32), reference_z: f32, cfg:
         }
     };
     let obs_at = |r: isize, c: isize, obs: &[bool]| -> bool {
-        r >= 0 && c >= 0 && (r as usize) < height && (c as usize) < width && obs[r as usize * width + c as usize]
+        r >= 0
+            && c >= 0
+            && (r as usize) < height
+            && (c as usize) < width
+            && obs[r as usize * width + c as usize]
     };
     for row in 0..height as isize {
         for col in 0..width as isize {
@@ -333,12 +360,16 @@ pub fn build(points: &[[f32; 3]], robot: (f32, f32, f32), reference_z: f32, cfg:
             {
                 continue;
             }
-            let gx = (at(row - 1, col + 1, &surface) + 2.0 * at(row, col + 1, &surface) + at(row + 1, col + 1, &surface)
+            let gx = (at(row - 1, col + 1, &surface)
+                + 2.0 * at(row, col + 1, &surface)
+                + at(row + 1, col + 1, &surface)
                 - at(row - 1, col - 1, &surface)
                 - 2.0 * at(row, col - 1, &surface)
                 - at(row + 1, col - 1, &surface))
                 / (8.0 * res);
-            let gy = (at(row + 1, col - 1, &surface) + 2.0 * at(row + 1, col, &surface) + at(row + 1, col + 1, &surface)
+            let gy = (at(row + 1, col - 1, &surface)
+                + 2.0 * at(row + 1, col, &surface)
+                + at(row + 1, col + 1, &surface)
                 - at(row - 1, col - 1, &surface)
                 - 2.0 * at(row - 1, col, &surface)
                 - at(row - 1, col + 1, &surface))
@@ -368,7 +399,17 @@ pub fn build(points: &[[f32; 3]], robot: (f32, f32, f32), reference_z: f32, cfg:
         plateau_step_gate(&mut cost, &surface, &observed, cfg, width, height);
     }
 
-    dropoff_layers(&mut cost, &surface, &observed, &mut below_h, &above, z_lo, cfg, width, height);
+    dropoff_layers(
+        &mut cost,
+        &surface,
+        &observed,
+        &mut below_h,
+        &above,
+        z_lo,
+        cfg,
+        width,
+        height,
+    );
 
     let distance = chamfer_distance(&cost, width, height, res);
 
@@ -628,7 +669,11 @@ fn dropoff_layers(
     // fall). Ungraded shallow voids are lethal; graded ones explicitly free.
     let standing: Vec<f32> = (0..n)
         .map(|i| {
-            let s = if observed[i] { surface[i] } else { f32::NEG_INFINITY };
+            let s = if observed[i] {
+                surface[i]
+            } else {
+                f32::NEG_INFINITY
+            };
             s.max(below_h[i])
         })
         .collect();
@@ -700,7 +745,8 @@ fn dropoff_layers(
                         continue;
                     }
                     let j = r as usize * width + c as usize;
-                    if dropped[j] && below_h[j].is_finite() && (s - below_h[j]) > cfg.max_safe_fall {
+                    if dropped[j] && below_h[j].is_finite() && (s - below_h[j]) > cfg.max_safe_fall
+                    {
                         rim[i] = true;
                         break 'neigh;
                     }
@@ -776,4 +822,110 @@ pub fn chamfer_distance(cost: &[i8], width: usize, height: usize, resolution: f3
         *v = if *v >= inf { f32::MAX } else { *v * scale };
     }
     d
+}
+
+/// Drop terrain points inside the robot's oriented footprint at `pose` (x, y, yaw).
+/// We are standing there, so those returns are the robot/ground, not obstacles;
+/// removing them stops a phantom self-return from blocking the planner's start.
+pub fn drop_footprint_points(
+    points: &mut Vec<[f32; 3]>,
+    pose: (f32, f32, f32),
+    half_len: f32,
+    half_w: f32,
+    offset: f32,
+) {
+    let (c, s) = (pose.2.cos(), pose.2.sin());
+    let cx = pose.0 + offset * c;
+    let cy = pose.1 + offset * s;
+    points.retain(|p| {
+        let (lx, ly) = (p[0] - cx, p[1] - cy);
+        let along = lx * c + ly * s;
+        let lat = -lx * s + ly * c;
+        !(along.abs() <= half_len && lat.abs() <= half_w)
+    });
+}
+
+/// Clear lethal cells whose CENTER lies inside the robot's oriented footprint at
+/// `pose`, then recompute the distance field. Complements `drop_footprint_points`:
+/// dropping the points leaves boundary-straddling cells with only their
+/// outside-the-footprint returns, and losing the ground evidence can flip such a
+/// cell lethal (a fabricated cliff edge at the robot's own nose — the stairs-leg
+/// freeze, 2026-07-15). The robot is physically standing on these cells, so they
+/// are drivable by construction; the oriented-box validation would otherwise veto
+/// every plan from a stance the costmap has walled in.
+pub fn clear_footprint_cells(
+    map: &mut Costmap,
+    pose: (f32, f32, f32),
+    half_len: f32,
+    half_w: f32,
+    offset: f32,
+) {
+    let (c, s) = (pose.2.cos(), pose.2.sin());
+    let cx = pose.0 + offset * c;
+    let cy = pose.1 + offset * s;
+    let mut changed = false;
+    for row in 0..map.height {
+        for col in 0..map.width {
+            let i = row * map.width + col;
+            if map.cost[i] < LETHAL_THRESHOLD {
+                continue;
+            }
+            let (wx, wy) = map.cell_center(row, col);
+            let (lx, ly) = (wx - cx, wy - cy);
+            let along = lx * c + ly * s;
+            let lat = -lx * s + ly * c;
+            if along.abs() <= half_len && lat.abs() <= half_w {
+                map.cost[i] = 0;
+                changed = true;
+            }
+        }
+    }
+    if changed {
+        map.distance = chamfer_distance(&map.cost, map.width, map.height, map.resolution);
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    // Regression (stairs-leg freeze, 2026-07-15): drop_footprint_points strips the
+    // ground evidence out of cells straddling the footprint boundary, and their
+    // surviving outside returns can flip such a cell lethal — a fabricated wall at
+    // the robot's own nose that the oriented-box validation then vetoes every plan
+    // against. Cells under the stance must never stay lethal, and the distance
+    // field must reflect the clearing.
+    #[test]
+    fn footprint_cells_are_never_lethal() {
+        let (width, height, res) = (20usize, 20usize, 0.1f32);
+        let mut cost = vec![0i8; width * height];
+        // Lethal cell dead ahead of the robot's nose, center inside the box, plus
+        // a real wall cell well outside the box that must survive.
+        cost[10 * width + 12] = LETHAL; // 0.2 m ahead of (1.0, 1.0) at yaw 0 -> in box
+        cost[10 * width + 18] = LETHAL; // 0.8 m ahead -> outside the box
+        let distance = chamfer_distance(&cost, width, height, res);
+        let mut map = Costmap {
+            width,
+            height,
+            resolution: res,
+            origin: (0.0, 0.0),
+            cost,
+            distance,
+        };
+        let before = map.distance[10 * width + 10];
+        clear_footprint_cells(&mut map, (1.0, 1.0, 0.0), 0.35, 0.165, 0.0);
+        assert!(
+            map.cost[10 * width + 12] < LETHAL_THRESHOLD,
+            "in-box lethal cell must be cleared"
+        );
+        assert_eq!(
+            map.cost[10 * width + 18],
+            LETHAL,
+            "wall outside the footprint must survive"
+        );
+        assert!(
+            map.distance[10 * width + 10] > before,
+            "distance field must be recomputed after clearing"
+        );
+    }
 }

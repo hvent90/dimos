@@ -1,12 +1,26 @@
 // Copyright 2026 Dimensional Inc.
+//
+// Licensed under the Apache License, Version 2.0 (the "License");
+// you may not use this file except in compliance with the License.
+// You may obtain a copy of the License at
+//
+//     http://www.apache.org/licenses/LICENSE-2.0
+//
+// Unless required by applicable law or agreed to in writing, software
+// distributed under the License is distributed on an "AS IS" BASIS,
+// WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
+// See the License for the specific language governing permissions and
+// limitations under the License.
+
+// Copyright 2026 Dimensional Inc.
 // SPDX-License-Identifier: Apache-2.0
 
 //! End-to-end pipeline tests on synthetic worlds — the guards that would have
 //! caught hl58 (voxel-spaced input under-sampling the grid -> lethal blanket
 //! -> robot boxed in -> empty plans at 60 Hz for a whole course).
 
-use dimos_repulsive_field::costmap::{self, CostmapConfig};
-use dimos_repulsive_field::solver::{self, SolverConfig};
+use dimos_wavefront::costmap::{self, CostmapConfig};
+use dimos_wavefront::solver::{self, SolverConfig};
 
 /// Ground plane sampled at VOXEL spacing (0.1 m) like the terrain mapper's
 /// output — twice as coarse as nothing, exactly as coarse as reality.
@@ -46,7 +60,11 @@ fn flat_ground_plans_toward_the_goal() {
     );
     assert!(arc(&plan.poses) > 2.0, "plan should extend toward the goal");
     let last = plan.poses.last().unwrap();
-    assert!(last.0 > 2.0, "plan should head +x toward the goal, ended at {:?}", last);
+    assert!(
+        last.0 > 2.0,
+        "plan should head +x toward the goal, ended at {:?}",
+        last
+    );
 }
 
 #[test]
@@ -67,7 +85,10 @@ fn wall_forces_a_detour_not_a_beeline() {
     let map = costmap::build(&pts, (0.0, 0.0, 0.4), 0.4, &cfg);
     let route = vec![(0.0, 0.0), (5.0, 0.0)];
     let plan = solver::plan(&map, &route, (0.0, 0.0, 0.0), 1.0, None, &scfg);
-    assert!(plan.poses.len() >= 2, "wall world must still produce a plan");
+    assert!(
+        plan.poses.len() >= 2,
+        "wall world must still produce a plan"
+    );
     // No pose may sit inside the wall's inflated zone at the centreline.
     for p in &plan.poses {
         let near_wall = (p.0 - 2.0).abs() < 0.25 && p.1.abs() < 2.0;
@@ -99,7 +120,10 @@ fn solve_is_fast_enough_for_60hz() {
     // never eat a whole tick era.
     let start = std::time::Instant::now();
     let _ = costmap::build(&pts, (0.0, 0.0, 0.4), 0.4, &cfg);
-    assert!(start.elapsed().as_secs_f64() < 0.05, "costmap build too slow");
+    assert!(
+        start.elapsed().as_secs_f64() < 0.05,
+        "costmap build too slow"
+    );
 }
 
 #[test]
@@ -111,10 +135,16 @@ fn debug_flat_ground_costmap_stats() {
     let unknown = map.cost.iter().filter(|&&c| c < 0).count();
     let lethal = map.cost.iter().filter(|&&c| c >= 50).count();
     let free = n - unknown - lethal;
-    println!("n={} free={} lethal={} unknown={}", n, free, lethal, unknown);
+    println!(
+        "n={} free={} lethal={} unknown={}",
+        n, free, lethal, unknown
+    );
     let (r, c) = map.cell(0.0, 0.0).unwrap();
     let i = r * map.width + c;
-    println!("robot cell cost={} dist={:.2}", map.cost[i], map.distance[i]);
+    println!(
+        "robot cell cost={} dist={:.2}",
+        map.cost[i], map.distance[i]
+    );
     for dr in -3..=3i32 {
         let mut line = String::new();
         for dc in -3..=3i32 {
@@ -135,7 +165,9 @@ fn resample_survives_float_edge() {
     let cfg = SolverConfig::default();
     let map = costmap::build(&voxel_ground(8.0, 0.0), (0.0, 0.0, 0.4), 0.4, &cfg_map());
     // 18-point path with irregular spacing (mirrors the panicking shape).
-    let route: Vec<(f32, f32)> = (0..18).map(|i| (i as f32 * 0.37, (i % 3) as f32 * 0.11)).collect();
+    let route: Vec<(f32, f32)> = (0..18)
+        .map(|i| (i as f32 * 0.37, (i % 3) as f32 * 0.11))
+        .collect();
     let plan = solver::plan(&map, &route, (0.0, 0.0, 0.0), 1.0, None, &cfg);
     assert!(plan.poses.len() >= 2);
 }
@@ -181,7 +213,6 @@ fn initial_bearing(poses: &[(f32, f32, f32)]) -> f32 {
     (poses[k].1 - poses[0].1).atan2(poses[k].0 - poses[0].0)
 }
 
-
 #[test]
 fn level_reference_converges_after_a_latched_offset() {
     // hl78: the reference latched ~0.2 m high at a stairs base and the pure
@@ -191,7 +222,7 @@ fn level_reference_converges_after_a_latched_offset() {
     // the robot's z; a storey jump must still reset outright.
     let mut level = costmap::LevelTracker::default();
     assert_eq!(level.update(0.6, 0.25), 0.6); // first sample adopts
-    // Flat ground at z=0.4 (offset 0.2 <= hysteresis): converges, not holds.
+                                              // Flat ground at z=0.4 (offset 0.2 <= hysteresis): converges, not holds.
     let mut reference = 0.0;
     for _ in 0..24 {
         reference = level.update(0.4, 0.25);
@@ -267,16 +298,26 @@ fn sub_can_climb_box_is_lethal_with_plateau_gate() {
     // (Real suitcase tops are noisy and score higher — 78-85% on the
     // warehouse recording blobs.)
     let on_box = lethal_fraction(&map, 1.75, 2.25, -0.25, 0.25);
-    assert!(on_box > 0.5, "box footprint must be majority-lethal, got {on_box}");
+    assert!(
+        on_box > 0.5,
+        "box footprint must be majority-lethal, got {on_box}"
+    );
     let rim = lethal_fraction(&map, 1.7, 2.3, -0.3, -0.2);
     assert!(rim > 0.85, "box rim must be lethal, got {rim}");
     let floor_near = lethal_fraction(&map, 0.0, 1.4, -1.0, 1.0);
-    assert!(floor_near < 0.05, "floor near the box must stay free, got {floor_near}");
+    assert!(
+        floor_near < 0.05,
+        "floor near the box must stay free, got {floor_near}"
+    );
 
     // Documents the pre-gate failure with the old config (can_climb 0.6,
     // no plateau gate — what the sim blueprint still runs): the gradient
     // alone leaves the sub-can_climb box free.
-    let off = CostmapConfig { max_step: 0.0, can_climb: 0.6, ..CostmapConfig::default() };
+    let off = CostmapConfig {
+        max_step: 0.0,
+        can_climb: 0.6,
+        ..CostmapConfig::default()
+    };
     let map_off = costmap::build(&pts, (0.0, 0.0, 0.4), 0.4, &off);
     let on_box_off = lethal_fraction(&map_off, 1.75, 2.25, -0.25, 0.25);
     assert!(
@@ -293,7 +334,11 @@ fn sub_can_climb_box_is_lethal_with_plateau_gate() {
 /// max_grade to 6.0 and disables the gate) the flight must stay traversable.
 #[test]
 fn open_riser_steep_staircase_stays_free() {
-    let cfg = CostmapConfig { can_climb: 0.6, max_step: 0.0, ..CostmapConfig::default() };
+    let cfg = CostmapConfig {
+        can_climb: 0.6,
+        max_step: 0.0,
+        ..CostmapConfig::default()
+    };
     let mut pts = voxel_ground(8.0, 0.0);
     let mut i = 0;
     let mut x = 1.0_f32;
@@ -321,7 +366,10 @@ fn open_riser_steep_staircase_stays_free() {
         "steep open-riser flight must stay mostly free, got {on_flight}"
     );
     let approach = lethal_fraction(&map, 0.0, 0.9, -0.5, 0.5);
-    assert!(approach < 0.05, "approach floor must stay free, got {approach}");
+    assert!(
+        approach < 0.05,
+        "approach floor must stay free, got {approach}"
+    );
 }
 
 /// Gentle solid stairs (0.17 m risers, 0.3 m treads — the real warehouse
@@ -346,5 +394,8 @@ fn gentle_solid_staircase_stays_free() {
     // above the ground beside it) are genuine drop-off edges and correctly
     // read lethal — same as the rail-edge band on the warehouse recording.
     let on_flight = lethal_fraction(&map, 1.15, 3.0, -0.3, 0.3);
-    assert!(on_flight < 0.15, "gentle stairs corridor must stay open, got {on_flight}");
+    assert!(
+        on_flight < 0.15,
+        "gentle stairs corridor must stay open, got {on_flight}"
+    );
 }

@@ -565,7 +565,7 @@ dependencies = [
 ]
 
 [[package]]
-name = "dimos-repulsive-field"
+name = "dimos-wavefront"
 version = "0.1.0"
 dependencies = [
  "dimos-module",
