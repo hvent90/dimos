@@ -12,8 +12,10 @@
 # See the License for the specific language governing permissions and
 # limitations under the License.
 
+import asyncio
 from queue import Queue
 import string
+import threading
 
 import pytest
 import reactivex as rx
@@ -84,3 +86,71 @@ def test_async_module_process_observable(get_collected_letters, start_module):
     collected = get_collected_letters()
     assert len(collected) == 26
     assert collected == "ABCDEFGHIJKLMNOPQRSTUVWXYZ"
+
+
+def test_async_dispatch_dispose_drains_active_handler() -> None:
+    loop = asyncio.new_event_loop()
+    loop_thread = threading.Thread(target=loop.run_forever)
+    loop_thread.start()
+    module = Module.__new__(Module)
+    module._loop = loop
+    started = threading.Event()
+    finished = threading.Event()
+
+    async def handler(_message: object) -> None:
+        started.set()
+        try:
+            await asyncio.sleep(60)
+        finally:
+            finished.set()
+
+    try:
+        on_message, dispatcher = module._make_async_dispatch(handler)
+        on_message("pending")
+        assert started.wait(timeout=2)
+
+        dispose_thread = threading.Thread(target=dispatcher.dispose)
+        dispose_thread.start()
+        dispose_thread.join(timeout=2)
+
+        assert not dispose_thread.is_alive()
+        assert finished.is_set()
+    finally:
+        loop.call_soon_threadsafe(loop.stop)
+        loop_thread.join(timeout=2)
+        loop.close()
+
+
+def test_async_dispatch_dispose_from_owning_loop_does_not_block() -> None:
+    loop = asyncio.new_event_loop()
+    loop_thread = threading.Thread(target=loop.run_forever)
+    loop_thread.start()
+    module = Module.__new__(Module)
+    module._loop = loop
+    started = threading.Event()
+    finished = threading.Event()
+    disposed = threading.Event()
+
+    async def handler(_message: object) -> None:
+        started.set()
+        try:
+            await asyncio.sleep(60)
+        finally:
+            finished.set()
+
+    def dispose_on_loop() -> None:
+        dispatcher.dispose()
+        disposed.set()
+
+    try:
+        on_message, dispatcher = module._make_async_dispatch(handler)
+        on_message("pending")
+        assert started.wait(timeout=2)
+        loop.call_soon_threadsafe(dispose_on_loop)
+
+        assert disposed.wait(timeout=2)
+        assert finished.wait(timeout=2)
+    finally:
+        loop.call_soon_threadsafe(loop.stop)
+        loop_thread.join(timeout=2)
+        loop.close()

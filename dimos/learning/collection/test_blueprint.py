@@ -33,4 +33,9 @@ def test_piper_rerun_collection_uses_flat_typed_module_config_kwargs() -> None:
 
     assert monitor_config.default_task_label == "pick_and_place"
     assert recorder_config.task_label == "pick_and_place"
+    assert recorder_config.pose_independent_streams == {
+        "color_image",
+        "coordinator_joint_state",
+        "status",
+    }
     assert "recordings/session_piper_rerun_" in str(recorder_config.db_path)

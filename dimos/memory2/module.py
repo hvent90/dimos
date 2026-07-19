@@ -24,6 +24,7 @@ import time
 from typing import TYPE_CHECKING, Any, Generic, TypeVar, cast
 
 from pydantic import Field, field_validator
+from reactivex.abc import DisposableBase
 from reactivex.disposable import Disposable
 
 from dimos.agents.annotation import skill
@@ -44,8 +45,6 @@ from dimos.utils.data import backup_file
 from dimos.utils.logging_config import setup_logger
 
 if TYPE_CHECKING:
-    from reactivex.abc import DisposableBase
-
     from dimos.core.stream import In, Out
     from dimos.msgs.geometry_msgs.Pose import Pose
 
@@ -272,6 +271,8 @@ class RecorderConfig(MemoryModuleConfig):
     # read the active remappings from inside the module (AFAIK), so this config
     # arg does the per-stream rename directly.
     stream_remapping: dict[str, str] = Field(default_factory=dict)
+    # Streams whose payloads do not need a pose anchor.
+    pose_independent_streams: set[str] = Field(default_factory=set)
 
 
 PoseSetter = Callable[[Any], "Awaitable[Pose | None]"]
@@ -318,9 +319,11 @@ class Recorder(MemoryModule):
     config: RecorderConfig
 
     _pose_setters: dict[str, Any] = {}
+    _input_disposables: list[DisposableBase]
 
     @rpc
     def start(self) -> None:
+        self._input_disposables = []
         super().start()
 
         if self.config.g.replay:
@@ -366,6 +369,15 @@ class Recorder(MemoryModule):
         if self.config.record_tf:
             self._record_tf()
 
+    @rpc
+    def stop(self) -> None:
+        """Stop input dispatchers before the store is disposed."""
+        for disposable in getattr(self, "_input_disposables", []):
+            disposable.dispose()
+        if hasattr(self, "_input_disposables"):
+            self._input_disposables.clear()
+        super().stop()
+
     def _port_to_stream(self, name: str, input_topic: In[Any], stream: Stream[Any]) -> None:
         """Append each message from *input_topic* to *stream*, attaching world pose via tf.
 
@@ -382,7 +394,7 @@ class Recorder(MemoryModule):
         async def on_msg(msg: Any) -> None:
             ts = self._resolve_ts(name, msg)
             pose = await self._resolve_pose(name, msg, ts)
-            if not pose:
+            if not pose and name not in self.config.pose_independent_streams:
                 logger.warning(
                     "[%s] No pose for time %s (msg ts: %s), storing without pose",
                     name,
@@ -391,7 +403,11 @@ class Recorder(MemoryModule):
                 )
             stream.append(msg, ts=ts, pose=pose)
 
-        self.process_observable(input_topic.pure_observable(), on_msg)
+        if not hasattr(self, "_input_disposables"):
+            self._input_disposables = []
+        self._input_disposables.append(
+            self.process_observable(input_topic.pure_observable(), on_msg)
+        )
 
     def _prepare_streams(self) -> None:
         """On APPEND, drop the streams this recorder is about to (re)write — the
@@ -413,6 +429,8 @@ class Recorder(MemoryModule):
         """Pose to anchor *msg* with. Dispatches to the stream's (async)
         ``@pose_setter_for`` if one is defined, else falls back to a
         ``world <- frame_id`` tf lookup."""
+        if name in self.config.pose_independent_streams:
+            return None
         setter = self._pose_setters.get(name)
         if setter is not None:
             return cast("Pose | None", await setter(msg))

@@ -22,6 +22,8 @@ The frontend is served from a separate HTML file.
 """
 
 import asyncio
+from collections.abc import Coroutine
+from concurrent.futures import Future, TimeoutError as FutureTimeoutError
 from pathlib import Path as FilePath
 import threading
 import time
@@ -122,6 +124,8 @@ class WebsocketVisModule(Module):
         self._broadcast_loop = None
         self._broadcast_thread = None
         self._uvicorn_server: uvicorn.Server | None = None
+        self._pending_coroutines: set[Future[Any]] = set()
+        self._pending_coroutines_lock = threading.RLock()
 
         self.vis_state = {}  # type: ignore[var-annotated]
         self.state_lock = threading.Lock()
@@ -205,15 +209,30 @@ class WebsocketVisModule(Module):
         if self._uvicorn_server:
             self._uvicorn_server.should_exit = True
 
-        if self.sio and self._broadcast_loop and not self._broadcast_loop.is_closed():
+        sio = self.sio
+        loop = self._broadcast_loop
+        if sio and loop and not loop.is_closed():
 
             async def _disconnect_all() -> None:
-                await self.sio.disconnect()
+                await sio.disconnect()
 
-            asyncio.run_coroutine_threadsafe(_disconnect_all(), self._broadcast_loop)
+            disconnect_future = self._submit_coroutine(_disconnect_all())
+            if disconnect_future is not None:
+                try:
+                    disconnect_future.result(timeout=DEFAULT_THREAD_JOIN_TIMEOUT)
+                except FutureTimeoutError:
+                    disconnect_future.cancel()
+                except Exception as e:
+                    logger.debug(f"WebSocket disconnect failed during shutdown: {e}")
+
+        self._cancel_pending_coroutines()
 
         if self._broadcast_loop and not self._broadcast_loop.is_closed():
-            self._broadcast_loop.call_soon_threadsafe(self._broadcast_loop.stop)
+            try:
+                self._broadcast_loop.call_soon_threadsafe(self._broadcast_loop.stop)
+            except RuntimeError:
+                # The loop can close between the check and scheduling stop.
+                pass
 
         if self._broadcast_thread and self._broadcast_thread.is_alive():
             self._broadcast_thread.join(timeout=DEFAULT_THREAD_JOIN_TIMEOUT)
@@ -400,5 +419,40 @@ class WebsocketVisModule(Module):
         }
 
     def _emit(self, event: str, data: Any) -> None:
-        if self._broadcast_loop and not self._broadcast_loop.is_closed():
-            asyncio.run_coroutine_threadsafe(self.sio.emit(event, data), self._broadcast_loop)
+        sio = self.sio
+        if (
+            not getattr(self, "_ws_stopped", False)
+            and self._broadcast_loop
+            and not self._broadcast_loop.is_closed()
+            and sio is not None
+        ):
+            self._submit_coroutine(sio.emit(event, data))
+
+    def _submit_coroutine(self, coroutine: Coroutine[Any, Any, Any]) -> Future[Any] | None:
+        """Submit module work and retain it so shutdown can drain it safely."""
+        loop = self._broadcast_loop
+        if loop is None:
+            coroutine.close()
+            return None
+        try:
+            future = asyncio.run_coroutine_threadsafe(coroutine, loop)
+        except Exception:
+            coroutine.close()
+            return None
+
+        with self._pending_coroutines_lock:
+            self._pending_coroutines.add(future)
+            future.add_done_callback(self._forget_coroutine)
+        return future
+
+    def _forget_coroutine(self, future: Future[Any]) -> None:
+        with self._pending_coroutines_lock:
+            self._pending_coroutines.discard(future)
+
+    def _cancel_pending_coroutines(self) -> None:
+        """Cancel queued emits before the event loop is stopped."""
+        with self._pending_coroutines_lock:
+            pending = list(self._pending_coroutines)
+
+        for future in pending:
+            future.cancel()

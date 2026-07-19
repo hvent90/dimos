@@ -702,7 +702,29 @@ class ModuleBase(Configurable, CompositeResource):
             disposed = True
             loop_now = self._loop
             if loop_now is not None and loop_now.is_running():
-                loop_now.call_soon_threadsafe(task.cancel)
+                try:
+                    running_loop = asyncio.get_running_loop()
+                except RuntimeError:
+                    running_loop = None
+
+                if running_loop is loop_now:
+                    # Disposal can run as a callback on the module loop (for
+                    # example while Recorder.stop is executing there). Waiting
+                    # on run_coroutine_threadsafe in this thread would deadlock
+                    # the loop. Cancelling here is enough: a running handler
+                    # cannot interleave with this callback, and a suspended
+                    # handler cannot resume before cancellation is delivered.
+                    task.cancel()
+                    return
+
+                async def _cancel_and_drain() -> None:
+                    task.cancel()
+                    try:
+                        await task
+                    except asyncio.CancelledError:
+                        pass
+
+                asyncio.run_coroutine_threadsafe(_cancel_and_drain(), loop_now).result(timeout=5.0)
 
         return on_msg, Disposable(_dispose)
 

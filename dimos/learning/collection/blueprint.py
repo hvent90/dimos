@@ -74,6 +74,7 @@ learning_collect_quest_piper = autoconnect(
 _piper_rerun_recorder_config = CollectionRecorderConfig(
     db_path=_session_db("piper_rerun"),
     task_label="pick_and_place",
+    pose_independent_streams={"color_image", "coordinator_joint_state", "status"},
 )
 
 learning_collect_quest_piper_rerun = autoconnect(
@@ -85,6 +86,19 @@ learning_collect_quest_piper_rerun = autoconnect(
     CollectionRecorder.blueprint(
         db_path=_piper_rerun_recorder_config.db_path,
         task_label=_piper_rerun_recorder_config.task_label,
+        pose_independent_streams=_piper_rerun_recorder_config.pose_independent_streams,
     ),
-    vis_module("rerun", rerun_config=dict(collection_status_rerun_config())),
+    vis_module(
+        "rerun",
+        rerun_config={
+            **collection_status_rerun_config(),
+            # These are logical stream names. LCM subscribes to /<name> and
+            # Zenoh maps the same names to dimos/<name> at the bridge boundary.
+            "topic_allowlist": {
+                "color_image",
+                "coordinator_joint_state",
+                "status",
+            },
+        },
+    ),
 )

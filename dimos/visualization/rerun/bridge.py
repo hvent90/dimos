@@ -213,6 +213,9 @@ class Config(ModuleConfig):
     )
     static: dict[str, Callable[[Any], Any]] = field(default_factory=dict)
     max_hz: dict[str, float] = field(default_factory=dict)
+    # Logical pubsub stream names. None preserves the historical all-stream
+    # subscription behavior.
+    topic_allowlist: set[str] | None = None
 
     entity_prefix: str = "world"
     topic_to_entity: Callable[[Any], str] | None = None
@@ -322,8 +325,37 @@ class RerunBridgeModule(Module):
             topic_str = "/" + topic_str.removeprefix("dimos/")
         return f"{self.config.entity_prefix}{topic_str}"
 
+    def _logical_topic_name(self, topic: Any) -> str:
+        """Return a topic's logical LCM-style name without its type suffix."""
+        raw = getattr(topic, "topic", None) or getattr(topic, "name", None) or str(topic)
+        if not isinstance(raw, str):
+            return str(raw)
+        raw = raw.split("#", 1)[0]
+        if raw.startswith("dimos/"):
+            raw = "/" + raw.removeprefix("dimos/")
+        return raw if raw.startswith("/") else "/" + raw
+
+    def _topic_is_allowed(self, topic: Any) -> bool:
+        allowlist = self.config.topic_allowlist
+        if allowlist is None:
+            return True
+        allowed = {name if name.startswith("/") else "/" + name for name in allowlist}
+        return self._logical_topic_name(topic) in allowed
+
+    def _subscribe_to_topics(self, pubsub: Any) -> Callable[[], None]:
+        """Use the transport's proven discovery subscription and filter messages locally.
+
+        Concrete topic subscription syntax differs across transports; applying the
+        allowlist at `_on_message` keeps that transport-specific discovery path
+        intact while preventing excluded streams from reaching Rerun.
+        """
+        return pubsub.subscribe_all(self._on_message)
+
     def _on_message(self, msg: Any, topic: Any) -> None:
         """Handle incoming message - log to rerun."""
+
+        if not self._topic_is_allowed(topic):
+            return
 
         entity_path: str = self._get_entity_path(topic)
 
@@ -450,7 +482,7 @@ class RerunBridgeModule(Module):
             logger.info(f"bridge listening on {pubsub.__class__.__name__}")
             if hasattr(pubsub, "start"):
                 pubsub.start()
-            unsub = pubsub.subscribe_all(self._on_message)
+            unsub = self._subscribe_to_topics(pubsub)
             self.register_disposable(Disposable(unsub))
 
         # Add pubsub stop as disposable
