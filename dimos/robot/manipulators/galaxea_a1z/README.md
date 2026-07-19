@@ -14,11 +14,11 @@ git clone --branch gripper https://github.com/userguide-galaxea/GALAXEA-A1Z.git
 uv pip install -e ./GALAXEA-A1Z
 ```
 
-The Jetson checkout currently used by DimOS is `/home/dimos/GALAXEA-A1Z` and
-must remain on that branch. DimOS deliberately has no Linux userspace-CAN
-fallback. After boot or reconnecting the HHS adapter, bind it to the kernel
-driver, configure the stable `a1zcan` SocketCAN interface, and verify that the
-driver can actually transmit:
+Keep the installed SDK checkout on its `gripper` branch; switching that checkout
+to vendor `main` will break G1Z initialization. DimOS deliberately has no Linux
+userspace-CAN fallback. After boot or reconnecting the HHS adapter, bind it to
+the kernel driver, configure the stable `a1zcan` SocketCAN interface, and verify
+that the driver can actually transmit:
 
 ```bash
 sudo ./dimos/robot/manipulators/galaxea_a1z/scripts/setup_a1z_can.sh
