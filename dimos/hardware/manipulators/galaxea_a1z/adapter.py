@@ -183,6 +183,7 @@ class GalaxeaA1ZAdapter:
         control_freq_hz: int = 250,
         urdf_path: str | None = None,
         gripper: bool = False,
+        gripper_free_drive: bool = False,
         gripper_max_torque: float = 2.0,
         gripper_max_opening_m: float = _GRIPPER_MAX_OPENING_M,
         transport: str = "auto",
@@ -200,6 +201,7 @@ class GalaxeaA1ZAdapter:
         self._control_freq_hz = control_freq_hz
         self._urdf_path = urdf_path
         self._gripper = gripper
+        self._gripper_free_drive = gripper_free_drive
         self._gripper_max_torque = gripper_max_torque
         self._gripper_max_opening_m = gripper_max_opening_m
         if transport == "auto":
@@ -459,14 +461,30 @@ class GalaxeaA1ZAdapter:
                 if self._robot.is_running:
                     if self._robot.is_estopped:
                         self._robot.release()
+                elif self._zero_gravity:
+                    # The vendor's zero-gravity startup deliberately allows
+                    # motion while gravity compensation takes over.  The
+                    # position-hold safe start below requires the arm to
+                    # settle, so it is only valid for position-controlled
+                    # operation (planning/replay), not hand teaching.
+                    self._robot.start()
                 elif self._safe_start_enabled:
                     self._safe_start()
                 else:
                     # Vendor-stock startup; can snap to zero if a motor's
                     # first feedback is late (see _safe_start docstring).
                     self._robot.start()
+                if self._gripper_free_drive and not self.set_gripper_free_drive(True):
+                    self._robot.stop()
+                    self._ensure_motors_disabled()
+                    raise RuntimeError(
+                        "gripper free-drive requested, but the installed A1Z SDK does not "
+                        "support set_gripper_free_drive()"
+                    )
                 return True
             else:
+                if self._gripper_free_drive:
+                    self.set_gripper_free_drive(False)
                 if self._robot.is_running:
                     self._robot.stop()
                 self._ensure_motors_disabled()

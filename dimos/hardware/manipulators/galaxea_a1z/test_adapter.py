@@ -151,6 +151,11 @@ class _FakeArmRobot:
             return None
         return getattr(self, "gripper_fraction", 0.0)
 
+    def set_gripper_free_drive(self, enabled: bool) -> None:
+        if not self.factory_kwargs.get("with_gripper"):
+            raise RuntimeError("No gripper attached")
+        self.actions.append(("set_gripper_free_drive", enabled))
+
 
 @pytest.fixture
 def a1z_adapter_module(
@@ -277,7 +282,7 @@ def test_safe_start_rejects_sustained_motion_during_settling(
     assert robot.actions[-2:] == ["estop", "stop"]
 
 
-def test_safe_start_preserves_zero_gain_teaching_mode(
+def test_zero_gravity_uses_vendor_teaching_startup(
     a1z_adapter_module: ModuleType,
 ) -> None:
     adapter = _connected_adapter(
@@ -290,11 +295,13 @@ def test_safe_start_preserves_zero_gain_teaching_mode(
     assert adapter.activate()
 
     start_call = next(a for a in robot.actions if isinstance(a, tuple) and a[0] == "start")
-    assert np.allclose(start_call[1], np.zeros(6))
-    assert start_call[3] == 0.0
+    assert start_call[1] is None
+    assert start_call[2] is None
+    assert start_call[3] == 0.7
     assert not any(
         isinstance(action, tuple) and action[0] == "command_joint_state" for action in robot.actions
     )
+    assert 0.0 not in robot.gravity_factor_history
     assert robot.gravity_comp_factor == 0.7
 
 
@@ -527,6 +534,24 @@ def test_gripper_round_trips_meters_to_normalized(
     # Out-of-range commands clamp to the physical stroke
     assert adapter.write_gripper_position(1.0)
     assert robot.gripper_fraction == pytest.approx(1.0)
+
+
+def test_configured_gripper_free_drive_tracks_adapter_lifecycle(
+    a1z_adapter_module: ModuleType,
+) -> None:
+    adapter = _connected_adapter(
+        a1z_adapter_module,
+        gripper=True,
+        gripper_free_drive=True,
+        zero_gravity=True,
+    )
+    robot = _FakeArmRobot.instances[-1]
+
+    assert adapter.activate()
+    assert ("set_gripper_free_drive", True) in robot.actions
+
+    assert adapter.deactivate()
+    assert ("set_gripper_free_drive", False) in robot.actions
 
 
 def test_gripper_read_prefers_motor_feedback(

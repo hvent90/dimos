@@ -110,6 +110,21 @@ class EpisodeMonitorModule(Module):
             status = self._snapshot("init", time.time())
         return self._emit(status)
 
+    @rpc
+    def start_episode(self) -> EpisodeStatus:
+        """Start a new episode and return the published status."""
+        return self._transition("start", time.time())
+
+    @rpc
+    def save_episode(self) -> EpisodeStatus:
+        """Save the active episode and return the published status."""
+        return self._transition("save", time.time())
+
+    @rpc
+    def discard_episode(self) -> EpisodeStatus:
+        """Discard the active episode and return the published status."""
+        return self._transition("discard", time.time())
+
     # ── port handlers ────────────────────────────────────────────────────────
 
     def _on_buttons(self, msg: Buttons) -> None:
@@ -139,7 +154,7 @@ class EpisodeMonitorModule(Module):
                 self._transition(event_name, msg.ts)
                 break
 
-    def _transition(self, event: EpisodeCommand, ts: float) -> None:
+    def _transition(self, event: EpisodeCommand, ts: float) -> EpisodeStatus:
         """State-machine transition. Publishes EpisodeStatus on every change.
 
         ``toggle`` resolves to ``start`` when idle and ``save`` when recording,
@@ -164,7 +179,7 @@ class EpisodeMonitorModule(Module):
                 self._state = "idle"
             # Snapshot under the mutation's lock so the event matches the state.
             status = self._snapshot(event, ts)
-        self._emit(status)
+        return self._emit(status)
 
     def _snapshot(self, last_event: EpisodeEvent, ts: float) -> EpisodeStatus:
         """Build a status from current state. Caller must hold `self._lock`."""

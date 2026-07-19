@@ -51,6 +51,7 @@ def galaxea_a1z_hardware(
     gripper: bool = True,
     mock_without_address: bool = False,
     dynamics_urdf_path: str | None = None,
+    adapter_kwargs: dict[str, object] | None = None,
 ) -> HardwareComponent:
     if global_config.simulation:
         # TODO: Add sim support when A1Z MuJoCo model is available
@@ -58,10 +59,13 @@ def galaxea_a1z_hardware(
     address = global_config.can_port or "a1zcan"
     if mock_without_address and not global_config.can_port:
         return make_galaxea_a1z_hardware(hw_id, gripper=gripper)
+    resolved_adapter_kwargs = dict(adapter_kwargs or {})
+    if dynamics_urdf_path is not None:
+        resolved_adapter_kwargs["urdf_path"] = dynamics_urdf_path
     return make_galaxea_a1z_hardware(
         hw_id,
         adapter_type="galaxea_a1z",
         address=address,
         gripper=gripper,
-        adapter_kwargs={"urdf_path": dynamics_urdf_path} if dynamics_urdf_path else None,
+        adapter_kwargs=resolved_adapter_kwargs,
     )

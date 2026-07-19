@@ -389,7 +389,13 @@ class Recorder(MemoryModule):
                     ts,
                     getattr(msg, "ts", None),
                 )
-            stream.append(msg, ts=ts, pose=pose)
+            try:
+                stream.append(msg, ts=ts, pose=pose)
+            except sqlite3.ProgrammingError:
+                # A callback already queued on the module loop can finish after
+                # shutdown has closed the store. The TF recorder has the same
+                # teardown guard below.
+                pass
 
         self.process_observable(input_topic.pure_observable(), on_msg)
 
