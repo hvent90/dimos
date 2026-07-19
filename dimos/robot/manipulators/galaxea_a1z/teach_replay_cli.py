@@ -114,12 +114,30 @@ def teach(
     if gripper_free_drive:
         typer.echo("Gripper: free drive (open and close it by hand).")
     else:
-        typer.echo("Gripper: powered; type g then ENTER to toggle open/closed.")
+        typer.echo("Gripper: powered; press g to toggle open/closed.")
     typer.echo("Keep the arm supported: it has no brakes and can fall when motors disable.\n")
 
     coordinator: ModuleCoordinator | None = None
     recording = False
     gripper_open: bool | None = None
+    saved_count = 0
+    episode_started_at = 0.0
+
+    def _status() -> str:
+        if gripper_free_drive:
+            gripper = "free-drive"
+        elif gripper_open is None:
+            gripper = "?"
+        else:
+            gripper = "open" if gripper_open else "closed"
+        if recording:
+            elapsed = time.monotonic() - episode_started_at
+            state = f"RECORDING {int(elapsed // 60)}:{int(elapsed % 60):02d}"
+            keys = "SPACE save · g gripper · d discard · q quit"
+        else:
+            state = "IDLE"
+            keys = "SPACE record · g gripper · q quit"
+        return f"[{state} | saved: {saved_count} | gripper: {gripper}]  {keys}"
 
     try:
         coordinator = ModuleCoordinator.build(
@@ -147,49 +165,60 @@ def teach(
             target = _GRIPPER_OPEN_M if target_open else _GRIPPER_CLOSED_M
             if control.set_gripper_position(_TEACH_HARDWARE_ID, target):
                 gripper_open = target_open
-                typer.echo(f"Gripper {'opening' if target_open else 'closing'}.")
+                typer.echo(f">> gripper {'opening' if target_open else 'closing'}")
             else:
-                typer.echo("Gripper command rejected; check hardware state.", err=True)
+                typer.echo(">> gripper command rejected; check hardware state", err=True)
 
         while True:
-            if not recording:
-                command = _read_key(
-                    "Press ENTER to start an episode, g to toggle the gripper, or q to finish"
-                )
-                if command == "q":
-                    break
-                if command == "g":
-                    _toggle_gripper()
-                    continue
-                if command:
-                    typer.echo("Use ENTER to start, g for the gripper, or q to finish.")
-                    continue
-                monitor.start_episode()
-                recording = True
-                typer.echo("RECORDING — move the arm by hand; g toggles the gripper.")
-                continue
+            command = _read_key(_status())
 
-            command = _read_key(
-                "Press ENTER to save, g to toggle the gripper, d to discard, "
-                "or q to discard and finish"
-            )
             if command == "g":
                 _toggle_gripper()
-            elif command == "d":
-                monitor.discard_episode()
-                recording = False
-                typer.echo("Episode discarded.")
-            elif command == "q":
-                monitor.discard_episode()
-                recording = False
-                typer.echo("Active episode discarded.")
-                break
-            elif not command:
-                status = monitor.save_episode()
-                recording = False
-                typer.echo(f"Episode saved ({status.episodes_saved} total).")
-            else:
-                typer.echo("Use ENTER to save, g for the gripper, d to discard, or q to finish.")
+                continue
+
+            if command == " " or command == "":
+                # SPACE is the documented key; bare ENTER does the same thing
+                # so either habit works.
+                if not recording:
+                    monitor.start_episode()
+                    recording = True
+                    episode_started_at = time.monotonic()
+                    typer.echo(">> episode started - move the arm by hand")
+                else:
+                    status = monitor.save_episode()
+                    recording = False
+                    saved_count = status.episodes_saved
+                    typer.echo(f">> episode saved ({saved_count} total)")
+                continue
+
+            if command == "d":
+                if recording:
+                    monitor.discard_episode()
+                    recording = False
+                    typer.echo(">> episode discarded")
+                else:
+                    typer.echo(">> nothing to discard (not recording)")
+                continue
+
+            if command == "q":
+                if not recording:
+                    break
+                choice = _read_key("Episode in progress - s to save it, d to discard it, or any other key to keep recording")
+                if choice == "s":
+                    status = monitor.save_episode()
+                    recording = False
+                    saved_count = status.episodes_saved
+                    typer.echo(f">> episode saved ({saved_count} total)")
+                    break
+                if choice == "d":
+                    monitor.discard_episode()
+                    recording = False
+                    typer.echo(">> episode discarded")
+                    break
+                typer.echo(">> still recording")
+                continue
+
+            typer.echo(f">> unrecognized key {command!r}")
     except KeyboardInterrupt:
         if coordinator is not None and recording:
             monitor = coordinator.get_instance(EpisodeMonitorModule)

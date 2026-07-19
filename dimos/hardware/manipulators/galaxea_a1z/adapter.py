@@ -456,7 +456,9 @@ class GalaxeaA1ZAdapter:
         SAFETY: disabling powers off motors and the arm falls freely.
         """
         if not self._robot:
-            return False
+            # Disabling with no robot is a no-op success (already torn down);
+            # enabling still requires a connection.
+            return not enable
 
         try:
             if enable:
