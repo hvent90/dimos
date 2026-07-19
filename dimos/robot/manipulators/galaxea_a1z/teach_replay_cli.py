@@ -337,3 +337,104 @@ def replay(
             except (KeyboardInterrupt, EOFError):
                 pass
             coordinator.stop()
+
+
+@app.command("run-policy")
+def run_policy(
+    checkpoint: str = typer.Argument(
+        ...,
+        help="Local LeRobot pretrained_model directory or Hugging Face model ID",
+    ),
+    task: str = typer.Option("", "--task", help="Task prompt supplied to the policy"),
+    duration: float = typer.Option(
+        10.0,
+        "--duration",
+        min=0.1,
+        help="Maximum policy execution time in seconds",
+    ),
+    camera_index: int = typer.Option(
+        0,
+        "--camera-index",
+        min=0,
+        help="Linux camera index N for /dev/videoN",
+    ),
+    device: str | None = typer.Option(
+        None,
+        "--device",
+        help="Torch device override, for example cuda or cpu",
+    ),
+) -> None:
+    """Execute a trained LeRobot policy on the live A1Z."""
+    from dimos.core.coordination.module_coordinator import ModuleCoordinator
+    from dimos.learning.lerobot_policy import LeRobotPolicyModule
+    from dimos.robot.manipulators.galaxea_a1z.blueprints.basic import (
+        make_a1z_policy_blueprint,
+    )
+
+    local_checkpoint = Path(checkpoint).expanduser()
+    policy_path = str(local_checkpoint.resolve()) if local_checkpoint.exists() else checkpoint
+
+    typer.echo("A1Z learned-policy execution")
+    typer.echo(f"Checkpoint: {policy_path}")
+    typer.echo(f"Camera: /dev/video{camera_index} (640x480 at 15 FPS)")
+    typer.echo(f"Maximum execution: {duration:.1f}s")
+    typer.echo("The arm has no brakes. Support it during startup and keep the workspace clear.\n")
+    if not typer.confirm("Load the policy and initialize the robot?", default=False):
+        typer.echo("Policy execution cancelled.")
+        return
+
+    coordinator: ModuleCoordinator | None = None
+    policy: Any = None
+    try:
+        coordinator = ModuleCoordinator.build(
+            make_a1z_policy_blueprint(
+                policy_path,
+                task=task,
+                camera_index=camera_index,
+                device=device,
+            ),
+            {},
+        )
+        policy = coordinator.get_instance(LeRobotPolicyModule)
+        observation_deadline = time.monotonic() + 5.0
+        while time.monotonic() < observation_deadline:
+            status = policy.policy_status()
+            if status["observations_ready"]:
+                break
+            time.sleep(0.1)
+        else:
+            raise RuntimeError(
+                f"live policy observations did not become ready: {status['observation_error']}"
+            )
+        result = policy.execute_learned_policy(duration, task)
+        typer.echo(result)
+        if "started" not in result.lower():
+            raise RuntimeError(result)
+
+        deadline = time.monotonic() + duration + 5.0
+        while time.monotonic() < deadline:
+            status = policy.policy_status()
+            if not status["running"]:
+                if status["last_error"]:
+                    raise RuntimeError(status["last_error"])
+                typer.echo(f"Policy execution complete ({status['commands_sent']} commands sent).")
+                break
+            time.sleep(0.1)
+        else:
+            policy.stop_learned_policy()
+            raise TimeoutError("Policy did not stop before its execution timeout")
+    except KeyboardInterrupt:
+        typer.echo("\nPolicy execution interrupted.", err=True)
+        if policy is not None:
+            policy.stop_learned_policy()
+    except Exception as exc:
+        typer.echo(f"A1Z policy execution failed: {exc}", err=True)
+        raise typer.Exit(1)
+    finally:
+        if coordinator is not None:
+            typer.echo("Support the arm before disabling its motors.")
+            try:
+                _press_enter("Press ENTER when the arm is supported")
+            except (KeyboardInterrupt, EOFError):
+                pass
+            coordinator.stop()

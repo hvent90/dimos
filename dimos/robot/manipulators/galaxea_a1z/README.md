@@ -83,3 +83,36 @@ uv run dimos dataprep inspect ./a1z_lerobot_dataset
 The LeRobot output stores images as
 `observation.images.image`, the measured arm and gripper state as
 `observation.state`, and the next measured state as `action`.
+
+Install the optional LeRobot trainer/runtime before running the A1Z SDK setup
+(an exact `uv sync` removes packages installed outside the project lock):
+
+```bash
+uv sync --extra lerobot
+./dimos/robot/manipulators/galaxea_a1z/scripts/setup_a1z.sh --sdk-only
+```
+
+Train an ACT checkpoint from the converted local dataset:
+
+```bash
+uv run lerobot-train \
+  --dataset.repo_id=galaxea_a1z \
+  --dataset.root=./a1z_lerobot_dataset \
+  --policy.type=act \
+  --policy.device=cuda \
+  --policy.push_to_hub=false \
+  --output_dir=outputs/a1z_act \
+  --job_name=a1z_act \
+  --wandb.enable=false
+```
+
+After `setup_a1z_can.sh` passes, run the trained policy. Loading and hardware
+initialization require confirmation, and inference starts only after live RGB
+and seven-joint observations are ready:
+
+```bash
+uv run dimos a1z run-policy \
+  outputs/a1z_act/checkpoints/last/pretrained_model \
+  --task "pick up the object" \
+  --duration 20
+```

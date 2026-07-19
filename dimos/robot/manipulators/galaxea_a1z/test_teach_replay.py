@@ -19,17 +19,20 @@ from pathlib import Path
 import numpy as np
 import pytest
 
+from dimos.control.coordinator import ControlCoordinator
 from dimos.hardware.sensors.camera.module import CameraModule
 from dimos.hardware.sensors.camera.webcam import Webcam
 from dimos.learning.collection.episode_monitor import EpisodeStatus
 from dimos.learning.collection.recorder import CollectionRecorder
 from dimos.learning.dataprep.core import Episode
+from dimos.learning.lerobot_policy import LeRobotPolicyModule
 from dimos.memory2.store.sqlite import SqliteStore
 from dimos.msgs.sensor_msgs.JointState import JointState
 from dimos.robot.manipulators.galaxea_a1z.blueprints.basic import (
     A1Z_TEACH_CAMERA_FPS,
     A1Z_TEACH_CAMERA_HEIGHT,
     A1Z_TEACH_CAMERA_WIDTH,
+    make_a1z_policy_blueprint,
     make_a1z_teach_blueprint,
 )
 from dimos.robot.manipulators.galaxea_a1z.teach_replay import (
@@ -76,6 +79,30 @@ def test_teach_blueprint_records_from_configured_webcam(tmp_path: Path) -> None:
     assert (transform.frame_id, transform.child_frame_id) == ("coordinator", "camera_link")
     assert recorder_atom.kwargs["tf_tolerance"] == 1.5
     assert blueprint.blueprints.index(camera_atom) > blueprint.blueprints.index(recorder_atom)
+
+
+def test_policy_blueprint_wires_camera_policy_and_seven_joint_servo() -> None:
+    blueprint = make_a1z_policy_blueprint(
+        "checkpoints/a1z",
+        task="pick up cube",
+        camera_index=2,
+        device="cuda",
+    )
+    camera_atom = next(atom for atom in blueprint.blueprints if atom.module is CameraModule)
+    policy_atom = next(atom for atom in blueprint.blueprints if atom.module is LeRobotPolicyModule)
+    control_atom = next(atom for atom in blueprint.blueprints if atom.module is ControlCoordinator)
+
+    camera = camera_atom.kwargs["hardware"]()
+    hardware = control_atom.kwargs["hardware"][0]
+    servo = control_atom.kwargs["tasks"][0]
+
+    assert camera.config.camera_index == 2
+    assert policy_atom.kwargs["policy_path"] == "checkpoints/a1z"
+    assert policy_atom.kwargs["joint_names"] == hardware.all_joints == list(A1Z_JOINT_NAMES)
+    assert policy_atom.kwargs["task"] == "pick up cube"
+    assert policy_atom.kwargs["device"] == "cuda"
+    assert servo.type == "servo"
+    assert servo.joint_names == list(A1Z_JOINT_NAMES)
 
 
 def test_loads_saved_memory2_episode_and_orders_joints(tmp_path: Path) -> None:
