@@ -157,7 +157,7 @@ fn polyline_distance_field(map: &Costmap, polyline: &[(f32, f32)]) -> Vec<f32> {
         }
     }
     if !any {
-        if let Some(&(x, y)) = polyline.first().map(|p| p) {
+        if let Some(&(x, y)) = polyline.first() {
             if let Some((r, c)) = map.cell(x, y) {
                 seed[r * map.width + c] = crate::costmap::LETHAL;
             }

@@ -33,7 +33,7 @@ pub struct CostmapConfig {
     pub can_climb: f32,
     /// Body-band occupancy gate: a cell with >= `body_min_points` returns
     /// between `body_step` and `can_pass_under` above its own floor, spanning
-    /// >= `body_min_extent` of vertical extent, is LETHAL outright. The
+    /// at least `body_min_extent` of vertical extent, is LETHAL outright. The
     /// gradient cost alone only trips lethal for ~storey-scale steps (the
     /// Sobel spreads a step across its kernel, so with can_climb 1.2 a wall
     /// must rise >1.2 m in one cell) — real-world clutter at 0.4-1.5 m

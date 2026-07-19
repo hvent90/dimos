@@ -533,7 +533,7 @@ dependencies = [
 [[package]]
 name = "dimos-lcm"
 version = "0.1.0"
-source = "git+https://github.com/dimensionalOS/dimos-lcm.git?rev=3555e97704ec4c727d96a7ac0769d5735bb44feb#3555e97704ec4c727d96a7ac0769d5735bb44feb"
+source = "git+https://github.com/dimensionalOS/dimos-lcm.git?branch=rust-codegen#e7c9428b7201cdfeadecd181c77c9e2d60a14503"
 dependencies = [
  "byteorder",
  "socket2 0.5.10",
