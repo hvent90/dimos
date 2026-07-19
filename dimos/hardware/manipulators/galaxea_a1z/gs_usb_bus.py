@@ -118,9 +118,7 @@ class GsUsbMacBus(can.BusABC):
         self._rx_queue: queue.Queue[can.Message] = queue.Queue(maxsize=_RX_QUEUE_MAX_FRAMES)
         self._rx_dropped = 0
         self._rx_stop = threading.Event()
-        self._rx_thread = threading.Thread(
-            target=self._rx_loop, name="gs_usb_rx", daemon=True
-        )
+        self._rx_thread = threading.Thread(target=self._rx_loop, name="gs_usb_rx", daemon=True)
         self._rx_thread.start()
 
         self.channel_info = f"gs_usb {vendor_id:04x}:{product_id:04x} @ {bitrate}"

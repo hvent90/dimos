@@ -203,7 +203,9 @@ def teach(
             if command == "q":
                 if not recording:
                     break
-                choice = _read_key("Episode in progress - s to save it, d to discard it, or any other key to keep recording")
+                choice = _read_key(
+                    "Episode in progress - s to save it, d to discard it, or any other key to keep recording"
+                )
                 if choice == "s":
                     status = monitor.save_episode()
                     recording = False
