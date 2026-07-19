@@ -529,6 +529,17 @@ def test_gripper_round_trips_meters_to_normalized(
     assert robot.gripper_fraction == pytest.approx(1.0)
 
 
+def test_gripper_read_prefers_motor_feedback(
+    a1z_adapter_module: ModuleType,
+) -> None:
+    adapter = _connected_adapter(a1z_adapter_module, gripper=True, gripper_max_opening_m=0.1)
+    robot = _FakeArmRobot.instances[-1]
+    robot.gripper_fraction = 0.8
+    robot.state["gripper_pos"] = np.array([0.35])
+
+    assert adapter.read_gripper_position() == pytest.approx(0.035)
+
+
 def test_gripper_disabled_signals_unsupported(
     a1z_adapter_module: ModuleType,
 ) -> None:

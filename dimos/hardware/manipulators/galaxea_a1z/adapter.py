@@ -534,16 +534,34 @@ class GalaxeaA1ZAdapter:
     def read_gripper_position(self) -> float | None:
         """Read gripper opening (meters). None if no gripper attached.
 
-        Converts the SDK's normalized position (0.0=closed, 1.0=open).
-        Requires the adapter constructed with gripper=True and the SDK's
-        'gripper' branch.
+        Prefers the SDK gripper's motor-feedback position, then falls back to
+        its commanded position for compatibility. Converts the normalized
+        value (0.0=closed, 1.0=open) to meters. Requires the adapter constructed
+        with gripper=True and the SDK's 'gripper' branch.
         """
         if not self._robot or not self._gripper:
             return None
+
+        fraction: float | None = None
         try:
-            fraction = self._robot.get_gripper_pos()
+            gripper_state = self._robot.get_joint_state().get("gripper_pos")
+            if gripper_state is not None:
+                fraction = float(np.asarray(gripper_state).reshape(-1)[0])
         except Exception:
-            return None
+            pass
+        if fraction is None:
+            sdk_gripper = getattr(self._robot, "gripper", None)
+            feedback_reader = getattr(sdk_gripper, "get_feedback_norm", None)
+            if callable(feedback_reader):
+                try:
+                    fraction = feedback_reader()
+                except Exception:
+                    pass
+        if fraction is None:
+            try:
+                fraction = self._robot.get_gripper_pos()
+            except Exception:
+                return None
         if fraction is None:
             return None
         return float(fraction) * self._gripper_max_opening_m
@@ -565,30 +583,6 @@ class GalaxeaA1ZAdapter:
         return None
 
     # --- A1Z-specific extensions (beyond ManipulatorAdapter protocol) ---
-
-    def start_teach_recording(self, sample_hz: int = 50) -> None:
-        """Start recording joint positions for teach-and-play.
-
-        Requires the adapter constructed with zero_gravity=True so the arm
-        can be hand-guided.
-        """
-        self._require_robot().start_recording(sample_hz=sample_hz)
-
-    def stop_teach_recording(self) -> list[tuple[float, np.ndarray]]:
-        """Stop recording and return the trajectory as (timestamp_s, pos_rad) tuples."""
-        return self._require_robot().stop_recording()
-
-    def play_trajectory(self, trajectory: list, speed_factor: float = 1.0) -> None:
-        """Replay a recorded trajectory (blocking)."""
-        self._require_robot().play_trajectory(trajectory, speed_factor=speed_factor)
-
-    def save_recording(self, trajectory: list, path: str) -> None:
-        """Save a recorded trajectory to a JSON file."""
-        self._require_robot().save_recording(trajectory, path)
-
-    def load_recording(self, path: str) -> list:
-        """Load a recorded trajectory from a JSON file."""
-        return self._require_robot().load_recording(path)
 
     def set_gripper_free_drive(self, enabled: bool) -> bool:
         """Toggle gripper free-drive (zero-torque) mode for hand teaching.

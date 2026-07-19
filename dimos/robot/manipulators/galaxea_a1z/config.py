@@ -55,7 +55,7 @@ def galaxea_a1z_hardware(
     if global_config.simulation:
         # TODO: Add sim support when A1Z MuJoCo model is available
         return make_galaxea_a1z_hardware(hw_id, gripper=gripper)
-    address = global_config.can_port or "can0"
+    address = global_config.can_port or "a1zcan"
     if mock_without_address and not global_config.can_port:
         return make_galaxea_a1z_hardware(hw_id, gripper=gripper)
     return make_galaxea_a1z_hardware(
