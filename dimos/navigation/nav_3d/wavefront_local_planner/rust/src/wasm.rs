@@ -12,9 +12,6 @@
 // See the License for the specific language governing permissions and
 // limitations under the License.
 
-// Copyright 2026 Dimensional Inc.
-// SPDX-License-Identifier: Apache-2.0
-
 //! wasm-bindgen bindings for the interactive browser demo: the JS side feeds
 //! synthetic obstacle points + a goal, gets back the costmap raster and the
 //! planned path each frame.

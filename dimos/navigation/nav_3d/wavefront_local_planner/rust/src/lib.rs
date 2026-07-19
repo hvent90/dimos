@@ -12,9 +12,6 @@
 // See the License for the specific language governing permissions and
 // limitations under the License.
 
-// Copyright 2026 Dimensional Inc.
-// SPDX-License-Identifier: Apache-2.0
-
 //! Wavefront (navigation-function) local planner core.
 //!
 //! Pure algorithm crate: `costmap` builds the level-aware occupancy + chamfer

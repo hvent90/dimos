@@ -12,9 +12,6 @@
 # See the License for the specific language governing permissions and
 # limitations under the License.
 
-# Copyright 2026 Dimensional Inc.
-# Licensed under the Apache License, Version 2.0 (the "License").
-
 from __future__ import annotations
 
 import math

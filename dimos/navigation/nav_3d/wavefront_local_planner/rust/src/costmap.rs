@@ -12,9 +12,6 @@
 // See the License for the specific language governing permissions and
 // limitations under the License.
 
-// Copyright 2026 Dimensional Inc.
-// SPDX-License-Identifier: Apache-2.0
-
 //! Level-aware height-cost occupancy — a faithful port of the measured Python
 //! semantics in `dimos/mapping/pointclouds/occupancy.py` (height_cost with
 //! `flag_dropoffs` + `reference_z`), self-contained so the local planner owns

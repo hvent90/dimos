@@ -12,9 +12,6 @@
 // See the License for the specific language governing permissions and
 // limitations under the License.
 
-// Copyright 2026 Dimensional Inc.
-// SPDX-License-Identifier: Apache-2.0
-
 //! pyo3 bindings for offline parity tests against the Python reference planner.
 
 use numpy::{PyArrayMethods, PyReadonlyArray2};

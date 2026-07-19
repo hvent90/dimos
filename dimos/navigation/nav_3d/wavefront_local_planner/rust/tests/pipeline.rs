@@ -12,9 +12,6 @@
 // See the License for the specific language governing permissions and
 // limitations under the License.
 
-// Copyright 2026 Dimensional Inc.
-// SPDX-License-Identifier: Apache-2.0
-
 //! End-to-end pipeline tests on synthetic worlds — the guards that would have
 //! caught hl58 (voxel-spaced input under-sampling the grid -> lethal blanket
 //! -> robot boxed in -> empty plans at 60 Hz for a whole course).
