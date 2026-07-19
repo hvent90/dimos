@@ -25,6 +25,15 @@ Device quirks handled here:
   the gs_usb library assumes 0x02)
 - macOS has no kernel driver to detach; the detach call is skipped
 - TX echo frames are filtered out of recv()
+- RX runs on a dedicated reader thread (see _rx_loop): the adapter is a
+  Full-Speed USB device read one frame per libusb round-trip, and the SDK's
+  250 Hz loop budgets only ~1 ms/cycle for draining. Synchronous reads from
+  that budget cannot keep up with the ~3500 frames/s the bus carries (motor
+  feedback plus TX echoes), so the device FIFO overflows and feedback
+  freezes for hundreds of ms (observed on hardware: frozen joints in teach
+  recordings, "CAN feedback stale" during replay). The reader thread drains
+  USB continuously - libusb releases the GIL while blocked - and recv()
+  becomes a queue pop that always meets the SDK's budget.
 
 Requires: pip install pyusb gs_usb (plus libusb, e.g. brew install libusb).
 Lives in galaxea_a1z/ because it is the only user today; promote to a shared
@@ -33,6 +42,9 @@ location when a second CAN arm needs it.
 
 from __future__ import annotations
 
+import contextlib
+import queue
+import threading
 import time
 from typing import Any
 
@@ -44,6 +56,13 @@ GALAXEA_PRODUCT_ID = 0x8598
 
 _GS_USB_NONE_ECHO_ID = 0xFFFFFFFF
 _GS_CAN_MODE_LISTEN_ONLY = 1 << 0
+
+# Reader-thread queue depth. At the arm's ~1750 feedback frames/s this holds
+# multiple seconds of backlog; the consumer (SDK drain) normally keeps the
+# queue near-empty, and on overflow the oldest frames are dropped so recv()
+# keeps returning fresh state instead of replaying stale history.
+_RX_QUEUE_MAX_FRAMES = 8192
+_RX_READ_TIMEOUT_MS = 20
 
 
 class GsUsbMacBus(can.BusABC):
@@ -96,6 +115,14 @@ class GsUsbMacBus(can.BusABC):
         self._gs.start(_GS_CAN_MODE_LISTEN_ONLY if listen_only else 0)
         self._flush_rx()
 
+        self._rx_queue: queue.Queue[can.Message] = queue.Queue(maxsize=_RX_QUEUE_MAX_FRAMES)
+        self._rx_dropped = 0
+        self._rx_stop = threading.Event()
+        self._rx_thread = threading.Thread(
+            target=self._rx_loop, name="gs_usb_rx", daemon=True
+        )
+        self._rx_thread.start()
+
         self.channel_info = f"gs_usb {vendor_id:04x}:{product_id:04x} @ {bitrate}"
         super().__init__(channel=channel)
 
@@ -127,30 +154,30 @@ class GsUsbMacBus(can.BusABC):
         hw_ts = bool(self._gs.device_flags & self._hw_timestamp_flag)
         self._gs.gs_usb.write(self._out_endpoint, frame.pack(hw_ts))
 
-    def _recv_internal(self, timeout: float | None) -> tuple[can.Message | None, bool]:
+    def _rx_loop(self) -> None:
+        """Continuously drain the device into the RX queue.
+
+        Runs until shutdown. libusb releases the GIL for the duration of each
+        blocking read, so this thread keeps the device FIFO empty even while
+        the SDK control thread and the rest of the process compete for the
+        interpreter. TX echoes are discarded here so they never consume the
+        consumer's drain budget.
+        """
         from gs_usb.gs_usb_frame import GsUsbFrame
 
-        # python-can treats timeout<=0 as a poll. gs_usb reads block for at
-        # least 1 ms, so a poll costs up to 1 ms when the queue is empty
-        # (returns immediately when a frame is pending). The SDK's feedback
-        # drain relies on recv(timeout=0.0) returning pending frames.
-        if timeout is not None and timeout <= 0:
-            timeout = 0.001
-        deadline = None if timeout is None else time.perf_counter() + timeout
         frame = GsUsbFrame()
-        while True:
-            if deadline is None:
-                wait_ms = 1000
-            else:
-                remaining = deadline - time.perf_counter()
-                if remaining <= 0:
-                    return None, False
-                wait_ms = max(1, int(remaining * 1000))
-
-            if not self._gs.read(frame, wait_ms):
-                if deadline is None:
-                    continue
-                return None, False
+        while not self._rx_stop.is_set():
+            try:
+                got = self._gs.read(frame, _RX_READ_TIMEOUT_MS)
+            except Exception:
+                if self._rx_stop.is_set():
+                    return
+                # Transient libusb error (e.g. device re-enumerating); back
+                # off briefly instead of spinning.
+                time.sleep(0.01)
+                continue
+            if not got:
+                continue
             if frame.echo_id != _GS_USB_NONE_ECHO_ID:
                 continue  # our own TX echo, not bus traffic
 
@@ -160,9 +187,36 @@ class GsUsbMacBus(can.BusABC):
                 data=bytes(frame.data[: frame.can_dlc]),
                 dlc=frame.can_dlc,
             )
-            return msg, False
+            try:
+                self._rx_queue.put_nowait(msg)
+            except queue.Full:
+                # Consumer stalled: drop the oldest frame so the queue holds
+                # the freshest state. Single producer, so this cannot race
+                # another put.
+                with contextlib.suppress(queue.Empty):
+                    self._rx_queue.get_nowait()
+                    self._rx_dropped += 1
+                with contextlib.suppress(queue.Full):
+                    self._rx_queue.put_nowait(msg)
+
+    def _recv_internal(self, timeout: float | None) -> tuple[can.Message | None, bool]:
+        # The SDK's feedback drain calls recv(timeout=0.0) in a tight loop
+        # with a ~1 ms budget; a true non-blocking pop keeps every call well
+        # inside that budget.
+        try:
+            if timeout is not None and timeout <= 0:
+                return self._rx_queue.get_nowait(), False
+            return self._rx_queue.get(timeout=timeout), False
+        except queue.Empty:
+            return None, False
 
     def shutdown(self) -> None:
+        self._rx_stop.set()
+        rx_thread = getattr(self, "_rx_thread", None)
+        if rx_thread is not None and rx_thread.is_alive():
+            rx_thread.join(timeout=1.0)
+        if self._rx_dropped:
+            print(f"GsUsbMacBus: dropped {self._rx_dropped} RX frames on queue overflow")
         try:
             self._gs.stop()
         except Exception:
