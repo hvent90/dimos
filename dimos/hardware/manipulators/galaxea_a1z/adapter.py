@@ -234,7 +234,8 @@ class GalaxeaA1ZAdapter:
             from a1z.robots.get_robot import get_a1z_robot
         except ImportError:
             print(
-                "ERROR: a1z SDK not installed. Install from github.com/userguide-galaxea/GALAXEA-A1Z"
+                "ERROR: a1z SDK not installed. Run "
+                "./dimos/robot/manipulators/galaxea_a1z/scripts/setup_a1z.sh"
             )
             return False
 
@@ -262,7 +263,8 @@ class GalaxeaA1ZAdapter:
         except TypeError as e:
             print(
                 "ERROR: installed a1z SDK does not support the gripper - "
-                f"install the SDK's 'gripper' branch: {e}"
+                "run ./dimos/robot/manipulators/galaxea_a1z/scripts/setup_a1z.sh: "
+                f"{e}"
             )
             self._robot = None
             return False

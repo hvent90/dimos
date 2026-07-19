@@ -9,16 +9,28 @@ G1Z gripper implementation.
 The G1Z requires the vendor SDK's `gripper` branch; vendor `main` does not
 accept `with_gripper` and cannot actuate CAN motor 7.
 
+Run the one-command host setup as your normal user:
+
 ```bash
-git clone --branch gripper https://github.com/userguide-galaxea/GALAXEA-A1Z.git
-uv pip install -e ./GALAXEA-A1Z
+./dimos/robot/manipulators/galaxea_a1z/scripts/setup_a1z.sh
 ```
 
-Keep the installed SDK checkout on its `gripper` branch; switching that checkout
-to vendor `main` will break G1Z initialization. DimOS deliberately has no Linux
-userspace-CAN fallback. After boot or reconnecting the HHS adapter, bind it to
-the kernel driver, configure the stable `a1zcan` SocketCAN interface, and verify
-that the driver can actually transmit:
+The wrapper verifies G1Z support and, when needed, installs a known-working
+commit from the vendor's `gripper` branch into the DimOS virtual environment.
+It requests `sudo` only when invoking the Linux SocketCAN setup. Use
+`--sdk-only` to install or verify the Python SDK without touching CAN.
+
+For a manual SDK-only installation, use the same pinned source:
+
+```bash
+uv pip install \
+  "a1z @ git+https://github.com/userguide-galaxea/GALAXEA-A1Z.git@e931ecd0e25ad35df251097ba42921b3d2fa7224"
+```
+
+DimOS deliberately has no Linux userspace-CAN fallback. After boot or
+reconnecting the HHS adapter, the one-command setup can be rerun, or the CAN
+portion can be invoked directly to bind the adapter to the kernel driver,
+configure the stable `a1zcan` SocketCAN interface, and verify transmission:
 
 ```bash
 sudo ./dimos/robot/manipulators/galaxea_a1z/scripts/setup_a1z_can.sh
