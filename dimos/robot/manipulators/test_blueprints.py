@@ -74,6 +74,10 @@ def _coordinator_tasks(blueprint: Blueprint) -> list[TaskConfig]:
     return cast("list[TaskConfig]", _module_kwargs(blueprint, ControlCoordinator)["tasks"])
 
 
+def _declared_lfs_filename(path: object) -> object:
+    return object.__getattribute__(path, "_lfs_filename")
+
+
 def test_planner_helper_defaults_to_no_visualization() -> None:
     blueprint = planner(robots=[make_xarm7_model_config(name="arm", add_gripper=True)])
 
@@ -154,7 +158,9 @@ def test_shipped_eef_twist_blueprints_use_pink_with_named_models(
 
     assert control_ik["robot_model"].end_effector_link
     assert "ee_joint_id" not in task.params
-    assert not str(control_ik["robot_model"].model_path).endswith((".xml", ".mjcf"))
+    declared_filename = _declared_lfs_filename(control_ik["robot_model"].model_path)
+    assert isinstance(declared_filename, str)
+    assert not declared_filename.endswith((".xml", ".mjcf"))
 
 
 def test_piper_pink_task_uses_xacro_and_gripper_base() -> None:
@@ -170,13 +176,17 @@ def test_piper_pink_task_uses_xacro_and_gripper_base() -> None:
             if task.type in ("eef_twist", "cartesian_ik")
         )
         control_ik = task.params["control_ik"]
-        assert control_ik["robot_model"].model_path == PIPER_MODEL_PATH
+        assert _declared_lfs_filename(control_ik["robot_model"].model_path) == (
+            _declared_lfs_filename(PIPER_MODEL_PATH)
+        )
         assert control_ik["robot_model"].end_effector_link == "gripper_base"
         assert "ee_joint_id" not in task.params
 
         reconstructed = PinkControlIKConfig.model_validate(control_ik)
         assert reconstructed.robot_model is control_ik["robot_model"]
-        assert reconstructed.robot_model.model_path == PIPER_MODEL_PATH
+        assert _declared_lfs_filename(reconstructed.robot_model.model_path) == (
+            _declared_lfs_filename(PIPER_MODEL_PATH)
+        )
         assert reconstructed.robot_model.end_effector_link == "gripper_base"
 
 
