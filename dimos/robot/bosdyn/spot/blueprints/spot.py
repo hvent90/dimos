@@ -38,13 +38,19 @@ from dimos.core.coordination.blueprints import autoconnect
 from dimos.core.global_config import global_config
 from dimos.navigation.movement_manager.movement_manager import MovementManager
 from dimos.robot.bosdyn.spot.effectors.high_level import SpotHighLevel
-from dimos.robot.bosdyn.spot.rerun import spot_camera_layout
+from dimos.robot.bosdyn.spot.rerun import spot_camera_layout, spot_camera_visual_overrides
 from dimos.visualization.vis_module import vis_module
 
 spot = autoconnect(
     SpotHighLevel.blueprint(),
     MovementManager.blueprint(),
-    vis_module(global_config.viewer, rerun_config={"blueprint": spot_camera_layout}),
+    vis_module(
+        global_config.viewer,
+        rerun_config={
+            "blueprint": spot_camera_layout,
+            "visual_override": spot_camera_visual_overrides(),
+        },
+    ),
 ).remappings(
     [
         # No nav stack here, so MovementManager's goal/way_point/stop_movement

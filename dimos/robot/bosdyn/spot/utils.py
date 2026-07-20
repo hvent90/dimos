@@ -16,6 +16,7 @@
 
 from __future__ import annotations
 
+import math
 from pathlib import Path
 from typing import Any
 
@@ -115,6 +116,25 @@ def camera_mount_transforms(
         composed.frame_id = base_frame_id
         transforms.append(composed)
     return transforms
+
+
+def roll_optical_frame(transform: Transform, quarter_turns: int) -> Transform:
+    """Roll a camera's optical frame `quarter_turns` * 90° about its viewing (z) axis.
+
+    Pairs with `rotate_image_quarter_turns`: rotating the image alone leaves the 3D
+    frame at its raw mount orientation, so frustums and depth back-projection land
+    rotated. Rolling the frame by the same amount realigns 3D with the upright image.
+    """
+    if not quarter_turns:
+        return transform
+    roll = Quaternion.from_euler(Vector3(0.0, 0.0, quarter_turns * math.pi / 2))
+    return Transform(
+        translation=transform.translation,
+        rotation=transform.rotation * roll,
+        frame_id=transform.frame_id,
+        child_frame_id=transform.child_frame_id,
+        ts=transform.ts,
+    )
 
 
 def rotate_image_quarter_turns(image: Image, quarter_turns: int) -> Image:
