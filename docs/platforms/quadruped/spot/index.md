@@ -30,6 +30,9 @@ dimos run spot \
   -o spothighlevel.password=<password>
 ```
 
+The username and password are printed on the sticker inside Spot's battery bay (visible
+when the battery is removed).
+
 The IP auto-detects (WiFi then Ethernet). Force one with `-o spothighlevel.ip=<addr>`.
 
 Keyboard teleop: WASD move/turn, QE strafe, Space soft-stop, ESC quit. A Rerun
@@ -51,7 +54,7 @@ viewer opens with the fisheye/depth cameras and odometry.
 - `recorder.py` — `SpotRecorder`: records every Spot stream to disk.
 - `blueprints/spot.py` — the runnable `spot` blueprint (click/teleop + sensors + Rerun).
 
-## Deep Dive
+## Dimos Tools
 
 - [Visualization](/docs/usage/visualization.md) — Rerun, performance tuning
 - [Data Streams](/docs/usage/data_streams/index.md) — RxPY streams, backpressure, quality filtering

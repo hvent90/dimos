@@ -43,13 +43,8 @@ POWER_OFF_TIMEOUT_S = 20.0
 STAND_TIMEOUT_S = 10.0
 SIT_TIMEOUT_S = 10.0
 
-# Static camera-mount geometry lives in this URDF (base_link -> body -> {pos}_camera
-# -> {pos}_camera_optical, all fixed joints). SpotHighLevel publishes those mounts
-# as static tf; the moving odom->base_link edge stays live from Spot's state.
 SPOT_URDF_PATH = Path(__file__).parent / "spot.urdf"
 
-# Stream-name suffix per camera mount, ordered to match the fisheye/depth source
-# lists in SpotHighLevel. Names the grayscale_image_* / depth_image_* streams by position.
 CAMERA_STREAM_SUFFIXES = ["front_left", "front_right", "left", "right", "back"]
 
 # Spot mounts the two front body cameras rotated ~90° clockwise, so their raw
@@ -62,7 +57,4 @@ FRONT_CAMERA_ROTATE_UPRIGHT = -1
 # intrinsics are unchanged in width/height, only the principal point flips.
 RIGHT_CAMERA_ROTATE_UPRIGHT = 2
 
-# Spot's body fisheye + depth cameras top out around 15 Hz. Poll at that rate so
-# we never miss a frame; the acquisition_time dedup in SpotHighLevel drops any
-# repeat returned by polling faster than a given camera actually refreshes.
 CAMERA_MAX_HZ = 15.0

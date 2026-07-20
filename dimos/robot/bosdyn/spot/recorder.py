@@ -45,9 +45,6 @@ class SpotRecorderConfig(RecorderConfig):
         default_factory=lambda: f"spot_recording_{datetime.now():%Y-%m-%d_%H-%M-%S}.db"
     )
     on_existing: OnExisting = OnExisting.APPEND
-    # The odom frame is the fixed root SpotHighLevel anchors against. It publishes
-    # odom->base_link and base_link->camera edges, so image/odom poses resolve
-    # against this root. Must match SpotHighLevelConfig.odom_frame_id.
     root_frame: str = "odom"
     stream_codecs: dict[str, str] = Field(
         default_factory=lambda: {

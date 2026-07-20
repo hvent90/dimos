@@ -119,7 +119,6 @@ class SpotHighLevelConfig(StaticTfPublisherConfig):
     right_camera_frame_id: str = "right_camera_optical"
     back_camera_frame_id: str = "back_camera_optical"
 
-    # Poll at the camera's max rate; SpotHighLevel dedups repeats by acquisition_time.
     image_rate_hz: float = CAMERA_MAX_HZ
     odom_rate_hz: float = 60.0
 
@@ -292,6 +291,7 @@ class SpotHighLevel(StaticTfPublisher):
             return
         await self.move(msg)
 
+    # the spot API can only poll - no callbacks
     async def _poll_images(self) -> None:
         period = 1.0 / self.config.image_rate_hz
         config = self.config
