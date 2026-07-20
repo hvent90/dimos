@@ -430,6 +430,7 @@ class SpotHighLevel(StaticTfPublisher):
             VISION_FRAME_NAME,
             get_a_tform_b,
         )
+        from bosdyn.client.math_helpers import SE3Pose  # type: ignore[import-not-found]
 
         period = 1.0 / self.config.odom_rate_hz
         while True:
@@ -442,23 +443,23 @@ class SpotHighLevel(StaticTfPublisher):
                 continue
 
             kinematic_state = state.kinematic_state
-            vision_tform_body = get_a_tform_b(
-                kinematic_state.transforms_snapshot, VISION_FRAME_NAME, BODY_FRAME_NAME
-            )
-            # Fail this task loudly rather than publish nothing silently. cmd_vel runs on a
-            # separate handler, so driving keeps working; only odom + the odom->base_link tf stop.
-            if vision_tform_body is None:
-                logger.error(
-                    "Spot odom stopped: robot state has no vision->body transform, so the "
-                    "odom->base_link TF cannot be published. cmd_vel still works, but anything "
-                    "needing TF (nav, mapping) will not until the transform is available."
-                )
-                raise RuntimeError("Spot state snapshot missing vision->body transform")
-            velocity = kinematic_state.velocity_of_body_in_vision
+            # note:  creating new time_converter's is intenional, time_sync changes itself over time, time_converter doesn't
             time_converter = self._robot.time_sync.get_robot_time_converter()
             ts = time_converter.local_seconds_from_robot_timestamp(
                 kinematic_state.acquisition_timestamp
             )
+            vision_tform_body = get_a_tform_b(
+                kinematic_state.transforms_snapshot, VISION_FRAME_NAME, BODY_FRAME_NAME
+            )
+            # No vision->body: fall back to identity so odom->base_link keeps publishing and the
+            # tf tree stays connected (cameras keep resolving). Odom pose reads zero until it returns.
+            if vision_tform_body is None:
+                logger.warning(
+                    "Spot state has no vision->body transform; using identity "
+                    "odom->base_link until it returns (odometry pose reads zero)."
+                )
+                vision_tform_body = SE3Pose.from_identity()
+            velocity = kinematic_state.velocity_of_body_in_vision
             self._publish_odom(vision_tform_body, velocity, ts)
 
             await asyncio.sleep(max(0.0, period - (time.monotonic() - start)))
