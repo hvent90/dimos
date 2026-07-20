@@ -168,7 +168,8 @@ def generate_cases(
                     line,
                     obstacle_keys,
                     cfg.voxel_size,
-                    cfg.robot_radius,
+                    cfg.robot_length,
+                    cfg.robot_width,
                     cfg.ground_margin,
                     cfg.body_clearance,
                 ).valid

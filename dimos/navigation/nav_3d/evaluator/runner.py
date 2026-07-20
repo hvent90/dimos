@@ -17,10 +17,11 @@
 Every case is planned twice: online on the incremental map built up to the
 case's start time, and final on the map fed the whole recording. The final
 map is not ground truth, only the most complete map the pipeline produces.
-The final path is gated against full final occupancy, the online path only
-against obstacles the sensor had returns from by plan time. Every path must
-also stand on final-map occupancy and stay within the climb envelope. The
-headline score is validity-gated SPL on the incremental map.
+The final path is gated against full final occupancy, the online path against
+the incremental map the planner had at plan time, so obstacles the sensor had
+not yet mapped never count. Every path must also stand on final-map occupancy
+and stay within the climb envelope. The headline score is validity-gated SPL
+on the incremental map.
 """
 
 from __future__ import annotations
@@ -113,8 +114,16 @@ class CaseResult:
     online: PlanOutcome
     final: PlanOutcome
     soft_progress: float
-    # Planner graph on the incremental map, kept only for failed cases.
+    # The online plan succeeded but a new obstacle in the final map blocks its
+    # route, so the case looks like a dynamic obstacle rather than a bug.
+    dynamic_candidate: bool = False
+    # Where the online route is blocked by that newly-appeared occupancy.
+    blocking_points: list[list[float]] = field(default_factory=list)
+    # Planner graph on the incremental map, kept for the rerun recording.
     online_artifacts: PlannerArtifacts | None = None
+    # Occupied voxel centers of the incremental map at plan time, kept for the
+    # rerun recording.
+    online_occupied: NDArray[np.float32] | None = None
 
 
 @dataclass
@@ -156,6 +165,9 @@ class Report:
     plan_ms: dict[str, float]
     map_update_ms: dict[str, float]
     datasets: list[DatasetResult]
+    # dataset/id of cases whose online route a new final obstacle blocks, the
+    # candidates for an expect_final_fail label.
+    dynamic_candidates: list[str] = field(default_factory=list)
     config: dict[str, float | int] = field(default_factory=dict)
 
     def to_dict(self) -> dict[str, object]:
@@ -164,6 +176,7 @@ class Report:
             dataset.pop("final_artifacts")
             for case in dataset["cases"]:
                 case.pop("online_artifacts")
+                case.pop("online_occupied")
         return out
 
 
@@ -186,7 +199,8 @@ def _run_plan(
         waypoints,
         obstacle_keys,
         cfg.voxel_size,
-        cfg.robot_radius,
+        cfg.robot_length,
+        cfg.robot_width,
         cfg.ground_margin,
         cfg.body_clearance,
     )
@@ -257,6 +271,41 @@ def _goal_seen(online_points: NDArray[np.float32], goal: tuple[float, float, flo
     return bool(d.min() <= GOAL_SEEN_RADIUS_M)
 
 
+def _dynamic_candidate(
+    online: PlanOutcome,
+    final: PlanOutcome,
+    online_wp: NDArray[np.float32] | None,
+    online_keys: NDArray[np.int64],
+    final_keys: NDArray[np.int64],
+    cfg: EvalConfig,
+) -> tuple[bool, list[list[float]]]:
+    """Flag a case whose online route is blocked only by new final occupancy.
+
+    An online success paired with a final failure is either a dynamic obstacle
+    that appeared after the robot passed or a planner or mapping bug. Gating
+    the online path against the voxels the final map gained since plan time
+    tells the two apart. If that newly-occupied set alone blocks the route, a
+    real obstacle appeared. A human still confirms before labeling the case.
+    """
+    if online_wp is None or not online.success or final.success:
+        return False, []
+    new_keys = np.setdiff1d(final_keys, online_keys)
+    if not len(new_keys):
+        return False, []
+    gate = metrics.check_path(
+        online_wp,
+        new_keys,
+        cfg.voxel_size,
+        cfg.robot_length,
+        cfg.robot_width,
+        cfg.ground_margin,
+        cfg.body_clearance,
+    )
+    if gate.valid:
+        return False, []
+    return True, gate.collision_points[:MAX_COLLISIONS_KEPT].tolist()
+
+
 def _snapshot(planner: MLSPlanner) -> PlannerArtifacts:
     return PlannerArtifacts(
         surface_clearance=planner.surface_clearance_map(),
@@ -264,7 +313,9 @@ def _snapshot(planner: MLSPlanner) -> PlannerArtifacts:
     )
 
 
-def run_suite(suite: Suite, cfg: EvalConfig, threads: int = 1) -> DatasetResult:
+def run_suite(
+    suite: Suite, cfg: EvalConfig, threads: int = 1, keep_artifacts: bool = False
+) -> DatasetResult:
     db_path = suite.db_path()
     trajectory = load_trajectory(db_path, suite.odom_stream)
     final = load_or_build_final_map(db_path, suite, cfg)
@@ -333,7 +384,6 @@ def run_suite(suite: Suite, cfg: EvalConfig, threads: int = 1) -> DatasetResult:
     def process_checkpoint(
         k: int,
         keys: NDArray[np.int64],
-        online_gate_keys: NDArray[np.int64],
         online_planner: MLSPlanner,
     ) -> None:
         online_points = key_centers(keys, cfg.voxel_size)
@@ -346,15 +396,29 @@ def run_suite(suite: Suite, cfg: EvalConfig, threads: int = 1) -> DatasetResult:
             final_out, _ = _run_plan(
                 final_planner, case, ref.length, obstacle_keys, obstacle_keys, cfg
             )
+            if case.expect_final_fail:
+                # A dynamic obstacle blocked the route by the final map, so the
+                # planner is right to refuse it there while the online plan,
+                # made before the closure, is scored normally.
+                final_out = score_negative(final_out)
             if len(online_points):
+                # Collisions are checked against the incremental map the planner
+                # actually had at plan time (keys), not the final map. Support
+                # still uses the final map, since the ground exists whether or
+                # not it was mapped yet.
                 online_out, online_wp = _run_plan(
-                    online_planner, case, ref.length, online_gate_keys, obstacle_keys, cfg
+                    online_planner, case, ref.length, keys, obstacle_keys, cfg
                 )
             else:
                 online_out = _no_plan(case, 0.0)
                 online_wp = None
             end = online_wp[-1] if online_wp is not None and len(online_wp) else None
             goal_seen = _goal_seen(online_points, case.goal)
+            dynamic_candidate, blocking = (
+                (False, [])
+                if case.expect_final_fail
+                else _dynamic_candidate(online_out, final_out, online_wp, keys, obstacle_keys, cfg)
+            )
             results[ci] = CaseResult(
                 id=case.id,
                 dataset=suite.dataset,
@@ -372,34 +436,33 @@ def run_suite(suite: Suite, cfg: EvalConfig, threads: int = 1) -> DatasetResult:
                 online=online_out,
                 final=final_out,
                 soft_progress=metrics.soft_progress(end, case.start, case.goal),
-                online_artifacts=None
-                if online_out.success or not len(online_points)
-                else _snapshot(online_planner),
+                dynamic_candidate=dynamic_candidate,
+                blocking_points=blocking,
+                online_artifacts=_snapshot(online_planner)
+                if keep_artifacts and len(online_points)
+                else None,
+                online_occupied=online_points if keep_artifacts and len(online_points) else None,
             )
 
     active = {int(k) for k in case_ckpt}
     tls = threading.local()
 
-    def task(k: int, keys: NDArray[np.int64], gate: NDArray[np.int64]) -> None:
+    def task(k: int, keys: NDArray[np.int64]) -> None:
         planner = getattr(tls, "planner", None)
         if planner is None:
             planner = tls.planner = cfg.make_planner()
         try:
-            process_checkpoint(k, keys, gate, planner)
+            process_checkpoint(k, keys, planner)
         finally:
             in_flight.release()
 
-    def snapshot_stream() -> Iterator[tuple[int, NDArray[np.int64], NDArray[np.int64]]]:
-        """Walk the delta chain once. The online gate only holds obstacles the
-        sensor had returns from by plan time. Obstacles never observed are not
-        the planner's fault."""
-        gate = np.array([], dtype=np.int64)
-        for k, (keys, observed_new) in enumerate(checkpoints.iter_snapshots()):
-            fresh = np.intersect1d(obstacle_keys, observed_new, assume_unique=True)
-            if len(fresh):
-                gate = np.union1d(gate, fresh)
+    def snapshot_stream() -> Iterator[tuple[int, NDArray[np.int64]]]:
+        """Walk the delta chain once, yielding the incremental occupancy at each
+        case's plan time. Only voxels mapped by then are present, so obstacles
+        the sensor never saw are naturally excluded from the online check."""
+        for k, (keys, _observed) in enumerate(checkpoints.iter_snapshots()):
             if k in active:
-                yield k, keys, gate
+                yield k, keys
 
     # The planner releases the GIL and parallelizes updates internally via a
     # shared rayon pool, so a few worker threads interleave the serial parts
@@ -416,8 +479,8 @@ def run_suite(suite: Suite, cfg: EvalConfig, threads: int = 1) -> DatasetResult:
                 future.result()
     else:
         online_planner = cfg.make_planner()
-        for k, keys, gate in snapshot_stream():
-            process_checkpoint(k, keys, gate, online_planner)
+        for k, keys in snapshot_stream():
+            process_checkpoint(k, keys, online_planner)
 
     done = [r for r in results if r is not None]
     if len(done) != len(suite.cases):
@@ -429,22 +492,37 @@ def run_suite(suite: Suite, cfg: EvalConfig, threads: int = 1) -> DatasetResult:
         map_build_ms=final.build_ms,
         add_frame_ms=final.add_frame_ms,
         frames=final.frames,
-        final_artifacts=_snapshot(final_planner),
+        final_artifacts=_snapshot(final_planner) if keep_artifacts else None,
     )
 
 
-def evaluate(suites: list[Suite], cfg: EvalConfig | None = None, workers: int = 1) -> Report:
+def evaluate(
+    suites: list[Suite],
+    cfg: EvalConfig | None = None,
+    workers: int = 1,
+    keep_artifacts: bool = False,
+) -> Report:
     """Score every suite. workers is total parallelism: datasets spread over
-    processes and each dataset's checkpoints over threads."""
+    processes and each dataset's checkpoints over threads. keep_artifacts
+    snapshots each planner graph for the rerun recording."""
     cfg = cfg or EvalConfig()
     if workers > 1 and len(suites) > 1:
         threads = max(1, workers // len(suites))
         with ProcessPoolExecutor(max_workers=min(workers, len(suites))) as pool:
             datasets = list(
-                pool.map(run_suite, suites, itertools.repeat(cfg), itertools.repeat(threads))
+                pool.map(
+                    run_suite,
+                    suites,
+                    itertools.repeat(cfg),
+                    itertools.repeat(threads),
+                    itertools.repeat(keep_artifacts),
+                )
             )
     else:
-        datasets = [run_suite(suite, cfg, threads=workers) for suite in suites]
+        datasets = [
+            run_suite(suite, cfg, threads=workers, keep_artifacts=keep_artifacts)
+            for suite in suites
+        ]
     cases = [c for d in datasets for c in d.cases]
     if not cases:
         raise ValueError("no cases to evaluate")
@@ -453,15 +531,15 @@ def evaluate(suites: list[Suite], cfg: EvalConfig | None = None, workers: int = 
     online_spl = np.array([c.online.spl for c in cases])
     final_spl = np.array([c.final.spl for c in cases])
     soft = np.array([c.soft_progress if not c.online.success else c.online.spl for c in cases])
-    outcome_counts = {"both": 0, "final_only": 0, "incremental_only": 0, "neither": 0}
+    outcome_names = {
+        (True, True): "both",
+        (False, True): "final_only",
+        (True, False): "incremental_only",
+        (False, False): "neither",
+    }
+    outcome_counts = dict.fromkeys(outcome_names.values(), 0)
     for c in cases:
-        key = {
-            (True, True): "both",
-            (False, True): "final_only",
-            (True, False): "incremental_only",
-            (False, False): "neither",
-        }[(c.online.success, c.final.success)]
-        outcome_counts[key] += 1
+        outcome_counts[outcome_names[c.online.success, c.final.success]] += 1
 
     by_tag: dict[str, TagStats] = {}
     for tag in sorted({t for c in cases for t in c.tags}):
@@ -487,5 +565,6 @@ def evaluate(suites: list[Suite], cfg: EvalConfig | None = None, workers: int = 
         plan_ms=metrics.timing_stats([c.online.plan_ms for c in cases]),
         map_update_ms=metrics.timing_stats([c.map_update_ms for c in cases]),
         datasets=datasets,
+        dynamic_candidates=[f"{c.dataset}/{c.id}" for c in cases if c.dynamic_candidate],
         config=asdict(cfg),
     )

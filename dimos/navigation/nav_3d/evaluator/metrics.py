@@ -65,27 +65,71 @@ class GateResult:
     min_clearance_m: float
 
 
+def chord_directions(samples: NDArray[np.float32], span: float) -> NDArray[np.float64]:
+    """Unit direction from a point span/2 behind each sample to a point span/2
+    ahead, measured along the path.
+
+    This is the rigid body's heading: the chord from the rear feet to the front
+    feet, not the local tangent between two points under the body center, which
+    on stepped terrain flips between flat treads and vertical risers.
+    """
+    if len(samples) < 2:
+        return np.tile(np.array([1.0, 0.0, 0.0]), (len(samples), 1))
+    pts = samples.astype(np.float64)
+    arc = np.concatenate([[0.0], np.cumsum(np.linalg.norm(np.diff(pts, axis=0), axis=1))])
+    half = span / 2.0
+    back_arc = np.clip(arc - half, arc[0], arc[-1])
+    front_arc = np.clip(arc + half, arc[0], arc[-1])
+    back = np.column_stack([np.interp(back_arc, arc, pts[:, c]) for c in range(3)])
+    front = np.column_stack([np.interp(front_arc, arc, pts[:, c]) for c in range(3)])
+    fwd = front - back
+    return fwd / np.maximum(np.linalg.norm(fwd, axis=1, keepdims=True), 1e-9)
+
+
+def body_frames(
+    samples: NDArray[np.float32], robot_length: float
+) -> tuple[NDArray[np.float64], NDArray[np.float64], NDArray[np.float64]]:
+    """Per-sample body axes: forward along the robot-length chord, lateral
+    horizontal, up tilted with the slope, so the box yaws and pitches with the
+    body rather than the terrain right under its center."""
+    fwd = chord_directions(samples, robot_length)
+    lateral = np.cross(np.array([0.0, 0.0, 1.0]), fwd)
+    ln = np.linalg.norm(lateral, axis=1, keepdims=True)
+    lateral = np.where(ln > 1e-6, lateral / np.maximum(ln, 1e-9), np.array([0.0, 1.0, 0.0]))
+    up = np.cross(fwd, lateral)
+    return fwd, lateral, up
+
+
 def check_path(
     waypoints: NDArray[np.float32],
     obstacle_keys: NDArray[np.int64],
     voxel_size: float,
-    robot_radius: float,
+    robot_length: float,
+    robot_width: float,
     ground_margin: float,
     body_clearance: float,
 ) -> GateResult:
-    """Sweep the robot body along foot-level waypoints against obstacles.
+    """Sweep the robot body box along foot-level waypoints against obstacles.
 
-    The checked volume at each sample is a cylinder from ground_margin above
-    the foot (so the supporting floor never counts) up to body_clearance.
-    Candidate voxels come from a padded voxelized cylinder and are then
-    verified against the exact continuous bounds, so quantization never pulls
-    ground voxels into the check.
+    At each sample the body is a box of the robot's length and width, centered
+    over the path point and rotated in place: yawed and pitched along the
+    robot-length chord, so it stays over the path rather than sliding onto the
+    chord. Its vertical span is the ground_margin to body_clearance band up the
+    tilted body axis, so the legs and the ground below never count, only the
+    elevated body. Candidate voxels come from a padded voxelized cylinder that
+    covers the box at any orientation and are tested against the exact box.
     """
     samples = densify(waypoints, voxel_size / 2)
+    fwd, lateral, up = body_frames(samples, robot_length)
+    half_len = robot_length / 2.0
+    half_wid = robot_width / 2.0
+    half_band = (body_clearance - ground_margin) / 2.0
+    mid = np.array([0.0, 0.0, (ground_margin + body_clearance) / 2.0])
+    circ = float(np.hypot(half_len, half_wid))
     offsets = cylinder_offsets(
-        robot_radius + MARGIN_CAP_M + voxel_size,
-        ground_margin - voxel_size,
-        body_clearance + voxel_size,
+        circ + MARGIN_CAP_M + voxel_size,
+        -(half_len + MARGIN_CAP_M + voxel_size),
+        body_clearance + half_len + MARGIN_CAP_M + voxel_size,
         voxel_size,
     )
     keys = offset_keys(samples, offsets, voxel_size)
@@ -93,11 +137,18 @@ def check_path(
     s_idx, o_idx = np.nonzero(candidate)
     if len(s_idx) == 0:
         return GateResult(valid=True, collision_points=samples[:0], min_clearance_m=MARGIN_CAP_M)
-    delta = key_centers(keys[s_idx, o_idx], voxel_size) - samples[s_idx]
-    hd = np.linalg.norm(delta[:, :2], axis=1)
-    in_band = (delta[:, 2] >= ground_margin) & (delta[:, 2] <= body_clearance)
-    exact = in_band & (hd <= robot_radius)
-    clearance = float(hd[in_band].min() - robot_radius) if in_band.any() else MARGIN_CAP_M
+    # Offset from the box center, which sits mid-band directly over the sample.
+    delta = key_centers(keys[s_idx, o_idx], voxel_size) - samples[s_idx] - mid
+    along = (delta * fwd[s_idx]).sum(1)
+    across = (delta * lateral[s_idx]).sum(1)
+    vertical = (delta * up[s_idx]).sum(1)
+    # Signed distance to the oriented footprint rectangle, negative inside.
+    qx = np.abs(along) - half_len
+    qy = np.abs(across) - half_wid
+    sdf = np.hypot(np.maximum(qx, 0.0), np.maximum(qy, 0.0)) + np.minimum(np.maximum(qx, qy), 0.0)
+    in_band = np.abs(vertical) <= half_band
+    exact = in_band & (sdf <= 0.0)
+    clearance = float(sdf[in_band].min()) if in_band.any() else MARGIN_CAP_M
     colliding = np.unique(s_idx[exact])
     return GateResult(
         valid=len(colliding) == 0,

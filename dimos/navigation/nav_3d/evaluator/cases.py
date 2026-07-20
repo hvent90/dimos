@@ -41,6 +41,10 @@ class Case:
     # Human-certified infeasible pair: the correct answer is to refuse.
     # Evaluated on the final map only, scored 1.0 for refusal.
     expect_fail: bool = False
+    # A route the robot walked that a later dynamic obstacle blocked, e.g. a
+    # door that closed. The online plan is expected to succeed, the final
+    # plan is expected to refuse and is scored 1.0 for refusal.
+    expect_final_fail: bool = False
 
 
 @dataclass
@@ -71,6 +75,12 @@ def load_suite(path: Path) -> Suite:
             raise ValueError(f"{path}: case {entry['id']}: start/goal must be xyz")
         sx, sy, sz = (float(v) for v in entry["start"])
         gx, gy, gz = (float(v) for v in entry["goal"])
+        expect_fail = bool(entry.get("expect_fail", False))
+        expect_final_fail = bool(entry.get("expect_final_fail", False))
+        if expect_fail and expect_final_fail:
+            raise ValueError(
+                f"{path}: case {entry['id']}: expect_fail and expect_final_fail are exclusive"
+            )
         case = Case(
             id=str(entry["id"]),
             start=(sx, sy, sz),
@@ -78,7 +88,8 @@ def load_suite(path: Path) -> Suite:
             weight=float(entry.get("weight", 1.0)),
             tags=[str(t) for t in entry.get("tags", [])],
             l_ref=float(entry["l_ref"]) if "l_ref" in entry else None,
-            expect_fail=bool(entry.get("expect_fail", False)),
+            expect_fail=expect_fail,
+            expect_final_fail=expect_final_fail,
         )
         if case.id in seen:
             raise ValueError(f"{path}: duplicate case id {case.id}")
@@ -126,6 +137,8 @@ def save_suite(suite: Suite, path: Path | None = None) -> Path:
             entry["l_ref"] = round(case.l_ref, 3)
         if case.expect_fail:
             entry["expect_fail"] = True
+        if case.expect_final_fail:
+            entry["expect_final_fail"] = True
         entries.append(entry)
     doc["cases"] = entries
     path.write_text(yaml.safe_dump(doc, sort_keys=False, default_flow_style=None))

@@ -24,6 +24,7 @@ Determinism check:    run twice with --json, then diff a.json b.json --exact
 New dataset:          python -m dimos.navigation.nav_3d.evaluator ingest recordings/.../mem2.db --name office_a
 Pick cases by click:  python -m dimos.navigation.nav_3d.evaluator pick-case office_a
 Curate by coords:     python -m dimos.navigation.nav_3d.evaluator add-case office_a --start x y z --goal x y z
+Flag dynamic route:   python -m dimos.navigation.nav_3d.evaluator tag office_a auto_03 --final-fail
 """
 
 from __future__ import annotations
@@ -116,6 +117,21 @@ def _print_report(report: Report) -> None:
         f"plan p95 {report.plan_ms['p95']:.1f}ms | "
         f"map update p95 {report.map_update_ms['p95']:.0f}ms"
     )
+    inc_only = [
+        f"{c.dataset}/{c.id}"
+        for d in report.datasets
+        for c in d.cases
+        if c.online.success and not c.final.success
+    ]
+    if inc_only:
+        candidates = set(report.dynamic_candidates)
+        others = [x for x in inc_only if x not in candidates]
+        print(f"\nincremental-only ({len(inc_only)}) — passed online, failed final:")
+        if report.dynamic_candidates:
+            print(f"  dynamic-obstacle candidates: {', '.join(report.dynamic_candidates)}")
+            print("    review with --rrd, confirm: evaluator tag <dataset> <id> --final-fail")
+        if others:
+            print(f"  not explained by a new obstacle, inspect final map: {', '.join(others)}")
 
 
 @app.command("diff")
@@ -135,7 +151,7 @@ def diff_reports(
     Perf budget breaches always print but only exit 1 with --exact: parallel
     runs inflate wall-clock ~20 percent, so the binding perf check belongs on
     the serial confirmation run. With --exact, also exits 1 on any non-timing
-    difference at all; running the suite twice and exact-diffing the reports
+    difference at all. Running the suite twice and exact-diffing the reports
     is the determinism check.
     """
     old_report = json.loads(old.read_text())
@@ -213,7 +229,7 @@ def run(
         if not suites:
             raise typer.BadParameter(f"no cases carry all tags {tag}")
     cfg = _apply_overrides(EvalConfig(), set_ or [])
-    report = evaluate(suites, cfg, workers=workers)
+    report = evaluate(suites, cfg, workers=workers, keep_artifacts=rrd_out is not None)
     _print_report(report)
     for violation in tripwire.perf_violations(report.to_dict()):
         print(f"PERF BUDGET EXCEEDED: {violation}")
@@ -404,6 +420,41 @@ def add_case(
     )
 
 
+@app.command("tag")
+def tag_case(
+    dataset: str = typer.Argument(..., help="Dataset whose manifest holds the case"),
+    case_id: str = typer.Argument(..., help="Case id to edit"),
+    final_fail: bool = typer.Option(
+        True,
+        "--final-fail/--no-final-fail",
+        help="Mark a dynamic-obstacle route: online path expected, final path expected refused",
+    ),
+) -> None:
+    """Flag an auto case as a dynamic-obstacle route, e.g. a door that closed.
+
+    The online plan is still scored normally, the final plan is scored 1.0
+    for refusing. Use it on a case that shows up as incremental-only because a
+    real obstacle blocked the route by the final map, not a planner bug.
+    """
+    manifest = CASES_DIR / f"{dataset}.yaml"
+    if not manifest.exists():
+        raise typer.BadParameter(f"no manifest {manifest}")
+    suite = load_suite(manifest)
+    case = next((c for c in suite.cases if c.id == case_id), None)
+    if case is None:
+        raise typer.BadParameter(f"case {case_id!r} not found in {manifest}")
+    if final_fail and case.expect_fail:
+        raise typer.BadParameter(
+            f"case {case_id!r} is expect_fail; a case cannot be both infeasible and dynamic"
+        )
+    case.expect_final_fail = final_fail
+    tags = [t for t in case.tags if t != "dynamic"]
+    case.tags = [*tags, "dynamic"] if final_fail else tags
+    save_suite(suite, manifest)
+    flag = "expect_final_fail" if final_fail else "cleared expect_final_fail"
+    print(f"{case.id}: {flag} [{', '.join(case.tags)}]")
+
+
 @app.command("pick-case")
 def pick_case(
     dataset: str = typer.Argument(..., help="Dataset whose manifest gets the cases"),
@@ -414,8 +465,8 @@ def pick_case(
 
     Serves the final map, the walked path, and every case already in the
     manifest as an editable panel entry. Shift+click picks new start/goal
-    pairs. Any case can be renamed, retagged, flipped negative, or deleted;
-    new pairs save to the manifest snapped like add-case.
+    pairs. Any case can be renamed, retagged, flipped negative, or deleted.
+    New pairs save to the manifest snapped like add-case.
     """
     # Lazy: picker/viz pull in viser and matplotlib, only needed for pick-case.
     from dimos.navigation.nav_3d.evaluator.picker import pick_cases

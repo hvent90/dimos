@@ -37,11 +37,14 @@ class EvalConfig:
     max_range: float = 30.0
     robot_height: float = 0.3
 
-    # Physical body envelope for the collision gate. The gate catches paths
-    # that penetrate obstacles, not near-grazes, so the radius is the true
-    # body half-width. The ground margin over the radius bounds the terrain
-    # slope the gate tolerates. Keep margin/radius above the steepest stairs.
-    robot_radius: float = 0.16
+    # Physical body envelope for the collision gate: a box the robot's length
+    # and width, oriented along the path and pitched with the slope. The gate
+    # catches paths that drive the body through obstacles. Only the elevated
+    # body is checked, from ground_margin to body_clearance up the tilted body
+    # axis, so the legs and the terrain they stand on never count. Length and
+    # width match the Go2 collision box.
+    robot_length: float = 0.7
+    robot_width: float = 0.31
     ground_margin: float = 0.25
     body_clearance: float = 0.45
     goal_tolerance: float = 0.5

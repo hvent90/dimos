@@ -48,6 +48,7 @@ from dimos.navigation.nav_3d.evaluator.runner import (
     CaseResult,
     DatasetResult,
     Report,
+    _dynamic_candidate,
     _no_plan,
     _run_plan,
     score_negative,
@@ -80,7 +81,13 @@ def _wall(x: float) -> np.ndarray:
 def _gate(waypoints: np.ndarray, obstacles: np.ndarray) -> metrics.GateResult:
     keys = np.unique(voxel_keys(obstacles, VOXEL))
     return metrics.check_path(
-        waypoints, keys, VOXEL, robot_radius=0.16, ground_margin=0.25, body_clearance=0.45
+        waypoints,
+        keys,
+        VOXEL,
+        robot_length=0.7,
+        robot_width=0.31,
+        ground_margin=0.25,
+        body_clearance=0.45,
     )
 
 
@@ -89,7 +96,19 @@ def test_gate_blocks_wall_crossing() -> None:
     result = _gate(path, _wall(0.0))
     assert not result.valid
     assert len(result.collision_points) > 0
-    assert np.all(np.abs(result.collision_points[:, 0]) < 0.3)
+    # Collisions fall within the box half-length (0.35) of the wall.
+    assert np.all(np.abs(result.collision_points[:, 0]) < 0.45)
+
+
+def test_gate_box_uses_travel_orientation() -> None:
+    """The body box is long along travel (0.7) and narrow across it (0.31)."""
+    path = np.array([[-0.5, 0, 0], [0.5, 0, 0]], dtype=np.float32)
+    # 0.25 m ahead along travel is inside the 0.35 m half-length.
+    ahead = np.array([[0.25, 0.0, 0.35]], dtype=np.float32)
+    assert not _gate(path, ahead).valid
+    # The same 0.25 m offset to the side is outside the 0.155 m half-width.
+    beside = np.array([[0.0, 0.25, 0.35]], dtype=np.float32)
+    assert _gate(path, beside).valid
 
 
 def test_gate_passes_clear_path() -> None:
@@ -104,8 +123,31 @@ def test_gate_ignores_ground() -> None:
     assert _gate(path, floor).valid
 
 
+def test_chord_direction_spans_robot_length() -> None:
+    """Heading comes from the body-length chord, not the local step, so it is
+    steady across stepped terrain instead of flipping tread-to-riser."""
+    xs = np.arange(0, 3.0, 0.1)
+    zs = np.floor(xs / 0.2) * 0.1  # stairs: 0.1 m rise every 0.2 m, mean slope 0.5
+    path = np.stack([xs, np.zeros_like(xs), zs], axis=1).astype(np.float32)
+    fwd = metrics.chord_directions(path, span=0.7)
+    local = np.diff(path.astype(np.float64), axis=0)
+    local /= np.linalg.norm(local, axis=1, keepdims=True)
+    assert fwd[5:-5, 2].std() < 0.5 * local[:, 2].std()
+    assert fwd[5:-5, 2].mean() > 0.2  # steadily pitched up the stairs
+
+
+def test_gate_pitch_clears_rising_step() -> None:
+    """A voxel ahead-and-up is inside a flat box but beyond the pitched one."""
+    step = np.array([[0.3, 0.0, 0.4]], dtype=np.float32)
+    # Level travel: the step sits in the horizontal body band and collides.
+    assert not _gate(np.array([[0, 0, 0], [1, 0, 0]], dtype=np.float32), step).valid
+    # Climbing at 45 degrees: the box pitches up, so the same voxel falls beyond
+    # the tilted body and clears.
+    assert _gate(np.array([[0, 0, 0], [1, 0, 1]], dtype=np.float32), step).valid
+
+
 def test_gate_tolerates_stair_slope() -> None:
-    """Terrain rising at stair slope inside the disc must not trigger the gate."""
+    """Terrain rising at stair slope inside the body box must not trigger the gate."""
     xs, ys = np.meshgrid(np.arange(-1, 2, VOXEL), np.arange(-1, 1, VOXEL))
     slope = np.stack([xs.ravel(), ys.ravel(), xs.ravel() * 0.7 - 0.05], axis=1, dtype=np.float32)
     path = np.stack(
@@ -119,7 +161,9 @@ def test_gate_reports_clearance_margin() -> None:
     graze = np.array([[9.7, -0.5, 0], [9.7, 0.5, 0]], dtype=np.float32)
     result = _gate(graze, wall)
     assert result.valid
-    assert result.min_clearance_m == pytest.approx(0.35 - 0.16, abs=0.02)
+    # Travel is +y here, so the wall 0.35 m away in x sits off the box's
+    # 0.155 m half-width.
+    assert result.min_clearance_m == pytest.approx(0.35 - 0.155, abs=0.02)
     crossing = _gate(np.array([[9, 0, 0], [11, 0, 0]], dtype=np.float32), wall)
     assert not crossing.valid
     assert crossing.min_clearance_m < 0
@@ -417,6 +461,60 @@ def test_meta_negative_case_scoring() -> None:
     assert score_negative(partial).success
 
 
+def test_expect_final_fail_scores_online_normally_and_refuses_final() -> None:
+    """A door-closed route: the online plan earns SPL, the final plan must refuse.
+
+    Mirrors the runner, which inverts only the final outcome for an
+    expect_final_fail case and scores the online outcome as usual.
+    """
+    keys, cfg, case = _meta_scene()
+    open_keys = np.unique(voxel_keys(_floor(), VOXEL))
+    route = _u_route()
+    l_ref = metrics.path_length(route)
+
+    # Online, before the door closed: the wall is absent and the walked route
+    # is clean, so it scores in full.
+    online, _ = _run_plan(_stub(route), case, l_ref, open_keys, open_keys, cfg)
+    assert online.success
+    assert online.spl == pytest.approx(1.0)
+
+    # Final, after the door closed: the wall is present and refusing is right.
+    refused, _ = _run_plan(_stub(None), case, l_ref, keys, keys, cfg)
+    final = score_negative(refused)
+    assert final.success
+    assert final.spl == 1.0
+
+    # Claiming a route straight through the closed door is a false positive.
+    line = np.array([case.start, case.goal], dtype=np.float32)
+    claimed, _ = _run_plan(_stub(line), case, l_ref, keys, keys, cfg)
+    assert score_negative(claimed).spl == 0.0
+
+
+def test_dynamic_candidate_flags_route_blocked_by_new_occupancy() -> None:
+    """Online success with a final failure from newly-appeared occupancy flags."""
+    _, cfg, case = _meta_scene()
+    open_keys = np.unique(voxel_keys(_floor(), VOXEL))
+    final_keys = np.unique(voxel_keys(np.concatenate([_floor(), _wall(10.0)]), VOXEL))
+    line = np.array([case.start, case.goal], dtype=np.float32)
+
+    online, wp = _run_plan(_stub(line), case, 24.0, open_keys, open_keys, cfg)
+    assert online.success
+    final, _ = _run_plan(_stub(line), case, 24.0, final_keys, final_keys, cfg)
+    assert not final.success
+
+    flagged, blocking = _dynamic_candidate(online, final, wp, open_keys, final_keys, cfg)
+    assert flagged
+    assert blocking
+
+    # No occupancy appeared between the two maps, so the final failure is not a
+    # dynamic obstacle and must not be flagged.
+    unflagged, _ = _dynamic_candidate(online, final, wp, final_keys, final_keys, cfg)
+    assert not unflagged
+
+    # A clean final plan is never a candidate.
+    assert not _dynamic_candidate(online, online, wp, open_keys, final_keys, cfg)[0]
+
+
 def test_check_kinematics_rejects_cliff_jumps() -> None:
     stairs = np.array([[0, 0, 0], [0.4, 0, 0.16], [0.8, 0, 0.32]], dtype=np.float32)
     assert metrics.check_kinematics(stairs, max_slope=1.0, max_step_m=0.2, window_m=0.5).valid
@@ -499,6 +597,35 @@ def test_load_suite(tmp_path: Path) -> None:
         "  - {id: a, start: [0, 0, 0], goal: [4, 5, 6]}\n"
     )
     with pytest.raises(ValueError, match="duplicate"):
+        load_suite(manifest)
+
+
+def test_expect_final_fail_roundtrips(tmp_path: Path) -> None:
+    suite = Suite(
+        dataset="demo",
+        cases=[
+            Case(
+                id="dyn",
+                start=(0.0, 0.0, 0.0),
+                goal=(3.0, 0.0, 0.0),
+                tags=["auto", "dynamic"],
+                expect_final_fail=True,
+            )
+        ],
+    )
+    loaded = load_suite(save_suite(suite, tmp_path / "demo.yaml"))
+    assert loaded.cases[0].expect_final_fail
+    assert not loaded.cases[0].expect_fail
+
+
+def test_expect_fail_and_final_fail_are_exclusive(tmp_path: Path) -> None:
+    manifest = tmp_path / "demo.yaml"
+    manifest.write_text(
+        "dataset: demo\ncases:\n"
+        "  - {id: bad, start: [0, 0, 0], goal: [1, 0, 0], "
+        "expect_fail: true, expect_final_fail: true}\n"
+    )
+    with pytest.raises(ValueError, match="exclusive"):
         load_suite(manifest)
 
 

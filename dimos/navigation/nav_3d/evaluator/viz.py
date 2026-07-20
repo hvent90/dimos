@@ -18,14 +18,17 @@ One static scene per dataset:
 - map/obstacles: final voxels, turbo colormap by height
 - walked_path: the recorded foot path (white)
 - planner_final: the planner graph the full aggregated map produced.
-  Surface cells colored by wall clearance (red inside the hard clearance),
+  Surface cells colored by wall clearance (gray inside the hard clearance),
   edges colored white to red by log traversal cost.
 - cases/<id>: start (cyan), goal (orange), online and final planned paths
   colored by verdict (green valid, red gate-invalid, yellow unreached), the
-  gate's collision samples (red dots), unsupported samples (magenta), and
-  too-steep waypoints (purple). Failed cases also get a thin red
-  start-to-goal intent line and a known/ layer: the planner graph on the
-  incremental map at plan time, i.e. what the robot knew when it failed.
+  gate's body box at each collision (semi-transparent red, pitched with the
+  slope and elevated over the legs), unsupported samples (magenta), and
+  too-steep waypoints (purple). Every case carries a known/ layer: the
+  incremental voxel map (known/voxels, turbo by height) and planner graph
+  at plan time, what the robot knew then. Failed cases also get a thin red
+  start-to-goal intent line. Dynamic obstacle candidates get a new_obstacle
+  layer marking the final occupancy that blocks the online route.
 """
 
 from __future__ import annotations
@@ -35,6 +38,7 @@ from typing import TYPE_CHECKING
 import numpy as np
 import rerun as rr
 import rerun.blueprint as rrb
+from scipy.spatial.transform import Rotation
 
 from dimos.navigation.nav_3d.evaluator.final_map import load_or_build_final_map
 from dimos.navigation.nav_3d.evaluator.recording import load_trajectory
@@ -52,17 +56,20 @@ WALKED_PATH_COLOR = [255, 255, 255]
 START_COLOR = [0, 255, 255]
 GOAL_COLOR = [255, 140, 0]
 COLLISION_COLOR = [255, 0, 0]
+COLLISION_FILL_ALPHA = 90
 UNSUPPORTED_COLOR = [255, 0, 255]
 STEEP_COLOR = [160, 32, 240]
 NEGATIVE_INTENT_COLOR = [255, 255, 0]
+NEAR_WALL_COLOR = [120, 120, 120]
 
 VALID_PATH_COLOR = [0, 220, 0]
 INVALID_PATH_COLOR = [255, 0, 0]
 UNREACHED_PATH_COLOR = [255, 200, 0]
+DYNAMIC_BLOCK_COLOR = [255, 20, 147]
 
 CLEARANCE_CLAMP_M = 1.0
-# Cells colored red as too close to a wall. Display threshold only.
-CLEARANCE_RED_M = 0.1
+# Cells colored gray as too close to a wall. Display threshold only.
+CLEARANCE_NEAR_WALL_M = 0.1
 
 
 def turbo_by_height(points: NDArray[np.float32]) -> NDArray[np.uint8]:
@@ -80,7 +87,7 @@ def _clearance_colors(clearance: NDArray[np.float32], hard_clearance: float) -> 
     blocked = np.array([4.0, 8.0, 48.0])
     clear = np.array([150.0, 200.0, 255.0])
     out = np.asarray(blocked + norm[:, None] * (clear - blocked), dtype=np.uint8)
-    out[clearance < hard_clearance] = (255, 0, 0)
+    out[clearance < hard_clearance] = NEAR_WALL_COLOR
     return out
 
 
@@ -101,7 +108,7 @@ def _log_planner(entity: str, artifacts: PlannerArtifacts | None, cfg: EvalConfi
             f"{entity}/surface",
             rr.Points3D(
                 surface[:, :3],
-                colors=_clearance_colors(surface[:, 3], CLEARANCE_RED_M),
+                colors=_clearance_colors(surface[:, 3], CLEARANCE_NEAR_WALL_M),
                 radii=cfg.voxel_size / 4,
             ),
             static=True,
@@ -127,7 +134,53 @@ def _outcome_color(outcome: PlanOutcome) -> list[int]:
     return UNREACHED_PATH_COLOR
 
 
-def _log_path(entity: str, outcome: PlanOutcome, radius: float) -> None:
+def _travel_dirs(
+    points: NDArray[np.float32], waypoints: NDArray[np.float32], span: float
+) -> NDArray[np.float64]:
+    """Rigid-body heading at each point: the chord from span/2 behind it to
+    span/2 ahead along the path, the rear-feet to front-feet direction."""
+    if len(waypoints) < 2:
+        return np.tile(np.array([1.0, 0.0, 0.0]), (len(points), 1))
+    wp = waypoints.astype(np.float64)
+    seg = np.linalg.norm(np.diff(wp, axis=0), axis=1)
+    arc = np.concatenate([[0.0], np.cumsum(seg)])
+    a2, v2 = wp[:-1, :2], np.diff(wp[:, :2], axis=0)
+    hlen2 = np.maximum((v2 * v2).sum(1), 1e-12)
+    half = span / 2.0
+    dirs = np.empty((len(points), 3))
+    for i, p in enumerate(points):
+        t = np.clip(((p[:2] - a2) * v2).sum(1) / hlen2, 0.0, 1.0)
+        s = int(np.argmin(((a2 + t[:, None] * v2 - p[:2]) ** 2).sum(1)))
+        pos = arc[s] + t[s] * seg[s]
+        lo, hi = np.clip([pos - half, pos + half], arc[0], arc[-1])
+        d = np.array(
+            [np.interp(hi, arc, wp[:, c]) - np.interp(lo, arc, wp[:, c]) for c in range(3)]
+        )
+        dirs[i] = d / max(float(np.linalg.norm(d)), 1e-9)
+    return dirs
+
+
+def _thin_by_gap(points: NDArray[np.float32], gap: float) -> NDArray[np.float32]:
+    """Keep points at least gap apart along the sequence."""
+    kept: list[NDArray[np.float32]] = []
+    for p in points:
+        if not kept or float(np.linalg.norm(p - kept[-1])) >= gap:
+            kept.append(p)
+    return np.asarray(kept, dtype=np.float32)
+
+
+def _body_box_quat(direction: NDArray[np.float64]) -> rr.Quaternion:
+    """Box orientation for a body travelling along direction: yaw and pitch from
+    the chord, no roll."""
+    fwd = direction
+    lateral = np.cross([0.0, 0.0, 1.0], fwd)
+    ln = float(np.linalg.norm(lateral))
+    lateral = lateral / ln if ln > 1e-6 else np.array([0.0, 1.0, 0.0])
+    up = np.cross(fwd, lateral)
+    return rr.Quaternion(xyzw=Rotation.from_matrix(np.column_stack([fwd, lateral, up])).as_quat())
+
+
+def _log_path(entity: str, outcome: PlanOutcome, radius: float, cfg: EvalConfig) -> None:
     if not outcome.waypoints:
         return
     rr.log(
@@ -136,9 +189,30 @@ def _log_path(entity: str, outcome: PlanOutcome, radius: float) -> None:
         static=True,
     )
     if outcome.collisions:
+        # The gate's body box at each colliding foot sample: the robot length
+        # and width, centered over the path point and rotated in place (yaw and
+        # pitch from the chord), elevated over the legs into the ground-margin
+        # to body-clearance band. Thinned to about a body length apart so the
+        # boxes read as distinct bodies instead of one overlapping smear.
+        feet = _thin_by_gap(np.asarray(outcome.collisions, dtype=np.float32), cfg.robot_length)
+        waypoints = np.asarray(outcome.waypoints, dtype=np.float32)
+        mid = np.array([0.0, 0.0, (cfg.ground_margin + cfg.body_clearance) / 2.0])
+        half = [
+            cfg.robot_length / 2.0,
+            cfg.robot_width / 2.0,
+            (cfg.body_clearance - cfg.ground_margin) / 2.0,
+        ]
         rr.log(
             f"{entity}/collisions",
-            rr.Points3D(outcome.collisions, colors=[COLLISION_COLOR], radii=radius * 3),
+            rr.Boxes3D(
+                half_sizes=np.tile(half, (len(feet), 1)),
+                centers=feet + mid,
+                quaternions=[
+                    _body_box_quat(d) for d in _travel_dirs(feet, waypoints, cfg.robot_length)
+                ],
+                colors=[[*COLLISION_COLOR, COLLISION_FILL_ALPHA]],
+                fill_mode=rr.components.FillMode.Solid,
+            ),
             static=True,
         )
     if outcome.unsupported:
@@ -156,9 +230,10 @@ def _log_path(entity: str, outcome: PlanOutcome, radius: float) -> None:
 
 
 def _dataset_view(root: str, case_ids: list[str]) -> rrb.Spatial3DView:
-    """One view per dataset, planner graph edges hidden until toggled on."""
+    """One view per dataset. Every case is hidden until toggled on, and the
+    final planner graph edges start off."""
     hidden = [f"{root}/planner_final/edges"]
-    hidden += [f"{root}/cases/{cid}/known/edges" for cid in case_ids]
+    hidden += [f"{root}/cases/{cid}" for cid in case_ids]
     return rrb.Spatial3DView(
         origin=f"/{root}",
         name=root,
@@ -225,9 +300,26 @@ def write_rrd(report: Report, suites: list[Suite], cfg: EvalConfig, out: Path) -
                     ),
                     static=True,
                 )
-                _log_planner(f"{base}/known", case.online_artifacts, cfg)
-            _log_path(f"{base}/online", case.online, radius=0.04)
-            _log_path(f"{base}/final", case.final, radius=0.02)
+            # The incremental map at plan time, saved for every case.
+            _log_planner(f"{base}/known", case.online_artifacts, cfg)
+            if case.online_occupied is not None and len(case.online_occupied):
+                rr.log(
+                    f"{base}/known/voxels",
+                    rr.Points3D(
+                        case.online_occupied,
+                        colors=turbo_by_height(case.online_occupied),
+                        radii=cfg.voxel_size / 4,
+                    ),
+                    static=True,
+                )
+            if case.blocking_points:
+                rr.log(
+                    f"{base}/new_obstacle",
+                    rr.Points3D(case.blocking_points, colors=[DYNAMIC_BLOCK_COLOR], radii=0.06),
+                    static=True,
+                )
+            _log_path(f"{base}/online", case.online, radius=0.04, cfg=cfg)
+            _log_path(f"{base}/final", case.final, radius=0.02, cfg=cfg)
 
     views = [_dataset_view(d.dataset, [c.id for c in d.cases]) for d in report.datasets]
     rr.send_blueprint(rrb.Blueprint(rrb.Tabs(*views) if len(views) > 1 else views[0]))
