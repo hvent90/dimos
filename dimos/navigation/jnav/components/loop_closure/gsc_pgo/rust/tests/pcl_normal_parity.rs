@@ -145,7 +145,17 @@ fn check_cloud(
     );
 }
 
+// The goldens are bit-exact against x86-64 Linux glibc PCL. The normal-scatter
+// eigensolver (pcl_compute_roots_f32) calls libm atan2f/cosf/sinf, whose results
+// are arch/libm-specific (Apple libm, and even arm64 glibc, differ from x86-64
+// glibc on cancellation-sensitive cubic roots), so a few normals diverge off the
+// reference platform. IEEE-only paths (e.g. the ICP parity test) match
+// everywhere; run this one only on x86-64 Linux.
 #[test]
+#[cfg_attr(
+    not(all(target_arch = "x86_64", target_os = "linux")),
+    ignore = "bit-exact vs x86-64 Linux glibc PCL; libm transcendentals differ off that platform"
+)]
 fn normals_and_degeneracy_match_pcl_bit_for_bit() {
     let (a, b) = make_clouds();
     check_cloud(

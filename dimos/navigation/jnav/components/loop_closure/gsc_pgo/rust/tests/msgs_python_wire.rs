@@ -40,15 +40,17 @@ fn repo_root() -> PathBuf {
         .to_path_buf()
 }
 
+/// The repo venv's Python, or `None` when it hasn't been created (e.g. the
+/// nix CI job, which builds the crate without a Python environment). Tests use
+/// this to skip rather than hard-fail when the cross-language check can't run.
+fn venv_python() -> Option<PathBuf> {
+    let python = repo_root().join(".venv/bin/python");
+    python.is_file().then_some(python)
+}
+
 /// Run a Python snippet in the repo venv, feeding `stdin` and returning stdout.
-fn python(code: &str, stdin: &str) -> String {
+fn python(python: &Path, code: &str, stdin: &str) -> String {
     let root = repo_root();
-    let python = root.join(".venv/bin/python");
-    assert!(
-        python.is_file(),
-        "venv python not found at {} — create the repo venv first",
-        python.display()
-    );
     let mut pythonpath = root.as_os_str().to_owned();
     if let Some(home) = std::env::var_os("HOME") {
         let shim = Path::new(&home).join(".cache/cyclonedds_shim");
@@ -134,7 +136,12 @@ fn graph3d_decodes_in_python() {
             },
         ],
     };
+    let Some(py) = venv_python() else {
+        eprintln!("skipping: repo .venv/bin/python not present (cross-language check needs the Python venv)");
+        return;
+    };
     let out = python(
+        &py,
         r#"
 import sys
 from dimos.navigation.jnav.msgs.Graph3D import Graph3D
@@ -195,7 +202,12 @@ fn graph_delta3d_decodes_in_python() {
             },
         ],
     };
+    let Some(py) = venv_python() else {
+        eprintln!("skipping: repo .venv/bin/python not present (cross-language check needs the Python venv)");
+        return;
+    };
     let out = python(
+        &py,
         r#"
 import sys
 from dimos.navigation.jnav.msgs.GraphDelta3D import GraphDelta3D
@@ -246,7 +258,12 @@ fn deformation_node_decodes_in_python_and_tf_id_agrees() {
             orientation: [0.1, 0.2, 0.3, 0.9273],
         },
     };
+    let Some(py) = venv_python() else {
+        eprintln!("skipping: repo .venv/bin/python not present (cross-language check needs the Python venv)");
+        return;
+    };
     let out = python(
+        &py,
         r#"
 import sys
 from dimos.navigation.jnav.msgs.DeformationNode import DeformationNode, tf_id_for
@@ -281,7 +298,12 @@ print(tf_id_for("map", "odom"))
 
 #[test]
 fn location_constraint_python_encode_decodes_in_rust() {
+    let Some(py) = venv_python() else {
+        eprintln!("skipping: repo .venv/bin/python not present (cross-language check needs the Python venv)");
+        return;
+    };
     let out = python(
+        &py,
         r#"
 from dimos.navigation.jnav.msgs.LocationConstraint import LocationConstraint
 from dimos.msgs.geometry_msgs.Pose import Pose
