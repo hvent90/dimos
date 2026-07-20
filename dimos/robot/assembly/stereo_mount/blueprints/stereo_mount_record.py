@@ -13,14 +13,15 @@
 # See the License for the specific language governing permissions and
 # limitations under the License.
 
-"""Record blueprint for the stereo_mount rig (SDK-free ZED + Mid-360).
+"""Record blueprint for the stereo_mount rig (SDK-free ZED + Mid-360 via Point-LIO).
 
-Both ZED eyes (60 fps color, no ZED SDK) and the Mid-360 lidar+imu are recorded
-into a memory2 db, with the rig's URDF mount frames published continuously onto
-tf. The lidar IP comes from the Mid-360 module's own config
-(``DIMOS_MID360_LIDAR_IP``)::
+Both ZED eyes (60 fps color, no ZED SDK) and Point-LIO odom+lidar are recorded into
+a memory2 db. Point-LIO publishes the moving ``world -> lidar_link`` edge onto tf
+and the rig's urdf mount frames are republished continuously, so every recorded
+stream resolves against ``world``. The lidar IP comes from Point-LIO's own config
+(``DIMOS_POINTLIO_LIDAR_IP``)::
 
-    export DIMOS_MID360_LIDAR_IP=192.168.1.155
+    export DIMOS_POINTLIO_LIDAR_IP=192.168.1.107
     dimos run stereo-mount-record
 """
 
@@ -31,7 +32,7 @@ from dimos.constants import RECORDINGS_DIR
 from dimos.core.coordination.blueprints import autoconnect
 from dimos.core.coordination.module_coordinator import ModuleCoordinator
 from dimos.hardware.sensors.camera.zed.uvc import ZedUvcCamera
-from dimos.hardware.sensors.lidar.livox.module import Mid360
+from dimos.hardware.sensors.lidar.pointlio.module import PointLio
 from dimos.robot.assembly.stereo_mount.assembly import StereoMountStaticTf
 from dimos.robot.assembly.stereo_mount.record import StereoMountRecorder
 
@@ -50,14 +51,16 @@ _RECORDING_DIR = _default_recording_dir()
 
 stereo_mount_record = autoconnect(
     ZedUvcCamera.blueprint(),
-    Mid360.blueprint().remappings(
+    # world -> lidar_link is the moving odometry edge; lidar_link is the mid360
+    # point-cloud origin in stereo_mount.urdf, tying odometry into the rig tree.
+    PointLio.blueprint(frame_id="world", sensor_frame_id="lidar_link").remappings(
         [
-            (Mid360, "lidar", "livox_lidar"),
-            (Mid360, "imu", "livox_imu"),
+            (PointLio, "lidar", "pointlio_lidar"),
+            (PointLio, "odometry", "pointlio_odometry"),
         ]
     ),
     StereoMountRecorder.blueprint(db_path=str(_RECORDING_DIR / "mem2.db")),
-    # Continuously republishes the rig's URDF mount frames onto tf (no latched static tf).
+    # Continuously republishes the rig's urdf mount frames onto tf (no latched static tf).
     StereoMountStaticTf.blueprint(),
 ).global_config(n_workers=4)
 

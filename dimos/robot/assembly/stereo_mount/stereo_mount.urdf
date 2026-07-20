@@ -115,12 +115,14 @@
     </collision>
   </link>
 
-  <!-- Point-cloud origin O: on the central axis, 17 mm above the box center -->
+  <!-- Point-cloud origin O: on the central axis, 17 mm above the box center.
+       Point-LIO's odometry attaches here (world -> lidar_link) and its clouds
+       are stamped with this frame, tying the moving world edge into the rig. -->
   <joint name="mid360_to_lidar" type="fixed">
     <parent link="mid360_link"/>
-    <child link="lidar_frame"/>
+    <child link="lidar_link"/>
     <origin xyz="0 0 0.017" rpy="0 0 0"/>
   </joint>
-  <link name="lidar_frame"/>
+  <link name="lidar_link"/>
 
 </robot>
