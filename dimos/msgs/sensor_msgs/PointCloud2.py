@@ -197,6 +197,14 @@ class PointCloud2(Timestamped):
         Returns:
             PointCloud2 instance
         """
+        for name, values in (
+            ("intensities", intensities),
+            ("offset_times", offset_times),
+            ("tags", tags),
+            ("lines", lines),
+        ):
+            if values is not None and len(values) != len(points):
+                raise ValueError(f"{name} has {len(values)} entries for {len(points)} points")
         pcd_t = o3d.t.geometry.PointCloud()
         pcd_t.point["positions"] = o3c.Tensor(points.astype(np.float32), dtype=o3c.float32)
         if intensities is not None:

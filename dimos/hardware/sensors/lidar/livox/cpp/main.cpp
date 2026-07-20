@@ -14,6 +14,7 @@
 #include <csignal>
 #include <cstdio>
 #include <cstring>
+#include <limits>
 #include <mutex>
 #include <string>
 #include <thread>
@@ -195,7 +196,15 @@ static void on_point_cloud(const uint32_t /*handle*/, const uint8_t /*dev_type*/
         g_frame_has_timestamp = true;
     }
 
-    const uint64_t packet_offset_ns = ts_ns - g_frame_start_ns;
+    // Clamp instead of wrapping when a UDP packet arrives out of order with a
+    // stamp older than the frame start (offset 0 = "at the header stamp").
+    const uint64_t packet_offset_ns = ts_ns >= g_frame_start_ns ? ts_ns - g_frame_start_ns : 0;
+    // Saturate at uint32 range (~4.29s) so a stalled emit loop degrades to a
+    // clamped offset rather than a wrapped one.
+    auto saturated_offset = [](uint64_t offset_ns_u64) {
+        constexpr uint64_t kMax = std::numeric_limits<uint32_t>::max();
+        return static_cast<uint32_t>(offset_ns_u64 < kMax ? offset_ns_u64 : kMax);
+    };
 
     if (data->data_type == DATA_TYPE_CARTESIAN_HIGH) {
         auto* pts = reinterpret_cast<const LivoxLidarCartesianHighRawPoint*>(data->data);
@@ -206,7 +215,7 @@ static void on_point_cloud(const uint32_t /*handle*/, const uint8_t /*dev_type*/
             g_accumulated_xyz.push_back(static_cast<float>(pts[i].z) / 1000.0f);
             g_accumulated_intensity.push_back(static_cast<float>(pts[i].reflectivity) / 255.0f);
             g_accumulated_offset_ns.push_back(
-                static_cast<uint32_t>(packet_offset_ns + i * point_interval_ns));
+                saturated_offset(packet_offset_ns + i * point_interval_ns));
             g_accumulated_tag.push_back(pts[i].tag);
         }
     } else if (data->data_type == DATA_TYPE_CARTESIAN_LOW) {
@@ -218,7 +227,7 @@ static void on_point_cloud(const uint32_t /*handle*/, const uint8_t /*dev_type*/
             g_accumulated_xyz.push_back(static_cast<float>(pts[i].z) / 100.0f);
             g_accumulated_intensity.push_back(static_cast<float>(pts[i].reflectivity) / 255.0f);
             g_accumulated_offset_ns.push_back(
-                static_cast<uint32_t>(packet_offset_ns + i * point_interval_ns));
+                saturated_offset(packet_offset_ns + i * point_interval_ns));
             g_accumulated_tag.push_back(pts[i].tag);
         }
     }
