@@ -83,6 +83,7 @@ all_blueprints = {
     "openarm-mock-planner-coordinator": "dimos.robot.manipulators.openarm.blueprints.planner:openarm_mock_planner_coordinator",
     "openarm-planner-coordinator": "dimos.robot.manipulators.openarm.blueprints.planner:openarm_planner_coordinator",
     "path-planner-eval": "dimos.navigation.nav_3d.evaluator.blueprints:path_planner_eval",
+    "stereo-mount-record": "dimos.robot.assembly.stereo_mount.blueprints.stereo_mount_record:stereo_mount_record",
     "teleop-hosted-go2": "dimos.teleop.quest_hosted.blueprints:teleop_hosted_go2",
     "teleop-hosted-go2-multicam": "dimos.teleop.hosted.blueprints.cloudflare:teleop_hosted_go2_multicam",
     "teleop-hosted-go2-transport": "dimos.teleop.hosted.blueprints.cloudflare:teleop_hosted_go2_transport",
@@ -262,6 +263,8 @@ all_modules = {
     "spatial-memory": "dimos.perception.spatial_perception.SpatialMemory",
     "speak-skill": "dimos.agents.skills.speak_skill.SpeakSkill",
     "static-tf-publisher": "dimos.protocol.tf.static_tf_publisher.StaticTfPublisher",
+    "stereo-mount-recorder": "dimos.robot.assembly.stereo_mount.record.StereoMountRecorder",
+    "stereo-mount-static-tf": "dimos.robot.assembly.stereo_mount.assembly.StereoMountStaticTf",
     "tare-planner": "dimos.navigation.cmu_nav.modules.tare_planner.tare_planner.TarePlanner",
     "teleop-recorder": "dimos.teleop.utils.recorder.TeleopRecorder",
     "temporal-memory": "dimos.perception.experimental.temporal_memory.temporal_memory.TemporalMemory",
@@ -282,4 +285,5 @@ all_modules = {
     "world-belief-module": "dimos.perception.worldbelief_module.WorldBeliefModule",
     "world-belief-recorder": "dimos.perception.worldbelief_recorder.WorldBeliefRecorder",
     "zed-camera": "dimos.hardware.sensors.camera.zed.camera.ZEDCamera",
+    "zed-uvc-camera": "dimos.hardware.sensors.camera.zed.uvc.ZedUvcCamera",
 }
