@@ -57,6 +57,7 @@ from dimos.msgs.sensor_msgs.Image import Image
 from dimos.protocol.tf.static_tf_publisher import StaticTfPublisher, StaticTfPublisherConfig
 from dimos.robot.bosdyn.spot.config import (
     CAMERA_MAX_HZ,
+    FRONT_CAMERA_MIRROR_HALF_TURN,
     FRONT_CAMERA_ROTATE_UPRIGHT,
     IP_LABELS,
     MAX_ANGULAR_VELOCITY,
@@ -75,6 +76,7 @@ from dimos.robot.bosdyn.spot.utils import (
     camera_mount_transforms,
     clamp,
     decode_image,
+    roll_optical_frame,
     rotate_camera_info_quarter_turns,
     rotate_image_quarter_turns,
 )
@@ -169,9 +171,11 @@ class SpotHighLevel(StaticTfPublisher):
         """Static base_link -> camera-optical extrinsics parsed from the URDF.
 
         `StaticTfPublisher` republishes these on a fixed interval; the moving
-        odom->base_link edge stays live (see `_publish_odom`).
+        odom->base_link edge stays live (see `_publish_odom`). The front optical
+        frames are rolled to match the upright-rotated front images so recorded
+        tf, intrinsics, and pixels stay mutually consistent for depth reprojection.
         """
-        return camera_mount_transforms(
+        mounts = camera_mount_transforms(
             SPOT_URDF_PATH,
             self.config.base_frame_id,
             [
@@ -182,6 +186,16 @@ class SpotHighLevel(StaticTfPublisher):
                 self.config.back_camera_frame_id,
             ],
         )
+        front_frame_rolls = {
+            self.config.frontleft_camera_frame_id: FRONT_CAMERA_ROTATE_UPRIGHT,
+            self.config.frontright_camera_frame_id: (
+                FRONT_CAMERA_ROTATE_UPRIGHT + FRONT_CAMERA_MIRROR_HALF_TURN
+            ),
+        }
+        return [
+            roll_optical_frame(mount, front_frame_rolls.get(mount.child_frame_id, 0))
+            for mount in mounts
+        ]
 
     async def main(self) -> AsyncIterator[None]:
         username, password = self.config.username, self.config.password

@@ -53,6 +53,10 @@ CAMERA_STREAM_SUFFIXES = ["front_left", "front_right", "left", "right", "back"]
 # each image lines up with its optical frame. Side/back cameras arrive upright.
 FRONT_CAMERA_ROTATE_UPRIGHT = -1
 
+# The two front cameras mount mirror-imaged, so frontright's optical frame sits a
+# half turn (2 quarter turns) past frontleft's when rolling frames upright in 3D.
+FRONT_CAMERA_MIRROR_HALF_TURN = 2
+
 # Spot's right body camera arrives upside down; a half turn (180°) rights it. Its
 # intrinsics are unchanged in width/height, only the principal point flips.
 RIGHT_CAMERA_ROTATE_UPRIGHT = 2
