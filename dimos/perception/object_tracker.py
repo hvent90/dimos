@@ -235,6 +235,7 @@ class ObjectTracking(Module):
         else:
             logger.error("Empty ROI during tracker initialization.")
             self.stop_track()
+            return {"status": "init_failed"}
 
         # Start tracking thread
         self._start_tracking_thread()
