@@ -74,26 +74,22 @@ using dimos::make_header;
 // Build and publish PointCloud2
 // ---------------------------------------------------------------------------
 
-// Wire layout: x,y,z,intensity float32 @ 0/4/8/12, then the Livox per-point
-// attributes Point-LIO consumes — offset_time uint32 @ 16 (ns since the header
-// stamp), tag uint8 @ 20, line uint8 @ 21 (always 0 on the Mid-360). The message
-// is self-describing (fields carry name/offset/datatype), so any spec-following
-// PointCloud2 consumer can read it; the field NAMES and datatypes are the only
-// convention shared with consumers (they follow livox_ros_driver's).
+// --point_format selects the wire layout:
+//   full    (default) x,y,z,intensity,offset_time,tag,line — 22 B/point
+//   minimal           x,y,z,offset_time                    — 16 B/point
+//   legacy            x,y,z,intensity                      — 16 B/point
+// offset_time is uint32 ns since the header stamp; tag/line are the Livox
+// per-point bytes (line is always 0 on the Mid-360). Scan-undistorting
+// estimators (FAST-LIVO2 etc.) need offset_time.
+enum class PointFormat { Full, Minimal, Legacy };
+static PointFormat g_point_format = PointFormat::Full;
+
+// Full-layout field offsets; minimal packs offset_time at 12 instead.
 static constexpr int32_t OFFSET_TIME_OFFSET = 16;
 static constexpr int32_t TAG_OFFSET = 20;
 static constexpr int32_t LINE_OFFSET = 21;
 static constexpr int32_t POINT_STEP = 22;
 static constexpr int32_t COMPACT_POINT_STEP = 16;  // minimal and legacy layouts
-
-// --point_format selects the wire layout:
-//   full    (default) x,y,z,intensity,offset_time,tag,line — 22 B/point
-//   minimal           x,y,z,offset_time                    — 16 B/point
-//   legacy            x,y,z,intensity                      — 16 B/point
-// Scan-undistorting estimators (FAST-LIVO2 etc.) need offset_time; intensity
-// is passthrough-only for every LIO in the stack (viz/map coloring).
-enum class PointFormat { kFull, kMinimal, kLegacy };
-static PointFormat g_point_format = PointFormat::kFull;
 
 static void publish_pointcloud(const std::vector<float>& xyz,
                                const std::vector<float>& intensity,
@@ -112,7 +108,7 @@ static void publish_pointcloud(const std::vector<float>& xyz,
     pc.is_dense = 1;
 
     const PointFormat format = g_point_format;
-    const int32_t point_step = format == PointFormat::kFull ? POINT_STEP : COMPACT_POINT_STEP;
+    const int32_t point_step = format == PointFormat::Full ? POINT_STEP : COMPACT_POINT_STEP;
 
     auto make_field = [](const std::string& name, int32_t offset, int8_t datatype) {
         sensor_msgs::PointField f;
@@ -127,15 +123,15 @@ static void publish_pointcloud(const std::vector<float>& xyz,
     pc.fields.push_back(make_field("x", 0, sensor_msgs::PointField::FLOAT32));
     pc.fields.push_back(make_field("y", 4, sensor_msgs::PointField::FLOAT32));
     pc.fields.push_back(make_field("z", 8, sensor_msgs::PointField::FLOAT32));
-    if (format != PointFormat::kMinimal) {
+    if (format != PointFormat::Minimal) {
         pc.fields.push_back(make_field("intensity", 12, sensor_msgs::PointField::FLOAT32));
     }
-    if (format == PointFormat::kFull) {
+    if (format == PointFormat::Full) {
         pc.fields.push_back(
             make_field("offset_time", OFFSET_TIME_OFFSET, sensor_msgs::PointField::UINT32));
         pc.fields.push_back(make_field("tag", TAG_OFFSET, sensor_msgs::PointField::UINT8));
         pc.fields.push_back(make_field("line", LINE_OFFSET, sensor_msgs::PointField::UINT8));
-    } else if (format == PointFormat::kMinimal) {
+    } else if (format == PointFormat::Minimal) {
         pc.fields.push_back(make_field("offset_time", 12, sensor_msgs::PointField::UINT32));
     }
     pc.fields_length = static_cast<int32_t>(pc.fields.size());
@@ -154,7 +150,7 @@ static void publish_pointcloud(const std::vector<float>& xyz,
         dst[1] = xyz[i * 3 + 1];
         dst[2] = xyz[i * 3 + 2];
         switch (format) {
-            case PointFormat::kFull: {
+            case PointFormat::Full: {
                 dst[3] = intensity[i];
                 uint32_t offset_value = offset_ns[i];
                 std::memcpy(base + OFFSET_TIME_OFFSET, &offset_value, sizeof(uint32_t));
@@ -162,12 +158,12 @@ static void publish_pointcloud(const std::vector<float>& xyz,
                 base[LINE_OFFSET] = 0;  // Mid-360: single line
                 break;
             }
-            case PointFormat::kMinimal: {
+            case PointFormat::Minimal: {
                 uint32_t offset_value = offset_ns[i];
                 std::memcpy(base + 12, &offset_value, sizeof(uint32_t));
                 break;
             }
-            case PointFormat::kLegacy:
+            case PointFormat::Legacy:
                 dst[3] = intensity[i];
                 break;
         }
@@ -313,11 +309,11 @@ int main(int argc, char** argv) {
     g_imu_frame_id = mod.arg("imu_frame_id", "imu_link");
     const std::string point_format = mod.arg("point_format", "full");
     if (point_format == "full") {
-        g_point_format = PointFormat::kFull;
+        g_point_format = PointFormat::Full;
     } else if (point_format == "minimal") {
-        g_point_format = PointFormat::kMinimal;
+        g_point_format = PointFormat::Minimal;
     } else if (point_format == "legacy") {
-        g_point_format = PointFormat::kLegacy;
+        g_point_format = PointFormat::Legacy;
     } else {
         fprintf(stderr, "[mid360] unknown --point_format '%s' (full|minimal|legacy)\n",
                 point_format.c_str());
