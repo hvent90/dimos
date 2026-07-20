@@ -76,8 +76,10 @@ using dimos::make_header;
 
 // Wire layout: x,y,z,intensity float32 @ 0/4/8/12, then the Livox per-point
 // attributes Point-LIO consumes — offset_time uint32 @ 16 (ns since the header
-// stamp), tag uint8 @ 20, line uint8 @ 21 (always 0 on the Mid-360). Packed, no
-// padding; must stay in sync with PointCloud2.lcm_decode on the Python side.
+// stamp), tag uint8 @ 20, line uint8 @ 21 (always 0 on the Mid-360). The message
+// is self-describing (fields carry name/offset/datatype), so any spec-following
+// PointCloud2 consumer can read it; the field NAMES and datatypes are the only
+// convention shared with consumers (they follow livox_ros_driver's).
 static constexpr int32_t OFFSET_TIME_OFFSET = 16;
 static constexpr int32_t TAG_OFFSET = 20;
 static constexpr int32_t LINE_OFFSET = 21;

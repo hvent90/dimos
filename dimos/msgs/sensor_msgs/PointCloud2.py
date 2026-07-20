@@ -655,10 +655,24 @@ class PointCloud2(Timestamped):
                 else None,
             )
 
-        # Parse field offsets
+        # Parse field offsets. The message is self-describing; a known field is
+        # honored only when its advertised datatype matches what we read it as,
+        # otherwise it is treated as absent rather than misread.
+        _expected_datatype = {
+            "x": PointField.FLOAT32,
+            "y": PointField.FLOAT32,
+            "z": PointField.FLOAT32,
+            "rgb": PointField.FLOAT32,
+            "intensity": PointField.FLOAT32,
+            "offset_time": PointField.UINT32,
+            "tag": PointField.UINT8,
+            "line": PointField.UINT8,
+        }
         x_offset = y_offset = z_offset = rgb_offset = intensity_offset = None
         offset_time_offset = tag_offset = line_offset = None
         for msgfield in msg.fields:
+            if _expected_datatype.get(msgfield.name) != msgfield.datatype:
+                continue
             if msgfield.name == "x":
                 x_offset = msgfield.offset
             elif msgfield.name == "y":
