@@ -32,8 +32,48 @@ from dimos.utils.logging_config import setup_logger
 logger = setup_logger()
 
 
-def clamp(value: float, low: float, high: float) -> float:
-    return max(low, min(high, value))
+def decode_image(response: Any, frame_id: str, time_converter: Any) -> Image | None:
+    """Turn a bosdyn ImageResponse into a dimos Image, or None if unsupported.
+
+    Stamps each image with its true capture time: the robot-clock `acquisition_time`
+    converted to local time by `time_converter`, bosdyn's live clock-skew estimate
+    (`RobotTimeConverter`). Polling faster than the sensor returns the same frame, so
+    keeping the sensor timestamp lets downstream drop the repeat instead of seeing a
+    fresh wall-clock stamp.
+    """
+    from bosdyn.api import image_pb2  # type: ignore[import-not-found]
+
+    shot = response.shot.image
+    pixel_format = shot.pixel_format
+    ts = time_converter.local_seconds_from_robot_timestamp(response.shot.acquisition_time)
+
+    if shot.format == image_pb2.Image.FORMAT_JPEG:
+        import cv2
+
+        buffer = np.frombuffer(shot.data, dtype=np.uint8)
+        decoded = cv2.imdecode(buffer, cv2.IMREAD_UNCHANGED)
+        if decoded is None:
+            logger.error(f"Failed to decode JPEG image from {frame_id}")
+            return None
+        image_format = ImageFormat.GRAY if decoded.ndim == 2 else ImageFormat.BGR
+        return Image.from_numpy(decoded, format=image_format, frame_id=frame_id, ts=ts)
+
+    if shot.format != image_pb2.Image.FORMAT_RAW:
+        logger.error(f"Unsupported Spot image encoding {shot.format} from {frame_id}")
+        return None
+
+    dtype, channels, image_format = raw_layout(pixel_format)
+    if dtype is None:
+        logger.error(f"Unsupported Spot pixel format {pixel_format} from {frame_id}")
+        return None
+
+    array = np.frombuffer(shot.data, dtype=dtype)
+    array = (
+        array.reshape(shot.rows, shot.cols)
+        if channels == 1
+        else array.reshape(shot.rows, shot.cols, channels)
+    )
+    return Image.from_numpy(array, format=image_format, frame_id=frame_id, ts=ts)
 
 
 def joint_to_transform(joint: JointDescription) -> Transform:
@@ -52,8 +92,7 @@ def camera_mount_transforms(
 
     Walks the fixed-joint chain (base_link -> body -> {pos}_camera -> optical) up
     from each optical frame and folds the per-joint origins into one transform, so
-    the recorded images resolve a pose against the live odom->base_link edge. The
-    URDF's root link is renamed to `base_frame_id` so callers can rebase the tree.
+    the recorded images resolve a pose against the live odom->base_link edge.
     """
     model = parse_model(urdf_path)
     urdf_root = model.root_link
@@ -119,48 +158,8 @@ def camera_info_from_response(response: Any, source_name: str, ts: float) -> Cam
     return info.with_ts(ts)
 
 
-def decode_image(response: Any, frame_id: str, time_converter: Any) -> Image | None:
-    """Turn a bosdyn ImageResponse into a dimos Image, or None if unsupported.
-
-    Stamps each image with its true capture time: the robot-clock `acquisition_time`
-    converted to local time by `time_converter`, bosdyn's live clock-skew estimate
-    (`RobotTimeConverter`). Polling faster than the sensor returns the same frame, so
-    keeping the sensor timestamp lets downstream drop the repeat instead of seeing a
-    fresh wall-clock stamp.
-    """
-    from bosdyn.api import image_pb2  # type: ignore[import-not-found]
-
-    shot = response.shot.image
-    pixel_format = shot.pixel_format
-    ts = time_converter.local_seconds_from_robot_timestamp(response.shot.acquisition_time)
-
-    if shot.format == image_pb2.Image.FORMAT_JPEG:
-        import cv2
-
-        buffer = np.frombuffer(shot.data, dtype=np.uint8)
-        decoded = cv2.imdecode(buffer, cv2.IMREAD_UNCHANGED)
-        if decoded is None:
-            logger.error(f"Failed to decode JPEG image from {frame_id}")
-            return None
-        image_format = ImageFormat.GRAY if decoded.ndim == 2 else ImageFormat.BGR
-        return Image.from_numpy(decoded, format=image_format, frame_id=frame_id, ts=ts)
-
-    if shot.format != image_pb2.Image.FORMAT_RAW:
-        logger.error(f"Unsupported Spot image encoding {shot.format} from {frame_id}")
-        return None
-
-    dtype, channels, image_format = raw_layout(pixel_format)
-    if dtype is None:
-        logger.error(f"Unsupported Spot pixel format {pixel_format} from {frame_id}")
-        return None
-
-    array = np.frombuffer(shot.data, dtype=dtype)
-    array = (
-        array.reshape(shot.rows, shot.cols)
-        if channels == 1
-        else array.reshape(shot.rows, shot.cols, channels)
-    )
-    return Image.from_numpy(array, format=image_format, frame_id=frame_id, ts=ts)
+def clamp(value: float, low: float, high: float) -> float:
+    return max(low, min(high, value))
 
 
 def raw_layout(pixel_format: int) -> tuple[Any, int, ImageFormat]:
