@@ -76,17 +76,7 @@ def g1_static_robot(rr: Any) -> list[Any]:
 
 
 def g1_odometry_tf_override(odom: Any) -> Any:
-    """Publish odometry as a TF frame so sensor_scan/path/robot can reference it.
-
-    The sensor z is zeroed so the robot box keeps its fixed drawn height.
-
-    PointLio's map frame originates at the lidar's pose when odometry booted
-    (not the ground), so the accumulated global_map renders too low by the
-    lidar's boot height. The robot is assumed to be standing when odometry
-    boots, so lifting by the mount height puts the map's ground at z≈0. The
-    lift is re-logged per odometry message (not a static entry) because the
-    bridge's one-time frame attach on the cloud would clobber a static one.
-    """
+    """Publish odometry as a TF frame so sensor_scan/path/robot can reference it."""
     import rerun as rr
 
     tf = rr.Transform3D(
