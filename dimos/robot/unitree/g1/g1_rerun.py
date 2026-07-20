@@ -92,11 +92,13 @@ def g1_odometry_tf_override(odom: Any) -> Any:
         parent_frame="tf#/map",
         child_frame="tf#/sensor",
     )
-    ground_lift = rr.Transform3D(
-        translation=[0.0, 0.0, G1_LIDAR_MOUNT_HEIGHT],
-        parent_frame="tf#/world",
-    )
     return [
         ("tf#/sensor", tf),
-        ("world/global_map", ground_lift),
+        (
+            "world/global_map",
+            rr.Transform3D(
+                translation=[0.0, 0.0, G1_LIDAR_MOUNT_HEIGHT],
+                parent_frame="tf#/world",
+            ),
+        ),
     ]
