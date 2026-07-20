@@ -1,3 +1,4 @@
+import os
 from pathlib import Path
 import subprocess
 from threading import Event
@@ -62,6 +63,24 @@ def test_command_has_sandbox_and_only_expected_mounts(tmp_path: Path) -> None:
     assert ":/input:ro" in rendered and ":/work:rw" in rendered
     assert "docker.sock" not in rendered
     assert "sha256:" in rendered
+
+
+def test_command_uses_coordinator_pid_for_descriptor_mounts(tmp_path: Path) -> None:
+    podman = RootlessPodman()
+    runtime_request = request(tmp_path)
+
+    command = podman.command(runtime_request)
+    create_command = podman.persistent(runtime_request, Event()).create_command()
+    expected_prefix = f"/proc/{os.getpid()}/fd/"
+
+    for rendered_command in (command, create_command):
+        mount_sources = [
+            argument
+            for argument in rendered_command
+            if argument.startswith(expected_prefix)
+        ]
+        assert len(mount_sources) == 2
+        assert all("/proc/self/fd/" not in argument for argument in mount_sources)
 
 
 def test_requires_digest_and_distinct_workspace(tmp_path: Path) -> None:

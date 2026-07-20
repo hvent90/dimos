@@ -122,4 +122,4 @@ export async function runAdapter(
   }
 }
 
-if (process.argv[1]?.endsWith("main.ts")) void runAdapter();
+if (process.argv[1]?.endsWith("main.ts") || process.argv[1]?.endsWith("main.js")) void runAdapter();

@@ -4,13 +4,17 @@ from pathlib import Path
 from pydantic import ValidationError
 import pytest
 
-from dimos.benchmark.spatial.pi_baseline.config import PiBaselineConfig, load_config
+from dimos.benchmark.spatial.pi_baseline.config import (
+    PiBaselineConfig,
+    load_config,
+    validate_node_adapter_command,
+)
 
 
 def valid_payload(auth_path: Path) -> dict[str, object]:
     return {
         "model": {"provider": "openai-codex", "model_id": "gpt-5.6-luna", "thinking_level": "medium"},
-        "node_adapter_command": ["node", "adapter.js"],
+        "node_adapter_command": ["/usr/bin/node", str(auth_path.parent / "adapter.js")],
         "codex_oauth_auth_path": str(auth_path),
         "runner_image": "registry.example/pi@sha256:" + "a" * 64,
         "rootless_podman_required": True,
@@ -60,10 +64,27 @@ def valid_payload(auth_path: Path) -> dict[str, object]:
 def test_config_loads_without_external_calls(tmp_path: Path) -> None:
     auth = tmp_path / "oauth.json"
     auth.write_text("{}", encoding="utf-8")
+    (tmp_path / "adapter.js").write_text("", encoding="utf-8")
     config_path = tmp_path / "config.json"
     config_path.write_text(json.dumps(valid_payload(auth)), encoding="utf-8")
     assert load_config(config_path).model.model_id == "gpt-5.6-luna"
     assert load_config(config_path).model.thinking_level == "medium"
+
+
+@pytest.mark.parametrize("command", [["node", "adapter.js"], ["/usr/bin/npm", "run", "adapter"], ["/usr/bin/node", "adapter.js", "--extra"]])
+def test_adapter_command_rejects_wrappers_relative_files_and_extra_argv(command: list[str], tmp_path: Path) -> None:
+    adapter = tmp_path / "adapter.js"
+    adapter.write_text("", encoding="utf-8")
+    if command == ["/usr/bin/node", "adapter.js", "--extra"]:
+        command[1] = str(adapter)
+    with pytest.raises(ValueError):
+        validate_node_adapter_command(command)
+
+
+def test_adapter_command_accepts_only_exact_direct_invocation(tmp_path: Path) -> None:
+    adapter = tmp_path / "adapter.js"
+    adapter.write_text("", encoding="utf-8")
+    assert validate_node_adapter_command(["/usr/bin/node", str(adapter)]) == ["/usr/bin/node", str(adapter)]
 
 
 @pytest.mark.parametrize(

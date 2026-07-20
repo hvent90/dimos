@@ -21,6 +21,7 @@ from dimos.benchmark.spatial.pi_baseline.config import (
     PromptMode,
     PublicSelection,
     ResourceLimits,
+    validate_node_adapter_command,
 )
 from dimos.benchmark.spatial.utilities import JsonValue, canonical_json, hash_file_sha256
 
@@ -84,7 +85,12 @@ class PiExecutionSnapshot(SpatialModel):
     resource_limits: ResourceLimits
     network_policy: AuditNetworkPolicy
     runner_image: str = Field(pattern=r"^.+@sha256:[0-9a-f]{64}$")
-    node_adapter_command: tuple[str, ...] = Field(min_length=1)
+    node_adapter_command: tuple[str, ...] = Field(min_length=2, max_length=2)
+
+    @model_validator(mode="after")
+    def validate_adapter_command(self) -> PiExecutionSnapshot:
+        validate_node_adapter_command(self.node_adapter_command)
+        return self
     scorer_revision: str = Field(min_length=1)
     implementation_digests: ImplementationDigests
     prompt_fingerprint: Digest = Field(pattern=r"^[0-9a-f]{64}$")
@@ -180,15 +186,10 @@ def verify_runtime_artifacts(
     verify_snapshot_artifacts(snapshot)
     root = base_dir or Path.cwd()
     records = {item.name: item for item in snapshot.material_inventory}
-    candidates = []
-    for argument in reversed(command):
-        candidate = Path(argument)
-        if not candidate.is_absolute():
-            candidate = root / candidate
-        if candidate.is_file():
-            candidates.append(candidate)
-            break
-    if not candidates or candidates[0].read_bytes() != artifact_bytes(records["adapter"].bytes_b64):
+    del root
+    validate_node_adapter_command(command)
+    candidate = Path(command[1])
+    if candidate.read_bytes() != artifact_bytes(records["adapter"].bytes_b64):
         raise ValueError("Pi adapter artifact drift detected")
     source_root = Path(__file__).parents[4]
     for name, path in {

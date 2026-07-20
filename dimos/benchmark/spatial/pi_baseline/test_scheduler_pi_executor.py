@@ -34,7 +34,7 @@ from dimos.benchmark.spatial.pi_baseline.cli_support import (
     validate_pi_definition,
 )
 from dimos.benchmark.spatial.pi_baseline.config import PiBaselineConfig, PromptMode
-from dimos.benchmark.spatial.pi_baseline.controller import AdapterCleanupError
+from dimos.benchmark.spatial.pi_baseline.controller import AdapterCleanupError, AdapterRunError
 from dimos.benchmark.spatial.pi_baseline.gate import ArtifactReference, SmokeRunEvidence
 from dimos.benchmark.spatial.pi_baseline.podman import ContainerCleanupError
 from dimos.benchmark.spatial.pi_baseline.runner import ConditionRun
@@ -213,7 +213,7 @@ def _config(tmp_path: Path) -> PiBaselineConfig:
     selection = _selection()
     payload.update(
         {
-            "node_adapter_command": ["node", str(adapter)],
+            "node_adapter_command": ["/usr/bin/node", str(adapter)],
             "corpus_root": str(corpus),
             "oracle_root": str(oracle),
             "selection": selection,
@@ -625,6 +625,28 @@ def test_policy_failure_becomes_failed_outcome_without_live_runner(tmp_path: Pat
     assert outcome.status == "failed"
     assert outcome.reason == "policy:visualization_forbidden"
     assert [event.kind for event in events] == ["progress"]
+
+
+def test_adapter_protocol_failure_has_stable_public_reason_without_raw_error(
+    tmp_path: Path,
+) -> None:
+    raw_message = "adapter_protocol_error: /private/corpus/secret-token"
+
+    def failing_runner(
+        config: PiBaselineConfig,
+        mode: PromptMode,
+        cancel_requested: Event,
+        publication_lock: Lock,
+    ) -> ConditionRun:
+        raise AdapterRunError(raw_message)
+
+    outcome = _executor(tmp_path, failing_runner).run(
+        _case(_selection()), _condition(), _context(), lambda _: None, *_operation_pair()
+    )
+
+    assert outcome == TerminalOutcome(status="failed", reason="adapter_run_error")
+    assert raw_message not in outcome.model_dump_json()
+    assert "/private/corpus/secret-token" not in outcome.model_dump_json()
 
 
 @pytest.mark.parametrize(

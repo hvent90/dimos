@@ -13,8 +13,8 @@ from dimos.benchmark.spatial.pi_baseline.config import (
     PromptMode,
     PublicSelection,
 )
-from dimos.benchmark.spatial.pi_baseline.controller import AdapterCleanupError
-from dimos.benchmark.spatial.pi_baseline.podman import ContainerCleanupError
+from dimos.benchmark.spatial.pi_baseline.controller import AdapterCleanupError, AdapterRunError
+from dimos.benchmark.spatial.pi_baseline.podman import ContainerCleanupError, PodmanSecurityError
 from dimos.benchmark.spatial.pi_baseline.runner import ConditionRun, run_condition
 from dimos.benchmark.spatial.pi_baseline.scheduler_executor import (
     EventSink,
@@ -37,6 +37,7 @@ from dimos.benchmark.spatial.pi_baseline.scheduler_pi_binding import (
     verify_runtime_artifacts,
     verify_snapshot_artifacts,
 )
+from dimos.benchmark.spatial.pi_baseline.topology import TopologyError
 
 
 class PiCasePayload(SpatialModel):
@@ -180,11 +181,33 @@ class PiSchedulerExecutor(Executor):
 
 
 def _failure_reason(error: Exception) -> str:
-    if isinstance(error, (ContainerCleanupError, AdapterCleanupError)):
+    if isinstance(error, ContainerCleanupError):
         return ContainerCleanupError.reason
+    if isinstance(error, AdapterCleanupError):
+        # Preserve the established public cleanup code; never expose the
+        # controller's process/path details.
+        return ContainerCleanupError.reason
+    if isinstance(error, AdapterRunError):
+        adapter_code = str(error)
+        if adapter_code in {
+            "adapter_protocol_error",
+            "adapter_startup_error",
+            "adapter_host_deadline",
+            "adapter_submitted_without_answer",
+            "adapter_eof_before_complete",
+            "adapter_run_failed",
+        }:
+            return adapter_code
+        return "adapter_run_error"
+    if isinstance(error, PodmanSecurityError):
+        return "podman_security_error"
+    if isinstance(error, TopologyError):
+        return "topology_error"
     if isinstance(error, PolicyViolationError):
-        return f"policy:{error.code}"
-    return "condition execution failed"
+        if error.code in {"visualization_forbidden", "visualization_required_before_submission"}:
+            return f"policy:{error.code}"
+        return "policy_violation"
+    return "executor_failed"
 
 
 def _check_cancel(cancel_requested: threading.Event) -> None:

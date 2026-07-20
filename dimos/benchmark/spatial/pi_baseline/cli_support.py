@@ -539,13 +539,13 @@ def _bytes_digest(value: bytes) -> str:
 
 
 def _adapter_artifact(base: Path, command: list[str]) -> bytes:
-    for argument in reversed(command):
-        candidate = Path(argument)
-        if not candidate.is_absolute():
-            candidate = base / candidate
-        if candidate.is_file():
-            return candidate.read_bytes()
-    raise ValueError("Pi authoring spec does not identify an adapter artifact")
+    del base
+    if len(command) != 2:
+        raise ValueError("Pi authoring spec must contain exactly one adapter file argument")
+    candidate = Path(command[1])
+    if not candidate.is_absolute() or not candidate.is_file() or candidate.is_symlink():
+        raise ValueError("Pi authoring spec does not identify its exact adapter artifact")
+    return candidate.read_bytes()
 
 
 def bind_private_tree(

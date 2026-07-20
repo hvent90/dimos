@@ -1,4 +1,4 @@
-import { AuthStorage, ModelRegistry, SessionManager, createAgentSession } from "@earendil-works/pi-coding-agent";
+import { ModelRegistry, ModelRuntime, SessionManager, createAgentSession, readStoredCredential } from "@earendil-works/pi-coding-agent";
 import type { Model } from "@earendil-works/pi-ai";
 import { customTools, assertNoBuiltinTools, assertToolInventory } from "./tools.js";
 import type { ToolDefinition } from "@earendil-works/pi-coding-agent";
@@ -31,10 +31,11 @@ export function validateSessionConfig(config: SessionConfig): void {
 
 export async function createFreshSession(tools: readonly ToolDefinition[], options: StoredAuthOptions, config: SessionConfig) {
   validateSessionConfig(config);
-  const auth = AuthStorage.create(options.authPath);
-  const credential = auth.get(MODEL_PROVIDER);
+  const credential = readStoredCredential(MODEL_PROVIDER, options.authPath);
   if (!credential || credential.type !== "oauth") throw new Error("Codex OAuth credentials are not stored");
-  const registry = ModelRegistry.create(auth, options.modelsPath);
+  const runtime = await ModelRuntime.create({ authPath: options.authPath, modelsPath: options.modelsPath });
+  const registry = new ModelRegistry(runtime);
+  await registry.refresh();
   const model = resolveConfiguredModel(registry);
   if (!registry.isUsingOAuth(model)) throw new Error("configured model is not using Codex OAuth");
   const custom = customTools(tools);
@@ -44,8 +45,7 @@ export async function createFreshSession(tools: readonly ToolDefinition[], optio
   const result = await createAgentSession({
     model,
     thinkingLevel: config.thinkingLevel,
-    authStorage: auth,
-    modelRegistry: registry,
+    modelRuntime: runtime,
     sessionManager: SessionManager.inMemory(),
     noTools: "builtin",
     tools: available,

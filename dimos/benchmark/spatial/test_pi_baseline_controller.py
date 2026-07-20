@@ -34,6 +34,12 @@ def _operation_pair() -> tuple[threading.Event, threading.Lock]:
     return threading.Event(), threading.Lock()
 
 
+def _adapter_command(tmp_path: Path) -> tuple[str, str]:
+    adapter = tmp_path / "adapter.js"
+    adapter.touch()
+    return ("/usr/bin/node", str(adapter))
+
+
 class _Process:
     def __init__(self, frames: list[dict[str, object]]) -> None:
         self.stdin = io.StringIO()
@@ -130,7 +136,7 @@ def test_controller_runs_closed_dialogue_and_rejects_case_mismatch(
         },
     }
     terminal = AdapterController(
-        ("node", "adapter.js"), tmp_path / "private-auth", transcript
+        _adapter_command(tmp_path), tmp_path / "private-auth", transcript
     ).run("run", broker, run_start, *_operation_pair())
     assert terminal.ok
     assert terminal.tool_replies[0] == {
@@ -158,7 +164,7 @@ def test_controller_runs_closed_dialogue_and_rejects_case_mismatch(
     )
     monkeypatch.setattr(subprocess, "Popen", lambda *args, **kwargs: mismatch)
     with pytest.raises(ValueError, match="run_started"):
-        AdapterController(("node",), tmp_path / "auth", tmp_path / "bad.ndjson").run(
+        AdapterController(_adapter_command(tmp_path), tmp_path / "auth", tmp_path / "bad.ndjson").run(
             "run", broker, run_start, *_operation_pair()
         )
 
@@ -173,7 +179,7 @@ def test_terminal_failure_is_rejected_and_stderr_is_bounded(tmp_path: Path, monk
     broker = CaseBroker("case", _Case(tmp_path), AnswerTransaction("instance", AnswerType.BOOLEAN), "visualization-forbidden")
     start = {"version": 1, "type": "run_start", "id": "run", "prompt": "offline", "budget": {"maxTurns": 1, "maxToolCalls": 1, "timeoutMs": 1000}, "config": {"promptMode": "visualization_forbidden", "answerType": "boolean", "modelId": "gpt-5.6-luna", "thinkingLevel": "medium", "implementationDigests": {"adapter": "adapter@sha256:" + "a" * 64, "scorer": "scorer@sha256:" + "b" * 64, "protocol": "protocol@sha256:" + "c" * 64}}}
     with pytest.raises(AdapterRunError, match="adapter_run_failed"):
-        AdapterController(("node",), tmp_path / "auth", tmp_path / "transcript", max_stderr_bytes=128).run("run", broker, start, *_operation_pair())
+        AdapterController(_adapter_command(tmp_path), tmp_path / "auth", tmp_path / "transcript", max_stderr_bytes=128).run("run", broker, start, *_operation_pair())
     assert (tmp_path / "transcript.stderr.log").stat().st_size <= 128
     assert "secret/path" not in (tmp_path / "transcript").read_text()
 
@@ -199,7 +205,7 @@ def test_transcript_symlink_in_pinned_leaf_fails_closed(
             "visualization-forbidden",
         )
         with pytest.raises(OSError):
-            AdapterController(("node",), tmp_path / "auth", pinned).run(
+            AdapterController(_adapter_command(tmp_path), tmp_path / "auth", pinned).run(
                 "run", broker, _minimal_start(), *_operation_pair()
             )
         assert escaped.read_bytes() == b"must remain unchanged"
@@ -234,7 +240,7 @@ def test_thread_start_failure_cleans_process_and_owned_transcript_fd(
         raise RuntimeError("forced thread-start failure")
 
     monkeypatch.setattr(threading.Thread, "start", fail_start)
-    controller = AdapterController(("node",), tmp_path / "auth", tmp_path / "transcript")
+    controller = AdapterController(_adapter_command(tmp_path), tmp_path / "auth", tmp_path / "transcript")
     owned_fd = controller.transcript_root.fd
     with pytest.raises(RuntimeError, match="forced thread-start failure"):
         controller.run("run", CaseBroker("case", _Case(tmp_path), AnswerTransaction("instance", AnswerType.BOOLEAN), "visualization-forbidden"), _minimal_start(), *_operation_pair())
@@ -254,7 +260,7 @@ def test_thread_constructor_failure_waits_and_closes_owned_transcript_fd(
         raise RuntimeError("forced thread construction failure")
 
     monkeypatch.setattr(threading, "Thread", fail_constructor)
-    controller = AdapterController(("node",), tmp_path / "auth", tmp_path / "transcript")
+    controller = AdapterController(_adapter_command(tmp_path), tmp_path / "auth", tmp_path / "transcript")
     owned_fd = controller.transcript_root.fd
     with pytest.raises(RuntimeError, match="forced thread construction failure"):
         controller.run(
@@ -285,7 +291,7 @@ def test_second_reader_start_failure_waits_and_closes_owned_transcript_fd(
         raise RuntimeError("forced second reader start failure")
 
     monkeypatch.setattr(threading.Thread, "start", fail_second_start)
-    controller = AdapterController(("node",), tmp_path / "auth", tmp_path / "transcript")
+    controller = AdapterController(_adapter_command(tmp_path), tmp_path / "auth", tmp_path / "transcript")
     owned_fd = controller.transcript_root.fd
     with pytest.raises(RuntimeError, match="forced second reader start failure"):
         controller.run(
@@ -309,7 +315,7 @@ def test_cleanup_failure_still_waits_and_closes_owned_transcript_fd(
         "_terminate_then_kill",
         lambda *args, **kwargs: (_ for _ in ()).throw(RuntimeError("forced cleanup failure")),
     )
-    controller = AdapterController(("node",), tmp_path / "auth", tmp_path / "transcript")
+    controller = AdapterController(_adapter_command(tmp_path), tmp_path / "auth", tmp_path / "transcript")
     owned_fd = controller.transcript_root.fd
     with pytest.raises(AdapterCleanupError, match="cleanup failed"):
         controller.run(
@@ -338,7 +344,7 @@ def test_cleanup_preserves_caller_owned_transcript_fd(
     pinned = PinnedDirectory.open(private)
     try:
         with pytest.raises(AdapterCleanupError):
-            AdapterController(("node",), tmp_path / "auth", pinned).run(
+            AdapterController(_adapter_command(tmp_path), tmp_path / "auth", pinned).run(
                 "run",
                 CaseBroker("case", _Case(tmp_path), AnswerTransaction("instance", AnswerType.BOOLEAN), "visualization-forbidden"),
                 _minimal_start(),
@@ -425,7 +431,7 @@ def test_integer_answer_type_matches_corpus_wire_value() -> None:
 
 
 def test_controller_returns_stable_policy_errors(tmp_path: Path) -> None:
-    controller = AdapterController(("node",), tmp_path / "auth", tmp_path / "transcript")
+    controller = AdapterController(_adapter_command(tmp_path), tmp_path / "auth", tmp_path / "transcript")
     encouraged = CaseBroker("case", _Case(tmp_path), AnswerTransaction("instance", AnswerType.BOOLEAN), "visualization-encouraged")
     forbidden = CaseBroker("case", _Case(tmp_path), AnswerTransaction("instance", AnswerType.BOOLEAN), "visualization-forbidden")
     submit = {"version": 1, "type": "tool_call", "id": "s", "tool": "submit_answer", "params": {"answer": True}}
@@ -465,7 +471,7 @@ def test_controller_rejects_premature_successful_completion(
     monkeypatch.setattr(subprocess, "Popen", lambda *args, **kwargs: process)
     broker = CaseBroker("case", _Case(tmp_path), AnswerTransaction("instance", AnswerType.BOOLEAN), "visualization-forbidden")
     with pytest.raises(AdapterRunError, match="without_answer"):
-        AdapterController(("node",), tmp_path / "auth", tmp_path / "transcript").run("run", broker, _minimal_start(), *_operation_pair())
+        AdapterController(_adapter_command(tmp_path), tmp_path / "auth", tmp_path / "transcript").run("run", broker, _minimal_start(), *_operation_pair())
 
 
 def test_controller_accepts_exhausted_budget_as_failed_terminal(
@@ -479,5 +485,5 @@ def test_controller_accepts_exhausted_budget_as_failed_terminal(
     monkeypatch.setattr(subprocess, "Popen", lambda *args, **kwargs: process)
     broker = CaseBroker("case", _Case(tmp_path), AnswerTransaction("instance", AnswerType.BOOLEAN), "visualization-forbidden")
     with pytest.raises(AdapterRunError, match="adapter_run_failed"):
-        AdapterController(("node",), tmp_path / "auth", tmp_path / "transcript").run("run", broker, _minimal_start(), *_operation_pair())
+        AdapterController(_adapter_command(tmp_path), tmp_path / "auth", tmp_path / "transcript").run("run", broker, _minimal_start(), *_operation_pair())
     assert "private" not in (tmp_path / "transcript").read_text()

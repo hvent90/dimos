@@ -6,6 +6,7 @@
 from __future__ import annotations
 
 from dataclasses import dataclass
+import os
 from pathlib import Path
 import re
 import subprocess
@@ -30,6 +31,11 @@ _DIGEST = re.compile(r"^[a-z0-9][a-z0-9./_-]*@sha256:[0-9a-f]{64}$")
 _IDENTIFIER = re.compile(r"^[a-z0-9][a-z0-9_.-]{0,62}$")
 _CLEANUP_TIMEOUT_SECONDS = 30.0
 _CLEANUP_COMMAND_TIMEOUT_SECONDS = 10.0
+
+
+def _descriptor_mount_source(fd: int) -> str:
+    """Return a descriptor path that remains valid across Podman create/start."""
+    return f"/proc/{os.getpid()}/fd/{fd}"
 
 
 @dataclass(frozen=True)
@@ -105,9 +111,9 @@ class RootlessPodman:
             "--tmpfs",
             "/tmp:rw,size=64m,mode=1777",
             "--volume",
-            f"/proc/self/fd/{request.topology.input.fd}:/input:ro",
+            f"{_descriptor_mount_source(request.topology.input.fd)}:/input:ro",
             "--volume",
-            f"/proc/self/fd/{request.topology.workspace.fd}:/work:rw",
+            f"{_descriptor_mount_source(request.topology.workspace.fd)}:/work:rw",
             request.image,
             *request.args,
         ]
@@ -262,9 +268,9 @@ class PersistentPodmanCase:
             "--tmpfs",
             "/tmp:rw,size=64m,mode=1777",
             "--volume",
-            f"/proc/self/fd/{request.topology.input.fd}:/input:ro",
+            f"{_descriptor_mount_source(request.topology.input.fd)}:/input:ro",
             "--volume",
-            f"/proc/self/fd/{request.topology.workspace.fd}:/work:rw",
+            f"{_descriptor_mount_source(request.topology.workspace.fd)}:/work:rw",
             request.image,
             "sleep",
             "infinity",

@@ -3,7 +3,7 @@
 
 from __future__ import annotations
 
-from collections.abc import Mapping
+from collections.abc import Mapping, Sequence
 import json
 from pathlib import Path
 import re
@@ -17,6 +17,25 @@ PromptMode = Literal["visualization-forbidden", "visualization-encouraged"]
 ThinkingLevel = Literal["medium"]
 _ID_PATTERN = r"^[A-Za-z0-9][A-Za-z0-9_-]{0,127}$"
 _DIGEST_PATTERN = r"^.+@sha256:[0-9a-f]{64}$"
+
+
+def validate_node_adapter_command(command: Sequence[str]) -> list[str]:
+    """Accept only a direct Node executable and one absolute JS entrypoint.
+
+    This is intentionally a structural admission check, rather than a shell
+    command parser: there is no supported wrapper, package manager, runtime
+    flag, or additional argv in the Pi protocol.
+    """
+    if len(command) != 2 or any(not isinstance(argument, str) or not argument for argument in command):
+        raise ValueError("Pi adapter command must be [absolute node executable, absolute adapter file]")
+    executable, adapter = (Path(argument) for argument in command)
+    if not executable.is_absolute() or executable.name not in {"node", "nodejs"}:
+        raise ValueError("Pi adapter executable must be an approved absolute Node executable")
+    if not executable.is_file() or not executable.stat().st_mode & 0o111:
+        raise ValueError("Pi adapter executable must be an executable file")
+    if not adapter.is_absolute() or adapter.suffix != ".js":
+        raise ValueError("Pi adapter command must name one absolute .js file")
+    return list(command)
 
 
 class ModelConfig(SpatialModel):
@@ -66,7 +85,7 @@ class PiBaselineConfig(SpatialModel):
     """All host-side inputs needed before an external runner may start."""
 
     model: ModelConfig
-    node_adapter_command: list[str] = Field(min_length=1)
+    node_adapter_command: list[str] = Field(min_length=2, max_length=2)
     codex_oauth_auth_path: str = Field(min_length=1)
     runner_image: str = Field(pattern=_DIGEST_PATTERN)
     rootless_podman_required: Literal[True]
@@ -85,6 +104,11 @@ class PiBaselineConfig(SpatialModel):
     implementation_digests: ImplementationDigests
     case_id: str | None = Field(default=None, pattern=_ID_PATTERN)
     run_id: str | None = Field(default=None, pattern=_ID_PATTERN)
+
+    @field_validator("node_adapter_command")
+    @classmethod
+    def validate_node_command(cls, value: list[str]) -> list[str]:
+        return validate_node_adapter_command(value)
 
     @field_validator("codex_oauth_auth_path")
     @classmethod

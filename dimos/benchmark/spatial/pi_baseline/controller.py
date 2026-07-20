@@ -15,6 +15,7 @@ import time
 from typing import TextIO, cast
 
 from dimos.benchmark.spatial.pi_baseline.broker import CaseBroker, PolicyViolationError
+from dimos.benchmark.spatial.pi_baseline.config import validate_node_adapter_command
 from dimos.benchmark.spatial.pi_baseline.scheduler_executor import ExecutionInterrupted
 from dimos.benchmark.spatial.pi_baseline.topology import PinnedDirectory
 
@@ -50,9 +51,9 @@ class AdapterController:
         max_stderr_bytes: int = 64 * 1024,
         terminate_grace_seconds: float = 1.0,
     ) -> None:
-        if not command or max_frame_bytes <= 0 or max_stderr_bytes <= 0 or terminate_grace_seconds <= 0:
+        if max_frame_bytes <= 0 or max_stderr_bytes <= 0 or terminate_grace_seconds <= 0:
             raise ValueError("adapter command and bounds are required")
-        self.command = command
+        self.command = tuple(validate_node_adapter_command(command))
         self.auth_path = auth_path
         if isinstance(transcript, PinnedDirectory):
             self.transcript_root = transcript
