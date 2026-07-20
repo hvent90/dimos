@@ -54,6 +54,9 @@ class _FakeRos:
     def publish(self, topic: Any, message: Any) -> None:
         self.published.append((topic, message))
 
+    def stop(self) -> None:
+        pass
+
 
 def _ns(**kw: Any) -> types.SimpleNamespace:
     return types.SimpleNamespace(**kw)
@@ -95,10 +98,18 @@ def _fake_ros_msgs(monkeypatch: Any) -> None:
         monkeypatch.setitem(sys.modules, f"{mod_name}.msg", sub)
 
 
+_TEMPLATE = R1LiteConnection()
+
+
+@pytest.fixture(scope="module", autouse=True)
+def _dispose_template() -> Any:
+    yield
+    _TEMPLATE.dispose()
+
+
 def _bare(stamp_available: bool = True) -> R1LiteConnection:
-    c = R1LiteConnection.__new__(R1LiteConnection)
+    c = _TEMPLATE
     c.config = R1LiteConnectionConfig()
-    c._lock = threading.Lock()
     c._ros = _FakeRos(stamp_available=stamp_available)
     c._cmd_left_topic = "left"
     c._cmd_right_topic = "right"
@@ -107,11 +118,11 @@ def _bare(stamp_available: bool = True) -> R1LiteConnection:
     c._speed_topic = "speed"
     c._acc_topic = "acc"
     c._brake_topic = "brake"
+    c._stop_event = threading.Event()
     c._torso_cmd_warned = False
     c._cmd_stale_logged = False
     c._state_stale_logged = False
     c._bad_fb_warn_ts = 0.0
-    c._stop_event = threading.Event()
     c._last_chassis_lin = 0.0
     c._last_chassis_ang = 0.0
     c._last_chassis_fb_ts = 0.0

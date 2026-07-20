@@ -60,7 +60,7 @@ EXPECTED_TOPICS = [
     CMD_TORSO,
 ]
 
-# --- Remaining open questions -------------------------------------------
+# Remaining open questions.
 # 1. Joint names per topic + /joint_states 25-joint composition.
 # 2. Torso safe home pose.
 # 3. Chassis gating: does r1_lite_chassis_control_node need subscriber/
