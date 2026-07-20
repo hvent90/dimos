@@ -1,6 +1,9 @@
-# Spot
+---
+title: "Boston Dynamics Spot"
+---
 
-Boston Dynamics Spot control for DimOS: velocity teleop + camera/odometry streaming.
+Boston Dynamics Spot control for DimOS: velocity teleop plus fisheye/depth camera and
+odometry streaming.
 
 ## Install
 
@@ -32,6 +35,13 @@ The IP auto-detects (WiFi then Ethernet). Force one with `-o spothighlevel.ip=<a
 Keyboard teleop: WASD move/turn, QE strafe, Space soft-stop, ESC quit. A Rerun
 viewer opens with the fisheye/depth cameras and odometry.
 
+## Available Blueprints
+
+| Blueprint | Description |
+|-----------|-------------|
+| `dimos run spot` | Velocity teleop + camera/depth/odometry streaming + Rerun |
+| `dimos run spot-record` | Same as `spot`, plus records every stream to a `.db` |
+
 ## Layout
 
 - `config.py` — constants + pure address/credential helpers (no `bosdyn` import).
@@ -40,3 +50,10 @@ viewer opens with the fisheye/depth cameras and odometry.
   cameras and body odometry.
 - `recorder.py` — `SpotRecorder`: records every Spot stream to disk.
 - `blueprints/spot.py` — the runnable `spot` blueprint (click/teleop + sensors + Rerun).
+
+## Deep Dive
+
+- [Visualization](/docs/usage/visualization.md) — Rerun, performance tuning
+- [Data Streams](/docs/usage/data_streams/index.md) — RxPY streams, backpressure, quality filtering
+- [Transports](/docs/usage/transports/index.md) — LCM, SHM, DDS
+- [Blueprints](/docs/usage/blueprints.md) — composing modules
