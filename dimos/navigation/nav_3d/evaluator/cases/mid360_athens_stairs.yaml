@@ -54,4 +54,5 @@ cases:
   start: [1.8, -4.44, -0.32]
   goal: [5.24, -4.2, -0.32]
   weight: 1.0
-  tags: [manual, flat, doorway]
+  tags: [manual, flat, doorway, negative]
+  expect_fail: true

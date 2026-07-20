@@ -49,6 +49,7 @@ from dimos.navigation.nav_3d.evaluator.runner import (
     DatasetResult,
     Report,
     _dynamic_candidate,
+    _final_only,
     _no_plan,
     _run_plan,
     score_negative,
@@ -394,12 +395,11 @@ def test_meta_straight_line_cheat_scores_zero() -> None:
     assert out.min_clearance is not None and out.min_clearance < 0
 
 
-def test_meta_no_path_scores_zero_with_miss() -> None:
+def test_meta_no_path_scores_zero() -> None:
     keys, cfg, case = _meta_scene()
     out, _ = _run_plan(_stub(None), case, 24.0, keys, keys, cfg)
     assert not out.planned
     assert out.spl == 0.0
-    assert out.goal_miss == pytest.approx(16.0)
     assert out.min_clearance is None
 
 
@@ -411,7 +411,6 @@ def test_meta_demonstrated_route_scores_full() -> None:
     out, _ = _run_plan(_stub(route), case, l_ref, keys, keys, cfg)
     assert out.success
     assert out.spl == pytest.approx(1.0)
-    assert out.goal_miss == 0.0
     assert out.min_clearance == metrics.MARGIN_CAP_M
 
 
@@ -600,6 +599,16 @@ def test_load_suite(tmp_path: Path) -> None:
         load_suite(manifest)
 
 
+def test_final_only_covers_manual_and_infeasible() -> None:
+    """Manual and infeasible cases skip the online phase; auto cases keep it."""
+    xyz = (0.0, 0.0, 0.0)
+    assert not _final_only(Case(id="a", start=xyz, goal=xyz, tags=["auto", "flat"]))
+    assert _final_only(Case(id="m", start=xyz, goal=xyz, tags=["manual", "flat"]))
+    assert _final_only(Case(id="n", start=xyz, goal=xyz, tags=["manual"], expect_fail=True))
+    # A dynamic-obstacle auto case still replays online.
+    assert not _final_only(Case(id="d", start=xyz, goal=xyz, tags=["auto"], expect_final_fail=True))
+
+
 def test_expect_final_fail_roundtrips(tmp_path: Path) -> None:
     suite = Suite(
         dataset="demo",
@@ -651,8 +660,8 @@ def _tripwire_report(spec: dict[str, dict[str, tuple[bool, bool]]]) -> dict[str,
                     map_update_ms=0.0,
                     goal_seen=True,
                     expect_fail=False,
-                    online=replace(_no_plan(case, 0.0), success=inc),
-                    final=replace(_no_plan(case, 0.0), success=fin),
+                    online=replace(_no_plan(0.0), success=inc),
+                    final=replace(_no_plan(0.0), success=fin),
                     soft_progress=0.0,
                 )
             )
@@ -671,6 +680,7 @@ def _tripwire_report(spec: dict[str, dict[str, tuple[bool, bool]]]) -> dict[str,
         score_soft=0.0,
         final_score=0.0,
         n_cases=0,
+        n_online=0,
         n_success=0,
         n_success_final=0,
         outcome_counts={},

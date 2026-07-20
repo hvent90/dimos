@@ -63,6 +63,8 @@ from dimos.utils.data import get_data_dir
 if TYPE_CHECKING:
     from numpy.typing import NDArray
 
+    from dimos.navigation.nav_3d.evaluator.runner import PlanOutcome
+
 app = typer.Typer(no_args_is_help=True, add_completion=False)
 
 
@@ -79,23 +81,32 @@ def _apply_overrides(cfg: EvalConfig, overrides: list[str]) -> EvalConfig:
     return cfg
 
 
+def _score_cell(outcome: PlanOutcome) -> str:
+    """No path at all shows x. A planned path shows its SPL, which is 0.00 when
+    the path is invalid and higher when it is valid."""
+    return "x" if not outcome.planned and not outcome.success else f"{outcome.spl:.2f}"
+
+
 def _print_report(report: Report) -> None:
     header = (
         f"{'case':<28} {'dataset':<22} {'inc':>5} {'fin':>5} "
-        f"{'len':>6} {'ref':>6} {'miss':>6} {'clr':>6} {'vox':>8} {'ms':>7}"
+        f"{'len':>6} {'ref':>6} {'clr':>6} {'vox':>8} {'ms':>7}"
     )
     print(header)
     print("-" * len(header))
     for d in report.datasets:
         for c in d.cases:
+            inc = "-" if c.final_only else _score_cell(c.online)
+            no_path = not c.online.planned and not c.online.success
+            length = "x" if no_path else f"{c.online.length:.1f}"
             clr = (
                 f"{c.online.min_clearance:>6.2f}" if c.online.min_clearance is not None else " " * 6
             )
             print(
                 f"{c.id:<28} {c.dataset:<22} "
-                f"{c.online.spl:>5.2f} {c.final.spl:>5.2f} "
-                f"{c.online.length:>6.1f} {c.l_ref:>6.1f} "
-                f"{c.online.goal_miss:>6.1f} {clr} "
+                f"{inc:>5} {_score_cell(c.final):>5} "
+                f"{length:>6} {c.l_ref:>6.1f} "
+                f"{clr} "
                 f"{c.online_voxels:>8d} {c.online.plan_ms:>7.1f}"
             )
     print("-" * len(header))
@@ -107,11 +118,12 @@ def _print_report(report: Report) -> None:
         )
     print(f"\n{'by tag':<12} {'inc':>5} {'fin':>5} {'n':>4}")
     for tag, s in report.by_tag.items():
-        print(f"{tag:<12} {s.inc_score:>5.2f} {s.fin_score:>5.2f} {s.n:>4}")
+        inc = f"{s.inc_score:.2f}" if s.n_online else "-"
+        print(f"{tag:<12} {inc:>5} {s.fin_score:>5.2f} {s.n:>4}")
     print(
         f"\nscore {report.score:.3f} | soft {report.score_soft:.3f} | "
         f"final {report.final_score:.3f} | "
-        f"success inc {report.n_success}/{report.n_cases} "
+        f"success inc {report.n_success}/{report.n_online} "
         f"fin {report.n_success_final}/{report.n_cases} | "
         f"outcomes {report.outcome_counts} | "
         f"plan p95 {report.plan_ms['p95']:.1f}ms | "

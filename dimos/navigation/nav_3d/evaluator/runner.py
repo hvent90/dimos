@@ -14,9 +14,11 @@
 
 """Run case suites through the ray tracer and MLS planner and score them.
 
-Every case is planned twice: online on the incremental map built up to the
-case's start time, and final on the map fed the whole recording. The final
-map is not ground truth, only the most complete map the pipeline produces.
+Auto cases, derived from the walked trajectory, are planned twice: online on
+the incremental map built up to the case's start time, and final on the map
+fed the whole recording. Manual and certified-infeasible cases have no plan
+time on the recording, so they are planned once, on the final map only. The
+final map is not ground truth, only the most complete map the pipeline makes.
 The final path is gated against full final occupancy, the online path against
 the incremental map the planner had at plan time, so obstacles the sensor had
 not yet mapped never count. Every path must also stand on final-map occupancy
@@ -76,9 +78,6 @@ class PlanOutcome:
     length: float
     plan_ms: float
     spl: float
-    # How far the path end is from the goal. Start-to-goal distance when no
-    # path was planned. Smooth counterpart to the binary reached flag.
-    goal_miss: float
     # Gate margin along the path (see GateResult.min_clearance_m). None when
     # no path was planned.
     min_clearance: float | None
@@ -114,6 +113,8 @@ class CaseResult:
     online: PlanOutcome
     final: PlanOutcome
     soft_progress: float
+    # Scored on the final map only, so there is no distinct online score.
+    final_only: bool = False
     # The online plan succeeded but a new obstacle in the final map blocks its
     # route, so the case looks like a dynamic obstacle rather than a bug.
     dynamic_candidate: bool = False
@@ -142,6 +143,8 @@ class TagStats:
     """Aggregate scores over every case carrying a given tag."""
 
     n: int
+    # Cases with an online phase (excludes final-only manual/infeasible cases).
+    n_online: int
     inc_score: float
     fin_score: float
     inc_success: int
@@ -154,6 +157,8 @@ class Report:
     score_soft: float
     final_score: float
     n_cases: int
+    # Cases with an online phase; the incremental score is over these only.
+    n_online: int
     n_success: int
     n_success_final: int
     # The incremental and final runs are independent tests per case. These
@@ -192,7 +197,7 @@ def _run_plan(
     waypoints = planner.plan(case.start, case.goal)
     plan_ms = (perf_counter() - t0) * 1000
     if waypoints is None or len(waypoints) == 0:
-        return _no_plan(case, plan_ms), None
+        return _no_plan(plan_ms), None
 
     reached = metrics.goal_reached(waypoints, case.goal, cfg.goal_tolerance)
     gate = metrics.check_path(
@@ -222,7 +227,6 @@ def _run_plan(
         length=length,
         plan_ms=plan_ms,
         spl=metrics.spl(success, l_ref, length),
-        goal_miss=float(np.linalg.norm(waypoints[-1] - np.asarray(case.goal, dtype=np.float32))),
         min_clearance=gate.min_clearance_m,
         waypoints=waypoints.tolist(),
         collisions=gate.collision_points[:MAX_COLLISIONS_KEPT].tolist(),
@@ -232,8 +236,7 @@ def _run_plan(
     return outcome, waypoints
 
 
-def _no_plan(case: Case, plan_ms: float) -> PlanOutcome:
-    miss = float(np.linalg.norm(np.asarray(case.goal) - np.asarray(case.start)))
+def _no_plan(plan_ms: float) -> PlanOutcome:
     return PlanOutcome(
         planned=False,
         reached=False,
@@ -244,7 +247,6 @@ def _no_plan(case: Case, plan_ms: float) -> PlanOutcome:
         length=0.0,
         plan_ms=plan_ms,
         spl=0.0,
-        goal_miss=miss,
         min_clearance=None,
         waypoints=[],
         collisions=[],
@@ -313,6 +315,16 @@ def _snapshot(planner: MLSPlanner) -> PlannerArtifacts:
     )
 
 
+def _final_only(case: Case) -> bool:
+    """Whether a case is scored on the final map only, with no online phase.
+
+    Manual and certified-infeasible cases have hand-placed endpoints that are
+    not tied to the recording timeline, so there is no meaningful incremental
+    map at plan time to replay against. They are pure final-map tests.
+    """
+    return case.expect_fail or "manual" in case.tags
+
+
 def run_suite(
     suite: Suite, cfg: EvalConfig, threads: int = 1, keep_artifacts: bool = False
 ) -> DatasetResult:
@@ -321,47 +333,55 @@ def run_suite(
     final = load_or_build_final_map(db_path, suite, cfg)
     obstacle_keys = final.occupied_keys
 
+    final_only = np.array([_final_only(c) for c in suite.cases])
     refs: list[metrics.Reference] = []
-    for case in suite.cases:
+    for i, case in enumerate(suite.cases):
         if case.expect_fail:
             # Infeasible by certification: no demonstrated route, no plan time.
             miss = float(np.linalg.norm(np.asarray(case.goal) - np.asarray(case.start)))
             refs.append(metrics.Reference(miss, False, float("inf"), False))
             continue
         ref = metrics.reference_length(trajectory, case.start, case.goal, cfg.robot_height)
-        if not ref.snapped:
-            logger.warning(
-                "%s/%s: start or goal is off the walked trajectory; "
-                "using straight-line reference and the full map",
-                suite.dataset,
-                case.id,
-            )
-        elif not ref.causal:
-            logger.warning(
-                "%s/%s: goal is never visited before the start; planning on the full map",
-                suite.dataset,
-                case.id,
-            )
+        if not final_only[i]:
+            # Only online-replayed cases need a causal snap onto the trajectory.
+            if not ref.snapped:
+                logger.warning(
+                    "%s/%s: start or goal is off the walked trajectory; "
+                    "using straight-line reference and the full map",
+                    suite.dataset,
+                    case.id,
+                )
+            elif not ref.causal:
+                logger.warning(
+                    "%s/%s: goal is never visited before the start; planning on the full map",
+                    suite.dataset,
+                    case.id,
+                )
         if case.l_ref is not None:
             ref = metrics.Reference(case.l_ref, ref.snapped, ref.start_ts, ref.causal)
         refs.append(ref)
 
-    start_ts = np.array([r.start_ts for r in refs], dtype=np.float64)
+    # Final-only cases never replay online, so they take no checkpoint and their
+    # plan time drops out of the schedule.
+    start_ts = np.array(
+        [float("inf") if final_only[i] else r.start_ts for i, r in enumerate(refs)],
+        dtype=np.float64,
+    )
     checkpoints = load_or_build_checkpoints(db_path, suite, cfg, start_ts)
     case_ckpt = np.searchsorted(checkpoints.times, start_ts)
-    negative = np.array([c.expect_fail for c in suite.cases])
-    case_ckpt[negative] = -1
+    case_ckpt[final_only] = -1
 
     final_planner = cfg.make_planner()
     final_planner.update_global_map(final.occupied)
 
     results: list[CaseResult | None] = [None] * len(suite.cases)
 
-    for ci in np.flatnonzero(negative):
+    for ci in np.flatnonzero(final_only):
         case, ref = suite.cases[ci], refs[ci]
-        outcome = score_negative(
-            _run_plan(final_planner, case, ref.length, obstacle_keys, obstacle_keys, cfg)[0]
-        )
+        outcome, _ = _run_plan(final_planner, case, ref.length, obstacle_keys, obstacle_keys, cfg)
+        if case.expect_fail:
+            # An infeasible case is passed by refusing it.
+            outcome = score_negative(outcome)
         results[ci] = CaseResult(
             id=case.id,
             dataset=suite.dataset,
@@ -370,15 +390,16 @@ def run_suite(
             weight=case.weight,
             tags=case.tags,
             l_ref=ref.length,
-            l_ref_snapped=False,
+            l_ref_snapped=ref.snapped,
             plan_ts=float("inf"),
             online_voxels=len(final.occupied),
             map_update_ms=0.0,
             goal_seen=True,
-            expect_fail=True,
+            expect_fail=case.expect_fail,
             online=outcome,
             final=outcome,
             soft_progress=outcome.spl,
+            final_only=True,
         )
 
     def process_checkpoint(
@@ -410,7 +431,7 @@ def run_suite(
                     online_planner, case, ref.length, keys, obstacle_keys, cfg
                 )
             else:
-                online_out = _no_plan(case, 0.0)
+                online_out = _no_plan(0.0)
                 online_wp = None
             end = online_wp[-1] if online_wp is not None and len(online_wp) else None
             goal_seen = _goal_seen(online_points, case.goal)
@@ -527,10 +548,15 @@ def evaluate(
     if not cases:
         raise ValueError("no cases to evaluate")
 
-    weights = np.array([c.weight for c in cases])
-    online_spl = np.array([c.online.spl for c in cases])
-    final_spl = np.array([c.final.spl for c in cases])
-    soft = np.array([c.soft_progress if not c.online.success else c.online.spl for c in cases])
+    # Manual and infeasible cases have no online phase, so every incremental
+    # aggregate is over the online cases only. Final aggregates cover them all.
+    online = [c for c in cases if not c.final_only]
+
+    def wmean(values: list[float], items: list[CaseResult]) -> float:
+        if not items:
+            return 0.0
+        return float(np.average(values, weights=[c.weight for c in items]))
+
     outcome_names = {
         (True, True): "both",
         (False, True): "final_only",
@@ -538,32 +564,36 @@ def evaluate(
         (False, False): "neither",
     }
     outcome_counts = dict.fromkeys(outcome_names.values(), 0)
-    for c in cases:
+    for c in online:
         outcome_counts[outcome_names[c.online.success, c.final.success]] += 1
 
     by_tag: dict[str, TagStats] = {}
     for tag in sorted({t for c in cases for t in c.tags}):
         tc = [c for c in cases if tag in c.tags]
-        w = np.array([c.weight for c in tc])
+        oc = [c for c in tc if not c.final_only]
         by_tag[tag] = TagStats(
             n=len(tc),
-            inc_score=float(np.average([c.online.spl for c in tc], weights=w)),
-            fin_score=float(np.average([c.final.spl for c in tc], weights=w)),
-            inc_success=sum(c.online.success for c in tc),
+            n_online=len(oc),
+            inc_score=wmean([c.online.spl for c in oc], oc),
+            fin_score=wmean([c.final.spl for c in tc], tc),
+            inc_success=sum(c.online.success for c in oc),
             fin_success=sum(c.final.success for c in tc),
         )
 
     return Report(
-        score=float(np.average(online_spl, weights=weights)),
-        score_soft=float(np.average(soft, weights=weights)),
-        final_score=float(np.average(final_spl, weights=weights)),
+        score=wmean([c.online.spl for c in online], online),
+        score_soft=wmean(
+            [c.soft_progress if not c.online.success else c.online.spl for c in online], online
+        ),
+        final_score=wmean([c.final.spl for c in cases], cases),
         n_cases=len(cases),
-        n_success=sum(c.online.success for c in cases),
+        n_online=len(online),
+        n_success=sum(c.online.success for c in online),
         n_success_final=sum(c.final.success for c in cases),
         outcome_counts=outcome_counts,
         by_tag=by_tag,
-        plan_ms=metrics.timing_stats([c.online.plan_ms for c in cases]),
-        map_update_ms=metrics.timing_stats([c.map_update_ms for c in cases]),
+        plan_ms=metrics.timing_stats([c.online.plan_ms for c in online]),
+        map_update_ms=metrics.timing_stats([c.map_update_ms for c in online]),
         datasets=datasets,
         dynamic_candidates=[f"{c.dataset}/{c.id}" for c in cases if c.dynamic_candidate],
         config=asdict(cfg),
