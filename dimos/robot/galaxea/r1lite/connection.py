@@ -12,46 +12,19 @@
 # See the License for the specific language governing permissions and
 # limitations under the License.
 
-"""Galaxea R1 Lite DDS Module: ROS 2 control + sensor streams.
+"""Galaxea R1 Lite DDS module: ROS 2 control and sensor streams.
 
-Sibling of ``r1pro/connection.py`` (same architecture: one Module owns all
-ROS 2 traffic — a control RawROS node plus an isolated rclpy Context for
-camera subscriptions), adapted to the R1 Lite as hardware-validated on
-2026-07-02..09 (see ``scripts/r1lite_test/BRINGUP_LOG.md``).
+One Module owns all ROS 2 traffic: a control RawROS node plus an isolated
+rclpy Context for camera subscriptions.
 
-Differences vs the R1 Pro module, each backed by hardware findings:
-
-* Joint layout (16 motors): torso 0-3, left arm 4-9, right arm 10-15.
-  Arms are 6-DOF (A1X). Torso feedback carries 4 motor values but the
-  URDF models only 3 joints (parallelogram lift).
-* **Torso commands are dropped** (feedback still published). The torso is
-  a parallelogram linkage — joint-space targets are only valid as
-  linkage-consistent tuples, and a single-joint delta physically shook
-  the robot. Torso motion belongs to Galaxea's task-space MPC path
-  (``/motion_target/target_speed_torso``), not wired up in v1.
-* **Grippers are first-class** (the R1 Pro module ignored them):
-  one command/feedback stream per side, positions in Galaxea's native
-  0-100 scale (0=closed, 100=open ≈ stroke %).
-* **Chassis commands are published at a fixed rate with a dead-man**:
-  the R1 Lite chassis node LATCHES the last target forever (no staleness
-  timeout robot-side), so this module streams speed + acc_limit +
-  brake=false every tick and collapses to an explicit zero-velocity
-  stream when ``cmd_vel`` goes stale. Acceleration limits default to the
-  hardware-validated gentle 0.5 values.
-* Chassis software control additionally requires, outside this module:
-  robot cold-booted with e-stop released (a latched e-stop poisons the
-  VCU for the whole power session) and the RC ON with all switches in
-  position 1 (``/controller`` mode 5 = software may drive).
-* Sensor set: stereo head pair (compressed RGB, no depth topic on this
-  robot), D405 wrist cameras (compressed color + aligned depth), chassis
-  and torso IMUs. No lidar, no chassis cameras.
-
-The on-robot jointTracker manages gains internally; ``MotorCommand.
-{kp,kd,tau}`` are ignored. Only ``q`` and ``dq`` (with sentinel/0 →
-``config.tracking_speed``) are forwarded, exactly like the R1 Pro.
-
-ROS environment (``ROS_DOMAIN_ID=2``, multicast) is expected from the
-container/launch environment — no Python-side env munging here.
+Joint layout (16 motors): torso 0-3, left arm 4-9 (6-DOF A1X), right arm
+10-15. Torso commands are dropped (it is a parallelogram linkage requiring
+linkage-consistent tuples); torso feedback is still published. Grippers use
+Galaxea's 0-100 scale (0=closed). The chassis node latches its last target
+with no staleness timeout, so the chassis command is streamed with a dead-man
+that collapses to zero velocity when cmd_vel goes stale. The on-robot
+jointTracker manages gains, so MotorCommand kp/kd/tau are ignored; only q and
+dq are forwarded. ROS_DOMAIN_ID and multicast come from the environment.
 """
 
 from __future__ import annotations
@@ -84,7 +57,7 @@ from dimos.utils.logging_config import setup_logger
 
 logger = setup_logger()
 
-# Joint layout — flat 16-element MotorCommandArray indexing.
+# Joint layout: flat 16-element MotorCommandArray indexing.
 _TORSO_SLICE = slice(0, 4)
 _LEFT_SLICE = slice(4, 10)
 _RIGHT_SLICE = slice(10, 16)
@@ -106,7 +79,7 @@ assert len(R1LITE_UPPER_BODY_JOINTS) == _NUM_MOTORS
 R1LITE_GRIPPER_OPEN = 100.0
 R1LITE_GRIPPER_CLOSED = 0.0
 
-# Cameras: stream name → (ROS topic, compressed?). The head is a pure
+# Cameras: stream name -> (ROS topic, compressed?). The head is a pure
 # stereo RGB pair; wrist color is compressed, wrist depth is raw 16UC1.
 _COMPRESSED_CAMERAS: dict[str, str] = {
     "head_left_color": "/hdas/camera_head/left_raw/image_raw_color/compressed",
@@ -121,7 +94,7 @@ _DEPTH_CAMERAS: dict[str, str] = {
 
 
 def _make_qos() -> Any:
-    """BEST_EFFORT + VOLATILE — for SUBSCRIPTIONS (robot publishes best-effort)."""
+    """BEST_EFFORT QoS for subscriptions (the robot publishes best-effort)."""
     from rclpy.qos import DurabilityPolicy, QoSProfile, ReliabilityPolicy
 
     return QoSProfile(
@@ -132,13 +105,10 @@ def _make_qos() -> Any:
 
 
 def _make_cmd_qos() -> Any:
-    """RELIABLE + VOLATILE — for command PUBLISHERS.
+    """RELIABLE QoS for command publishers.
 
-    A reliable publisher delivers to both reliable and best-effort
-    subscribers; a best-effort publisher is DDS-incompatible with reliable
-    subscribers ("No messages will be sent") — and the R1 Lite has at
-    least one RELIABLE subscriber on target_speed_chassis (observed
-    2026-07-09 during keyboard-teleop run 3).
+    A reliable publisher reaches both reliable and best-effort subscribers;
+    the R1 Lite has at least one reliable subscriber on target_speed_chassis.
     """
     from rclpy.qos import DurabilityPolicy, QoSProfile, ReliabilityPolicy
 
@@ -151,11 +121,10 @@ def _make_cmd_qos() -> Any:
 
 class R1LiteConnectionConfig(ModuleConfig):
     publish_rate_hz: float = Field(default=100.0)
-    # rad/s used when MotorCommand.dq is the VEL_STOP sentinel or 0 (which
-    # is what ConnectedWholeBody sends every tick). 0.5 validated on hw.
+    # rad/s used when MotorCommand.dq is the VEL_STOP sentinel or 0.
     tracking_speed: float = Field(default=0.5)
     publish_odom: bool = Field(default=True)
-    # Hardware-validated gentle limits (R1 Pro used 2.5/1.0/1.0).
+    # Gentle acceleration limits.
     acc_limit_x: float = Field(default=0.5)
     acc_limit_y: float = Field(default=0.5)
     acc_limit_yaw: float = Field(default=0.5)
@@ -163,11 +132,16 @@ class R1LiteConnectionConfig(ModuleConfig):
     # chassis node latches its last target forever, so the timeout must
     # live here.
     cmd_vel_timeout_s: float = Field(default=0.3)
+    # Feedback older than this marks a segment stale: motor_states stops
+    # publishing and arm commands are dropped until fresh feedback returns.
+    feedback_stale_after_s: float = Field(default=0.5)
+    # On stop(), stream chassis zeros for this long before ROS teardown.
+    stop_zero_duration_s: float = Field(default=0.3)
     frame_id: str = Field(default="r1lite_base_link")
 
 
 class R1LiteConnection(Module):
-    """R1 Lite Module — owns the ROS 2 control node + isolated sensor context."""
+    """R1 Lite module: owns the ROS 2 control node and isolated sensor context."""
 
     config: R1LiteConnectionConfig
 
@@ -230,6 +204,10 @@ class R1LiteConnection(Module):
         self._torso_seen = False
         self._left_seen = False
         self._right_seen = False
+        self._torso_ts = 0.0
+        self._left_ts = 0.0
+        self._right_ts = 0.0
+        self._stale_logged = False
         self._latest_imu_chassis: Imu | None = None
         self._latest_imu_torso: Imu | None = None
         self._torso_cmd_warned = False
@@ -238,6 +216,7 @@ class R1LiteConnection(Module):
         self._latest_cmd_vel: Twist | None = None
         self._latest_cmd_vel_ts = 0.0
         self._cmd_vel_active = False  # True while we still owe zero-streams
+        self._last_chassis_speed = 0.0
 
         # Odom dead-reckoning (driven by the chassis_speed Gate-1 callback).
         self._odom_x = 0.0
@@ -266,7 +245,12 @@ class R1LiteConnection(Module):
     def start(self) -> None:
         super().start()
 
-        # Lazy import — RawROS pulls rclpy which must not load on import in
+        # Clear stop flags so a start/stop/start lifecycle works.
+        self._stop_event.clear()
+        self._sensor_stop.clear()
+        self._stale_logged = False
+
+        # Lazy import: RawROS pulls rclpy which must not load at import time in
         # environments without ROS 2.
         from dimos.protocol.pubsub.impl.rospubsub import RawROS
 
@@ -294,7 +278,7 @@ class R1LiteConnection(Module):
             seen = (self._torso_seen, self._left_seen, self._right_seen)
         if not all(seen):
             logger.warning(
-                "Feedback discovery timeout: torso=%s left=%s right=%s — "
+                "Feedback discovery timeout: torso=%s left=%s right=%s "
                 "motor_states will gate first publish until all three arrive.",
                 *seen,
             )
@@ -324,7 +308,7 @@ class R1LiteConnection(Module):
     @rpc
     def stop(self) -> None:
         # Stop the publish loop FIRST so it can't race the ROS teardown,
-        # then leave the chassis with an explicit zero target — the
+        # then leave the chassis with an explicit zero target; the
         # robot-side node latches whatever it heard last.
         self._stop_event.set()
         self._sensor_stop.set()
@@ -333,12 +317,9 @@ class R1LiteConnection(Module):
             self._publish_thread.join(timeout=DEFAULT_THREAD_JOIN_TIMEOUT)
             self._publish_thread = None
 
-        try:
-            self._publish_chassis_command(Twist())
-        except Exception:
-            pass
+        self._stream_chassis_zero(self.config.stop_zero_duration_s)
 
-        # Sensor teardown first — its callbacks reference the isolated
+        # Sensor teardown first; its callbacks reference the isolated
         # context and will hot-loop on a shut-down node otherwise.
         if self._sensor_executor is not None:
             try:
@@ -465,7 +446,7 @@ class R1LiteConnection(Module):
                 lambda msg, _t: self._on_gripper_feedback("right", msg),
             )
         )
-        # Gate 1 — the chassis node only runs its control path if someone
+        # Gate 1: the chassis node only runs its control path if someone
         # subscribes to its measured-speed output. Also drives odom.
         self._control_unsubs.append(
             self._ros.subscribe(self._chassis_speed_topic, self._on_chassis_speed)
@@ -482,7 +463,7 @@ class R1LiteConnection(Module):
         try:
             from sensor_msgs.msg import CompressedImage, Image as RosImage, Imu as RosImu
         except ImportError:
-            logger.warning("sensor_msgs not available — sensor streams disabled")
+            logger.warning("sensor_msgs not available; sensor streams disabled")
             return
 
         qos = _make_qos()
@@ -593,8 +574,7 @@ class R1LiteConnection(Module):
 
         from sensor_msgs.msg import JointState as RosJointState
 
-        # Torso slice intentionally dropped: parallelogram linkage —
-        # joint-space targets shook the robot (BRINGUP_LOG 2026-07-03).
+        # Torso commands are dropped; it is a parallelogram linkage.
         torso_q = list(msg.q[_TORSO_SLICE])
         if not self._torso_cmd_warned and any(abs(v) > 1e-6 for v in torso_q):
             self._torso_cmd_warned = True
@@ -607,7 +587,14 @@ class R1LiteConnection(Module):
         with self._lock:
             if self._ros is None:
                 return  # pre-start / post-stop
-            stamp = self._ros._node.get_clock().now().to_msg()  # type: ignore[union-attr]
+            _, left_stale, right_stale = self._stale_segments(time.monotonic())
+            if left_stale or right_stale:
+                if not self._stale_logged:
+                    self._stale_logged = True
+                    logger.warning("arm feedback stale; dropping arm commands until it returns")
+                return
+            self._stale_logged = False
+            stamp = self._ros.now_stamp()
 
             left_q = list(msg.q[_LEFT_SLICE])
             right_q = list(msg.q[_RIGHT_SLICE])
@@ -642,7 +629,7 @@ class R1LiteConnection(Module):
 
         The gripper controller is a follow-the-stream tracker: it acts only
         while targets keep arriving, so callers must publish continuously
-        (one-shots are ignored by the robot — hardware-verified).
+        (one-shots are ignored by the robot).
         """
         if not msg.position:
             return
@@ -658,7 +645,7 @@ class R1LiteConnection(Module):
             if self._ros is None or topic is None:
                 return
             cmd = RosJointState()
-            cmd.header.stamp = self._ros._node.get_clock().now().to_msg()  # type: ignore[union-attr]
+            cmd.header.stamp = self._ros.now_stamp()
             cmd.name = [""]
             cmd.position = [target]
             cmd.velocity = [0.0]
@@ -666,8 +653,7 @@ class R1LiteConnection(Module):
             self._ros.publish(topic, cmd)
 
     def _on_cmd_vel(self, msg: Twist) -> None:
-        # Latch locally; the publish loop streams it (dead-man semantics —
-        # see _publish_chassis_command).
+        # Latch locally; the publish loop streams it with a dead-man.
         with self._lock:
             self._latest_cmd_vel = msg
             self._latest_cmd_vel_ts = time.monotonic()
@@ -676,7 +662,7 @@ class R1LiteConnection(Module):
     def _publish_chassis_command(self, twist: Twist) -> None:
         """One chassis tick: acc_limit + brake=false + speed target.
 
-        All three every tick — the validated recipe. Gate 1 is held open by
+        All three every tick. Gate 1 is held open by
         our _chassis_speed_topic subscription.
         """
         from geometry_msgs.msg import TwistStamped
@@ -685,7 +671,7 @@ class R1LiteConnection(Module):
         with self._lock:
             if self._ros is None or self._acc_topic is None or self._speed_topic is None:
                 return
-            stamp = self._ros._node.get_clock().now().to_msg()  # type: ignore[union-attr]
+            stamp = self._ros.now_stamp()
 
             acc = TwistStamped()
             acc.header.stamp = stamp
@@ -704,28 +690,66 @@ class R1LiteConnection(Module):
             cmd.twist.angular.z = twist.angular.z
             self._ros.publish(self._speed_topic, cmd)
 
+    def _stream_chassis_zero(self, duration_s: float) -> None:
+        """Stream zero-velocity for a bounded window, then confirm the chassis
+        settled. Runs after the publish loop is joined, before ROS teardown, so
+        a killed process cannot leave the chassis latched at a nonzero target.
+        """
+        zero = Twist()
+        period = 1.0 / float(self.config.publish_rate_hz)
+        ticks = max(1, int(duration_s / period))
+        sent = 0
+        for _ in range(ticks):
+            try:
+                self._publish_chassis_command(zero)
+                sent += 1
+            except Exception as exc:
+                logger.error("chassis zero publish failed during stop: %s", exc)
+            time.sleep(period)
+        if sent == 0:
+            logger.error("chassis stop sent no zero commands; chassis may be latched")
+        with self._lock:
+            settled = abs(self._last_chassis_speed) < 0.02
+        if not settled:
+            logger.error(
+                "chassis speed %.3f m/s not settled after stop stream",
+                self._last_chassis_speed,
+            )
+
+    def _stale_segments(self, now: float) -> tuple[bool, bool, bool]:
+        """Freshness of (torso, left, right) feedback against the stale window."""
+        window = self.config.feedback_stale_after_s
+        return (
+            self._torso_seen and (now - self._torso_ts) > window,
+            self._left_seen and (now - self._left_ts) > window,
+            self._right_seen and (now - self._right_ts) > window,
+        )
+
     # Control feedback callbacks
 
     def _on_feedback_torso(self, msg: Any, _topic: Any) -> None:
         with self._lock:
-            self._copy_segment(
+            if self._copy_segment(
                 msg, self._latest_torso_q, self._latest_torso_dq, self._latest_torso_eff
-            )
-            self._torso_seen = True
+            ):
+                self._torso_seen = True
+                self._torso_ts = time.monotonic()
 
     def _on_feedback_left(self, msg: Any, _topic: Any) -> None:
         with self._lock:
-            self._copy_segment(
+            if self._copy_segment(
                 msg, self._latest_left_q, self._latest_left_dq, self._latest_left_eff
-            )
-            self._left_seen = True
+            ):
+                self._left_seen = True
+                self._left_ts = time.monotonic()
 
     def _on_feedback_right(self, msg: Any, _topic: Any) -> None:
         with self._lock:
-            self._copy_segment(
+            if self._copy_segment(
                 msg, self._latest_right_q, self._latest_right_dq, self._latest_right_eff
-            )
-            self._right_seen = True
+            ):
+                self._right_seen = True
+                self._right_ts = time.monotonic()
 
     def _on_gripper_feedback(self, side: str, msg: Any) -> None:
         if not msg.position:
@@ -745,15 +769,18 @@ class R1LiteConnection(Module):
     @staticmethod
     def _copy_segment(
         msg: Any, q_dst: list[float], dq_dst: list[float], eff_dst: list[float]
-    ) -> None:
-        n = min(len(msg.position), len(q_dst))
-        q_dst[:n] = msg.position[:n]
-        if msg.velocity:
-            nv = min(len(msg.velocity), len(dq_dst))
-            dq_dst[:nv] = msg.velocity[:nv]
-        if msg.effort:
-            ne = min(len(msg.effort), len(eff_dst))
-            eff_dst[:ne] = msg.effort[:ne]
+    ) -> bool:
+        """Copy one feedback segment. Rejects a wrong-length position array so a
+        malformed frame never partially overwrites cached joint state.
+        """
+        if len(msg.position) != len(q_dst):
+            return False
+        q_dst[:] = msg.position[:]
+        if len(msg.velocity) == len(dq_dst):
+            dq_dst[:] = msg.velocity[:]
+        if len(msg.effort) == len(eff_dst):
+            eff_dst[:] = msg.effort[:]
+        return True
 
     # Chassis Gate 1 + odom integration
 
@@ -771,6 +798,8 @@ class R1LiteConnection(Module):
         vx = msg.twist.linear.x
         vy = msg.twist.linear.y
         wz = msg.twist.angular.z
+        with self._lock:
+            self._last_chassis_speed = max(abs(vx), abs(vy))
         cy, sy = math.cos(self._odom_yaw), math.sin(self._odom_yaw)
         self._odom_x += (cy * vx - sy * vy) * dt
         self._odom_y += (sy * vx + cy * vy) * dt
@@ -795,6 +824,7 @@ class R1LiteConnection(Module):
         next_tick = time.perf_counter()
         frame_id = self.config.frame_id
         bootstrapped = False
+        fresh = False
         zero = Twist()
 
         while not self._stop_event.is_set():
@@ -825,6 +855,19 @@ class R1LiteConnection(Module):
                     )
                     imu_chassis = self._latest_imu_chassis
                     imu_torso = self._latest_imu_torso
+                    torso_stale, left_stale, right_stale = self._stale_segments(time.monotonic())
+                    fresh = not (torso_stale or left_stale or right_stale)
+                    if not fresh and not self._stale_logged:
+                        self._stale_logged = True
+                        logger.warning(
+                            "feedback stale (torso=%s left=%s right=%s); "
+                            "pausing motor_states until it returns",
+                            torso_stale,
+                            left_stale,
+                            right_stale,
+                        )
+                    elif fresh:
+                        self._stale_logged = False
                 cmd_vel = self._latest_cmd_vel
                 cmd_fresh = (
                     cmd_vel is not None
@@ -837,7 +880,7 @@ class R1LiteConnection(Module):
                     # pointed at zero without spamming before first use.
                     self._latest_cmd_vel = None
 
-            if bootstrapped:
+            if bootstrapped and fresh:
                 now = time.time()
                 self.motor_states.publish(
                     JointState(
@@ -855,7 +898,7 @@ class R1LiteConnection(Module):
                     self.imu_torso.publish(imu_torso)
 
             # Chassis: stream the fresh command, or zeros once cmd_vel has
-            # ever been used (dead-man — robot side latches forever).
+            # ever been used (dead-man; the robot side latches forever).
             if chassis_active and not self._stop_event.is_set():
                 try:
                     self._publish_chassis_command(cmd_vel if cmd_fresh else zero)  # type: ignore[arg-type]
@@ -940,12 +983,3 @@ def _enqueue_drop_oldest(q: queue.Queue[Any], item: Any) -> None:
         except queue.Empty:
             pass
         q.put_nowait(item)
-
-
-__all__ = [
-    "R1LITE_GRIPPER_CLOSED",
-    "R1LITE_GRIPPER_OPEN",
-    "R1LITE_UPPER_BODY_JOINTS",
-    "R1LiteConnection",
-    "R1LiteConnectionConfig",
-]
