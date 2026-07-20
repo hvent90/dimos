@@ -23,15 +23,16 @@ from __future__ import annotations
 import ast
 from pathlib import Path
 import sys
-import threading
 import time
 import types
 from typing import Any
 
 import pytest
 
+import dimos.core.module as module_mod
+from dimos.protocol.rpc.spec import RPCSpec
 from dimos.robot.galaxea.r1lite import connection as conn_mod
-from dimos.robot.galaxea.r1lite.connection import R1LiteConnection, R1LiteConnectionConfig
+from dimos.robot.galaxea.r1lite.connection import R1LiteConnection
 
 _CONN_SRC = Path(conn_mod.__file__)
 
@@ -98,18 +99,20 @@ def _fake_ros_msgs(monkeypatch: Any) -> None:
         monkeypatch.setitem(sys.modules, f"{mod_name}.msg", sub)
 
 
-_TEMPLATE = R1LiteConnection()
+class _NoRpc(RPCSpec):
+    """Module.__init__ treats a ValueError from the rpc factory as rpc disabled."""
+
+    def __init__(self, **kw: Any) -> None:
+        raise ValueError("rpc disabled for unit tests")
 
 
-@pytest.fixture(scope="module", autouse=True)
-def _dispose_template() -> Any:
-    yield
-    _TEMPLATE.dispose()
+@pytest.fixture(autouse=True)
+def _no_background_threads(monkeypatch: Any) -> None:
+    monkeypatch.setattr(module_mod, "get_loop", lambda: (types.SimpleNamespace(), None))
 
 
 def _bare(stamp_available: bool = True) -> R1LiteConnection:
-    c = _TEMPLATE
-    c.config = R1LiteConnectionConfig()
+    c = R1LiteConnection(rpc_transport=_NoRpc)
     c._ros = _FakeRos(stamp_available=stamp_available)
     c._cmd_left_topic = "left"
     c._cmd_right_topic = "right"
@@ -118,14 +121,6 @@ def _bare(stamp_available: bool = True) -> R1LiteConnection:
     c._speed_topic = "speed"
     c._acc_topic = "acc"
     c._brake_topic = "brake"
-    c._stop_event = threading.Event()
-    c._torso_cmd_warned = False
-    c._cmd_stale_logged = False
-    c._state_stale_logged = False
-    c._bad_fb_warn_ts = 0.0
-    c._last_chassis_lin = 0.0
-    c._last_chassis_ang = 0.0
-    c._last_chassis_fb_ts = 0.0
     now = time.monotonic()
     c._torso_seen = c._left_seen = c._right_seen = True
     c._torso_ts = c._left_ts = c._right_ts = now
