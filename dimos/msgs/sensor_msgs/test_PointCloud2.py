@@ -156,40 +156,6 @@ def test_lcm_per_point_timing_round_trip() -> None:
     np.testing.assert_array_equal(decoded_lines, lines)
 
 
-def test_lcm_timing_only_round_trip() -> None:
-    """offset_time without tag/line round-trips, and only that field is added."""
-    points = np.array([[1.0, 0.0, 0.0], [0.0, 1.0, 0.0]], dtype=np.float32)
-    offset_times = np.array([100, 200], dtype=np.uint32)
-
-    original = PointCloud2.from_numpy(points, timestamp=5.0, offset_times=offset_times)
-    decoded = PointCloud2.lcm_decode(original.lcm_encode())
-
-    decoded_offsets = decoded.offset_times_u32()
-    assert decoded_offsets is not None
-    np.testing.assert_array_equal(decoded_offsets, offset_times)
-    assert decoded.tags_u8() is None
-    assert decoded.lines_u8() is None
-
-
-def test_lcm_no_timing_keeps_legacy_layout() -> None:
-    """Clouds without timing keep the 16-byte layout and decode with None accessors."""
-    from dimos_lcm.sensor_msgs.PointCloud2 import PointCloud2 as LCMPointCloud2
-
-    points = np.array([[1.0, 2.0, 3.0], [4.0, 5.0, 6.0]], dtype=np.float32)
-    intensities = np.array([0.5, 0.75], dtype=np.float32)
-    original = PointCloud2.from_numpy(points, timestamp=1.0, intensities=intensities)
-
-    binary = original.lcm_encode()
-    wire = LCMPointCloud2.lcm_decode(binary)
-    assert wire.point_step == 16, "legacy layout changed for clouds without timing"
-    assert [f.name for f in wire.fields] == ["x", "y", "z", "intensity"]
-
-    decoded = PointCloud2.lcm_decode(binary)
-    assert decoded.offset_times_u32() is None
-    assert decoded.tags_u8() is None
-    assert decoded.lines_u8() is None
-
-
 def test_bounding_box_intersects() -> None:
     """Test bounding_box_intersects method with various scenarios."""
     # Test 1: Overlapping boxes

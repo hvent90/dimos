@@ -189,9 +189,9 @@ class PointCloud2(Timestamped):
             frame_id: Frame ID for the point cloud
             timestamp: Timestamp for the point cloud (defaults to current time)
             intensities: Optional Nx1 or (N,) float array of per-point intensity values
-            offset_times: Optional (N,) uint32 array of per-point time offsets in
-                nanoseconds relative to the header stamp (Livox CustomPoint semantic)
-            tags: Optional (N,) uint8 array of per-point Livox tags
+            offset_times: Optional (N,) uint32 array of per-point capture-time
+                offsets in nanoseconds relative to the header stamp
+            tags: Optional (N,) uint8 array of per-point sensor tag bytes
             lines: Optional (N,) uint8 array of per-point laser line numbers
 
         Returns:
@@ -448,7 +448,7 @@ class PointCloud2(Timestamped):
         return None
 
     def tags_u8(self) -> np.ndarray | None:
-        """Per-point Livox tag bytes as flat uint8, or None if absent."""
+        """Per-point sensor tag bytes as flat uint8, or None if absent."""
         self._ensure_tensor_initialized()
         if "tags" in self._pcd_tensor.point:
             arr = self._pcd_tensor.point["tags"].numpy().flatten()
@@ -572,7 +572,7 @@ class PointCloud2(Timestamped):
 
             point_data = np.column_stack([points, intensities]).astype(np.float32)
 
-        # Optional Livox per-point attributes (offset_time/tag/line) extend the
+        # Optional per-point attributes (offset_time/tag/line) extend the
         # base 16-byte layout with packed extra fields, emitted only when present.
         extras: list[tuple[str, np.dtype, int, np.ndarray]] = []
         offset_times = self.offset_times_u32()
@@ -705,7 +705,7 @@ class PointCloud2(Timestamped):
                     intensities.reshape(-1, 1), dtype=o3c.float32
                 )
 
-        # Extract Livox per-point attributes if present. Unlike intensity, zero is
+        # Extract per-point attributes if present. Unlike intensity, zero is
         # a meaningful value (first point's offset_time is 0), so presence of the
         # field alone decides — no nonzero check.
         def _extract_scalar_field(field_offset: int, np_dtype: str) -> np.ndarray:
