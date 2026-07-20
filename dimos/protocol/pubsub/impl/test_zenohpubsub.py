@@ -16,8 +16,11 @@
 
 from __future__ import annotations
 
+from collections.abc import Callable
 import threading
+from typing import Any
 
+import numpy as np
 import pytest
 
 pytest.importorskip("zenoh")
@@ -26,9 +29,11 @@ import zenoh
 
 from dimos.msgs.geometry_msgs.Twist import Twist
 from dimos.msgs.sensor_msgs.Image import Image
+from dimos.msgs.sensor_msgs.PointCloud2 import PointCloud2
 from dimos.protocol.pubsub.impl.lcmpubsub import Topic as LCMTopic
 from dimos.protocol.pubsub.impl.zenohpubsub import (
     Topic,
+    Zenoh,
     ZenohPubSubBase,
     ZenohQoS,
     _key_expr_to_topic,
@@ -42,9 +47,9 @@ def make_pubsub():
     """Build started ZenohPubSubBase instances on isolated pools, clean up after."""
     created = []
 
-    def _make(**kwargs):
+    def _make(pubsub_cls=ZenohPubSubBase, **kwargs):
         pool = ZenohSessionPool()
-        ps = ZenohPubSubBase(session_pool=pool, **kwargs)
+        ps = pubsub_cls(session_pool=pool, **kwargs)
         ps.start()
         created.append((ps, pool))
         return ps
@@ -60,6 +65,16 @@ def make_pubsub():
 def pubsub(make_pubsub):
     """Create and start a ZenohPubSubBase instance on an isolated pool, clean up after."""
     return make_pubsub()
+
+
+def _image_message() -> Image:
+    return Image(np.array([[[1, 2, 3]]], dtype=np.uint8), frame_id="camera", ts=1.0)
+
+
+def _pointcloud_message() -> PointCloud2:
+    return PointCloud2.from_numpy(
+        np.array([[1.0, 2.0, 3.0]], dtype=np.float32), frame_id="lidar", timestamp=1.0
+    )
 
 
 class TestZenohPubSubBase:
@@ -216,6 +231,46 @@ class TestZenohPubSubBase:
         unsub = pubsub.subscribe_all(lambda msg, t: None)
         assert pubsub._drain_stops == []
         unsub()  # no-op, must not raise
+
+
+@pytest.mark.parametrize("make_message", (_image_message, _pointcloud_message))
+@pytest.mark.parametrize("subscription", ("fixed", "pattern", "all"))
+def test_clause_2_typed_zenoh_heavy_delivery_enters_callback_with_wire_bytes(
+    make_pubsub,
+    make_message: Callable[[], Image | PointCloud2],
+    mocker,
+    subscription: str,
+    retry_until,
+) -> None:
+    """Clause 2 DIM-1125: typed Zenoh heavy subscriptions receive bytes before decode."""
+    pubsub = make_pubsub(Zenoh)
+    message = make_message()
+    publisher_topic = Topic("dimos/clause2/heavy", type(message))
+    callback_decode_counts: list[int] = []
+    payloads: list[Any] = []
+    received = threading.Event()
+    decode = mocker.spy(type(message), "lcm_decode")
+
+    def callback(payload: Any, _: Topic) -> None:
+        callback_decode_counts.append(decode.call_count)
+        payloads.append(payload)
+        received.set()
+
+    if subscription == "all":
+        pubsub.subscribe_all(
+            callback, lambda received_topic: received_topic.topic == publisher_topic.topic
+        )
+    else:
+        subscriber_topic = (
+            Topic("dimos/clause2/heavy/**") if subscription == "pattern" else publisher_topic
+        )
+        pubsub.subscribe(subscriber_topic, callback)
+    retry_until(received, lambda: pubsub.publish(publisher_topic, message))
+
+    assert callback_decode_counts == [0]
+    assert isinstance(payloads[0], bytes)
+    assert type(message).lcm_decode(payloads[0]).lcm_encode() == message.lcm_encode()
+    assert decode.call_count == 1
 
 
 class TestPublisherQoS:
