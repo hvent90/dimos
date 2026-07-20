@@ -82,6 +82,11 @@ static constexpr int32_t OFFSET_TIME_OFFSET = 16;
 static constexpr int32_t TAG_OFFSET = 20;
 static constexpr int32_t LINE_OFFSET = 21;
 static constexpr int32_t POINT_STEP = 22;
+static constexpr int32_t LEGACY_POINT_STEP = 16;  // x,y,z,intensity only
+
+// --per_point_timing false publishes the legacy 16-byte layout (no
+// offset_time/tag/line fields) for consumers that don't want the extra bytes.
+static bool g_per_point_timing = true;
 
 static void publish_pointcloud(const std::vector<float>& xyz,
                                const std::vector<float>& intensity,
@@ -99,8 +104,10 @@ static void publish_pointcloud(const std::vector<float>& xyz,
     pc.is_bigendian = 0;
     pc.is_dense = 1;
 
-    pc.fields_length = 7;
-    pc.fields.resize(7);
+    const bool timing = g_per_point_timing;
+    const int32_t point_step = timing ? POINT_STEP : LEGACY_POINT_STEP;
+    pc.fields_length = timing ? 7 : 4;
+    pc.fields.resize(pc.fields_length);
 
     auto make_field = [](const std::string& name, int32_t offset, int8_t datatype) {
         sensor_msgs::PointField f;
@@ -115,11 +122,14 @@ static void publish_pointcloud(const std::vector<float>& xyz,
     pc.fields[1] = make_field("y", 4, sensor_msgs::PointField::FLOAT32);
     pc.fields[2] = make_field("z", 8, sensor_msgs::PointField::FLOAT32);
     pc.fields[3] = make_field("intensity", 12, sensor_msgs::PointField::FLOAT32);
-    pc.fields[4] = make_field("offset_time", OFFSET_TIME_OFFSET, sensor_msgs::PointField::UINT32);
-    pc.fields[5] = make_field("tag", TAG_OFFSET, sensor_msgs::PointField::UINT8);
-    pc.fields[6] = make_field("line", LINE_OFFSET, sensor_msgs::PointField::UINT8);
+    if (timing) {
+        pc.fields[4] =
+            make_field("offset_time", OFFSET_TIME_OFFSET, sensor_msgs::PointField::UINT32);
+        pc.fields[5] = make_field("tag", TAG_OFFSET, sensor_msgs::PointField::UINT8);
+        pc.fields[6] = make_field("line", LINE_OFFSET, sensor_msgs::PointField::UINT8);
+    }
 
-    pc.point_step = POINT_STEP;
+    pc.point_step = point_step;
     pc.row_step = pc.point_step * num_points;
 
     // Pack point data
@@ -127,16 +137,18 @@ static void publish_pointcloud(const std::vector<float>& xyz,
     pc.data.resize(pc.data_length);
 
     for (int i = 0; i < num_points; ++i) {
-        uint8_t* base = pc.data.data() + i * POINT_STEP;
+        uint8_t* base = pc.data.data() + i * point_step;
         float* dst = reinterpret_cast<float*>(base);
         dst[0] = xyz[i * 3 + 0];
         dst[1] = xyz[i * 3 + 1];
         dst[2] = xyz[i * 3 + 2];
         dst[3] = intensity[i];
-        uint32_t offset_value = offset_ns[i];
-        std::memcpy(base + OFFSET_TIME_OFFSET, &offset_value, sizeof(uint32_t));
-        base[TAG_OFFSET] = tag[i];
-        base[LINE_OFFSET] = 0;  // Mid-360: single line
+        if (timing) {
+            uint32_t offset_value = offset_ns[i];
+            std::memcpy(base + OFFSET_TIME_OFFSET, &offset_value, sizeof(uint32_t));
+            base[TAG_OFFSET] = tag[i];
+            base[LINE_OFFSET] = 0;  // Mid-360: single line
+        }
     }
 
     g_lcm->publish(g_lidar_topic, &pc);
@@ -277,6 +289,7 @@ int main(int argc, char** argv) {
     g_frequency = mod.arg_float("frequency", 10.0f);
     g_frame_id = mod.arg("frame_id", "lidar_link");
     g_imu_frame_id = mod.arg("imu_frame_id", "imu_link");
+    g_per_point_timing = mod.arg_bool("per_point_timing", true);
 
     // SDK network ports (defaults from SdkPorts struct in livox_sdk_config.hpp)
     livox_common::SdkPorts ports;

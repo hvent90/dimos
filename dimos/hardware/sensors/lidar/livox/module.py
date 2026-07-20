@@ -63,6 +63,10 @@ class Mid360Config(NativeModuleConfig):
     )
     frequency: float = 10.0
     enable_imu: bool = True
+    # Publish per-point offset_time/tag/line fields (22-byte points). False keeps
+    # the legacy 16-byte x/y/z/intensity layout; scan-undistorting estimators
+    # (FAST-LIVO2 etc.) need this on.
+    per_point_timing: bool = True
     frame_id: str = "lidar_link"
     imu_frame_id: str = "imu_link"
 

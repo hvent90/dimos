@@ -78,6 +78,11 @@ def register_colormap_annotation(name: str = "turbo") -> None:
 class PointCloud2(Timestamped):
     msg_name = "sensor_msgs.PointCloud2"
 
+    # Set by lcm_decode when the wire carries per-point attributes; extraction is
+    # deferred to the accessors (see _per_point_field).
+    _lazy_wire_fields: dict[str, tuple[int, str]]
+    _lazy_wire_raw: tuple[bytes, int, int]
+
     def __init__(
         self,
         pointcloud: o3d.geometry.PointCloud | o3d.t.geometry.PointCloud | None = None,
@@ -439,29 +444,46 @@ class PointCloud2(Timestamped):
             return arr.astype(np.float32) if arr.dtype != np.float32 else arr  # type: ignore[no-any-return]
         return None
 
+    def _per_point_field(self, name: str, np_dtype: type) -> np.ndarray | None:
+        """Read a per-point attribute from the tensor, or lazily extract it from
+        the stashed wire bytes (lcm_decode defers extraction so consumers that
+        never ask for these fields pay nothing)."""
+        self._ensure_tensor_initialized()
+        if name in self._pcd_tensor.point:
+            arr = self._pcd_tensor.point[name].numpy().flatten()
+            return arr.astype(np_dtype) if arr.dtype != np_dtype else arr  # type: ignore[no-any-return]
+        lazy: dict[str, tuple[int, str]] | None = getattr(self, "_lazy_wire_fields", None)
+        if not lazy or name not in lazy:
+            return None
+        field_offset, wire_dtype = lazy.pop(name)
+        raw_data, point_step, num_points = self._lazy_wire_raw
+        item_size = np.dtype(wire_dtype).itemsize
+        dt = np.dtype(
+            [
+                ("_pre", f"V{field_offset}"),
+                ("value", wire_dtype),
+                ("_post", f"V{point_step - field_offset - item_size}"),
+            ]
+        )
+        values = np.ascontiguousarray(np.frombuffer(raw_data, dtype=dt, count=num_points)["value"])
+        # Cache into the tensor so later reads (and lcm_encode) find it there.
+        o3c_dtype = o3c.uint32 if wire_dtype == "<u4" else o3c.uint8
+        self._pcd_tensor.point[name] = o3c.Tensor(values.reshape(-1, 1), dtype=o3c_dtype)
+        if not lazy:
+            del self._lazy_wire_raw  # all fields materialized; release the wire bytes
+        return values
+
     def offset_times_u32(self) -> np.ndarray | None:
         """Per-point time offsets (ns relative to header stamp) as flat uint32, or None."""
-        self._ensure_tensor_initialized()
-        if "offset_times" in self._pcd_tensor.point:
-            arr = self._pcd_tensor.point["offset_times"].numpy().flatten()
-            return arr.astype(np.uint32) if arr.dtype != np.uint32 else arr  # type: ignore[no-any-return]
-        return None
+        return self._per_point_field("offset_times", np.uint32)
 
     def tags_u8(self) -> np.ndarray | None:
         """Per-point sensor tag bytes as flat uint8, or None if absent."""
-        self._ensure_tensor_initialized()
-        if "tags" in self._pcd_tensor.point:
-            arr = self._pcd_tensor.point["tags"].numpy().flatten()
-            return arr.astype(np.uint8) if arr.dtype != np.uint8 else arr  # type: ignore[no-any-return]
-        return None
+        return self._per_point_field("tags", np.uint8)
 
     def lines_u8(self) -> np.ndarray | None:
         """Per-point laser line numbers as flat uint8, or None if absent."""
-        self._ensure_tensor_initialized()
-        if "lines" in self._pcd_tensor.point:
-            arr = self._pcd_tensor.point["lines"].numpy().flatten()
-            return arr.astype(np.uint8) if arr.dtype != np.uint8 else arr  # type: ignore[no-any-return]
-        return None
+        return self._per_point_field("lines", np.uint8)
 
     @functools.cached_property
     def axis_aligned_bounding_box(self) -> o3d.geometry.AxisAlignedBoundingBox:
@@ -705,34 +727,18 @@ class PointCloud2(Timestamped):
                     intensities.reshape(-1, 1), dtype=o3c.float32
                 )
 
-        # Extract per-point attributes if present. Unlike intensity, zero is
-        # a meaningful value (first point's offset_time is 0), so presence of the
-        # field alone decides — no nonzero check.
-        def _extract_scalar_field(field_offset: int, np_dtype: str) -> np.ndarray:
-            item_size = np.dtype(np_dtype).itemsize
-            dt_s = np.dtype(
-                [
-                    ("_pre", f"V{field_offset}"),
-                    ("value", np_dtype),
-                    ("_post", f"V{point_step - field_offset - item_size}"),
-                ]
-            )
-            structured_s = np.frombuffer(raw_data, dtype=dt_s, count=num_points)
-            return np.ascontiguousarray(structured_s["value"])
-
+        # Note per-point attribute (offset_time/tag/line) offsets, but defer the
+        # actual extraction until an accessor asks for them — consumers that never
+        # touch the timing info pay nothing at decode. Unlike intensity, zero is a
+        # meaningful value (first point's offset_time is 0), so field presence
+        # alone decides.
+        lazy_wire_fields: dict[str, tuple[int, str]] = {}
         if offset_time_offset is not None:
-            pcd_t.point["offset_times"] = o3c.Tensor(
-                _extract_scalar_field(offset_time_offset, "<u4").reshape(-1, 1),
-                dtype=o3c.uint32,
-            )
+            lazy_wire_fields["offset_times"] = (offset_time_offset, "<u4")
         if tag_offset is not None:
-            pcd_t.point["tags"] = o3c.Tensor(
-                _extract_scalar_field(tag_offset, "u1").reshape(-1, 1), dtype=o3c.uint8
-            )
+            lazy_wire_fields["tags"] = (tag_offset, "u1")
         if line_offset is not None:
-            pcd_t.point["lines"] = o3c.Tensor(
-                _extract_scalar_field(line_offset, "u1").reshape(-1, 1), dtype=o3c.uint8
-            )
+            lazy_wire_fields["lines"] = (line_offset, "u1")
 
         # Extract RGB colors if present
         if rgb_offset is not None:
@@ -751,13 +757,17 @@ class PointCloud2(Timestamped):
             colors = np.column_stack([r, g, b])
             pcd_t.point["colors"] = o3c.Tensor(colors, dtype=o3c.float32)
 
-        return cls(
+        pc = cls(
             pointcloud=pcd_t,
             frame_id=msg.header.frame_id if hasattr(msg, "header") else "",
             ts=msg.header.stamp.sec + msg.header.stamp.nsec / 1e9
             if hasattr(msg, "header") and msg.header.stamp.sec > 0
             else None,
         )
+        if lazy_wire_fields:
+            pc._lazy_wire_fields = lazy_wire_fields
+            pc._lazy_wire_raw = (raw_data, point_step, num_points)
+        return pc
 
     def _create_xyz_fields(self) -> list:  # type: ignore[type-arg]
         """Create X, Y, Z, intensity field definitions."""
