@@ -17,7 +17,7 @@
 
 RayTracingVoxelMap -> CostMapper -> ReplanningAStarPlanner -> MovementManager,
 plus the nav viewer. Consumers supply the lidar and locomotion: the onboard
-high-level SDK (unitree-g1-nav-simple) or the GR00T WBC stack (unitree-g1).
+high-level SDK (unitree-g1) or the GR00T WBC stack (unitree-g1-groot).
 """
 
 from dimos.core.coordination.blueprints import autoconnect

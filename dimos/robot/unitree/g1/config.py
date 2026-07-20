@@ -37,6 +37,8 @@ class G1Config:
     name: str
     height_clearance: float
     width_clearance: float
+    lidar_ip: str | None = None
+    lidar_host_ip: str | None = None
     internal_odom_offsets: dict[str, Any] = field(default_factory=dict)
 
 
@@ -44,6 +46,9 @@ G1 = G1Config(
     name="unitree_g1",
     height_clearance=1.2,
     width_clearance=0.6,
+    # Unitree onboard subnet: MID-360 lidar and the Jetson's NIC facing it.
+    lidar_ip="192.168.123.120",
+    lidar_host_ip="192.168.123.164",
     internal_odom_offsets={
         # Mid-360 lidar: 1.2 m above ground.
         "mid360_link": Pose(0.0, 0.0, 1.2, *Quaternion.from_euler(Vector3(0, 0, 0))),
