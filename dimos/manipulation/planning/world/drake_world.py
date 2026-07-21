@@ -16,12 +16,13 @@
 
 from __future__ import annotations
 
+from collections.abc import Callable
 from concurrent.futures import ThreadPoolExecutor
 from contextlib import contextmanager
 from dataclasses import dataclass, field
 from pathlib import Path
 from threading import RLock, current_thread
-from typing import TYPE_CHECKING, Any
+from typing import TYPE_CHECKING, Any, TypeAlias
 
 import numpy as np
 
@@ -82,6 +83,9 @@ except ImportError:
     DRAKE_AVAILABLE = False
 
 logger = setup_logger()
+
+ObstacleAddHook: TypeAlias = Callable[[str, Obstacle], None]
+ObstacleRemoveHook: TypeAlias = Callable[[str], None]
 
 
 @dataclass
@@ -197,6 +201,19 @@ class DrakeWorld(WorldSpec, VisualizationSpec):
 
         # Obstacle source for dynamic obstacles
         self._obstacle_source_id: Any = None
+        self._obstacle_add_hook: ObstacleAddHook | None = None
+        self._obstacle_remove_hook: ObstacleRemoveHook | None = None
+
+    def set_obstacle_hooks(
+        self,
+        *,
+        on_add: ObstacleAddHook | None = None,
+        on_remove: ObstacleRemoveHook | None = None,
+    ) -> None:
+        """Replace direct obstacle mutation hooks, or clear them with no arguments."""
+        with self._lock:
+            self._obstacle_add_hook = on_add
+            self._obstacle_remove_hook = on_remove
 
     def add_robot(self, config: RobotModelConfig) -> WorldRobotID:
         """Add a robot to the world. Returns robot_id.
@@ -371,6 +388,7 @@ class DrakeWorld(WorldSpec, VisualizationSpec):
                 logger.debug(f"Obstacle '{obstacle_id}' already exists, skipping")
                 return obstacle_id
 
+            added = False
             try:
                 if not self._finalized:
                     geometry_id = self._add_obstacle_to_plant(obstacle, obstacle_id)
@@ -388,6 +406,7 @@ class DrakeWorld(WorldSpec, VisualizationSpec):
                         geometry_id=geometry_id,
                         source_id=self._obstacle_source_id,
                     )
+                added = True
 
                 logger.debug(f"Added obstacle '{obstacle_id}': {obstacle.obstacle_type.value}")
             except RuntimeError as e:
@@ -397,6 +416,12 @@ class DrakeWorld(WorldSpec, VisualizationSpec):
                     logger.debug(f"Obstacle '{obstacle_id}' already in SceneGraph, skipping")
                 else:
                     raise
+
+            if added and self._obstacle_add_hook is not None:
+                try:
+                    self._obstacle_add_hook(obstacle_id, obstacle)
+                except Exception:
+                    logger.exception("Drake obstacle add hook failed for '%s'", obstacle_id)
 
             return obstacle_id
 
@@ -537,6 +562,11 @@ class DrakeWorld(WorldSpec, VisualizationSpec):
 
             del self._obstacles[obstacle_id]
             logger.debug(f"Removed obstacle '{obstacle_id}'")
+            if self._obstacle_remove_hook is not None:
+                try:
+                    self._obstacle_remove_hook(obstacle_id)
+                except Exception:
+                    logger.exception("Drake obstacle remove hook failed for '%s'", obstacle_id)
             return True
 
     def update_obstacle_pose(self, obstacle_id: str, pose: PoseStamped) -> bool:

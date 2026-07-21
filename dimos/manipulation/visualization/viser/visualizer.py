@@ -45,6 +45,7 @@ if TYPE_CHECKING:
     from dimos.manipulation.planning.monitor.world_monitor import WorldMonitor
     from dimos.manipulation.planning.spec.models import (
         JointPath,
+        Obstacle,
         PlanningSceneInfo,
         WorldRobotID,
     )
@@ -136,6 +137,30 @@ class ViserManipulationVisualizer:
         except Exception:
             self.close()
             raise
+
+    def add_obstacle(self, obstacle_id: str, obstacle: Obstacle) -> None:
+        """Render an accepted obstacle without changing planner state."""
+        if self._closed:
+            return
+        self._ensure_started()
+        if self._scene is None:
+            return
+        try:
+            self._scene.add_obstacle(obstacle_id, obstacle)
+        except Exception:
+            logger.exception("Could not visualize manipulation obstacle %s", obstacle_id)
+
+    def remove_obstacle(self, obstacle_id: str) -> None:
+        """Remove the visual representation for an accepted obstacle ID."""
+        if self._closed:
+            return
+        self._ensure_started()
+        if self._scene is None:
+            return
+        try:
+            self._scene.remove_obstacle(obstacle_id)
+        except Exception:
+            logger.exception("Could not remove manipulation obstacle visualization %s", obstacle_id)
 
     def get_visualization_url(self) -> str | None:
         return None if self._runtime is None else self._runtime.url

@@ -19,6 +19,7 @@ from __future__ import annotations
 from dimos.control.coordinator import ControlCoordinator, TaskConfig
 from dimos.core.coordination.blueprints import autoconnect
 from dimos.manipulation.manipulation_module import ManipulationModule
+from dimos.manipulation.visualization.viser.config import ViserVisualizationConfig
 from dimos.robot.manipulators.common.blueprints import coordinator, planner, trajectory_task
 from dimos.robot.manipulators.common.sim import mujoco_if_sim
 from dimos.robot.manipulators.xarm.config import (
@@ -33,6 +34,7 @@ from dimos.robot.manipulators.xarm.config import (
 xarm6_planner_only = ManipulationModule.blueprint(
     robots=[make_xarm6_model_config(name="arm")],
     planning_timeout=10.0,
+    visualization=ViserVisualizationConfig(),
 )
 
 dual_xarm6_planner = ManipulationModule.blueprint(

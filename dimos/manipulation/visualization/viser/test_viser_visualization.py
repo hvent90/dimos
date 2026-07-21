@@ -22,6 +22,7 @@ from types import ModuleType, SimpleNamespace, TracebackType
 
 import numpy as np
 import pytest
+import trimesh
 
 pytest.importorskip("viser", reason="Viser optional dependency is not installed")
 
@@ -46,7 +47,10 @@ from dimos.manipulation.visualization.viser.state import (
     TargetStatus,
 )
 from dimos.manipulation.visualization.viser.theme import _dimos_logo_data_url, apply_dimos_theme
+from dimos.manipulation.planning.spec.enums import ObstacleType
+from dimos.manipulation.planning.spec.models import Obstacle
 from dimos.msgs.geometry_msgs.Pose import Pose
+from dimos.msgs.geometry_msgs.PoseStamped import PoseStamped
 from dimos.msgs.sensor_msgs.JointState import JointState
 
 GuiCallback = Callable[[SimpleNamespace], None]
@@ -166,7 +170,7 @@ class FakeHandle:
         self.visible: object | None = None
         self.removed = False
         self.name = ""
-        self.kwargs: dict[str, float | bool] = {}
+        self.kwargs: dict[str, object] = {}
 
     def remove(self) -> None:
         self.removed = True
@@ -220,7 +224,7 @@ class FakeGridServer(FakeServer):
         self.grids = []
         self.scene.add_grid = self.add_grid
 
-    def add_grid(self, name: str, **kwargs: float | bool) -> FakeHandle:
+    def add_grid(self, name: str, **kwargs: object) -> FakeHandle:
         handle = FakeHandle()
         handle.name = name
         handle.kwargs = kwargs
@@ -256,6 +260,38 @@ class FakeTransformServer(FakeServer):
         handle.scale = scale
         self.transform_controls.append(handle)
         return handle
+
+
+class FakeObstacleServer(FakeServer):
+    def __init__(self) -> None:
+        super().__init__()
+        self.entities: list[FakeHandle] = []
+        self.scene.add_box = self._add("box")
+        self.scene.add_icosphere = self._add("sphere")
+        self.scene.add_cylinder = self._add("cylinder")
+        self.scene.add_mesh_simple = self._add("mesh")
+        self.scene.add_label = self._add("label")
+
+    def _add(self, kind: str) -> Callable[..., FakeHandle]:
+        def add(name: str, *args: object, **kwargs: object) -> FakeHandle:
+            handle = FakeHandle()
+            handle.name = name
+            handle.name = f"{kind}:{name}"
+            handle.kwargs = kwargs
+            handle.visible = kwargs.get("visible")
+            self.entities.append(handle)
+            return handle
+
+        return add
+
+
+def make_obstacle(obstacle_type: ObstacleType, dimensions: tuple[float, ...] = ()) -> Obstacle:
+    return Obstacle(
+        name="test-obstacle",
+        obstacle_type=obstacle_type,
+        pose=PoseStamped(position=[1.0, 2.0, 3.0], orientation=[0.0, 0.0, 0.0, 1.0]),
+        dimensions=dimensions,
+    )
 
 
 class FakeFolder:
@@ -719,6 +755,114 @@ def test_scene_adds_reference_grid_when_supported() -> None:
     assert grid.visible is False
     scene.set_reference_grid_visible(True)
     assert grid.visible is True
+
+
+def test_scene_renders_obstacle_primitives_with_pose_and_fallback_appearance() -> None:
+    server = FakeObstacleServer()
+    scene = ViserManipulationScene(
+        server, lambda *args, **kwargs: FakeUrdf(("j1",)), preview_fps=10.0
+    )
+    scene.add_obstacle("box-1", make_obstacle(ObstacleType.BOX, (1.0, 2.0, 3.0)))
+    scene.add_obstacle("sphere-1", make_obstacle(ObstacleType.SPHERE, (0.5,)))
+    scene.add_obstacle("cylinder-1", make_obstacle(ObstacleType.CYLINDER, (0.25, 1.0)))
+
+    assert [handle.name.split(":", 1)[0] for handle in server.entities[-3:]] == [
+        "box", "sphere", "cylinder"
+    ]
+    assert server.entities[-3].kwargs["position"] == (1.0, 2.0, 3.0)
+    assert server.entities[-3].kwargs["color"] == (55, 190, 210)
+    assert server.entities[-3].kwargs["opacity"] == 0.55
+
+    explicit_color = make_obstacle(ObstacleType.BOX, (1.0, 1.0, 1.0))
+    explicit_color.color = (0.1, 0.8, 0.3, 0.35)
+    scene.add_obstacle("explicit-color", explicit_color)
+    assert server.entities[-1].kwargs["color"] == (26, 204, 76)
+    assert server.entities[-1].kwargs["opacity"] == 0.35
+
+    invalid_color = make_obstacle(ObstacleType.BOX, (1.0, 1.0, 1.0))
+    invalid_color.color = (float("nan"), 0.0, 0.0, 0.5)
+    scene.add_obstacle("fallback", invalid_color)
+    assert server.entities[-1].kwargs["color"] == (55, 190, 210)
+    assert server.entities[-1].kwargs["opacity"] == 0.55
+
+
+def test_scene_mesh_failure_keeps_proxy_label_and_visibility_state() -> None:
+    server = FakeObstacleServer()
+    scene = ViserManipulationScene(
+        server, lambda *args, **kwargs: FakeUrdf(("j1",)), preview_fps=10.0
+    )
+    scene.set_obstacles_visible(False)
+    scene.add_obstacle("mesh-1", make_obstacle(ObstacleType.MESH))
+
+    assert len(scene._obstacle_handles["mesh-1"]) == 2
+    assert all(handle.visible is False for handle in scene._obstacle_handles["mesh-1"])
+    assert any("mesh-failure-proxy" in handle.name for handle in server.entities)
+    assert any("mesh-failure-label" in handle.name for handle in server.entities)
+
+    scene.add_obstacle("mesh-2", make_obstacle(ObstacleType.BOX, (1.0, 1.0, 1.0)))
+    assert server.entities[-1].visible is False
+    scene.remove_obstacle("mesh-1")
+    assert all(handle.removed for handle in server.entities[-3:-1])
+    assert "mesh-1" not in scene._obstacle_handles
+
+
+def test_obstacle_toggle_exists_when_panel_is_disabled_and_late_callback_is_safe() -> None:
+    server = FakeGuiServer()
+    scene = ViserManipulationScene(
+        server, lambda *args, **kwargs: FakeUrdf(("j1",)), preview_fps=10.0
+    )
+
+    assert list(server.checkboxes) == ["manipulation.obstacles"]
+    toggle = server.checkboxes["manipulation.obstacles"]
+    assert toggle.value is True
+    assert toggle.update_callback is not None
+    toggle.update_callback(SimpleNamespace(target=SimpleNamespace(value=False)))
+    assert scene._obstacles_visible is False
+    scene.close()
+    toggle.update_callback(SimpleNamespace(target=SimpleNamespace(value=True)))
+    scene.add_obstacle("late", make_obstacle(ObstacleType.BOX, (1.0, 1.0, 1.0)))
+    assert scene._obstacle_handles == {}
+
+
+def test_successful_mesh_rendering_uses_native_mesh_handle(tmp_path: Path) -> None:
+    mesh_path = tmp_path / "triangle.obj"
+    trimesh.creation.box(extents=(1.0, 1.0, 1.0)).export(mesh_path)
+    server = FakeObstacleServer()
+    scene = ViserManipulationScene(
+        server, lambda *args, **kwargs: FakeUrdf(("j1",)), preview_fps=10.0
+    )
+    obstacle = make_obstacle(ObstacleType.MESH)
+    obstacle.mesh_path = str(mesh_path)
+
+    scene.add_obstacle("mesh-ok", obstacle)
+
+    assert len(scene._obstacle_handles["mesh-ok"]) == 1
+    assert server.entities[-1].name.startswith("mesh:/manipulation/obstacles/mesh-ok")
+
+
+def test_obstacle_mutations_and_close_are_safe_concurrently() -> None:
+    server = FakeObstacleServer()
+    scene = ViserManipulationScene(
+        server, lambda *args, **kwargs: FakeUrdf(("j1",)), preview_fps=10.0
+    )
+    errors: list[BaseException] = []
+
+    def mutate() -> None:
+        try:
+            for index in range(20):
+                scene.set_obstacles_visible(index % 2 == 0)
+                scene.add_obstacle(f"obstacle-{index}", make_obstacle(ObstacleType.BOX, (1, 1, 1)))
+        except BaseException as error:
+            errors.append(error)
+
+    worker = threading.Thread(target=mutate)
+    worker.start()
+    scene.close()
+    worker.join()
+    scene.close()
+
+    assert errors == []
+    assert scene._obstacle_handles == {}
 
 
 def test_preview_visibility_only_affects_preview_ghost_and_close_removes_handles() -> None:

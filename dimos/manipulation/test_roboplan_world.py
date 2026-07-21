@@ -392,6 +392,137 @@ def test_obstacle_mutation_updates_scene_and_stored_pose(
     assert world.get_obstacles() == []
 
 
+def test_obstacle_hooks_forward_only_successful_mutations(
+    fake_roboplan: None, robot_config: RobotModelConfig
+) -> None:
+    world, _ = _make_world(fake_roboplan, robot_config)
+    world.finalize()
+    events: list[tuple[str, str, Obstacle | None]] = []
+    world.set_obstacle_hooks(
+        on_add=lambda obstacle_id, obstacle: events.append(("add", obstacle_id, obstacle)),
+        on_remove=lambda obstacle_id: events.append(("remove", obstacle_id, None)),
+    )
+    obstacle = Obstacle(
+        name="hooked",
+        obstacle_type=ObstacleType.BOX,
+        pose=PoseStamped(position=Vector3(), orientation=Quaternion()),  # type: ignore[call-arg]
+        dimensions=(0.1, 0.2, 0.3),
+    )
+
+    assert world.add_obstacle(obstacle) == "hooked"
+    assert world.add_obstacle(obstacle) == "hooked"
+    assert world.remove_obstacle("missing") is False
+    assert world.remove_obstacle("hooked") is True
+    assert events == [("add", "hooked", obstacle), ("remove", "hooked", None)]
+
+
+def test_obstacle_hook_failures_do_not_rollback_native_state(
+    fake_roboplan: None, robot_config: RobotModelConfig
+) -> None:
+    world, _ = _make_world(fake_roboplan, robot_config)
+    world.finalize()
+
+    def fail(*_args: Any) -> None:
+        raise RuntimeError("visualization failed")
+
+    world.set_obstacle_hooks(on_add=fail, on_remove=fail)
+    obstacle = Obstacle(
+        name="retained",
+        obstacle_type=ObstacleType.BOX,
+        pose=PoseStamped(position=Vector3(), orientation=Quaternion()),  # type: ignore[call-arg]
+        dimensions=(0.1, 0.2, 0.3),
+    )
+
+    assert world.add_obstacle(obstacle) == "retained"
+    assert world.get_obstacles() == [obstacle]
+    assert world.remove_obstacle("retained") is True
+    assert world.get_obstacles() == []
+
+
+def test_obstacle_hooks_can_be_replaced_and_cleared(
+    fake_roboplan: None, robot_config: RobotModelConfig
+) -> None:
+    world, _ = _make_world(fake_roboplan, robot_config)
+    world.finalize()
+    first: list[str] = []
+    second: list[str] = []
+    obstacle = Obstacle(
+        name="replaceable",
+        obstacle_type=ObstacleType.BOX,
+        pose=PoseStamped(position=Vector3(), orientation=Quaternion()),  # type: ignore[call-arg]
+        dimensions=(0.1, 0.2, 0.3),
+    )
+
+    world.set_obstacle_hooks(on_add=lambda obstacle_id, _: first.append(obstacle_id))
+    world.add_obstacle(obstacle)
+    world.set_obstacle_hooks(on_add=lambda obstacle_id, _: second.append(obstacle_id))
+    world.remove_obstacle("replaceable")
+    world.add_obstacle(obstacle)
+    world.set_obstacle_hooks()
+    world.remove_obstacle("replaceable")
+
+    assert first == ["replaceable"]
+    assert second == ["replaceable"]
+
+
+def test_clear_obstacles_forwards_removals_and_respects_hook_teardown(
+    fake_roboplan: None, robot_config: RobotModelConfig
+) -> None:
+    world, _ = _make_world(fake_roboplan, robot_config)
+    world.finalize()
+    removed: list[str] = []
+    world.set_obstacle_hooks(on_remove=removed.append)
+    for name in ("first", "second"):
+        world.add_obstacle(
+            Obstacle(
+                name=name,
+                obstacle_type=ObstacleType.BOX,
+                pose=PoseStamped(position=Vector3(), orientation=Quaternion()),  # type: ignore[call-arg]
+                dimensions=(0.1, 0.2, 0.3),
+            )
+        )
+
+    world.clear_obstacles()
+    assert world.get_obstacles() == []
+    assert removed == ["first", "second"]
+
+    world.add_obstacle(
+        Obstacle(
+            name="cleared-hook",
+            obstacle_type=ObstacleType.BOX,
+            pose=PoseStamped(position=Vector3(), orientation=Quaternion()),  # type: ignore[call-arg]
+            dimensions=(0.1, 0.2, 0.3),
+        )
+    )
+    world.set_obstacle_hooks()
+    world.clear_obstacles()
+    assert removed == ["first", "second"]
+
+
+def test_clear_obstacles_survives_remove_hook_failures(
+    fake_roboplan: None, robot_config: RobotModelConfig
+) -> None:
+    world, _ = _make_world(fake_roboplan, robot_config)
+    world.finalize()
+
+    def fail(_obstacle_id: str) -> None:
+        raise RuntimeError("visualization failed")
+
+    world.set_obstacle_hooks(on_remove=fail)
+    for name in ("first", "second"):
+        world.add_obstacle(
+            Obstacle(
+                name=name,
+                obstacle_type=ObstacleType.BOX,
+                pose=PoseStamped(position=Vector3(), orientation=Quaternion()),  # type: ignore[call-arg]
+                dimensions=(0.1, 0.2, 0.3),
+            )
+        )
+
+    world.clear_obstacles()
+    assert world.get_obstacles() == []
+
+
 def test_collision_config_and_edge_checks(
     fake_roboplan: None, robot_config: RobotModelConfig
 ) -> None:
