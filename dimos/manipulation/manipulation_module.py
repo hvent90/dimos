@@ -290,7 +290,9 @@ class ManipulationModule(Module):
         set_hooks = getattr(world, "set_obstacle_hooks", None)
         if not callable(set_hooks):
             raise RuntimeError("Viser obstacle visualization requires world obstacle hooks")
-        set_hooks(on_add=add if callable(add) else None, on_remove=remove if callable(remove) else None)
+        set_hooks(
+            on_add=add if callable(add) else None, on_remove=remove if callable(remove) else None
+        )
         self._obstacle_hook_world = world
 
     def _detach_obstacle_visualization_hook(self) -> None:

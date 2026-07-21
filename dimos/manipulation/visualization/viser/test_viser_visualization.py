@@ -26,6 +26,8 @@ import trimesh
 
 pytest.importorskip("viser", reason="Viser optional dependency is not installed")
 
+from dimos.manipulation.planning.spec.enums import ObstacleType
+from dimos.manipulation.planning.spec.models import Obstacle
 from dimos.manipulation.visualization.types import RobotInfo, TargetEvaluation
 from dimos.manipulation.visualization.viser.adapter import InProcessViserAdapter
 from dimos.manipulation.visualization.viser.animation import (
@@ -47,8 +49,6 @@ from dimos.manipulation.visualization.viser.state import (
     TargetStatus,
 )
 from dimos.manipulation.visualization.viser.theme import _dimos_logo_data_url, apply_dimos_theme
-from dimos.manipulation.planning.spec.enums import ObstacleType
-from dimos.manipulation.planning.spec.models import Obstacle
 from dimos.msgs.geometry_msgs.Pose import Pose
 from dimos.msgs.geometry_msgs.PoseStamped import PoseStamped
 from dimos.msgs.sensor_msgs.JointState import JointState
@@ -767,7 +767,9 @@ def test_scene_renders_obstacle_primitives_with_pose_and_fallback_appearance() -
     scene.add_obstacle("cylinder-1", make_obstacle(ObstacleType.CYLINDER, (0.25, 1.0)))
 
     assert [handle.name.split(":", 1)[0] for handle in server.entities[-3:]] == [
-        "box", "sphere", "cylinder"
+        "box",
+        "sphere",
+        "cylinder",
     ]
     assert server.entities[-3].kwargs["position"] == (1.0, 2.0, 3.0)
     assert server.entities[-3].kwargs["color"] == (55, 190, 210)
