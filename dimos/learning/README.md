@@ -148,8 +148,38 @@ uv run lerobot-train \
 ```
 
 The deployable checkpoint is written under
-`outputs/a1z_act/checkpoints/last/pretrained_model`. A robot blueprint can
-compose `LeRobotPolicyModule` with a camera, joint-state source, and joint
-command consumer. The module does not move hardware at startup; its
-`execute_learned_policy` background skill starts inference explicitly, and
-`stop_learned_policy` stops it while the robot holds the final command.
+`outputs/a1z_act/checkpoints/last/pretrained_model`. ACT is the currently
+tested A1Z path, but the runtime loads policies through LeRobot's policy
+factory rather than hard-coding ACT. Another LeRobot policy type can be used
+when its saved configuration has the same single RGB image input, seven-value
+state input, and seven-value action output.
+
+`LeRobotPolicyModule` owns a named catalog of checkpoints. It loads each
+checkpoint on first use and caches it, so one running robot stack can execute
+several trained behaviors without restarting. The generic
+`execute_learned_policy(policy_name, duration)` skill is useful for testing.
+For an agent-facing robot, expose each behavior as a normal, descriptive
+DimOS skill instead:
+
+```python
+from dimos.agents.annotation import skill
+from dimos.agents.capabilities import CAP_MOVEMENT
+from dimos.learning.lerobot_policy import LeRobotPolicyModule
+
+
+class HackathonPolicies(LeRobotPolicyModule):
+    @skill(uses=[CAP_MOVEMENT], lifecycle="background")
+    def pick_up_cup(self) -> str:
+        """Pick up the wooden cup from the table."""
+        return self.start_configured_policy("pick_up_cup", tool_name="pick_up_cup")
+
+    @skill(uses=[CAP_MOVEMENT], lifecycle="background")
+    def place_cup(self) -> str:
+        """Place the held wooden cup on the table."""
+        return self.start_configured_policy("place_cup", tool_name="place_cup")
+```
+
+These wrappers are deliberately ordinary `@skill` methods. Their names,
+docstrings, movement-capability locking, background progress, and stop events
+therefore pass through the existing DimOS agent and MCP machinery unchanged.
+The shared parent module only selects and executes checkpoints.

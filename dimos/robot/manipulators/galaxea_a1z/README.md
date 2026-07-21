@@ -148,3 +148,92 @@ uv run dimos a1z run-policy \
   --task "pick up the object" \
   --duration 20
 ```
+
+This command is the one-checkpoint hardware test path. It installs that
+checkpoint in the policy catalog under the name `default`, starts the same
+camera/coordinator/policy module stack used by a full blueprint, and invokes
+`execute_learned_policy("default")`.
+
+## Turn trained policies into an agentic robot
+
+Once individual checkpoints pass `run-policy`, put them in one catalog and
+give the behaviors stable, meaningful skill names. The complete blueprint can
+stay small:
+
+```python
+from dimos.agents.annotation import skill
+from dimos.agents.capabilities import CAP_MOVEMENT
+from dimos.agents.mcp.mcp_client import McpClient
+from dimos.agents.mcp.mcp_server import McpServer
+from dimos.core.coordination.blueprints import autoconnect
+from dimos.learning.lerobot_policy import LeRobotPolicyConfig, LeRobotPolicyModule
+from dimos.robot.manipulators.galaxea_a1z.blueprints.basic import (
+    make_a1z_learned_policy_blueprint,
+)
+
+
+class HackathonPolicies(LeRobotPolicyModule):
+    @skill(uses=[CAP_MOVEMENT], lifecycle="background")
+    def pick_up_cup(self) -> str:
+        """Pick up the wooden cup from the table."""
+        return self.start_configured_policy("pick_up_cup", tool_name="pick_up_cup")
+
+    @skill(uses=[CAP_MOVEMENT], lifecycle="background")
+    def place_cup(self) -> str:
+        """Place the held wooden cup on the table."""
+        return self.start_configured_policy("place_cup", tool_name="place_cup")
+
+
+a1z_policies = make_a1z_learned_policy_blueprint(
+    policies={
+        "pick_up_cup": LeRobotPolicyConfig(
+            policy_path="outputs/pick_up_cup/checkpoints/last/pretrained_model",
+            task="pick up the wooden cup",
+            device="mps",
+            default_duration=20.0,
+        ),
+        "place_cup": LeRobotPolicyConfig(
+            policy_path="outputs/place_cup/checkpoints/last/pretrained_model",
+            task="place the wooden cup on the table",
+            device="mps",
+            default_duration=20.0,
+        ),
+    },
+    policy_module=HackathonPolicies,
+    camera_index=0,
+)
+
+A1Z_AGENT_PROMPT = """You control a Galaxea A1Z manipulation arm.
+Use the available learned manipulation skills to carry out the user's request.
+Call only one movement skill at a time and report failures clearly.
+"""
+
+a1z_learned_agent = autoconnect(
+    a1z_policies,
+    McpServer.blueprint(),
+    McpClient.blueprint(system_prompt=A1Z_AGENT_PROMPT),
+)
+```
+
+Expose `a1z_learned_agent` as a runnable blueprint using the normal DimOS
+blueprint registration process, then start it like any other stack:
+
+```bash
+uv run dimos run a1z-learned-agent --daemon
+uv run dimos humancli
+```
+
+The same running blueprint can be driven without the interactive terminal:
+
+```bash
+uv run dimos agent-send "pick up the wooden cup, then place it back down"
+uv run dimos mcp list-tools
+uv run dimos mcp call pick_up_cup
+```
+
+The composition is now standard DimOS: the A1Z helper supplies the hardware,
+servo coordinator, camera, and one multi-policy module; `McpServer` exposes the
+named skills; and `McpClient` lets the language agent select and sequence those
+skills. Adding a trained behavior means adding one catalog entry and one small
+documented `@skill` wrapper. It does not require a new executor module or any
+changes to DimOS core.

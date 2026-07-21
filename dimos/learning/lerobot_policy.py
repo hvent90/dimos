@@ -36,6 +36,7 @@ from dimos.core.module import Module, ModuleConfig
 from dimos.core.stream import In, Out
 from dimos.msgs.sensor_msgs.Image import Image, ImageFormat
 from dimos.msgs.sensor_msgs.JointState import JointState
+from dimos.protocol.service.spec import BaseConfig
 from dimos.utils.logging_config import setup_logger
 
 logger = setup_logger()
@@ -61,20 +62,31 @@ class PolicyBackend(Protocol):
     ) -> NDArray[np.float32]: ...
 
 
-class LeRobotPolicyModuleConfig(ModuleConfig):
+class LeRobotPolicyConfig(BaseConfig):
+    """Configuration for one named learned policy."""
+
     policy_path: str
+    task: str = ""
+    device: str | None = None
+    default_duration: float = Field(default=10.0, gt=0)
+
+
+class LeRobotPolicyModuleConfig(ModuleConfig):
+    policies: dict[str, LeRobotPolicyConfig] = Field(min_length=1)
     joint_names: list[str] = Field(min_length=1)
     fps: float = Field(default=15.0, gt=0)
-    task: str = ""
     robot_type: str = ""
-    device: str | None = None
     max_observation_age_s: float = Field(default=0.5, gt=0)
 
 
 class _LeRobotBackend:
     """Lazy LeRobot/torch adapter using the upstream inference pipeline."""
 
-    def __init__(self, config: LeRobotPolicyModuleConfig) -> None:
+    def __init__(
+        self,
+        config: LeRobotPolicyModuleConfig,
+        policy: LeRobotPolicyConfig,
+    ) -> None:
         try:
             torch = import_module("torch")
             PreTrainedConfig = import_module("lerobot.configs.policies").PreTrainedConfig
@@ -93,9 +105,9 @@ class _LeRobotBackend:
             ) from exc
 
         register_third_party_plugins()
-        policy_config = PreTrainedConfig.from_pretrained(config.policy_path)
-        if config.device is not None:
-            policy_config.device = config.device
+        policy_config = PreTrainedConfig.from_pretrained(policy.policy_path)
+        if policy.device is not None:
+            policy_config.device = policy.device
         if policy_config.device is None:
             raise RuntimeError("LeRobot did not resolve an inference device")
 
@@ -107,10 +119,10 @@ class _LeRobotBackend:
             )
 
         policy_class = get_policy_class(policy_config.type)
-        self._policy = policy_class.from_pretrained(config.policy_path, config=policy_config)
+        self._policy = policy_class.from_pretrained(policy.policy_path, config=policy_config)
         self._preprocessor, self._postprocessor = make_pre_post_processors(
             policy_cfg=policy_config,
-            pretrained_path=config.policy_path,
+            pretrained_path=policy.policy_path,
             preprocessor_overrides={"device_processor": {"device": str(self._device)}},
         )
         self._prepare_observation = prepare_observation_for_inference
@@ -177,8 +189,11 @@ class _LeRobotBackend:
         return np.asarray(action.squeeze(0).to("cpu").numpy(), dtype=np.float32)
 
 
-def _load_policy_backend(config: LeRobotPolicyModuleConfig) -> PolicyBackend:
-    return _LeRobotBackend(config)
+def _load_policy_backend(
+    config: LeRobotPolicyModuleConfig,
+    policy: LeRobotPolicyConfig,
+) -> PolicyBackend:
+    return _LeRobotBackend(config, policy)
 
 
 class LeRobotPolicyModule(Module):
@@ -195,22 +210,23 @@ class LeRobotPolicyModule(Module):
         super().__init__(**kwargs)
         if len(set(self.config.joint_names)) != len(self.config.joint_names):
             raise ValueError("joint_names must not contain duplicates")
+        if any(not name.strip() for name in self.config.policies):
+            raise ValueError("policy names must not be empty")
         self._lock = RLock()
-        self._backend: PolicyBackend | None = None
+        self._backends: dict[str, PolicyBackend] = {}
         self._latest_image: tuple[NDArray[np.uint8], float] | None = None
         self._latest_joint_state: JointState | None = None
         self._stop_event = Event()
         self._thread: Thread | None = None
         self._commands_sent = 0
         self._last_error: str | None = None
-        self._active_task = self.config.task
+        self._active_policy_name: str | None = None
+        self._active_task = ""
+        self._active_tool_name: str | None = None
 
     @rpc
     def build(self) -> None:
-        """Load the checkpoint before hardware modules are started."""
-        if self._backend is None:
-            self._backend = _load_policy_backend(self.config)
-            logger.info("Loaded LeRobot policy from %s", self.config.policy_path)
+        """Build the module; checkpoints are loaded when first invoked."""
 
     @rpc
     def start(self) -> None:
@@ -226,40 +242,87 @@ class LeRobotPolicyModule(Module):
         super().stop()
 
     @skill(uses=[CAP_MOVEMENT], lifecycle="background")
-    def execute_learned_policy(self, duration: float = 10.0, task: str = "") -> str:
-        """Execute the loaded learned policy against the live camera and robot state.
+    def execute_learned_policy(
+        self,
+        policy_name: str,
+        duration: float | None = None,
+    ) -> str:
+        """Execute a configured learned policy against live camera and robot state.
 
         Args:
-            duration: Maximum execution time in seconds.
-            task: Optional task prompt; defaults to the module's configured task.
+            policy_name: Name of the policy in this module's policy catalog.
+            duration: Optional maximum execution time; uses the policy default when omitted.
         """
-        self.start_tool(_TOOL_NAME)
+        return self.start_configured_policy(
+            policy_name,
+            tool_name=_TOOL_NAME,
+            duration=duration,
+        )
+
+    def start_configured_policy(
+        self,
+        policy_name: str,
+        *,
+        tool_name: str,
+        duration: float | None = None,
+    ) -> str:
+        """Start a catalog policy from a user-defined background ``@skill`` method.
+
+        This method must be called by a method decorated with
+        ``@skill(..., lifecycle="background")`` so DimOS can associate the
+        execution updates with the user-facing tool name.
+        """
+        self.start_tool(tool_name)
         background_launched = False
         try:
-            if duration <= 0:
+            policy = self.config.policies.get(policy_name)
+            if policy is None:
+                available = ", ".join(sorted(self.config.policies))
+                return f"Unknown learned policy {policy_name!r}. Available policies: {available}."
+            execution_duration = policy.default_duration if duration is None else duration
+            if execution_duration <= 0:
                 return "Duration must be greater than zero."
             with self._lock:
                 if self._thread is not None and self._thread.is_alive():
-                    background_launched = True
-                    return "The learned policy is already running."
+                    if self._active_tool_name == tool_name:
+                        background_launched = True
+                    return f"Learned policy {self._active_policy_name!r} is already running."
                 self._snapshot_observation(time.time())
-                if self._backend is None:
-                    return "The learned policy has not been loaded."
-                self._backend.reset()
+                backend = self._backends.get(policy_name)
+
+            # Loading can take seconds. Keep observation callbacks flowing so
+            # inference starts from a fresh camera frame and joint state.
+            if backend is None:
+                loaded_backend = _load_policy_backend(self.config, policy)
+                with self._lock:
+                    backend = self._backends.setdefault(policy_name, loaded_backend)
+                logger.info("Loaded LeRobot policy %s from %s", policy_name, policy.policy_path)
+
+            with self._lock:
+                # Re-check after loading in case another direct caller started
+                # a policy while this checkpoint was being initialized.
+                if self._thread is not None and self._thread.is_alive():
+                    if self._active_tool_name == tool_name:
+                        background_launched = True
+                    return f"Learned policy {self._active_policy_name!r} is already running."
+                self._snapshot_observation(time.time())
+                backend.reset()
                 self._stop_event.clear()
                 self._commands_sent = 0
                 self._last_error = None
-                self._active_task = task or self.config.task
+                self._active_policy_name = policy_name
+                self._active_task = policy.task
+                self._active_tool_name = tool_name
                 self._thread = Thread(
                     target=self._run_policy,
-                    args=(duration, self._active_task),
-                    name="lerobot-policy",
+                    args=(backend, execution_duration, policy.task, tool_name),
+                    name=f"lerobot-policy-{policy_name}",
                     daemon=True,
                 )
                 self._thread.start()
                 background_launched = True
             return (
-                f"Learned policy started for up to {duration:.1f}s. "
+                f"Learned policy {policy_name!r} started for up to {execution_duration:.1f}s. "
                 "Use stop_learned_policy to stop early."
             )
         except Exception as exc:
@@ -268,7 +331,7 @@ class LeRobotPolicyModule(Module):
             return f"Learned policy did not start: {exc}"
         finally:
             if not background_launched:
-                self.stop_tool(_TOOL_NAME)
+                self.stop_tool(tool_name)
 
     @skill
     def stop_learned_policy(self) -> str:
@@ -290,7 +353,13 @@ class LeRobotPolicyModule(Module):
                 "running": running,
                 "observations_ready": observation_error is None,
                 "observation_error": observation_error,
-                "policy_path": self.config.policy_path,
+                "active_policy": self._active_policy_name,
+                "policy_path": (
+                    self.config.policies[self._active_policy_name].policy_path
+                    if self._active_policy_name is not None
+                    else None
+                ),
+                "available_policies": sorted(self.config.policies),
                 "task": self._active_task,
                 "commands_sent": self._commands_sent,
                 "last_error": self._last_error,
@@ -337,14 +406,17 @@ class LeRobotPolicyModule(Module):
             raise RuntimeError("joint state contains non-finite positions")
         return image.copy(), vector
 
-    def _run_policy(self, duration: float, task: str) -> None:
+    def _run_policy(
+        self,
+        backend: PolicyBackend,
+        duration: float,
+        task: str,
+        tool_name: str,
+    ) -> None:
         period = 1.0 / self.config.fps
         deadline = time.monotonic() + duration
         next_progress = time.monotonic() + 1.0
         try:
-            backend = self._backend
-            if backend is None:
-                raise RuntimeError("policy backend is not loaded")
             while not self._stop_event.is_set() and time.monotonic() < deadline:
                 tick_started = time.monotonic()
                 with self._lock:
@@ -379,24 +451,28 @@ class LeRobotPolicyModule(Module):
                     commands_sent = self._commands_sent
                 now = time.monotonic()
                 if now >= next_progress:
-                    self.tool_update(_TOOL_NAME, f"Executed {commands_sent} policy steps")
+                    self.tool_update(tool_name, f"Executed {commands_sent} policy steps")
                     next_progress = now + 1.0
                 self._stop_event.wait(max(0.0, period - (time.monotonic() - tick_started)))
+            if not self._stop_event.is_set():
+                self.tool_update(tool_name, f"Policy completed after {self._commands_sent} steps")
         except Exception as exc:
             with self._lock:
                 self._last_error = str(exc)
             logger.exception("LeRobot policy execution stopped: %s", exc)
-            self.tool_update(_TOOL_NAME, f"Policy stopped: {exc}")
+            self.tool_update(tool_name, f"Policy stopped: {exc}")
         finally:
             self._stop_event.set()
-            self.stop_tool(_TOOL_NAME)
+            self.stop_tool(tool_name)
 
     def _stop_policy(self) -> bool:
         with self._lock:
             thread = self._thread
             was_running = thread is not None and thread.is_alive()
+            tool_name = self._active_tool_name
             self._stop_event.set()
         if thread is not None and thread is not current_thread():
             thread.join(timeout=DEFAULT_THREAD_JOIN_TIMEOUT)
-        self.stop_tool(_TOOL_NAME)
+        if tool_name is not None:
+            self.stop_tool(tool_name)
         return was_running

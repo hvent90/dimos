@@ -25,16 +25,23 @@ from dimos.hardware.sensors.camera.webcam import Webcam
 from dimos.learning.collection.episode_monitor import EpisodeStatus
 from dimos.learning.collection.recorder import CollectionRecorder
 from dimos.learning.dataprep.core import Episode
-from dimos.learning.lerobot_policy import LeRobotPolicyModule
+from dimos.learning.lerobot_policy import LeRobotPolicyConfig, LeRobotPolicyModule
 from dimos.memory2.store.sqlite import SqliteStore
 from dimos.msgs.sensor_msgs.JointState import JointState
 from dimos.robot.manipulators.galaxea_a1z.blueprints.basic import (
     A1Z_TEACH_CAMERA_FPS,
     A1Z_TEACH_CAMERA_HEIGHT,
     A1Z_TEACH_CAMERA_WIDTH,
+    make_a1z_learned_policy_blueprint,
     make_a1z_policy_blueprint,
     make_a1z_teach_blueprint,
 )
+
+
+class CustomPolicyModule(LeRobotPolicyModule):
+    pass
+
+
 from dimos.robot.manipulators.galaxea_a1z.teach_replay import (
     _REPLAY_VELOCITY_MAX,
     A1Z_JOINT_NAMES,
@@ -97,12 +104,29 @@ def test_policy_blueprint_wires_camera_policy_and_seven_joint_servo() -> None:
     servo = control_atom.kwargs["tasks"][0]
 
     assert camera.config.camera_index == 2
-    assert policy_atom.kwargs["policy_path"] == "checkpoints/a1z"
+    policy = policy_atom.kwargs["policies"]["default"]
+    assert policy.policy_path == "checkpoints/a1z"
     assert policy_atom.kwargs["joint_names"] == hardware.all_joints == list(A1Z_JOINT_NAMES)
-    assert policy_atom.kwargs["task"] == "pick up cube"
-    assert policy_atom.kwargs["device"] == "cuda"
+    assert policy.task == "pick up cube"
+    assert policy.device == "cuda"
     assert servo.type == "servo"
     assert servo.joint_names == list(A1Z_JOINT_NAMES)
+
+
+def test_multi_policy_blueprint_uses_custom_skill_module() -> None:
+    policies = {
+        "pick_up_cup": LeRobotPolicyConfig(policy_path="checkpoints/cup"),
+        "place_cup": LeRobotPolicyConfig(policy_path="checkpoints/place"),
+    }
+
+    blueprint = make_a1z_learned_policy_blueprint(
+        policies,
+        policy_module=CustomPolicyModule,
+    )
+
+    policy_atom = next(atom for atom in blueprint.blueprints if atom.module is CustomPolicyModule)
+    assert policy_atom.kwargs["policies"] == policies
+    assert policy_atom.kwargs["robot_type"] == "galaxea_a1z"
 
 
 def test_loads_saved_memory2_episode_and_orders_joints(tmp_path: Path) -> None:

@@ -409,7 +409,7 @@ def run_policy(
             raise RuntimeError(
                 f"live policy observations did not become ready: {status['observation_error']}"
             )
-        result = policy.execute_learned_policy(duration, task)
+        result = policy.execute_learned_policy("default", duration)
         typer.echo(result)
         if "started" not in result.lower():
             raise RuntimeError(result)

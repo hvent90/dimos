@@ -16,21 +16,30 @@
 
 from __future__ import annotations
 
-from collections.abc import Callable, Iterator
+from collections.abc import Iterator
 from threading import Event
 import time
-from typing import Any
+from typing import Any, Protocol
 
 import numpy as np
 import pytest
 import pytest_mock
 
-from dimos.learning.lerobot_policy import LeRobotPolicyModule
+from dimos.agents.annotation import skill
+from dimos.agents.capabilities import CAP_MOVEMENT
+from dimos.learning.lerobot_policy import LeRobotPolicyConfig, LeRobotPolicyModule
 from dimos.msgs.sensor_msgs.Image import Image, ImageFormat
 from dimos.msgs.sensor_msgs.JointState import JointState
 from dimos.protocol.rpc.pubsubrpc import LCMRPC
 
 JOINTS = [f"arm/joint{i}" for i in range(1, 7)] + ["arm/gripper"]
+
+
+class CupPolicyModule(LeRobotPolicyModule):
+    @skill(uses=[CAP_MOVEMENT], lifecycle="background")
+    def pick_up_cup(self) -> str:
+        """Pick up the wooden cup."""
+        return self.start_configured_policy("pick_up_cup", tool_name="pick_up_cup")
 
 
 class FakeBackend:
@@ -72,10 +81,19 @@ class CapturingOutput:
         self.published.set()
 
 
+class ModuleFactory(Protocol):
+    def __call__(
+        self,
+        backends: dict[str, FakeBackend],
+        *,
+        module_type: type[LeRobotPolicyModule] = LeRobotPolicyModule,
+    ) -> tuple[LeRobotPolicyModule, CapturingOutput, Event]: ...
+
+
 @pytest.fixture
 def make_module(
     mocker: pytest_mock.MockerFixture,
-) -> Iterator[Callable[[FakeBackend], tuple[LeRobotPolicyModule, CapturingOutput, Event]]]:
+) -> Iterator[ModuleFactory]:
     mocker.patch("dimos.core.module.get_loop", return_value=(mocker.MagicMock(), None))
     mocker.patch.object(LCMRPC, "__init__", return_value=None)
     mocker.patch.object(LCMRPC, "serve_module_rpc", return_value=None)
@@ -84,13 +102,27 @@ def make_module(
 
     built: list[LeRobotPolicyModule] = []
 
-    def _make(backend: FakeBackend) -> tuple[LeRobotPolicyModule, CapturingOutput, Event]:
-        mocker.patch("dimos.learning.lerobot_policy._load_policy_backend", return_value=backend)
-        module = LeRobotPolicyModule(
-            policy_path="checkpoint",
+    def _make(
+        backends: dict[str, FakeBackend],
+        *,
+        module_type: type[LeRobotPolicyModule] = LeRobotPolicyModule,
+    ) -> tuple[LeRobotPolicyModule, CapturingOutput, Event]:
+        policies = {
+            name: LeRobotPolicyConfig(
+                policy_path=f"checkpoint/{name}",
+                task=f"task for {name}",
+            )
+            for name in backends
+        }
+
+        def _load(_config: Any, policy: LeRobotPolicyConfig) -> FakeBackend:
+            return backends[policy.policy_path.rsplit("/", maxsplit=1)[-1]]
+
+        mocker.patch("dimos.learning.lerobot_policy._load_policy_backend", side_effect=_load)
+        module = module_type(
+            policies=policies,
             joint_names=JOINTS,
             fps=50.0,
-            task="default task",
             robot_type="galaxea_a1z",
         )
         output = CapturingOutput()
@@ -122,36 +154,37 @@ def _provide_observation(module: LeRobotPolicyModule) -> tuple[np.ndarray[Any, A
 
 
 def test_policy_observation_and_action_use_canonical_order(
-    make_module: Callable[[FakeBackend], tuple[LeRobotPolicyModule, CapturingOutput, Event]],
+    make_module: ModuleFactory,
 ) -> None:
     action = np.arange(len(JOINTS), dtype=np.float32) / 20
     backend = FakeBackend(action)
-    module, output, _finished = make_module(backend)
+    module, output, _finished = make_module({"pick_up_cube": backend})
     bgr, positions = _provide_observation(module)
 
-    result = module.execute_learned_policy(duration=1.0, task="pick up cube")
+    result = module.execute_learned_policy("pick_up_cube", duration=1.0)
 
     assert "started" in result.lower()
     assert output.published.wait(1.0), "policy did not publish a command"
     assert backend.reset_count == 1
-    assert backend.task == "pick up cube"
+    assert backend.task == "task for pick_up_cube"
     assert backend.robot_type == "galaxea_a1z"
     assert backend.image is not None
     np.testing.assert_array_equal(backend.image, bgr[..., ::-1])
-    np.testing.assert_allclose(backend.state, positions)
+    assert backend.state is not None
+    np.testing.assert_allclose(backend.state, np.asarray(positions))
     assert output.messages[0].name == JOINTS
     np.testing.assert_allclose(output.messages[0].position, action)
     module.stop_learned_policy()
 
 
 def test_invalid_policy_action_stops_without_publishing(
-    make_module: Callable[[FakeBackend], tuple[LeRobotPolicyModule, CapturingOutput, Event]],
+    make_module: ModuleFactory,
 ) -> None:
     backend = FakeBackend(np.zeros(len(JOINTS) - 1, dtype=np.float32))
-    module, output, finished = make_module(backend)
+    module, output, finished = make_module({"invalid": backend})
     _provide_observation(module)
 
-    module.execute_learned_policy(duration=1.0)
+    module.execute_learned_policy("invalid", duration=1.0)
 
     assert backend.called.wait(1.0), "policy was not invoked"
     assert finished.wait(1.0), "policy thread did not stop after invalid output"
@@ -162,14 +195,78 @@ def test_invalid_policy_action_stops_without_publishing(
 
 
 def test_policy_refuses_to_start_without_live_observations(
-    make_module: Callable[[FakeBackend], tuple[LeRobotPolicyModule, CapturingOutput, Event]],
+    make_module: ModuleFactory,
 ) -> None:
     backend = FakeBackend(np.zeros(len(JOINTS), dtype=np.float32))
-    module, output, _finished = make_module(backend)
+    module, output, _finished = make_module({"default": backend})
 
-    result = module.execute_learned_policy(duration=1.0)
+    result = module.execute_learned_policy("default", duration=1.0)
 
     assert "no camera image" in result
     assert backend.reset_count == 0
     assert output.messages == []
     assert module.policy_status()["running"] is False
+
+
+def test_named_policies_load_lazily_and_are_cached(
+    make_module: ModuleFactory,
+    mocker: pytest_mock.MockerFixture,
+) -> None:
+    cup = FakeBackend(np.zeros(len(JOINTS), dtype=np.float32))
+    plate = FakeBackend(np.zeros(len(JOINTS), dtype=np.float32))
+    module, _output, _finished = make_module({"cup": cup, "plate": plate})
+    loader = mocker.patch(
+        "dimos.learning.lerobot_policy._load_policy_backend",
+        side_effect=lambda _config, policy: {
+            "checkpoint/cup": cup,
+            "checkpoint/plate": plate,
+        }[policy.policy_path],
+    )
+    _provide_observation(module)
+
+    assert loader.call_count == 0
+    assert "started" in module.execute_learned_policy("cup", duration=1.0).lower()
+    assert cup.called.wait(1.0)
+    module.stop_learned_policy()
+    assert "started" in module.execute_learned_policy("plate", duration=1.0).lower()
+    assert plate.called.wait(1.0)
+    module.stop_learned_policy()
+    assert "started" in module.execute_learned_policy("cup", duration=1.0).lower()
+    module.stop_learned_policy()
+
+    assert loader.call_count == 2
+    assert module.policy_status()["available_policies"] == ["cup", "plate"]
+    assert module.policy_status()["active_policy"] == "cup"
+
+
+def test_named_skill_uses_its_own_tool_lifecycle(
+    make_module: ModuleFactory,
+) -> None:
+    backend = FakeBackend(np.zeros(len(JOINTS), dtype=np.float32))
+    module, _output, _finished = make_module({"pick_up_cup": backend}, module_type=CupPolicyModule)
+    assert isinstance(module, CupPolicyModule)
+    _provide_observation(module)
+
+    skill_names = {skill_info.func_name for skill_info in module.get_skills()}
+    result = module.pick_up_cup()
+
+    assert "pick_up_cup" in skill_names
+    assert "started" in result.lower()
+    assert backend.called.wait(1.0)
+    module.stop_learned_policy()
+    module.start_tool.assert_called_with("pick_up_cup")  # type: ignore[attr-defined]
+    module.stop_tool.assert_any_call("pick_up_cup")  # type: ignore[attr-defined]
+
+
+def test_unknown_policy_is_rejected_without_loading(
+    make_module: ModuleFactory,
+) -> None:
+    backend = FakeBackend(np.zeros(len(JOINTS), dtype=np.float32))
+    module, output, _finished = make_module({"cup": backend})
+    _provide_observation(module)
+
+    result = module.execute_learned_policy("missing")
+
+    assert "unknown learned policy" in result.lower()
+    assert backend.reset_count == 0
+    assert output.messages == []

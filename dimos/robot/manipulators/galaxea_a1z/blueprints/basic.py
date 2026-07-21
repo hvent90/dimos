@@ -25,7 +25,7 @@ from dimos.hardware.sensors.camera.module import CameraModule
 from dimos.hardware.sensors.camera.webcam import Webcam
 from dimos.learning.collection.episode_monitor import EpisodeMonitorModule
 from dimos.learning.collection.recorder import CollectionRecorder
-from dimos.learning.lerobot_policy import LeRobotPolicyModule
+from dimos.learning.lerobot_policy import LeRobotPolicyConfig, LeRobotPolicyModule
 from dimos.memory2.module import OnExisting
 from dimos.msgs.geometry_msgs.Transform import Transform
 from dimos.robot.manipulators.a1z.config import A1Z_G1Z_MODEL_PATH
@@ -146,6 +146,32 @@ def make_a1z_policy_blueprint(
     fps: float = A1Z_TEACH_CAMERA_FPS,
 ) -> Blueprint:
     """Run one trained LeRobot policy against the live A1Z camera and state."""
+    return make_a1z_learned_policy_blueprint(
+        policies={
+            "default": LeRobotPolicyConfig(
+                policy_path=policy_path,
+                task=task,
+                device=device,
+            )
+        },
+        camera_index=camera_index,
+        fps=fps,
+    )
+
+
+def make_a1z_learned_policy_blueprint(
+    policies: dict[str, LeRobotPolicyConfig],
+    *,
+    policy_module: type[LeRobotPolicyModule] = LeRobotPolicyModule,
+    camera_index: int = 0,
+    fps: float = A1Z_TEACH_CAMERA_FPS,
+) -> Blueprint:
+    """Compose an A1Z stack exposing a catalog of trained LeRobot policies.
+
+    Pass a ``LeRobotPolicyModule`` subclass with named ``@skill`` methods to
+    expose task-specific tools to an agent. The default module instead exposes
+    the generic ``execute_learned_policy(policy_name, duration)`` skill.
+    """
     hardware = galaxea_a1z_hardware(
         "arm",
         gripper=True,
@@ -164,13 +190,11 @@ def make_a1z_policy_blueprint(
                 )
             ],
         ),
-        LeRobotPolicyModule.blueprint(
-            policy_path=policy_path,
+        policy_module.blueprint(
+            policies=policies,
             joint_names=hardware.all_joints,
             fps=fps,
-            task=task,
             robot_type="galaxea_a1z",
-            device=device,
         ),
         _a1z_camera(camera_index),
     )
