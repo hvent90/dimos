@@ -467,6 +467,23 @@ tests-self-hosted = [
     "pybind11>=2.12",
 ]
 
+# Sphinx documentation. Installs the project (autodoc imports dimos modules) plus
+# the extras needed to import the documented modules: `agents` for the MCP client,
+# `web` for the MCP server.
+docs = [
+    # Docs are only ever built on the single build interpreter (3.12), so gate the
+    # toolchain to it rather than constraining it to the project's 3.10 floor.
+    "sphinx; python_version >= '3.12'",
+    "dimos[agents,web]",
+]
+
+# `docs` plus the spelling checker. Gated to non-Windows because pyenchant needs
+# the native enchant library. Mirrors aiohttp's doc.in / doc-spelling.in split.
+docs-spelling = [
+    {include-group = "docs"},
+    "sphinxcontrib-spelling; platform_system != 'Windows' and python_version >= '3.12'",
+]
+
 [tool.uv]
 required-version = ">=0.9.17"
 default-groups = ["tests"]
@@ -538,7 +555,7 @@ force-sort-within-sections = true
 runtime-evaluated-base-classes = ["dimos.core.module.Module"]
 
 [tool.mypy]
-files = ["dimos/"]
+files = ["dimos/", "docs/code/"]
 mypy_path = "stubs/"
 python_version = "3.12"
 incremental = true

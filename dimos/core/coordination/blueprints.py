@@ -156,11 +156,12 @@ class BlueprintAtom:
 
 @dataclass(frozen=True)
 class TransportSpec:
-    """Deferred transport construction: a transport class plus its ctor args.
+    """Deferred transport construction: a transport class plus its constructor arguments.
 
     Blueprint authors declare transports via ``Cls.spec(...)`` so nothing is
     constructed at blueprint-definition time. The coordinator materializes
-    specs at build time, once CLI/env/config overrides have resolved.
+    specs at build time, once command-line, environment, and configuration
+    overrides have resolved.
     """
 
     cls: type[Transport[Any]]
