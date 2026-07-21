@@ -70,7 +70,6 @@ from dimos.manipulation.visualization.config import (
 )
 from dimos.manipulation.visualization.factory import create_manipulation_visualization
 from dimos.manipulation.visualization.types import TargetEvaluation
-from dimos.manipulation.visualization.viser.config import ViserVisualizationConfig
 from dimos.msgs.geometry_msgs.Pose import Pose
 from dimos.msgs.geometry_msgs.Quaternion import Quaternion
 from dimos.msgs.geometry_msgs.Vector3 import Vector3
@@ -163,7 +162,6 @@ class ManipulationModule(Module):
 
         # Coordinator integration (lazy initialized)
         self._coordinator_client: RPCClient | None = None
-        self._obstacle_hook_world: Any | None = None
 
         # Init joints: captured from first joint state per robot, used by go_init
         self._init_joints: dict[RobotName, JointState] = {}
@@ -230,10 +228,8 @@ class ManipulationModule(Module):
         # Viser must have a live server and registered robot scene before any
         # startup obstacle (including the floor) is added. Other visualizers
         # retain their existing startup behavior.
-        self._world_monitor.set_visualization(visualization)
+        self._world_monitor.set_visualization(visualization, config=self.config.visualization)
         self._world_monitor.sync_visualization_scene()
-        if isinstance(self.config.visualization, ViserVisualizationConfig):
-            self._install_obstacle_visualization_hook(visualization)
 
         # Add floor obstacle to prevent trajectories below the table surface
         if self.config.floor_z is not None:
@@ -269,38 +265,6 @@ class ManipulationModule(Module):
             )
             self._tf_thread.start()
             logger.info("TF publishing thread started")
-
-    def _install_obstacle_visualization_hook(self, visualization: Any) -> None:
-        """Forward direct world obstacle mutations to an optional visualizer.
-
-        The visualizer lane owns the concrete callback methods. This narrow
-        duck-typed adapter keeps startup independent of that implementation
-        and leaves the planning world's obstacle IDs/return values unchanged.
-        """
-        if self._world_monitor is None or not isinstance(
-            self.config.visualization, ViserVisualizationConfig
-        ):
-            return
-        add = getattr(visualization, "add_obstacle", None)
-        remove = getattr(visualization, "remove_obstacle", None)
-        if not callable(add) and not callable(remove):
-            return
-
-        world = self._world_monitor.world
-        set_hooks = getattr(world, "set_obstacle_hooks", None)
-        if not callable(set_hooks):
-            raise RuntimeError("Viser obstacle visualization requires world obstacle hooks")
-        set_hooks(
-            on_add=add if callable(add) else None, on_remove=remove if callable(remove) else None
-        )
-        self._obstacle_hook_world = world
-
-    def _detach_obstacle_visualization_hook(self) -> None:
-        """Detach Viser callbacks before stopping or closing visualization."""
-        world = self._obstacle_hook_world
-        self._obstacle_hook_world = None
-        if world is not None:
-            world.set_obstacle_hooks(on_add=None, on_remove=None)
 
     def _get_default_robot_name(self) -> RobotName | None:
         """Get default robot name (first robot if only one, else None)."""
@@ -1571,7 +1535,6 @@ class ManipulationModule(Module):
 
         # Stop world monitor (includes visualization thread)
         if self._world_monitor is not None:
-            self._detach_obstacle_visualization_hook()
             self._world_monitor.stop_all_monitors()
 
         super().stop()

@@ -1,7 +1,7 @@
 ## ADDED Requirements
 
 ### Requirement: Optionally visualize the accepted manipulation planning world
-The manipulation planning stack SHALL support an optional, read-only visualization of obstacles in the planning world. When enabled, the visualization SHALL mirror each successfully accepted obstacle addition and removal exactly once, and SHALL NOT forward a failed world mutation.
+The manipulation planning stack SHALL support an optional, read-only visualization of obstacles in the planning world. `WorldMonitor` SHALL provide explicit coordinated add/remove helpers that call `WorldSpec` first and then the optional Viser visualizer only after a successful world mutation. `WorldObstacleMonitor` SHALL use those helpers. When enabled, the visualization SHALL mirror each successfully accepted obstacle addition and removal exactly once, and SHALL NOT forward a failed world mutation. No native-world hook is part of this capability.
 
 #### Scenario: Accepted obstacle addition is visualized once
 - **GIVEN** obstacle visualization is enabled
@@ -94,7 +94,7 @@ If an accepted mesh obstacle cannot be rendered, the visualization SHALL retain 
 - **AND** the accepted obstacle remains available to the planner
 
 ### Requirement: Keep the capability read-only and limited to add/remove
-The visualization SHALL observe planning-world obstacle additions and removals only. It SHALL NOT change planner decisions, obstacle acceptance, obstacle geometry, robot commands, actuator behavior, or introduce synchronization for mutation types outside add/remove.
+The visualization SHALL observe planning-world obstacle additions and removals only. Pose updates are explicitly out of scope. It SHALL NOT change planner decisions, obstacle acceptance, obstacle geometry, robot commands, actuator behavior, or introduce synchronization for mutation types outside add/remove.
 
 #### Scenario: Visualization cannot change planner or robot outcomes
 - **GIVEN** visualization is enabled

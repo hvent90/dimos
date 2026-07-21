@@ -21,14 +21,13 @@ the optional dependency installed.
 
 from __future__ import annotations
 
-from collections.abc import Callable
 from contextlib import contextmanager
 from dataclasses import dataclass, field, replace
 from pathlib import Path
 import tempfile
 from threading import RLock
 import time
-from typing import TYPE_CHECKING, TypeAlias
+from typing import TYPE_CHECKING
 import xml.etree.ElementTree as ET
 from xml.sax.saxutils import escape
 
@@ -61,9 +60,6 @@ if TYPE_CHECKING:
     from dimos.manipulation.planning.spec.protocols import WorldSpec
 
 logger = setup_logger()
-
-ObstacleAddHook: TypeAlias = Callable[[str, Obstacle], None]
-ObstacleRemoveHook: TypeAlias = Callable[[str], None]
 
 _WORLD_FRAME = ""
 
@@ -99,20 +95,6 @@ class RoboPlanWorld:
         self._live_context = RoboPlanContext()
         self._srdf_tempdirs: list[tempfile.TemporaryDirectory[str]] = []
         self._obstacle_lock = RLock()
-        self._obstacle_add_hook: ObstacleAddHook | None = None
-        self._obstacle_remove_hook: ObstacleRemoveHook | None = None
-
-    def set_obstacle_hooks(
-        self,
-        *,
-        on_add: ObstacleAddHook | None = None,
-        on_remove: ObstacleRemoveHook | None = None,
-    ) -> None:
-        """Replace direct obstacle mutation hooks, or clear them with no arguments."""
-        with self._obstacle_lock:
-            self._obstacle_add_hook = on_add
-            self._obstacle_remove_hook = on_remove
-
     # Robot Management
 
     def add_robot(self, config: RobotModelConfig) -> WorldRobotID:
@@ -166,11 +148,6 @@ class RoboPlanWorld:
                 return obstacle_id
             self._add_obstacle_to_scene(obstacle, obstacle_id)
             self._obstacles[obstacle_id] = obstacle
-            if self._obstacle_add_hook is not None:
-                try:
-                    self._obstacle_add_hook(obstacle_id, obstacle)
-                except Exception:
-                    logger.exception("RoboPlan obstacle add hook failed for '%s'", obstacle_id)
             return obstacle_id
 
     def remove_obstacle(self, obstacle_id: str) -> bool:
@@ -181,11 +158,6 @@ class RoboPlanWorld:
             scene = self._require_scene()
             scene.removeGeometry(obstacle_id)
             del self._obstacles[obstacle_id]
-            if self._obstacle_remove_hook is not None:
-                try:
-                    self._obstacle_remove_hook(obstacle_id)
-                except Exception:
-                    logger.exception("RoboPlan obstacle remove hook failed for '%s'", obstacle_id)
             return True
 
     def update_obstacle_pose(self, obstacle_id: str, pose: PoseStamped) -> bool:

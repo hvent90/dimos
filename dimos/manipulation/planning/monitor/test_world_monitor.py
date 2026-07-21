@@ -20,7 +20,10 @@ from typing import Any
 from dimos.manipulation.planning import factory as planning_factory
 from dimos.manipulation.planning.monitor import world_monitor as world_monitor_module
 from dimos.manipulation.planning.spec.config import RobotModelConfig
-from dimos.manipulation.planning.spec.models import PlanningSceneInfo
+from dimos.manipulation.planning.spec.enums import ObstacleType
+from dimos.manipulation.planning.spec.models import Obstacle, PlanningSceneInfo
+from dimos.manipulation.visualization.config import MeshcatVisualizationConfig
+from dimos.manipulation.visualization.viser.config import ViserVisualizationConfig
 from dimos.msgs.geometry_msgs.PoseStamped import PoseStamped
 from dimos.msgs.geometry_msgs.Quaternion import Quaternion
 from dimos.msgs.geometry_msgs.Vector3 import Vector3
@@ -29,6 +32,7 @@ from dimos.msgs.geometry_msgs.Vector3 import Vector3
 class FakeWorld:
     def __init__(self) -> None:
         self.calls: list[tuple[str, Any]] = []
+        self.obstacles: dict[str, Obstacle] = {}
 
     def add_robot(self, config):
         self.calls.append(("add_robot", config))
@@ -44,10 +48,13 @@ class FakeWorld:
         return ([], [])
 
     def add_obstacle(self, obstacle):
-        return "obstacle-1"
+        self.calls.append(("add_obstacle", obstacle))
+        self.obstacles.setdefault(obstacle.name, obstacle)
+        return obstacle.name
 
     def remove_obstacle(self, obstacle_id):
-        return True
+        self.calls.append(("remove_obstacle", obstacle_id))
+        return self.obstacles.pop(obstacle_id, None) is not None
 
     def update_obstacle_pose(self, obstacle_id, pose):
         return True
@@ -56,7 +63,7 @@ class FakeWorld:
         return None
 
     def get_obstacles(self):
-        return []
+        return list(self.obstacles.values())
 
     def finalize(self) -> None:
         return None
@@ -148,6 +155,12 @@ class FakeViz:
     def close(self) -> None:
         self.calls.append(("close", None))
 
+    def add_obstacle(self, obstacle_id: str, obstacle: Obstacle) -> None:
+        self.calls.append(("add_obstacle", obstacle_id, obstacle))
+
+    def remove_obstacle(self, obstacle_id: str) -> None:
+        self.calls.append(("remove_obstacle", obstacle_id))
+
 
 def _robot_config() -> RobotModelConfig:
     return RobotModelConfig(
@@ -161,7 +174,7 @@ def _robot_config() -> RobotModelConfig:
 
 
 def test_world_monitor_add_robot_records_scene_without_visualization_probe() -> None:
-    fake_world = FakeWorld()
+    fake_world: Any = FakeWorld()
     fake_viz = FakeViz()
 
     monitor = world_monitor_module.WorldMonitor(world=fake_world, visualization=fake_viz)  # type: ignore[arg-type]
@@ -173,7 +186,7 @@ def test_world_monitor_add_robot_records_scene_without_visualization_probe() -> 
 
 
 def test_world_monitor_syncs_planning_scene_to_visualization() -> None:
-    fake_world = FakeWorld()
+    fake_world: Any = FakeWorld()
     fake_viz = FakeViz()
 
     monitor = world_monitor_module.WorldMonitor(world=fake_world, visualization=fake_viz)  # type: ignore[arg-type]
@@ -184,6 +197,82 @@ def test_world_monitor_syncs_planning_scene_to_visualization() -> None:
     scene = fake_viz.calls[0][1]
     assert isinstance(scene, PlanningSceneInfo)
     assert scene.robots["robot-1"].name == "arm"
+
+
+def test_world_monitor_coordinates_obstacle_visualization_after_world_mutation() -> None:
+    fake_world: Any = FakeWorld()
+    fake_viz = FakeViz()
+    monitor = world_monitor_module.WorldMonitor(
+        world=fake_world,
+        visualization=fake_viz,
+        visualization_config=ViserVisualizationConfig(),
+    )  # type: ignore[arg-type]
+    obstacle = Obstacle(
+        name="box",
+        obstacle_type=ObstacleType.BOX,
+        pose=PoseStamped(position=Vector3(), orientation=Quaternion()),  # type: ignore[call-arg]
+        dimensions=(0.1, 0.2, 0.3),
+    )
+
+    assert monitor.add_obstacle(obstacle) == "box"
+    assert fake_world.calls[-1][0] == "add_obstacle"
+    assert fake_viz.calls[-1][:2] == ("add_obstacle", "box")
+    assert monitor.remove_obstacle("box") is True
+    assert fake_world.calls[-1] == ("remove_obstacle", "box")
+    assert fake_viz.calls[-1] == ("remove_obstacle", "box")
+
+
+def test_world_monitor_does_not_forward_duplicate_or_meshcat_adds() -> None:
+    fake_world: Any = FakeWorld()
+    fake_viz = FakeViz()
+    obstacle = Obstacle(
+        name="box",
+        obstacle_type=ObstacleType.BOX,
+        pose=PoseStamped(position=Vector3(), orientation=Quaternion()),  # type: ignore[call-arg]
+        dimensions=(0.1, 0.2, 0.3),
+    )
+    monitor = world_monitor_module.WorldMonitor(
+        world=fake_world,
+        visualization=fake_viz,
+        visualization_config=ViserVisualizationConfig(),
+    )  # type: ignore[arg-type]
+    monitor.add_obstacle(obstacle)
+    monitor.add_obstacle(obstacle)
+    assert [call[0] for call in fake_viz.calls] == ["add_obstacle"]
+
+    meshcat_monitor = world_monitor_module.WorldMonitor(
+        world=FakeWorld(),  # type: ignore[arg-type]
+        visualization=fake_viz,
+        visualization_config=MeshcatVisualizationConfig(),
+    )  # type: ignore[arg-type]
+    meshcat_monitor.add_obstacle(obstacle)
+    assert [call[0] for call in fake_viz.calls] == ["add_obstacle"]
+
+
+def test_world_monitor_clear_obstacles_forwards_removals_to_viser() -> None:
+    fake_world: Any = FakeWorld()
+    fake_viz = FakeViz()
+    monitor = world_monitor_module.WorldMonitor(
+        world=fake_world,
+        visualization=fake_viz,
+        visualization_config=ViserVisualizationConfig(),
+    )  # type: ignore[arg-type]
+    for name in ("first", "second"):
+        monitor.add_obstacle(
+            Obstacle(
+                name=name,
+                obstacle_type=ObstacleType.BOX,
+                pose=PoseStamped(position=Vector3(), orientation=Quaternion()),  # type: ignore[call-arg]
+                dimensions=(0.1, 0.2, 0.3),
+            )
+        )
+
+    monitor.clear_obstacles()
+    assert fake_world.obstacles == {}
+    assert [call for call in fake_viz.calls if call[0] == "remove_obstacle"] == [
+        ("remove_obstacle", "first"),
+        ("remove_obstacle", "second"),
+    ]
 
 
 def test_create_planning_specs_wraps_existing_world(monkeypatch) -> None:

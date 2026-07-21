@@ -19,18 +19,20 @@ visualization operation is tied to an individual world mutation.
 
 **Goals:**
 
-- When Viser is selected, initialize its server/scene and install a direct mutation
-  hook on the already-created concrete planning-world object before the floor or
-  any other obstacle can be added.
-- Forward each actual successful obstacle add and remove synchronously and exactly
-  once, using the accepted obstacle/ID and the matching Viser scene operation.
+- When Viser is selected, initialize its server/scene before the floor or any
+  other obstacle can be added.
+- Add explicit coordinated `WorldMonitor` add/remove helpers. Each helper calls
+  `WorldSpec` first and then, on success, calls the optional Viser visualizer
+  synchronously and exactly once with the accepted obstacle/ID.
+- Route `WorldObstacleMonitor` through the `WorldMonitor` helpers rather than
+  calling the world or visualizer directly.
 - Render planner-parity boxes, spheres, cylinders, and meshes under a local
   `manipulation.obstacles` scene namespace.
 - Provide one local visibility checkbox, defaulting to visible, which changes
   entity visibility without deleting render handles or losing state.
 - Show a local proxy and a failure label when a mesh cannot be rendered, rather than
   silently dropping an accepted planner obstacle.
-- Keep the concrete world identity intact and preserve the no-visualization path as
+- Preserve the existing world identity and preserve the no-visualization path as
   a true no-op.
 
 **Non-Goals:**
@@ -41,17 +43,17 @@ visualization operation is tied to an individual world mutation.
   architecture.
 - No dynamic obstacle pose synchronization in this change.  Pose updates remain
   deferred because Drake's collision/visual pose behavior currently differs; an
-  update must not be inferred from add/remove hooks.
+  update must not be inferred from add/remove coordination.
 - No change to robot visualization, planner collision semantics, or robot actuation.
 
 ## DimOS Architecture
 
 The existing flow remains `ManipulationModule` → `WorldMonitor` → concrete
 `DrakeWorld`/`RoboPlanWorld`.  `WorldSpec` and `VisualizationSpec` remain the
-public contracts; no DimOS `Spec` Protocol or stream is added.  The hook is an
-internal, narrowly typed obstacle-mutation adapter/callback installed on the
-concrete world instance, so the world continues to be passed to planners and
-monitors by its original identity.
+public contracts; no DimOS `Spec` Protocol or stream is added. `WorldMonitor`
+owns the coordination seam: its explicit obstacle add/remove helpers invoke
+`WorldSpec` and then an optional Viser visualizer. No native-world hook,
+world decorator, or callback is installed on the concrete world.
 
 Startup is reordered as follows:
 
@@ -61,20 +63,18 @@ Startup is reordered as follows:
    With Viser enabled, eagerly start the Viser runtime and initialize its scene.
 3. Construct the `WorldMonitor` with the visualization (or attach it before any
    obstacle mutation), add robots, and finalize the world as today.
-4. Install the obstacle hook on the concrete world before adding the floor.  The
-   hook is absent for `NoManipulationVisualizationConfig` and for non-Viser
-   visualization paths that do not opt into obstacle rendering.
-5. Add the floor and start the normal monitors.  All subsequent monitor, RPC, and
-   perception add/remove calls use the same world and therefore pass through the
-   hook.
+4. Add the floor through the `WorldMonitor` coordinated add helper. The helper
+   calls `WorldSpec` first and forwards only a successful mutation to Viser.
+5. Start the normal monitors. All subsequent RPC and perception add/remove calls
+   from `WorldObstacleMonitor` use the same `WorldMonitor` seam.
 
-The concrete world implementation invokes the callback only after its own
-mutation and bookkeeping succeed.  `add_obstacle` supplies the accepted
-`Obstacle` and returned ID; `remove_obstacle` supplies the removed ID only when it
-returns `True`.  Duplicate/no-op adds and missing-ID removes do not produce
-visualization calls.  Callback invocation is direct in the mutation call stack,
-not queued or polled.  Visualization errors are logged and isolated from the
-planner mutation after the world has committed its authoritative state.
+The `WorldMonitor` helpers invoke the `WorldSpec` mutation first. `add_obstacle`
+supplies the accepted `Obstacle` and returned ID to Viser only on success;
+`remove_obstacle` supplies the removed ID only when `WorldSpec` returns `True`.
+Duplicate/no-op adds and missing-ID removes do not produce visualization calls.
+Coordination is direct in the mutation call stack, not queued or polled.
+Visualization errors are logged and isolated after the world has committed its
+authoritative state.
 
 The Viser scene owns an obstacle-handle map keyed by world obstacle ID beneath
 `/manipulation/obstacles/<id>`.  Primitive dimensions, pose, color, and opacity
@@ -100,26 +100,27 @@ conventions rather than adding a new CLI flag.
 
 ## Decisions
 
-### Direct hook on the native world
+### Explicit monitor coordination
 
-Install a callback on the existing concrete `DrakeWorld`/`RoboPlanWorld` instance
-before floor creation.  This preserves `world is planning_specs.world` and avoids
-changing planner, monitor, or backend type checks.  A wrapper world was rejected
-because it obscures identity and risks missing backend-internal mutations.
+Keep the concrete `DrakeWorld`/`RoboPlanWorld` unchanged and let `WorldMonitor`
+coordinate each supported mutation. This keeps `WorldSpec` authoritative,
+preserves world identity, makes the optional visualizer dependency explicit, and
+avoids native-world hooks, wrappers, and backend-internal coupling.
 
 ### Commit-before-forward and exact-once forwarding
 
-Each backend completes its native add/remove first, then invokes the matching
-visual operation once.  This makes the planner the source of truth and prevents
-failed operations from appearing in Viser.  Duplicate and missing-object no-ops
-are not visual mutations.  The callback executes synchronously under the existing
-world/monitor mutation lock, giving deterministic ordering without a queue.
+Each `WorldMonitor` helper completes the `WorldSpec` add/remove first, then invokes
+the matching visual operation once. This makes the planner the source of truth
+and prevents failed operations from appearing in Viser. Duplicate and missing-
+object no-ops are not visual mutations. The helper executes synchronously under
+the existing monitor mutation lock, giving deterministic ordering without a
+queue.
 
 ### Read-only Viser scene
 
 Obstacle handles are created and removed by planner events only.  Viser controls
 only local visibility; it never edits poses, dimensions, or planner state.  Pose
-updates are intentionally not hooked until Drake's dynamic-pose discrepancy is
+updates are intentionally not synchronized until Drake's dynamic-pose discrepancy is
 resolved.
 
 ### Geometry and mesh failure behavior
@@ -131,12 +132,12 @@ rejected because it falsely suggests planner/visual parity.
 
 ### Lifecycle and threading
 
-Viser startup occurs before the first obstacle mutation; teardown removes the hook
-before closing the Viser scene/runtime so late monitor callbacks cannot target
-closed handles.  Direct scene calls are protected by the scene's lifecycle/scene
-lock as needed, and callback failures do not hold up world authority.  The
-existing visualization thread continues to publish robot state only; it does not
-poll or reconcile obstacles.
+Viser startup occurs before the first obstacle mutation. Teardown stops obstacle
+monitor activity before closing the Viser scene/runtime so late coordinated calls
+cannot target closed handles. Direct scene calls are protected by the scene's
+lifecycle/scene lock as needed, and visualizer failures do not hold up world
+authority. The existing visualization thread continues to publish robot state
+only; it does not poll or reconcile obstacles.
 
 ## Safety / Simulation / Replay
 
@@ -144,14 +145,14 @@ This is read-only visualization and does not send commands to a robot or alter
 collision checking, so hardware safety behavior is unchanged.  Real hardware,
 simulation, and replay use the same accepted-world mutation path; the viewer only
 reflects the selected planning backend.  The Viser backend is optional and must be
-explicitly enabled; disabled visualization creates no server, scene, hook, or
+explicitly enabled; disabled visualization creates no server, scene, or
 Viser dependency access.
 
 The manual xArm6 planner-only check should enable Viser and verify that startup
 shows the floor, primitive and mesh obstacle parity, exact add/remove behavior,
 the `manipulation.obstacles` checkbox, and mesh failure proxy/label feedback.  It
 should also verify that planning and robot actuation are unchanged.  Automated
-tests should cover both Drake and backend-independent hook behavior where
+tests should cover both Drake and backend-independent coordination behavior where
 available, without requiring a live browser.
 
 ## Risks / Trade-offs
@@ -159,16 +160,17 @@ available, without requiring a live browser.
 - Viser API differences or unavailable mesh assets can prevent a native mesh
   handle.  Keep primitive rendering independent and use the proxy/label fallback;
   test scene calls with fakes.
-- Direct callbacks run on obstacle-monitor/RPC threads and may briefly add Viser
+- Direct visualizer calls run on obstacle-monitor/RPC threads and may briefly add Viser
   latency.  This is intentional for exact ordering; avoid blocking network or
   polling infrastructure and keep the scene operation bounded.
-- A visualization callback can fail after a successful planner mutation.  Log the
+- A visualizer call can fail after a successful planner mutation. Log the
   failure and retain planner state; do not roll back native world state.  The mesh
   fallback specifically prevents silent loss for the expected asset-load failure.
-- Lifecycle races could call a closed scene.  Install/remove the hook under the
-  same lifecycle lock and stop obstacle monitors before visualization teardown.
-- Existing Meshcat behavior must not regress; its world-native visualization path
-  remains unchanged and does not install the Viser hook.
+- Lifecycle races could call a closed scene. Stop obstacle monitors before
+  visualization teardown and guard the coordinated visualizer seam with the
+  lifecycle lock.
+- Existing Meshcat behavior must not regress; its existing visualization path
+  remains unchanged and does not opt into the Viser visualizer seam.
 
 ## Migration / Rollout
 
@@ -183,7 +185,7 @@ as needed, and focused tests; no other artifacts are changed.
 Validation consists of the focused manipulation and Viser tests plus the manual
 xArm6 planner-only check.  Rollback is simply selecting `backend="none"` (or
 removing the Viser wiring); native world behavior remains available without the
-hook.
+the coordinated visualizer seam.
 
 ## Open Questions
 

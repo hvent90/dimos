@@ -7,13 +7,15 @@ This change is intentionally limited to obstacle add/remove visualization in the
 ## What Changes
 
 - Add optional Viser visualization for obstacles accepted into the manipulation planning world.
-- When visualization is enabled, initialize and attach the Viser backend before floor or any obstacle mutation.
-- Forward each successful world add/remove mutation exactly once to the visualization; failed world mutations are not forwarded.
-- Keep visualization disabled as a true no-op with no visualization hook.
+- When visualization is enabled, initialize the Viser backend before floor or any obstacle mutation.
+- Give `WorldMonitor` explicit coordinated add/remove helpers that call `WorldSpec` first and then, when available, the optional Viser visualizer.
+- Route `WorldObstacleMonitor` through those helpers so successful world mutations are forwarded exactly once and failed mutations are not forwarded.
+- Do not add native-world hooks; `WorldMonitor` is the sole coordination seam.
+- Keep visualization disabled as a true no-op with no visualizer calls.
 - Render planner-parity box, sphere, cylinder, and mesh obstacles.
 - Provide one local `manipulation.obstacles` visibility checkbox, default visible, that hides/shows obstacle entities without losing their render state.
 - On mesh rendering failure, retain a local proxy and label it as failed rather than silently dropping the obstacle.
-- Scope the initial behavior to add/remove only; no general viewer architecture or broader mutation synchronization is introduced.
+- Scope the initial behavior to add/remove only; pose updates are explicitly out of scope, and no general viewer architecture or broader mutation synchronization is introduced.
 
 ## Affected DimOS Surfaces
 

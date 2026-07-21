@@ -16,8 +16,6 @@ from __future__ import annotations
 
 from contextlib import AbstractContextManager, nullcontext
 from pathlib import Path
-from types import SimpleNamespace
-from typing import Any, cast
 from unittest.mock import MagicMock
 
 import numpy as np
@@ -25,7 +23,7 @@ from numpy.typing import NDArray
 from pydantic import ValidationError
 import pytest
 
-from dimos.manipulation.manipulation_module import ManipulationModule, ManipulationModuleConfig
+from dimos.manipulation.manipulation_module import ManipulationModuleConfig
 from dimos.manipulation.planning.spec.config import RobotModelConfig
 from dimos.manipulation.planning.spec.models import (
     JointPath,
@@ -68,14 +66,6 @@ class FakeVisualization:
 
 
 class FakeWorld:
-    def __init__(self) -> None:
-        self.obstacle_add_hook = None
-        self.obstacle_remove_hook = None
-
-    def set_obstacle_hooks(self, *, on_add=None, on_remove=None) -> None:
-        self.obstacle_add_hook = on_add
-        self.obstacle_remove_hook = on_remove
-
     def add_robot(self, config: RobotModelConfig) -> WorldRobotID:
         return "robot-1"
 
@@ -97,13 +87,9 @@ class FakeWorld:
         return (np.array([], dtype=np.float64), np.array([], dtype=np.float64))
 
     def add_obstacle(self, obstacle: Obstacle) -> str:
-        if self.obstacle_add_hook is not None:
-            self.obstacle_add_hook("obstacle-1", obstacle)
         return "obstacle-1"
 
     def remove_obstacle(self, obstacle_id: str) -> bool:
-        if self.obstacle_remove_hook is not None:
-            self.obstacle_remove_hook(obstacle_id)
         return True
 
     def update_obstacle_pose(self, obstacle_id: str, pose: PoseStamped) -> bool:
@@ -169,49 +155,6 @@ class FakeWorld:
 
 class FakeVisualizationWorld(FakeWorld, FakeVisualization):
     pass
-
-
-class ObstacleVisualization(FakeVisualization):
-    def __init__(self) -> None:
-        self.added: list[tuple[str, Obstacle]] = []
-        self.removed: list[str] = []
-
-    def add_obstacle(self, obstacle_id: str, obstacle: Obstacle) -> None:
-        self.added.append((obstacle_id, obstacle))
-
-    def remove_obstacle(self, obstacle_id: str) -> None:
-        self.removed.append(obstacle_id)
-
-
-def test_direct_world_obstacle_hook_forwards_mutations() -> None:
-    module: Any = object.__new__(ManipulationModule)
-    world = FakeWorld()
-    module._world_monitor = SimpleNamespace(world=world)
-    module.config = ManipulationModuleConfig(visualization=ViserVisualizationConfig())
-    visualization = ObstacleVisualization()
-
-    module._install_obstacle_visualization_hook(visualization)
-    obstacle = cast("Obstacle", object())
-    assert world.add_obstacle(obstacle) == "obstacle-1"
-    assert visualization.added == [("obstacle-1", obstacle)]
-    assert world.remove_obstacle("obstacle-1") is True
-    assert visualization.removed == ["obstacle-1"]
-
-    module._detach_obstacle_visualization_hook()
-    world.add_obstacle(obstacle)
-    assert len(visualization.added) == 1
-
-
-def test_direct_world_obstacle_hook_is_noop_without_callbacks() -> None:
-    module: Any = object.__new__(ManipulationModule)
-    world = FakeWorld()
-    module._world_monitor = SimpleNamespace(world=world)
-    module.config = ManipulationModuleConfig(visualization=MeshcatVisualizationConfig())
-
-    module._install_obstacle_visualization_hook(FakeVisualization())
-    obstacle = cast("Obstacle", object())
-    assert world.add_obstacle(obstacle) == "obstacle-1"
-    assert world.obstacle_add_hook is None
 
 
 def test_config_defaults_to_no_visualization() -> None:

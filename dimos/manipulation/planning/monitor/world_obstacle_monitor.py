@@ -19,7 +19,7 @@ Monitors obstacle updates and applies them to a WorldSpec instance.
 This is the WorldSpec-based replacement for WorldGeometryMonitor.
 
 Example:
-    monitor = WorldObstacleMonitor(world, lock)
+    monitor = WorldObstacleMonitor(world, lock, add_obstacle, remove_obstacle)
     monitor.start()
     monitor.on_collision_object(collision_msg)  # Called by subscriber
 """
@@ -67,6 +67,8 @@ class WorldObstacleMonitor:
         self,
         world: WorldSpec,
         lock: threading.RLock,
+        add_obstacle: Callable[[Obstacle], str],
+        remove_obstacle: Callable[[str], bool],
         detection_timeout: float = 2.0,
         use_mesh_obstacles: bool = False,
     ) -> None:
@@ -80,6 +82,8 @@ class WorldObstacleMonitor:
         """
         self._world = world
         self._lock = lock
+        self._add_obstacle = add_obstacle
+        self._remove_obstacle = remove_obstacle
         self._detection_timeout = detection_timeout
         self._use_mesh_obstacles = use_mesh_obstacles
 
@@ -145,7 +149,7 @@ class WorldObstacleMonitor:
             logger.warning(f"Failed to create obstacle from message: {msg.id}")
             return
 
-        obstacle_id = self._world.add_obstacle(obstacle)
+        obstacle_id = self._add_obstacle(obstacle)
         self._collision_objects[msg.id] = obstacle_id
 
         logger.debug(f"Added collision object '{msg.id}' as '{obstacle_id}'")
@@ -164,7 +168,7 @@ class WorldObstacleMonitor:
             return
 
         obstacle_id = self._collision_objects[msg_id]
-        self._world.remove_obstacle(obstacle_id)
+        self._remove_obstacle(obstacle_id)
         del self._collision_objects[msg_id]
 
         logger.debug(f"Removed collision object '{msg_id}'")
@@ -252,7 +256,7 @@ class WorldObstacleMonitor:
                 else:
                     # Add new obstacle
                     obstacle = self._detection_to_obstacle(detection)
-                    obstacle_id = self._world.add_obstacle(obstacle)
+                    obstacle_id = self._add_obstacle(obstacle)
                     self._perception_objects[det_id] = obstacle_id
                     self._perception_timestamps[det_id] = current_time
 
@@ -303,7 +307,7 @@ class WorldObstacleMonitor:
 
         for det_id in stale_ids:
             obstacle_id = self._perception_objects[det_id]
-            removed = self._world.remove_obstacle(obstacle_id)
+            removed = self._remove_obstacle(obstacle_id)
             if not removed:
                 logger.warning(f"Obstacle '{obstacle_id}' not found in world during cleanup")
             del self._perception_objects[det_id]
@@ -374,7 +378,7 @@ class WorldObstacleMonitor:
 
             # Clear perception objects
             for det_id, obstacle_id in list(self._perception_objects.items()):
-                self._world.remove_obstacle(obstacle_id)
+                self._remove_obstacle(obstacle_id)
                 del self._perception_objects[det_id]
                 del self._perception_timestamps[det_id]
 
@@ -469,13 +473,13 @@ class WorldObstacleMonitor:
         # Step 3: apply to Drake world under lock (fast)
         with self._lock:
             for obs_id in self._object_obstacles.values():
-                self._world.remove_obstacle(obs_id)
+                self._remove_obstacle(obs_id)
             self._object_obstacles.clear()
 
             result: list[dict[str, Any]] = []
             for oid, obj, obstacle in prepared:
                 assert isinstance(obj, Object)
-                obs_id = self._world.add_obstacle(obstacle)
+                obs_id = self._add_obstacle(obstacle)
                 self._object_obstacles[oid] = obs_id
                 result.append(
                     {
@@ -503,7 +507,7 @@ class WorldObstacleMonitor:
             obs_id = self._object_obstacles.pop(object_id, None)
             if obs_id is None:
                 return False
-            self._world.remove_obstacle(obs_id)
+            self._remove_obstacle(obs_id)
             logger.info(f"Removed obstacle for object '{object_id}'")
             return True
 
@@ -516,7 +520,7 @@ class WorldObstacleMonitor:
         with self._lock:
             count = len(self._object_obstacles)
             for obs_id in self._object_obstacles.values():
-                self._world.remove_obstacle(obs_id)
+                self._remove_obstacle(obs_id)
             self._object_obstacles.clear()
             return count
 

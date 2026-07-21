@@ -25,6 +25,8 @@ from dimos.manipulation.planning.monitor.robot_state_monitor import RobotStateMo
 from dimos.manipulation.planning.monitor.world_obstacle_monitor import WorldObstacleMonitor
 from dimos.manipulation.planning.spec.models import PlanningSceneInfo
 from dimos.manipulation.planning.spec.protocols import VisualizationSpec, WorldSpec
+from dimos.manipulation.visualization.config import ManipulationVisualizationConfig
+from dimos.manipulation.visualization.viser.config import ViserVisualizationConfig
 from dimos.msgs.geometry_msgs.PoseStamped import PoseStamped
 from dimos.msgs.sensor_msgs.JointState import JointState
 from dimos.utils.logging_config import setup_logger
@@ -55,9 +57,11 @@ class WorldMonitor:
         self,
         world: WorldSpec,
         visualization: VisualizationSpec | None = None,
+        visualization_config: ManipulationVisualizationConfig | None = None,
     ) -> None:
         self._world = world
         self._visualization = visualization
+        self._visualization_config = visualization_config
         self._lock = threading.RLock()
         self._robot_joints: dict[WorldRobotID, list[str]] = {}
         self._robot_configs: dict[WorldRobotID, RobotModelConfig] = {}
@@ -112,17 +116,37 @@ class WorldMonitor:
     def add_obstacle(self, obstacle: Obstacle) -> str:
         """Add an obstacle. Returns obstacle_id."""
         with self._lock:
-            return self._world.add_obstacle(obstacle)
+            obstacle_count = len(self._world.get_obstacles())
+            obstacle_id = self._world.add_obstacle(obstacle)
+            inserted = len(self._world.get_obstacles()) > obstacle_count
+            if inserted and self._is_viser_visualization():
+                callback = getattr(self._visualization, "add_obstacle", None)
+                if callable(callback):
+                    try:
+                        callback(obstacle_id, obstacle)
+                    except Exception:
+                        logger.exception("Obstacle visualization add failed for '%s'", obstacle_id)
+            return obstacle_id
 
     def remove_obstacle(self, obstacle_id: str) -> bool:
         """Remove an obstacle."""
         with self._lock:
-            return self._world.remove_obstacle(obstacle_id)
+            removed = self._world.remove_obstacle(obstacle_id)
+            if removed and self._is_viser_visualization():
+                callback = getattr(self._visualization, "remove_obstacle", None)
+                if callable(callback):
+                    try:
+                        callback(obstacle_id)
+                    except Exception:
+                        logger.exception("Obstacle visualization remove failed for '%s'", obstacle_id)
+            return removed
 
     def clear_obstacles(self) -> None:
         """Remove all obstacles."""
         with self._lock:
-            self._world.clear_obstacles()
+            obstacle_ids = [obstacle.name for obstacle in self._world.get_obstacles()]
+            for obstacle_id in obstacle_ids:
+                self.remove_obstacle(obstacle_id)
 
     # Monitor Control
 
@@ -173,6 +197,8 @@ class WorldMonitor:
             self._obstacle_monitor = WorldObstacleMonitor(
                 world=self._world,
                 lock=self._lock,
+                add_obstacle=self.add_obstacle,
+                remove_obstacle=self.remove_obstacle,
             )
             self._obstacle_monitor.start()
             logger.info("Obstacle monitor started")
@@ -518,9 +544,19 @@ class WorldMonitor:
         """Get optional visualization backend."""
         return self._visualization
 
-    def set_visualization(self, visualization: VisualizationSpec | None) -> None:
+    def set_visualization(
+        self,
+        visualization: VisualizationSpec | None,
+        *,
+        config: ManipulationVisualizationConfig | None = None,
+    ) -> None:
         """Set optional visualization backend after monitor construction."""
         self._visualization = visualization
+        self._visualization_config = config
+
+    def _is_viser_visualization(self) -> bool:
+        """Return whether obstacle events belong to the Viser adapter."""
+        return isinstance(self._visualization_config, ViserVisualizationConfig)
 
     def get_state_monitor(self, robot_id: str) -> RobotStateMonitor | None:
         """Get state monitor for a robot (may be None)."""

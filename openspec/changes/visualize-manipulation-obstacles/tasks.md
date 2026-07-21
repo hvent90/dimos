@@ -7,19 +7,19 @@
 - [x] 1.5 Implement accepted-mesh rendering failure feedback using a local proxy at the accepted pose and a user-visible failure label, without raising a planner-world failure or silently dropping the obstacle.
 - [x] 1.6 Add focused fake-server/scene tests for primitive geometry parity, appearance fallback, mesh success/failure, removal cleanup, default visibility, and hidden-state persistence across additions.
 
-## 2. Native planning-world mutation hook
+## 2. WorldMonitor mutation coordination
 
-- [x] 2.1 Add a narrowly typed direct hook facility to the concrete planning-world mutation path, preserving the original `DrakeWorld`/`RoboPlanWorld` object identity and avoiding a proxy world, queue, or polling loop.
-- [x] 2.2 Invoke the add callback only after a real native obstacle addition and bookkeeping succeed, forwarding the accepted obstacle and returned ID exactly once; do not forward rejected, duplicate/no-op additions.
-- [x] 2.3 Invoke the remove callback only after a real native removal succeeds, forwarding the matching obstacle ID exactly once; leave visualization unchanged for rejected or missing-ID removals.
-- [x] 2.4 Preserve existing world locks and lifecycle behavior while making direct callback invocation safe for RPC and obstacle-monitor mutation threads; isolate visualization callback failures after native world state commits.
-- [x] 2.5 Add backend-independent and concrete-world tests covering successful/rejected add/remove forwarding, exact-once behavior, no-op behavior, native world identity, and callback teardown/lifecycle safety.
+- [x] 2.1 Add explicit coordinated add/remove helpers to `WorldMonitor` that call `WorldSpec` first and optionally the Viser visualizer second, preserving the original concrete world identity and avoiding hooks, proxy worlds, queues, or polling.
+- [x] 2.2 Route `WorldObstacleMonitor` add/remove operations through the `WorldMonitor` helpers; forward accepted obstacles/IDs exactly once and do not forward rejected or duplicate/no-op additions.
+- [x] 2.3 Forward a removed obstacle ID exactly once only when `WorldSpec` reports successful removal; leave visualization unchanged for rejected or missing-ID removals.
+- [x] 2.4 Preserve existing monitor/world locks and lifecycle behavior for RPC and obstacle-monitor mutation threads; isolate visualizer failures after `WorldSpec` commits its authoritative state.
+- [x] 2.5 Add backend-independent and monitor tests covering successful/rejected add/remove coordination, exact-once behavior, no-op behavior, world identity, and lifecycle safety without native-world hooks.
 
 ## 3. Enabled startup and blueprint wiring
 
 - [x] 3.1 Reorder manipulation startup so enabled Viser is initialized and its scene is ready after robot metadata is available but before the floor or any obstacle mutation.
-- [x] 3.2 Install the direct hook on that existing concrete world before adding the floor, and route floor, RPC, and perception add/remove mutations through the same hook without reconstructing obstacles by polling.
-- [x] 3.3 Ensure disabled visualization installs no hook, starts no Viser runtime, and leaves planning, obstacle outcomes, and actuation behavior unchanged.
+- [x] 3.2 Add the floor through `WorldMonitor`'s coordinated helper and route RPC/perception add/remove mutations from `WorldObstacleMonitor` through the same seam without reconstructing obstacles by polling.
+- [x] 3.3 Ensure disabled visualization makes the coordinated helper a visualizer-free no-op, starts no Viser runtime, and leaves planning, obstacle outcomes, and actuation behavior unchanged.
 - [x] 3.4 Wire the optional Viser configuration into the xArm6 planner-only blueprint using existing configuration/dependency conventions, without adding CLI, stream, skill, MCP, or generated-registry surfaces.
 - [x] 3.5 Add startup-order and disabled-path tests proving the floor is visible on initial readiness, the first accepted obstacle needs no retry, and the concrete world identity is preserved.
 
@@ -32,6 +32,6 @@
 
 - [x] 5.1 Run `openspec validate visualize-manipulation-obstacles`.
 - [x] 5.2 Run focused pytest targets covering the Viser scene/visualizer tests, manipulation world/monitor tests, visualization factory tests, and startup integration tests.
-- [x] 5.3 Run focused mypy validation for the changed manipulation planning and Viser visualization modules, resolving type errors introduced by the hook and adapter contracts.
+- [x] 5.3 Run focused mypy validation for the changed manipulation planning and Viser visualization modules, resolving type errors introduced by the coordination seam and adapter contracts.
 - [x] 5.4 Manually run the xArm6 planner-only surface with Viser enabled and use the existing RPC API to add box, sphere, cylinder, and mesh obstacles, remove accepted and missing IDs, and verify exact visual parity and no visual update for rejected mutations.
-- [x] 5.5 In the same xArm6 smoke test, verify the `manipulation.obstacles` checkbox is visible and enabled by default and persists when hidden across add/remove operations. Verify the accepted-mesh renderer-failure proxy with the focused fake-Viser test because Drake rejects malformed mesh assets before the live visualization hook runs.
+- [x] 5.5 In the same xArm6 smoke test, verify the `manipulation.obstacles` checkbox is visible and enabled by default and persists when hidden across add/remove operations. Verify the accepted-mesh renderer-failure proxy with the focused fake-Viser test because Drake rejects malformed mesh assets before the live visualization seam runs.
