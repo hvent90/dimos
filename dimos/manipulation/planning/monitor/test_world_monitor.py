@@ -243,6 +243,7 @@ def test_world_monitor_does_not_forward_duplicate_adds() -> None:
     monitor.add_obstacle(obstacle)
     assert fake_viz.added_obstacles == [("box", obstacle)]
 
+
 def test_world_monitor_clear_obstacles_forwards_removals_to_visualization() -> None:
     fake_world: Any = FakeWorld()
     fake_viz = FakeViz()

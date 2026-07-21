@@ -252,13 +252,11 @@ def test_create_visualization_none_returns_none() -> None:
 def test_create_visualization_meshcat_accepts_structural_world() -> None:
     fake_world = FakeMeshcatWorld()
     world_monitor = MagicMock()
-    visualization = (
-        create_manipulation_visualization(
-            MeshcatVisualizationConfig(),
-            world=fake_world,
-            world_monitor=world_monitor,
-            manipulation_module=MagicMock(),
-        )
+    visualization = create_manipulation_visualization(
+        MeshcatVisualizationConfig(),
+        world=fake_world,
+        world_monitor=world_monitor,
+        manipulation_module=MagicMock(),
     )
     assert visualization is not fake_world
     assert isinstance(visualization, VisualizationSpec)

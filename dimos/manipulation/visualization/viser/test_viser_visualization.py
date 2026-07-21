@@ -360,7 +360,6 @@ class FakeGuiServer:
         self.checkboxes[label] = handle
         return handle
 
-
     def add_slider(
         self,
         label: str,
@@ -803,9 +802,7 @@ def test_scene_mesh_failure_keeps_proxy_label_and_visibility_state() -> None:
     scene.set_obstacles_visible(False)
     scene.add_obstacle("mesh-1", make_obstacle(ObstacleType.MESH))
 
-    mesh_failure_entities = [
-        handle for handle in server.entities if "mesh-1" in handle.name
-    ]
+    mesh_failure_entities = [handle for handle in server.entities if "mesh-1" in handle.name]
     assert len(mesh_failure_entities) == 2
     assert all(handle.visible is False for handle in mesh_failure_entities)
     assert any("mesh-failure-proxy" in handle.name for handle in mesh_failure_entities)
