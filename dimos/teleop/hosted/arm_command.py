@@ -52,7 +52,7 @@ class ArmCommandModule(ArmTeleopModule):
     """Operator command/E-STOP plane for a coordinator-driven arm."""
 
     # Pushed to the broker at init so the session POST picks the arm cockpit.
-    ROBOT_TYPE: ClassVar[RobotType] = RobotType.XARM
+    ROBOT_TYPE: ClassVar[RobotType] = RobotType.ARM
 
     config: ArmCommandConfig
 

@@ -25,4 +25,4 @@ class RobotType(StrEnum):
     """Operator cockpit kind; value is the wire string sent to the broker."""
 
     GO2 = "go2"
-    XARM = "xarm"
+    ARM = "arm"

@@ -285,5 +285,5 @@ def test_init_declares_robot_type_to_broker(module: ArmCommandModule) -> None:
     in the session-create POST so the operator dashboard opens the arm cockpit."""
     from dimos.protocol.pubsub.impl.webrtc.providers.broker import BrokerProvider
 
-    assert module.ROBOT_TYPE == "xarm"
-    assert BrokerProvider._robot_type == "xarm"
+    assert module.ROBOT_TYPE == "arm"
+    assert BrokerProvider._robot_type == "arm"
