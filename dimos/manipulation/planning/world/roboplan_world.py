@@ -95,6 +95,7 @@ class RoboPlanWorld:
         self._live_context = RoboPlanContext()
         self._srdf_tempdirs: list[tempfile.TemporaryDirectory[str]] = []
         self._obstacle_lock = RLock()
+
     # Robot Management
 
     def add_robot(self, config: RobotModelConfig) -> WorldRobotID:

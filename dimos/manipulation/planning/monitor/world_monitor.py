@@ -138,7 +138,9 @@ class WorldMonitor:
                     try:
                         callback(obstacle_id)
                     except Exception:
-                        logger.exception("Obstacle visualization remove failed for '%s'", obstacle_id)
+                        logger.exception(
+                            "Obstacle visualization remove failed for '%s'", obstacle_id
+                        )
             return removed
 
     def clear_obstacles(self) -> None:

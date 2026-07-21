@@ -83,6 +83,7 @@ except ImportError:
 
 logger = setup_logger()
 
+
 @dataclass
 class _RobotData:
     """Internal data for tracking a robot in the world."""
@@ -196,6 +197,7 @@ class DrakeWorld(WorldSpec, VisualizationSpec):
 
         # Obstacle source for dynamic obstacles
         self._obstacle_source_id: Any = None
+
     def add_robot(self, config: RobotModelConfig) -> WorldRobotID:
         """Add a robot to the world. Returns robot_id.
 
