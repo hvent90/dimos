@@ -20,7 +20,8 @@ from typing import Any
 from dimos.manipulation.planning import factory as planning_factory
 from dimos.manipulation.planning.monitor import world_monitor as world_monitor_module
 from dimos.manipulation.planning.spec.config import RobotModelConfig
-from dimos.manipulation.planning.spec.models import PlanningSceneInfo
+from dimos.manipulation.planning.spec.enums import ObstacleType
+from dimos.manipulation.planning.spec.models import Obstacle, PlanningSceneInfo
 from dimos.msgs.geometry_msgs.PoseStamped import PoseStamped
 from dimos.msgs.geometry_msgs.Quaternion import Quaternion
 from dimos.msgs.geometry_msgs.Vector3 import Vector3
@@ -44,6 +45,7 @@ class FakeWorld:
         return ([], [])
 
     def add_obstacle(self, obstacle):
+        self.calls.append(("add_obstacle", obstacle))
         return "obstacle-1"
 
     def remove_obstacle(self, obstacle_id):
@@ -107,6 +109,9 @@ class FakeWorld:
     def initialize_scene(self, scene: PlanningSceneInfo) -> None:
         return None
 
+    def add_obstacle(self, obstacle: Obstacle) -> None:
+        return None
+
     def publish_visualization(self, ctx=None) -> None:
         return None
 
@@ -132,6 +137,9 @@ class FakeViz:
 
     def initialize_scene(self, scene: PlanningSceneInfo) -> None:
         self.calls.append(("initialize_scene", scene))
+
+    def add_obstacle(self, obstacle: Obstacle) -> None:
+        self.calls.append(("add_obstacle", obstacle))
 
     def publish_visualization(self, ctx=None) -> None:
         return None

@@ -517,6 +517,9 @@ class FakeVisualization:
     def initialize_scene(self, scene: PlanningSceneInfo) -> None:
         pass
 
+    def add_obstacle(self, obstacle: Obstacle) -> None:
+        pass
+
     def get_visualization_url(self) -> str | None:
         return "123"
 

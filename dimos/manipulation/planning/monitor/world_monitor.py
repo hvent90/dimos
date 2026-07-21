@@ -112,7 +112,10 @@ class WorldMonitor:
     def add_obstacle(self, obstacle: Obstacle) -> str:
         """Add an obstacle. Returns obstacle_id."""
         with self._lock:
-            return self._world.add_obstacle(obstacle)
+            obstacle_id = self._world.add_obstacle(obstacle)
+            if self._visualization is not None:
+                self._visualization.add_obstacle(obstacle)
+            return obstacle_id
 
     def remove_obstacle(self, obstacle_id: str) -> bool:
         """Remove an obstacle."""

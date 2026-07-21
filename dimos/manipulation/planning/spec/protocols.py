@@ -186,6 +186,10 @@ class VisualizationSpec(Protocol):
         """Receive stable planning-scene metadata after world startup."""
         ...
 
+    def add_obstacle(self, obstacle: Obstacle) -> None:
+        """Receive an obstacle added to the planning world."""
+        ...
+
     def get_visualization_url(self) -> str | None:
         """Get visualization URL if enabled."""
         ...

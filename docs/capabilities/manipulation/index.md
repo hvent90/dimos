@@ -200,6 +200,26 @@ does not need extra setup because it observes the Drake world directly.
 When the Viser panel is enabled, it can call the existing manipulation execution path after a
 fresh feasible plan is available and the current robot joints still match the plan start.
 
+#### Viser robot display
+
+The Viser sidebar provides a keyboard-accessible, text-labelled **Robot display** control for
+the primary robot. It offers **Visual**, **Collision**, and **Both** modes; **Visual** is the
+default for each new visualization session. Collision geometry is rendered in diagnostic
+magenta (`#D228DC`) at 35% opacity.
+
+The control is view-only: it changes only the Viser scene and does not affect robot commands,
+planning inputs, collision checking, execution, or the live robot context. Changes apply
+immediately, including while the robot is moving, and joint-state updates continue normally.
+The selected mode is retained if the primary robot representation is recreated during the
+current visualization session. It applies only to the primary robot; target and preview-ghost
+representations keep their existing rendering. If collision geometry is unavailable, **Collision**
+and **Both** fall back to the available visual geometry without changing the selected mode. The
+substituted visual meshes retain the diagnostic magenta (`#D228DC`) translucent treatment at 35%
+opacity so the selected mode remains obvious, and the panel clearly tells you that collision
+geometry is unavailable and visual meshes remain shown. No fallback notice is shown in **Visual**
+mode or when collision geometry exists; the fallback styling and notice apply only to the primary
+robot and do not change target or preview-ghost rendering.
+
 ### Perception + Agent
 
 ```bash

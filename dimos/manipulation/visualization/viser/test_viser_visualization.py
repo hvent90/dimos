@@ -176,6 +176,9 @@ class FakeUrdf:
     def __init__(self, names: tuple[str, ...]) -> None:
         self._urdf = SimpleNamespace(actuated_joint_names=names)
         self._meshes = []
+        self._collision_meshes = []
+        self.show_visual = True
+        self.show_collision = False
         self.cfg = None
         self.removed = False
 
@@ -676,10 +679,39 @@ class FakeViserUrdfWithMeshes:
     def __init__(self, names: tuple[str, ...] = ("joint1", "joint2", "joint3")) -> None:
         self._urdf = SimpleNamespace(actuated_joint_names=names)
         self._meshes = [FakeMesh(), FakeMesh()]
+        self._collision_meshes = [FakeMesh(), FakeMesh()]
+        for mesh in self._collision_meshes:
+            mesh.color = (210, 40, 220)
+            mesh.opacity = 0.35
+        self.show_visual = True
+        self.show_collision = False
         self.cfg = None
 
     def update_cfg(self, cfg: Sequence[float]) -> None:
         self.cfg = list(cfg)
+
+
+class FakeViserUrdfWithCollisionRoot:
+    """Model Viser 1.0.30's collision representation without old mesh attr."""
+
+    def __init__(self, *args: object, **kwargs: object) -> None:
+        self._urdf = SimpleNamespace(actuated_joint_names=("joint1",))
+        self._meshes = [FakeMesh(), FakeMesh()]
+        self._collision_root_frame = SimpleNamespace()
+        self.show_visual = True
+        self.show_collision = False
+
+    def update_cfg(self, cfg: Sequence[float]) -> None:
+        del cfg
+
+
+class FakeViserUrdfWithoutCollision:
+    def __init__(self, *args: object, **kwargs: object) -> None:
+        self._urdf = SimpleNamespace(actuated_joint_names=("joint1",))
+        self._meshes = [FakeMesh(), FakeMesh()]
+        self._collision_meshes = []
+        self.show_visual = True
+        self.show_collision = False
 
 
 def test_viser_joint_configuration_maps_names_to_urdf_order() -> None:
@@ -1029,6 +1061,148 @@ def test_scene_registers_goal_robot_coloring_and_updates_visibility() -> None:
     scene.hide_preview("robot1")
     assert all(mesh.visible is False for mesh in preview._meshes)
     assert all(mesh.visible is True for mesh in target._meshes)
+
+
+def test_scene_display_mode_controls_only_primary_robot() -> None:
+    server = FakeServer()
+    scene = ViserManipulationScene(
+        server,
+        lambda *args, **kwargs: FakeViserUrdfWithMeshes(("joint1",)),
+        preview_fps=10.0,
+    )
+    scene.prepared_urdf_path = lambda config: "dummy.urdf"
+    config = SimpleNamespace(
+        name="arm",
+        model_path="/tmp/arm.urdf",
+        package_paths={},
+        xacro_args={},
+        auto_convert_meshes=False,
+        joint_names=["joint1"],
+    )
+    scene.register_robot("robot1", config)
+    current = scene._urdfs["robot1:current"]
+    target = scene._urdfs["robot1:target"]
+    preview = scene._urdfs["robot1:preview"]
+
+    assert scene.robot_display_mode == "visual"
+    assert scene.collision_geometry_available is True
+    assert (current.show_visual, current.show_collision) == (True, False)
+    target_state = (target._meshes[0].visible, target._meshes[0].color)
+    preview_state = (preview._meshes[0].visible, preview._meshes[0].color)
+
+    scene.set_robot_display_mode("collision")
+    assert (current.show_visual, current.show_collision) == (False, True)
+    assert (target._meshes[0].visible, target._meshes[0].color) == target_state
+    assert (preview._meshes[0].visible, preview._meshes[0].color) == preview_state
+    assert all(mesh.color == (210, 40, 220) for mesh in current._collision_meshes)
+    assert all(mesh.opacity == 0.35 for mesh in current._collision_meshes)
+
+    scene.set_robot_display_mode("both")
+    assert (current.show_visual, current.show_collision) == (True, True)
+
+
+def test_scene_detects_collision_geometry_from_viser_root_frame() -> None:
+    scene = ViserManipulationScene(
+        FakeServer(), FakeViserUrdfWithCollisionRoot, preview_fps=10.0
+    )
+    scene.prepared_urdf_path = lambda config: "dummy.urdf"
+    config = SimpleNamespace(
+        name="arm",
+        model_path="/tmp/arm.urdf",
+        package_paths={},
+        xacro_args={},
+        auto_convert_meshes=False,
+        joint_names=["joint1"],
+    )
+
+    scene.register_robot("robot1", config)
+
+    assert scene.collision_geometry_available is True
+    assert "robot1" not in scene._collision_fallback_urdfs
+
+
+def test_scene_display_mode_falls_back_without_collision_geometry() -> None:
+    server = FakeServer()
+    scene = ViserManipulationScene(
+        server,
+        FakeViserUrdfWithoutCollision,
+        preview_fps=10.0,
+    )
+    scene.prepared_urdf_path = lambda config: "dummy.urdf"
+    config = SimpleNamespace(
+        name="arm",
+        model_path="/tmp/arm.urdf",
+        package_paths={},
+        xacro_args={},
+        auto_convert_meshes=False,
+        joint_names=["joint1"],
+    )
+    scene.register_robot("robot1", config)
+    current = scene._urdfs["robot1:current"]
+    current._collision_meshes = []
+    scene._urdfs["robot1:target"]._collision_meshes = [FakeMesh()]
+
+    assert scene.collision_geometry_available is False
+    scene.set_robot_display_mode("collision")
+    assert scene.robot_display_mode == "collision"
+    assert (current.show_visual, current.show_collision) == (False, False)
+    assert scene._collision_fallback_urdfs["robot1"].show_visual is True
+
+
+def test_scene_missing_collision_uses_magenta_visual_substitute() -> None:
+    scene = ViserManipulationScene(
+        FakeServer(), FakeViserUrdfWithoutCollision, preview_fps=10.0
+    )
+    scene.prepared_urdf_path = lambda config: "dummy.urdf"
+    config = SimpleNamespace(
+        name="arm",
+        model_path="/tmp/arm.urdf",
+        package_paths={},
+        xacro_args={},
+        auto_convert_meshes=False,
+        joint_names=["joint1"],
+    )
+    scene.register_robot("robot1", config)
+    fallback = scene._collision_fallback_urdfs["robot1"]
+    scene.set_robot_display_mode("collision")
+    assert fallback.show_visual is True
+    assert all(mesh.visible is True for mesh in fallback._meshes)
+
+    scene.set_robot_display_mode("both")
+    assert scene._urdfs["robot1:current"].show_visual is True
+    assert all(mesh.color == (210, 40, 220) for mesh in fallback._meshes)
+    assert all(mesh.opacity == 0.35 for mesh in fallback._meshes)
+
+
+def test_scene_display_mode_survives_primary_robot_recreation() -> None:
+    server = FakeServer()
+    created: list[FakeViserUrdfWithMeshes] = []
+
+    def make_urdf(*args: object, **kwargs: object) -> FakeViserUrdfWithMeshes:
+        urdf = FakeViserUrdfWithMeshes(("joint1",))
+        created.append(urdf)
+        return urdf
+
+    scene = ViserManipulationScene(server, make_urdf, preview_fps=10.0)
+    scene.prepared_urdf_path = lambda config: "dummy.urdf"
+    config = SimpleNamespace(
+        name="arm",
+        model_path="/tmp/arm.urdf",
+        package_paths={},
+        xacro_args={},
+        auto_convert_meshes=False,
+        joint_names=["joint1"],
+    )
+    scene.register_robot("robot1", config)
+    scene.set_robot_display_mode("both")
+    scene._urdfs.pop("robot1:current")
+    scene.register_robot("robot1", config)
+
+    current = scene._urdfs["robot1:current"]
+    assert current is created[-1]
+    assert scene.collision_geometry_available is True
+    assert scene.robot_display_mode == "both"
+    assert (current.show_visual, current.show_collision) == (True, True)
 
 
 def test_scene_transform_controls_update_pose_callback_and_visual_state() -> None:
