@@ -42,6 +42,7 @@ class FakeIK:
         self.solution = np.array([0.01, 0.02, 0.03], dtype=np.float64)
         self.converged = True
         self.final_error = 0.0
+        self.solve_from_pose = False
 
     def forward_kinematics(self, q_current: NDArray[np.float64]) -> FakePose:
         self.fk_calls.append(q_current.copy())
@@ -51,6 +52,8 @@ class FakeIK:
         self, pose: FakePose, q_current: NDArray[np.float64]
     ) -> tuple[NDArray[np.float64], bool, float]:
         self.solve_calls.append(pose.copy())
+        if self.solve_from_pose:
+            return pose.translation.copy(), self.converged, self.final_error
         return self.solution.copy(), self.converged, self.final_error
 
 
@@ -124,6 +127,23 @@ def test_integration_uses_current_fk_and_coordinator_dt(
     assert fake_ik.solve_calls[1].translation[0] > fake_ik.solve_calls[0].translation[0]
 
 
+def test_commands_accumulate_from_last_command_with_stale_feedback(
+    task: EEFTwistTask, fake_ik: FakeIK
+) -> None:
+    fake_ik.solve_from_pose = True
+    assert task.on_ee_twist_command(_twist(1.0), t_now=1.0)
+
+    first = task.compute(_state(1.01, positions=[0.0, 0.0, 0.0], dt=0.01))
+    second = task.compute(_state(1.02, positions=[0.0, 0.0, 0.0], dt=0.01))
+
+    assert first is not None
+    assert second is not None
+    assert first.positions is not None
+    assert second.positions is not None
+    assert second.positions[0] > first.positions[0]
+    assert second.positions[0] == pytest.approx(0.02)
+
+
 def test_non_converged_ik_solution_is_accepted_when_joint_delta_is_safe(
     task: EEFTwistTask, fake_ik: FakeIK
 ) -> None:
@@ -190,4 +210,7 @@ def test_timeout_and_zero_command_clear_then_next_nonzero_reseeds(
     assert fake_ik.solve_calls[-1].translation[0] > 1.0
 
     assert task.on_ee_twist_command(_twist(0.0), t_now=2.02)
-    assert not task.is_active()
+    assert task.is_active()
+    held = task.compute(_state(2.03, positions=[0.0, 0.0, 0.0]))
+    assert held is not None
+    assert held.positions == [1.01, 0.0, 0.0]
