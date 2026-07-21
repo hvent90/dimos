@@ -36,9 +36,22 @@ const MAX_SNAP_ATTEMPTS: usize = 64;
 /// On a blocked path, stop this far short of the last traversable point.
 const BEST_EFFORT_DISTANCE_M: f32 = 1.0;
 
-/// World-frame waypoints paired with the string-pulled cell path that produced
-/// them. The cell path is cached for later safe truncation.
-type PlannedPath = (Vec<(f32, f32, f32)>, Vec<VoxelKey>);
+/// Optimistic bridge endpoints: the best-effort route's end and the goal
+/// component's closest approach point, world frame.
+pub type Bridge = ((f32, f32, f32), (f32, f32, f32));
+
+/// World-frame waypoints with the string-pulled cell path that produced them.
+/// The cell path is cached for later safe truncation. A best-effort route
+/// carries the optimistic bridge from its end to the goal component's closest
+/// approach point.
+pub struct PlannedPath {
+    pub waypoints: Vec<(f32, f32, f32)>,
+    pub cells: Vec<VoxelKey>,
+    pub bridge: Option<Bridge>,
+}
+
+/// Waypoints and the string-pulled cell path of one planning attempt.
+type PlannedRoute = (Vec<(f32, f32, f32)>, Vec<VoxelKey>);
 
 /// Surface cells near the pose, nearest first in xy.
 pub fn snap_candidates(
@@ -101,14 +114,16 @@ fn best_iz_in_column(
     Some((ix, iy, iz))
 }
 
-/// Cell nearest the pose by euclidean distance. Ties break by id.
-fn nearest_cell_to_pose(
+/// Cell nearest the pose by euclidean distance among the given ids. Ties
+/// break by id.
+fn nearest_cell(
     cells: &SurfaceCells,
+    ids: impl Iterator<Item = CellId>,
     pose: (f32, f32, f32),
     voxel_size: f32,
 ) -> Option<CellId> {
     let mut best: Option<(f32, CellId)> = None;
-    for id in cells.ids() {
+    for id in ids {
         let (ix, iy, iz) = cells.coord(id);
         let (x, y, z) = surface_point_xyz(ix, iy, iz, voxel_size);
         let d2 = (x - pose.0).powi(2) + (y - pose.1).powi(2) + (z - pose.2).powi(2);
@@ -119,31 +134,64 @@ fn nearest_cell_to_pose(
     best.map(|(_, id)| id)
 }
 
-/// Cell nearest the pose among those reachable from the sources over passable
-/// edges. Ties break by id.
-fn nearest_reachable_cell(
-    cells: &SurfaceCells,
-    sources: &[CellId],
-    pose: (f32, f32, f32),
-    voxel_size: f32,
-) -> Option<CellId> {
+/// Cells reachable from the sources over passable edges.
+fn reachable_set(cells: &SurfaceCells, sources: &[CellId]) -> AHashSet<CellId> {
     let mut visited: AHashSet<CellId> = sources.iter().copied().collect();
     let mut queue: VecDeque<CellId> = sources.iter().copied().collect();
-    let mut best: Option<(f32, CellId)> = None;
     while let Some(u) = queue.pop_front() {
-        let (ix, iy, iz) = cells.coord(u);
-        let (x, y, z) = surface_point_xyz(ix, iy, iz, voxel_size);
-        let d2 = (x - pose.0).powi(2) + (y - pose.1).powi(2) + (z - pose.2).powi(2);
-        if best.is_none_or(|(bd, bid)| d2 < bd || (d2 == bd && u < bid)) {
-            best = Some((d2, u));
-        }
         for edge in cells.neighbors(u) {
             if edge.cost.is_finite() && visited.insert(edge.dest) {
                 queue.push_back(edge.dest);
             }
         }
     }
-    best.map(|(_, id)| id)
+    visited
+}
+
+/// Position of the goal-component node nearest the reachable component's
+/// nodes, where the two components make their closest approach.
+fn frontier_goal_pos(
+    plg: &PlannerGraph,
+    goal_cell: CellId,
+    reachable: &AHashSet<CellId>,
+) -> Option<(f32, f32, f32)> {
+    let node_cells: AHashSet<NodeId> = plg.nodes.iter().map(|n| n.cell_id).collect();
+    let (goal_node, _) = goal_node_of(plg, goal_cell, &node_cells)?;
+    let (cost_to_go, _) = node_dijkstra(plg, goal_node);
+    let goal_nodes: Vec<(f32, f32, f32)> = plg
+        .nodes
+        .iter()
+        .filter(|n| cost_to_go.contains_key(&n.cell_id))
+        .map(|n| n.pos)
+        .collect();
+    let mut best: Option<(f32, (f32, f32, f32))> = None;
+    for s in plg.nodes.iter().filter(|n| reachable.contains(&n.cell_id)) {
+        for &g in &goal_nodes {
+            let d2 = (s.pos.0 - g.0).powi(2) + (s.pos.1 - g.1).powi(2) + (s.pos.2 - g.2).powi(2);
+            if best.is_none_or(|(bd, _)| d2 < bd) {
+                best = Some((d2, g));
+            }
+        }
+    }
+    best.map(|(_, pos)| pos)
+}
+
+/// Node owning the cell's Voronoi region, with the cell path to it. The
+/// penalized Voronoi cannot own sub-clearance cells, so those fall back to
+/// the nearest node by hops.
+fn goal_node_of(
+    plg: &PlannerGraph,
+    goal_cell: CellId,
+    node_cells: &AHashSet<NodeId>,
+) -> Option<(NodeId, Vec<CellId>)> {
+    let segment = walk_preds(&plg.cell_state, goal_cell);
+    let node = *segment
+        .last()
+        .expect("walk_preds returns at least the start cell");
+    if node_cells.contains(&node) {
+        return Some((node, segment));
+    }
+    nearest_node(&plg.cells, goal_cell, node_cells)
 }
 
 /// Plan path from start pose to goal pose using the node graph. A goal off
@@ -176,7 +224,7 @@ pub fn plan(
     // An unseen goal plans to the nearest mapped cell, so replans converge on
     // it as the map grows.
     let Some(goal_cell) =
-        snapped_goal.or_else(|| nearest_cell_to_pose(&plg.cells, goal_pose, voxel_size))
+        snapped_goal.or_else(|| nearest_cell(&plg.cells, plg.cells.ids(), goal_pose, voxel_size))
     else {
         tracing::debug!(?goal_pose, "plan failed: map has no surface cells");
         return None;
@@ -194,30 +242,45 @@ pub fn plan(
         .filter_map(|&candidate| plg.cells.id(candidate))
         .collect();
 
-    if let Some(path) = plan_to_cell(plg, start_pose, goal_pose, goal_cell, &start_cells, config) {
-        return Some(path);
+    if let Some((waypoints, cells)) =
+        plan_to_cell(plg, start_pose, goal_pose, goal_cell, &start_cells, config)
+    {
+        return Some(PlannedPath {
+            waypoints,
+            cells,
+            bridge: None,
+        });
     }
-    // A goal on a disconnected component plans best-effort to the reachable
-    // cell nearest it, so replans converge on it if the components ever join.
-    let fallback_cell = nearest_reachable_cell(&plg.cells, &start_cells, goal_pose, voxel_size)?;
-    if fallback_cell == goal_cell {
+    // A disconnected goal plans best-effort toward the disconnect: the point
+    // where the two components make their closest approach. Mapping fills in
+    // there as the robot arrives, so replans converge on the goal. Without a
+    // node on each side there is no approach point, so aim at the goal.
+    let reachable = reachable_set(&plg.cells, &start_cells);
+    let aim = frontier_goal_pos(plg, goal_cell, &reachable).unwrap_or(goal_pose);
+    let target_cell = nearest_cell(&plg.cells, reachable.iter().copied(), aim, voxel_size)?;
+    if target_cell == goal_cell {
         return None;
     }
-    let (ix, iy, iz) = plg.cells.coord(fallback_cell);
-    let fallback_pose = surface_point_xyz(ix, iy, iz, voxel_size);
+    let (ix, iy, iz) = plg.cells.coord(target_cell);
+    let target_pose = surface_point_xyz(ix, iy, iz, voxel_size);
     tracing::debug!(
         ?goal_pose,
-        ?fallback_pose,
-        "goal unreachable; planning to the nearest reachable cell"
+        ?target_pose,
+        "goal unreachable; planning toward the disconnect"
     );
-    plan_to_cell(
+    let (waypoints, cells) = plan_to_cell(
         plg,
         start_pose,
-        fallback_pose,
-        fallback_cell,
+        target_pose,
+        target_cell,
         &start_cells,
         config,
-    )
+    )?;
+    Some(PlannedPath {
+        waypoints,
+        cells,
+        bridge: Some((target_pose, aim)),
+    })
 }
 
 /// Plan from the start snap candidates to a resolved goal cell, or none when
@@ -229,27 +292,17 @@ fn plan_to_cell(
     goal_cell: CellId,
     start_cells: &[CellId],
     config: &Config,
-) -> Option<PlannedPath> {
+) -> Option<PlannedRoute> {
     let voxel_size = config.voxel_size;
     let node_cells: AHashSet<NodeId> = plg.nodes.iter().map(|n| n.cell_id).collect();
 
-    // The penalized Voronoi cannot own sub-clearance goals, so fall back to the
-    // nearest node by hops. A real failure then reports as disconnected below.
-    let mut goal_segment = walk_preds(&plg.cell_state, goal_cell);
-    let mut goal_node = *goal_segment
-        .last()
-        .expect("walk_preds returns at least the start cell");
-    if !node_cells.contains(&goal_node) {
-        let Some((node, path)) = nearest_node(&plg.cells, goal_cell, &node_cells) else {
-            tracing::debug!(
-                ?goal_pose,
-                "plan failed: goal's connected component has no graph node"
-            );
-            return None;
-        };
-        goal_node = node;
-        goal_segment = path;
-    }
+    let Some((goal_node, goal_segment)) = goal_node_of(plg, goal_cell, &node_cells) else {
+        tracing::debug!(
+            ?goal_pose,
+            "plan failed: goal's connected component has no graph node"
+        );
+        return None;
+    };
 
     // Rooted at the goal so one pass covers every node's cost-to-go.
     let (cost_to_go, pred_to_goal) = node_dijkstra(plg, goal_node);
@@ -1022,7 +1075,7 @@ mod tests {
             goal_tolerance: 0.3,
             viz_publish_hz: 2.0,
         };
-        plan(plg, start, goal, &config).map(|(wp, _)| wp)
+        plan(plg, start, goal, &config).map(|p| p.waypoints)
     }
 
     fn surface_graph(cells: &[VoxelKey]) -> PlannerGraph {
@@ -1155,6 +1208,26 @@ mod tests {
         assert!(
             (end.0 - edge.0).abs() < 1e-5 && (end.1 - edge.1).abs() < 1e-5,
             "path must end at the start island's edge: {end:?}"
+        );
+    }
+
+    #[test]
+    fn plan_aims_at_the_disconnect_not_under_the_goal() {
+        // Start strip at y=0. The goal component is a far row at y=30 plus an
+        // arm at x=5 reaching down to y=17, past SNAP_SEARCH_RADIUS_M of the
+        // start so no candidate bridges the gap. The closest approach is the
+        // arm tip, so the best-effort path must head for x=5, not x=2 under
+        // the goal.
+        let mut cells: Vec<VoxelKey> = (0..=10).map(|x| (x, 0, 0)).collect();
+        cells.extend((0..=10).map(|x| (x, 30, 0)));
+        cells.extend((17..30).map(|y| (5, y, 0)));
+        let plg = graph_with_nodes(&cells, &[(5, 0, 0), (2, 30, 0), (5, 17, 0)]);
+        let wp = plan_simple(&plg, (0.95, 0.0, 0.1), (0.25, 3.05, 0.1)).unwrap();
+        let gap = surface_point_xyz(5, 0, 0, VOXEL);
+        let end = wp.last().unwrap();
+        assert!(
+            (end.0 - gap.0).abs() < 1e-5 && (end.1 - gap.1).abs() < 1e-5,
+            "path must end at the closest approach to the goal component: {end:?}"
         );
     }
 

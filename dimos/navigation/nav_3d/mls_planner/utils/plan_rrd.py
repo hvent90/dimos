@@ -49,6 +49,11 @@ AXIS_RADIUS_RATIO = 25
 # lows, and clear of PATH_PALETTE so it never reads as a planned path.
 ODOM_PATH_COLOR = [80, 160, 255]
 
+# Optimistic bridge of a best-effort plan: from the route's end to the goal
+# component's closest approach point. Orange, thinner than the paths.
+BRIDGE_COLOR = [255, 140, 0]
+BRIDGE_RADIUS = 0.02
+
 # Distinct path colors for overlaid configurations, config 0 first.
 PATH_PALETTE = [
     [0, 255, 0],
@@ -124,6 +129,16 @@ def _log_path_wp(waypoints: NDArray[np.float32] | None, entity: str, color: list
         return
     points = [(float(p[0]), float(p[1]), float(p[2])) for p in waypoints]
     rr.log(entity, rr.LineStrips3D([points], colors=[color], radii=0.05))
+
+
+Point3 = tuple[float, float, float]
+
+
+def _log_bridge(bridge: tuple[Point3, Point3] | None, entity: str) -> None:
+    if bridge is None:
+        rr.log(entity, rr.LineStrips3D([]))
+        return
+    rr.log(entity, rr.LineStrips3D([list(bridge)], colors=[BRIDGE_COLOR], radii=BRIDGE_RADIUS))
 
 
 def _log_odometry(
@@ -333,6 +348,7 @@ def _process_frame(
         waypoints = planner.plan_or_truncate(start, goal)
         t2 = perf_counter()
         _log_path_wp(waypoints, f"world/paths/{label}", color)
+        _log_bridge(planner.frontier_bridge(), f"world/paths/{label}/bridge")
         if j == 0:
             ref_timing = {
                 "update_ms": (t1 - t0) * 1000,

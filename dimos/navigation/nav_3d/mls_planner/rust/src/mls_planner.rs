@@ -162,6 +162,8 @@ pub struct Planner {
     // Last goal and whether a full plan reached it, so replan outcomes log
     // on transitions instead of every cycle.
     last_result: Option<((f32, f32, f32), bool)>,
+    // Optimistic bridge of the last plan when it was best-effort.
+    last_bridge: Option<planner::Bridge>,
 }
 
 impl Planner {
@@ -466,7 +468,7 @@ impl Planner {
         if self.graph.nodes.is_empty() {
             return None;
         }
-        planner::plan(&self.graph, start, goal, config).map(|(wp, _)| wp)
+        planner::plan(&self.graph, start, goal, config).map(|p| p.waypoints)
     }
 
     /// Plan to the goal, or follow the cached path as far as it is still safe.
@@ -478,15 +480,17 @@ impl Planner {
         config: &Config,
     ) -> Vec<(f32, f32, f32)> {
         if !self.graph.nodes.is_empty() {
-            if let Some((waypoints, cells)) = planner::plan(&self.graph, start, goal, config) {
+            if let Some(path) = planner::plan(&self.graph, start, goal, config) {
                 if self.last_result != Some((goal, true)) {
-                    tracing::info!(?goal, waypoints = waypoints.len(), "full path to goal");
+                    tracing::info!(?goal, waypoints = path.waypoints.len(), "full path to goal");
                 }
                 self.last_result = Some((goal, true));
-                self.last_path = Some((goal, cells));
-                return waypoints;
+                self.last_path = Some((goal, path.cells));
+                self.last_bridge = path.bridge;
+                return path.waypoints;
             }
         }
+        self.last_bridge = None;
         if self.last_result != Some((goal, false)) {
             tracing::warn!(
                 ?goal,
@@ -505,6 +509,13 @@ impl Planner {
             self.last_path = None;
         }
         safe
+    }
+
+    /// Optimistic bridge of the last plan_or_truncate call: from the
+    /// best-effort route's end to the goal component's closest approach
+    /// point. None when the last plan reached the goal.
+    pub fn frontier_bridge(&self) -> Option<planner::Bridge> {
+        self.last_bridge
     }
 
     pub fn graph(&self) -> &PlannerGraph {

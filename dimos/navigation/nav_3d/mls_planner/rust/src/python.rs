@@ -20,6 +20,7 @@ use validator::Validate;
 
 use crate::edges::edges_to_segments;
 use crate::mls_planner::{Config, Planner, RegionBounds};
+use crate::planner::Bridge;
 use crate::voxel::{surface_point_xyz, VoxelKey};
 
 #[pyclass]
@@ -260,6 +261,13 @@ impl MLSPlanner {
         let planner = &mut self.planner;
         let waypoints = py.allow_threads(move || planner.plan_or_truncate(start, goal, config));
         waypoint_array(py, waypoints)
+    }
+
+    /// Optimistic bridge of the last plan_or_truncate call: `(route_end,
+    /// approach_point)` world-frame xyz tuples, or `None` when the last plan
+    /// reached the goal.
+    fn frontier_bridge(&self) -> Option<Bridge> {
+        self.planner.frontier_bridge()
     }
 
     fn voxel_count(&self) -> usize {
