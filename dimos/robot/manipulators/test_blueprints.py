@@ -33,7 +33,6 @@ from dimos.robot.manipulators.piper.blueprints.teleop import (
     coordinator_teleop_piper,
     keyboard_teleop_piper,
 )
-from dimos.robot.manipulators.piper.config import make_piper_model_config
 from dimos.robot.manipulators.xarm.blueprints.basic import (
     dual_xarm6_planner,
     xarm6_planner_only,
@@ -77,13 +76,11 @@ def test_quest_piper_teleop_routes_to_declarative_teleop_task() -> None:
     assert "coordinator_cartesian_command" in teleop_quest_piper.remapping_map.values()
 
 
-def test_piper_teleop_declares_teleop_and_trajectory_tasks() -> None:
+def test_piper_teleop_declares_teleop_task() -> None:
     tasks = _coordinator_tasks(coordinator_teleop_piper)
     assert [(task.name, task.type) for task in tasks] == [
         ("teleop_piper", "teleop_ik"),
-        ("traj_arm", "trajectory"),
     ]
-    assert make_piper_model_config().coordinator_task_name == "traj_arm"
 
 
 def test_piper_keyboard_declares_high_priority_gripper_servo() -> None:

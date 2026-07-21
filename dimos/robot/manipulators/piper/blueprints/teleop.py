@@ -25,7 +25,6 @@ from dimos.robot.manipulators.common.blueprints import (
     cartesian_ik_task,
     eef_twist_task,
     teleop_ik_task,
-    trajectory_task,
 )
 from dimos.robot.manipulators.common.sim import mujoco_if_sim
 from dimos.robot.manipulators.piper.config import (
@@ -84,7 +83,6 @@ _piper_teleop_hw = piper_hardware("arm", gripper_open_position=0.07, gripper_clo
 
 coordinator_teleop_piper = autoconnect(
     ControlCoordinator.blueprint(
-        publish_joint_state=True,
         hardware=[_piper_teleop_hw],
         tasks=[
             teleop_ik_task(
@@ -97,10 +95,8 @@ coordinator_teleop_piper = autoconnect(
                     "gripper_joint": make_gripper_joints("arm")[0],
                     "gripper_open_pos": 1.0,
                     "gripper_closed_pos": 0.0,
-                    "max_joint_delta_deg": 50.0,
                 },
             ),
-            trajectory_task(_piper_teleop_hw, name="traj_arm"),
         ],
     ),
     *mujoco_if_sim(PIPER_SIM_PATH, len(_piper_teleop_hw.joints)),
