@@ -63,6 +63,7 @@ jobs:
     runs-on: ubuntu-latest
     permissions:
       contents: read  # For checkout
+      id-token: write  # For codecov-action's OIDC upload
 
     steps:
       - name: Checkout
@@ -138,8 +139,35 @@ jobs:
         run: |
           source .venv/bin/activate
           python -m pytest -v -m native_rust \
+            --cov=dimos/ \
+            --junitxml=junit.xml \
             --override-ini="addopts=--timeout=600 --timeout-method=thread -v --import-mode=importlib -p no:launch_testing -p no:launch_ros" \
             dimos/visualization/rerun/test_native_bridge.py
+      - name: Turn coverage into xml
+        run: |
+          source .venv/bin/activate
+          python -m coverage xml
+      - name: Upload coverage
+        uses: codecov/codecov-action@v7
+        with:
+          disable_search: true
+          fail_ci_if_error: true
+          files: ./coverage.xml
+          flags: native-rust
+          use_oidc: true
+          # Install the CLI from PyPI (pinned) instead of cli.codecov.io:
+          # See the tests job "Upload coverage" step (same file, full comment there).
+          use_pypi: true
+          version: "11.2.8"
+      - name: Upload test results to Codecov
+        if: ${{ !cancelled() }}
+        uses: codecov/codecov-action@v7
+        with:
+          report_type: test_results
+          use_oidc: true
+          # See the "Upload coverage" step above.
+          use_pypi: true
+          version: "11.2.8"
 
   md-babel:
     timeout-minutes: 15

@@ -39,6 +39,7 @@ from dimos.protocol.pubsub.impl.zenohpubsub import (
     _key_expr_to_topic,
     _topic_to_key_expr,
 )
+from dimos.protocol.pubsub.patterns import Glob
 from dimos.protocol.service.zenohservice import ZenohSessionPool
 
 
@@ -217,6 +218,71 @@ class TestZenohPubSubBase:
         pubsub.subscribe_all(callback)
         retry_until(event, lambda: pubsub.publish(topic, b"wildcard"))
         assert b"wildcard" in received
+
+    def test_subscribe_all_accept_filter_drops_rejected_topic(self, pubsub, retry_until) -> None:
+        """DIM-1125"""
+        received: list[Topic] = []
+        delivered = threading.Event()
+        rejected_seen = threading.Event()
+        accepted = Topic("dimos/test/accept/yes")
+        rejected = Topic("dimos/test/accept/no")
+
+        def accept(topic: Topic) -> bool:
+            if topic.topic == rejected.topic:
+                rejected_seen.set()
+                return False
+            return True
+
+        def callback(msg: bytes, t: Topic) -> None:
+            received.append(t)
+            delivered.set()
+
+        pubsub.subscribe_all(callback, accept)
+        retry_until(rejected_seen, lambda: pubsub.publish(rejected, b"drop"))
+        retry_until(delivered, lambda: pubsub.publish(accepted, b"keep"))
+        assert {t.topic for t in received} == {accepted.topic}
+
+    def test_subscribe_all_heavy_false_excludes_heavy_topics(self, pubsub, retry_until) -> None:
+        """DIM-1125"""
+        seen: set[str] = set()
+        event = threading.Event()
+
+        def callback(msg: bytes, t: Topic) -> None:
+            seen.add(t.topic)
+            event.set()
+
+        pubsub.subscribe_all(callback, heavy=False)
+        retry_until(
+            event,
+            lambda: (
+                pubsub.publish(Topic("dimos/test/hf", Image), b"heavy"),
+                pubsub.publish(Topic("dimos/test/light"), b"light"),
+            ),
+        )
+        assert seen == {"dimos/test/light"}
+
+    def test_subscribe_all_heavy_allowlist_selects_heavy_topics(self, pubsub, retry_until) -> None:
+        """DIM-1125"""
+        seen: set[str] = set()
+        event = threading.Event()
+        expected = {"dimos/test/himg", "dimos/test/hglob/a", "dimos/test/hlight"}
+
+        def callback(msg: bytes, t: Topic) -> None:
+            seen.add(t.topic)
+            if seen >= expected:
+                event.set()
+
+        pubsub.subscribe_all(callback, heavy=["/test/himg", Glob("/test/hglob/*")])
+        retry_until(
+            event,
+            lambda: (
+                pubsub.publish(Topic("dimos/test/himg", Image), b"h1"),
+                pubsub.publish(Topic("dimos/test/hglob/a", Image), b"h2"),
+                pubsub.publish(Topic("dimos/test/hother", Image), b"h3"),
+                pubsub.publish(Topic("dimos/test/hlight"), b"l1"),
+            ),
+        )
+        assert seen == expected
 
     def test_subscribe_after_stop_does_not_track(self, pubsub) -> None:
         # Models the declare/stop race: once stopped, a newly declared subscriber
