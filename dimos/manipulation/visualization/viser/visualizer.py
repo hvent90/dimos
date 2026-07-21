@@ -162,6 +162,18 @@ class ViserManipulationVisualizer:
         except Exception:
             logger.exception("Could not remove manipulation obstacle visualization %s", obstacle_id)
 
+    def clear_obstacles(self) -> None:
+        """Remove all manipulation obstacle representations."""
+        if self._closed:
+            return
+        self._ensure_started()
+        if self._scene is None:
+            return
+        try:
+            self._scene.clear_obstacles()
+        except Exception:
+            logger.exception("Could not clear manipulation obstacle visualization")
+
     def get_visualization_url(self) -> str | None:
         return None if self._runtime is None else self._runtime.url
 

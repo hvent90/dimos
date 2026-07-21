@@ -228,7 +228,7 @@ class ManipulationModule(Module):
         # Viser must have a live server and registered robot scene before any
         # startup obstacle (including the floor) is added. Other visualizers
         # retain their existing startup behavior.
-        self._world_monitor.set_visualization(visualization, config=self.config.visualization)
+        self._world_monitor.set_visualization(visualization)
         self._world_monitor.sync_visualization_scene()
 
         # Add floor obstacle to prevent trajectories below the table surface

@@ -186,6 +186,18 @@ class VisualizationSpec(Protocol):
         """Receive stable planning-scene metadata after world startup."""
         ...
 
+    def add_obstacle(self, obstacle_id: str, obstacle: Obstacle) -> None:
+        """Render or otherwise accept an obstacle added to the planning world."""
+        ...
+
+    def remove_obstacle(self, obstacle_id: str) -> None:
+        """Remove an obstacle representation from the visualization."""
+        ...
+
+    def clear_obstacles(self) -> None:
+        """Clear obstacle representations from the visualization."""
+        ...
+
     def get_visualization_url(self) -> str | None:
         """Get visualization URL if enabled."""
         ...

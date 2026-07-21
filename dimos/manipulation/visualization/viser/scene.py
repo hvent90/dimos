@@ -39,7 +39,6 @@ from dimos.utils.logging_config import setup_logger
 try:
     from viser import (
         GridHandle,
-        LabelHandle,
         MeshHandle,
         SceneNodeHandle,
         TransformControlsEvent,
@@ -225,6 +224,12 @@ class ViserManipulationScene:
                 return
             for handle in self._obstacle_handles.pop(obstacle_id, []):
                 self._remove_scene_handle(handle)
+
+    def clear_obstacles(self) -> None:
+        """Remove every obstacle entity while retaining the robot scene."""
+        with self._lock:
+            for obstacle_id in list(self._obstacle_handles):
+                self.remove_obstacle(obstacle_id)
 
     def _ensure_obstacle_control(self) -> None:
         """Create the one stable local obstacle control, independent of the panel."""

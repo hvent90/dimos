@@ -360,6 +360,7 @@ class FakeGuiServer:
         self.checkboxes[label] = handle
         return handle
 
+
     def add_slider(
         self,
         label: str,
@@ -372,6 +373,12 @@ class FakeGuiServer:
         handle = GuiSliderHandle(label=label, min=min, max=max, step=step, value=initial_value)
         self.sliders.append(handle)
         return handle
+
+
+class FakeObstacleGuiServer(FakeObstacleServer, FakeGuiServer):
+    def __init__(self) -> None:
+        FakeObstacleServer.__init__(self)
+        FakeGuiServer.__init__(self)
 
 
 def make_robot_config(**overrides: RobotConfigOverride) -> RobotConfigStub:
@@ -533,7 +540,7 @@ def test_viser_config_enables_panel_by_default() -> None:
 def test_gui_builds_controls_in_manipulation_panel_folder(
     make_panel: Callable[..., ViserPanelGui],
 ) -> None:
-    server = FakeGuiServer()
+    server = FakeObstacleGuiServer()
     adapter = make_adapter_with_robot()
     gui = make_panel(server, adapter, ViserVisualizationConfig())
     assert server.folders
@@ -796,20 +803,35 @@ def test_scene_mesh_failure_keeps_proxy_label_and_visibility_state() -> None:
     scene.set_obstacles_visible(False)
     scene.add_obstacle("mesh-1", make_obstacle(ObstacleType.MESH))
 
-    assert len(scene._obstacle_handles["mesh-1"]) == 2
-    assert all(handle.visible is False for handle in scene._obstacle_handles["mesh-1"])
-    assert any("mesh-failure-proxy" in handle.name for handle in server.entities)
-    assert any("mesh-failure-label" in handle.name for handle in server.entities)
+    mesh_failure_entities = [
+        handle for handle in server.entities if "mesh-1" in handle.name
+    ]
+    assert len(mesh_failure_entities) == 2
+    assert all(handle.visible is False for handle in mesh_failure_entities)
+    assert any("mesh-failure-proxy" in handle.name for handle in mesh_failure_entities)
+    assert any("mesh-failure-label" in handle.name for handle in mesh_failure_entities)
 
     scene.add_obstacle("mesh-2", make_obstacle(ObstacleType.BOX, (1.0, 1.0, 1.0)))
     assert server.entities[-1].visible is False
     scene.remove_obstacle("mesh-1")
-    assert all(handle.removed for handle in server.entities[-3:-1])
-    assert "mesh-1" not in scene._obstacle_handles
+    assert all(handle.removed for handle in mesh_failure_entities)
+
+
+def test_scene_clear_obstacles_removes_all_obstacle_entities() -> None:
+    server = FakeObstacleServer()
+    scene = ViserManipulationScene(
+        server, lambda *args, **kwargs: FakeUrdf(("j1",)), preview_fps=10.0
+    )
+    scene.add_obstacle("first", make_obstacle(ObstacleType.BOX, (1.0, 1.0, 1.0)))
+    scene.add_obstacle("second", make_obstacle(ObstacleType.SPHERE, (0.5,)))
+
+    scene.clear_obstacles()
+
+    assert all(handle.removed for handle in server.entities)
 
 
 def test_obstacle_toggle_exists_when_panel_is_disabled_and_late_callback_is_safe() -> None:
-    server = FakeGuiServer()
+    server = FakeObstacleGuiServer()
     scene = ViserManipulationScene(
         server, lambda *args, **kwargs: FakeUrdf(("j1",)), preview_fps=10.0
     )
@@ -818,12 +840,15 @@ def test_obstacle_toggle_exists_when_panel_is_disabled_and_late_callback_is_safe
     toggle = server.checkboxes["manipulation.obstacles"]
     assert toggle.value is True
     assert toggle.update_callback is not None
+    scene.add_obstacle("visible", make_obstacle(ObstacleType.BOX, (1.0, 1.0, 1.0)))
     toggle.update_callback(SimpleNamespace(target=SimpleNamespace(value=False)))
-    assert scene._obstacles_visible is False
+    visible_entity = server.entities[-1]
+    assert visible_entity.visible is False
     scene.close()
     toggle.update_callback(SimpleNamespace(target=SimpleNamespace(value=True)))
+    entity_count = len(server.entities)
     scene.add_obstacle("late", make_obstacle(ObstacleType.BOX, (1.0, 1.0, 1.0)))
-    assert scene._obstacle_handles == {}
+    assert len(server.entities) == entity_count
 
 
 def test_successful_mesh_rendering_uses_native_mesh_handle(tmp_path: Path) -> None:
@@ -838,7 +863,6 @@ def test_successful_mesh_rendering_uses_native_mesh_handle(tmp_path: Path) -> No
 
     scene.add_obstacle("mesh-ok", obstacle)
 
-    assert len(scene._obstacle_handles["mesh-ok"]) == 1
     assert server.entities[-1].name.startswith("mesh:/manipulation/obstacles/mesh-ok")
 
 
@@ -864,7 +888,7 @@ def test_obstacle_mutations_and_close_are_safe_concurrently() -> None:
     scene.close()
 
     assert errors == []
-    assert scene._obstacle_handles == {}
+    assert all(handle.removed for handle in server.entities)
 
 
 def test_preview_visibility_only_affects_preview_ghost_and_close_removes_handles() -> None:

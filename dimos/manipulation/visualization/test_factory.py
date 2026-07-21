@@ -25,6 +25,7 @@ import pytest
 
 from dimos.manipulation.manipulation_module import ManipulationModuleConfig
 from dimos.manipulation.planning.spec.config import RobotModelConfig
+from dimos.manipulation.planning.spec.enums import ObstacleType
 from dimos.manipulation.planning.spec.models import (
     JointPath,
     Obstacle,
@@ -62,6 +63,15 @@ class FakeVisualization:
         return None
 
     def close(self) -> None:
+        return None
+
+    def add_obstacle(self, obstacle_id: str, obstacle: Obstacle) -> None:
+        return None
+
+    def remove_obstacle(self, obstacle_id: str) -> None:
+        return None
+
+    def clear_obstacles(self) -> None:
         return None
 
 
@@ -153,8 +163,43 @@ class FakeWorld:
         return np.zeros((6, 0), dtype=np.float64)
 
 
-class FakeVisualizationWorld(FakeWorld, FakeVisualization):
-    pass
+class FakeMeshcatWorld(FakeWorld):
+    def __init__(self) -> None:
+        self.native_calls: list[str] = []
+        self.visualization_calls: list[tuple[object, ...]] = []
+
+    def add_obstacle(self, obstacle: Obstacle) -> str:
+        self.native_calls.append("add")
+        return obstacle.name
+
+    def remove_obstacle(self, obstacle_id: str) -> bool:
+        self.native_calls.append("remove")
+        return True
+
+    def clear_obstacles(self) -> None:
+        self.native_calls.append("clear")
+
+    def initialize_scene(self, scene: PlanningSceneInfo) -> None:
+        self.visualization_calls.append(("initialize_scene", scene))
+
+    def get_visualization_url(self) -> str | None:
+        self.visualization_calls.append(("get_visualization_url",))
+        return "meshcat://test"
+
+    def publish_visualization(self, ctx: object | None = None) -> None:
+        self.visualization_calls.append(("publish_visualization", ctx))
+
+    def show_preview(self, robot_id: WorldRobotID) -> None:
+        self.visualization_calls.append(("show_preview", robot_id))
+
+    def hide_preview(self, robot_id: WorldRobotID) -> None:
+        self.visualization_calls.append(("hide_preview", robot_id))
+
+    def animate_path(self, robot_id: WorldRobotID, path: JointPath, duration: float = 3.0) -> None:
+        self.visualization_calls.append(("animate_path", robot_id, path, duration))
+
+    def close(self) -> None:
+        self.visualization_calls.append(("close",))
 
 
 def test_config_defaults_to_no_visualization() -> None:
@@ -205,18 +250,46 @@ def test_create_visualization_none_returns_none() -> None:
 
 
 def test_create_visualization_meshcat_accepts_structural_world() -> None:
-    fake_world = FakeVisualizationWorld()
-    assert isinstance(fake_world, VisualizationSpec)
+    fake_world = FakeMeshcatWorld()
     world_monitor = MagicMock()
-    assert (
+    visualization = (
         create_manipulation_visualization(
             MeshcatVisualizationConfig(),
             world=fake_world,
             world_monitor=world_monitor,
             manipulation_module=MagicMock(),
         )
-        is fake_world
     )
+    assert visualization is not fake_world
+    assert isinstance(visualization, VisualizationSpec)
+    scene = PlanningSceneInfo(robots={})
+    obstacle = Obstacle(
+        name="box",
+        obstacle_type=ObstacleType.BOX,
+        pose=PoseStamped(),
+        dimensions=(1.0, 1.0, 1.0),
+    )
+    path = [JointState({"position": [0.1]})]
+    visualization.initialize_scene(scene)
+    assert visualization.get_visualization_url() == "meshcat://test"
+    visualization.publish_visualization(None)
+    visualization.show_preview("robot-1")
+    visualization.hide_preview("robot-1")
+    visualization.animate_path("robot-1", path, 2.5)
+    visualization.close()
+    visualization.add_obstacle("box", obstacle)
+    visualization.remove_obstacle("box")
+    visualization.clear_obstacles()
+    assert fake_world.visualization_calls == [
+        ("initialize_scene", scene),
+        ("get_visualization_url",),
+        ("publish_visualization", None),
+        ("show_preview", "robot-1"),
+        ("hide_preview", "robot-1"),
+        ("animate_path", "robot-1", path, 2.5),
+        ("close",),
+    ]
+    assert fake_world.native_calls == []
 
 
 def test_create_visualization_meshcat_rejects_non_visualization_world() -> None:

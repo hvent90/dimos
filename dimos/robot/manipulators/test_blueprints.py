@@ -21,7 +21,6 @@ from dimos.control.coordinator import ControlCoordinator, TaskConfig
 from dimos.core.coordination.blueprints import Blueprint
 from dimos.manipulation.manipulation_module import ManipulationModule, ManipulationModuleConfig
 from dimos.manipulation.visualization.config import NoManipulationVisualizationConfig
-from dimos.manipulation.visualization.viser.config import ViserVisualizationConfig
 from dimos.robot.manipulators.a1z.blueprints.teleop import keyboard_teleop_a1z
 from dimos.robot.manipulators.a750.blueprints.teleop import keyboard_teleop_a750
 from dimos.robot.manipulators.common.blueprints import eef_twist_task, planner
@@ -80,10 +79,7 @@ def test_planner_helper_preserves_explicit_visualization() -> None:
 
 
 def test_xarm_planner_blueprints_default_to_no_visualization() -> None:
-    assert isinstance(
-        _manipulation_config(xarm6_planner_only).visualization, ViserVisualizationConfig
-    )
-    for blueprint in (dual_xarm6_planner, xarm7_planner_coordinator):
+    for blueprint in (xarm6_planner_only, dual_xarm6_planner, xarm7_planner_coordinator):
         config = _manipulation_config(blueprint)
 
         assert isinstance(config.visualization, NoManipulationVisualizationConfig)
