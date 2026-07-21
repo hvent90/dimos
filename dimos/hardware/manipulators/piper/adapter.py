@@ -25,6 +25,8 @@ import math
 import time
 from typing import Any
 
+from piper_sdk import C_PiperInterface_V2
+
 from dimos.hardware.manipulators.spec import (
     ControlMode,
     JointLimits,
@@ -88,12 +90,6 @@ class PiperAdapter(ManipulatorAdapter):
     def connect(self) -> bool:
         """Connect to Piper via CAN bus."""
         try:
-            from piper_sdk import C_PiperInterface_V2
-        except ImportError:
-            print("ERROR: Piper SDK not installed. Please install piper_sdk")
-            return False
-
-        try:
             self._sdk = C_PiperInterface_V2(
                 can_name=self._can_port,
                 judge_flag=True,  # Enable safety checks
@@ -149,12 +145,11 @@ class PiperAdapter(ManipulatorAdapter):
             logger.exception("Failed to command Piper startup zero pose")
             return False
 
-        if hasattr(sdk, "GripperCtrl"):
-            try:
-                sdk.GripperCtrl(0, DEFAULT_GRIPPER_SPEED, 0x01, 0)
-                self._gripper_initialized = True
-            except Exception:
-                logger.warning("Piper gripper startup command failed; continuing arm startup")
+        try:
+            sdk.GripperCtrl(0, DEFAULT_GRIPPER_SPEED, 0x01, 0)
+            self._gripper_initialized = True
+        except Exception:
+            logger.warning("Piper gripper startup command failed; continuing arm startup")
 
         time.sleep(STARTUP_ZERO_WAIT)
         return True

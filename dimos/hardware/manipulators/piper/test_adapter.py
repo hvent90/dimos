@@ -15,19 +15,15 @@
 from __future__ import annotations
 
 import sys
-from types import SimpleNamespace
+from types import ModuleType
 from typing import Any
 
-import pytest
+piper_sdk_module = ModuleType("piper_sdk")
+piper_sdk_module.__dict__["C_PiperInterface_V2"] = lambda **_: None
+sys.modules.setdefault("piper_sdk", piper_sdk_module)
 
+from dimos.hardware.manipulators.piper import adapter as piper_adapter
 from dimos.hardware.manipulators.piper.adapter import PiperAdapter
-
-
-def test_connect_reports_missing_sdk(mocker: Any, capsys: pytest.CaptureFixture[str]) -> None:
-    mocker.patch.dict(sys.modules, {"piper_sdk": None})
-
-    assert not PiperAdapter().connect()
-    assert "Piper SDK not installed" in capsys.readouterr().out
 
 
 def test_connect_continues_when_gripper_startup_fails(
@@ -36,10 +32,7 @@ def test_connect_continues_when_gripper_startup_fails(
     sdk = mocker.Mock()
     sdk.GetArmStatus.return_value = object()
     sdk.GripperCtrl.side_effect = RuntimeError("gripper unavailable")
-    mocker.patch.dict(
-        sys.modules,
-        {"piper_sdk": SimpleNamespace(C_PiperInterface_V2=lambda **_: sdk)},
-    )
+    mocker.patch.object(piper_adapter, "C_PiperInterface_V2", lambda **_: sdk)
     mocker.patch("dimos.hardware.manipulators.piper.adapter.time.sleep")
 
     adapter = PiperAdapter()

@@ -15,11 +15,15 @@
 from __future__ import annotations
 
 import sys
-from types import SimpleNamespace
+from types import ModuleType, SimpleNamespace
 from typing import Any
 
 import pytest
 from typing_extensions import override
+
+piper_sdk_module = ModuleType("piper_sdk")
+piper_sdk_module.__dict__["C_PiperInterface_V2"] = lambda **_: None
+sys.modules.setdefault("piper_sdk", piper_sdk_module)
 
 from dimos.hardware.manipulators.a750.adapter import A750Adapter
 from dimos.hardware.manipulators.openarm.adapter import OpenArmAdapter
@@ -48,10 +52,7 @@ def piper_sdk(mocker: Any) -> Any:
     sdk.GetArmGripperMsgs.side_effect = lambda: SimpleNamespace(
         gripper_state=SimpleNamespace(grippers_angle=sdk.gripper_position)
     )
-    mocker.patch.dict(
-        sys.modules,
-        {"piper_sdk": SimpleNamespace(C_PiperInterface_V2=lambda **_: sdk)},
-    )
+    mocker.patch.object(piper_adapter, "C_PiperInterface_V2", lambda **_: sdk)
     mocker.patch.object(piper_adapter.time, "sleep")
     return sdk
 
@@ -104,10 +105,7 @@ def test_piper_connect_reset_failure_cleans_up_without_zero(
     sdk = mocker.Mock()
     sdk.GetArmStatus.return_value = object()
     sdk.MotionCtrl_1.side_effect = RuntimeError("reset failed")
-    mocker.patch.dict(
-        sys.modules,
-        {"piper_sdk": SimpleNamespace(C_PiperInterface_V2=lambda **_: sdk)},
-    )
+    mocker.patch.object(piper_adapter, "C_PiperInterface_V2", lambda **_: sdk)
 
     adapter = PiperAdapter()
 
@@ -131,10 +129,7 @@ def test_piper_connect_joint_failure_cleans_up_without_gripper(
     sdk = mocker.Mock()
     sdk.GetArmStatus.return_value = object()
     sdk.JointCtrl.side_effect = RuntimeError("joint command failed")
-    mocker.patch.dict(
-        sys.modules,
-        {"piper_sdk": SimpleNamespace(C_PiperInterface_V2=lambda **_: sdk)},
-    )
+    mocker.patch.object(piper_adapter, "C_PiperInterface_V2", lambda **_: sdk)
     mocker.patch.object(piper_adapter.time, "sleep")
 
     adapter = PiperAdapter()

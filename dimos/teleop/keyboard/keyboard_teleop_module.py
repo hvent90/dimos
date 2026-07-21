@@ -33,7 +33,7 @@ from __future__ import annotations
 
 import os
 import threading
-from typing import TYPE_CHECKING, Any, cast
+from typing import TYPE_CHECKING, Any
 
 try:
     import pygame
@@ -63,6 +63,7 @@ DEFAULT_ANGULAR_SPEED = 0.5  # rad/s
 # Normalized gripper command values.
 GRIPPER_OPEN_POSITION = 1.0
 GRIPPER_CLOSED_POSITION = 0.0
+# TODO: Improve gripper handling.
 GRIPPER_JOINT_NAME = "arm/gripper"
 
 TwistVector = tuple[float, float, float]
@@ -101,8 +102,8 @@ def _gripper_key_codes() -> tuple[int, int]:
     if pygame is None:
         return (-1, -1)
     return (
-        cast("int", getattr(pygame, "K_LEFTBRACKET", ord("["))),
-        cast("int", getattr(pygame, "K_RIGHTBRACKET", ord("]"))),
+        pygame.K_LEFTBRACKET,
+        pygame.K_RIGHTBRACKET,
     )
 
 

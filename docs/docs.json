@@ -101,6 +101,7 @@
               "capabilities/manipulation/agentic",
               "capabilities/manipulation/adding_a_custom_arm",
               "capabilities/manipulation/openarm_integration",
+              "capabilities/manipulation/piper_integration",
               "capabilities/manipulation/a750"
             ]
           },
@@ -129,8 +130,7 @@
           {
             "group": "Teleoperation",
             "pages": [
-              "capabilities/teleoperation/hosted",
-              "capabilities/teleoperation/piper"
+              "capabilities/teleoperation/hosted"
             ]
           }
         ]
@@ -422,6 +422,10 @@
       "destination": "/capabilities/manipulation/openarm_integration"
     },
     {
+      "source": "/docs/capabilities/manipulation/piper_integration.md",
+      "destination": "/capabilities/manipulation/piper_integration"
+    },
+    {
       "source": "/docs/capabilities/manipulation/a750.md",
       "destination": "/capabilities/manipulation/a750"
     },
@@ -468,10 +472,6 @@
     {
       "source": "/docs/capabilities/teleoperation/hosted.md",
       "destination": "/capabilities/teleoperation/hosted"
-    },
-    {
-      "source": "/docs/capabilities/teleoperation/piper.md",
-      "destination": "/capabilities/teleoperation/piper"
     },
     {
       "source": "/docs/platforms/quadruped/go2/index.md",
