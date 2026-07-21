@@ -39,6 +39,7 @@ class NativeRerunConfig(NativeModuleConfig):
     lcm_url: str
     max_hz: dict[str, float]
     native_topics: dict[str, NativeTopicConfig]
+    python_topic_patterns: list[str]
     python_topics: list[str]
     heavy_types: list[str]
     recording_id: str

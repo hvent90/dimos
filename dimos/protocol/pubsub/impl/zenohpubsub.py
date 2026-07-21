@@ -30,6 +30,7 @@ from dimos.protocol.pubsub.encoders import (
     PickleEncoderMixin,
 )
 from dimos.protocol.pubsub.impl.lcmpubsub import Topic as LCMTopic
+from dimos.protocol.pubsub.patterns import Glob
 from dimos.protocol.pubsub.spec import AllPubSub, accept_all
 from dimos.protocol.service.zenohservice import ZenohService
 from dimos.utils.logging_config import setup_logger
@@ -241,20 +242,29 @@ class ZenohPubSubBase(ZenohService, AllPubSub[Topic, bytes]):
         topic: Topic,
         callback: Callable[[Any, Topic], None],
         accept: Callable[[Topic], bool],
-        heavy: bool | Sequence[str],
+        heavy: bool | Sequence[str | Glob],
     ) -> Callable[[], None]:
         key_exprs = [topic.key_expr]
         if heavy is True:
             key_exprs.append("dimos-heavy/" + topic.key_expr.removeprefix("dimos/"))
         elif heavy is not False:
-            key_exprs.extend(f"dimos-heavy/{name.removeprefix('/')}/*" for name in heavy)
+            for name in heavy:
+                if isinstance(name, Glob):
+                    chunks = [
+                        chunk if chunk in ("*", "**") else chunk.replace("*", "$*")
+                        for chunk in name.glob.removeprefix("/").split("/")
+                    ]
+                    key_expr = f"dimos-heavy/{'/'.join(chunks)}/*"
+                    key_exprs.append(str(zenoh.KeyExpr.autocanonize(key_expr)))
+                else:
+                    key_exprs.append(f"dimos-heavy/{name.removeprefix('/')}/*")
         return self._subscribe_keys(key_exprs, topic, callback, accept)
 
     def subscribe_all(
         self,
         callback: Callable[[Any, Topic], Any],
         accept: Callable[[Topic], bool] = accept_all,
-        heavy: bool | Sequence[str] = True,
+        heavy: bool | Sequence[str | Glob] = True,
     ) -> Callable[[], None]:
         """Subscribe to all dimos topics, delivering only the latest per topic.
 
@@ -341,7 +351,7 @@ class Zenoh(  # type: ignore[misc]
         topic: Topic,
         callback: Callable[[Any, Topic], None],
         accept: Callable[[Topic], bool],
-        heavy: bool | Sequence[str],
+        heavy: bool | Sequence[str | Glob],
     ) -> Callable[[], None]:
         def deliver(message: bytes, received_topic: Topic) -> None:
             try:
@@ -364,7 +374,7 @@ class PickleZenoh(
         topic: Topic,
         callback: Callable[[Any, Topic], None],
         accept: Callable[[Topic], bool],
-        heavy: bool | Sequence[str],
+        heavy: bool | Sequence[str | Glob],
     ) -> Callable[[], None]:
         def deliver(message: bytes, received_topic: Topic) -> None:
             try:

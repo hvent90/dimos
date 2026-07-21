@@ -31,6 +31,7 @@ from dimos.msgs.sensor_msgs.Image import Image
 from dimos.msgs.sensor_msgs.PointCloud2 import PointCloud2
 from dimos.protocol.pubsub.impl.lcmpubsub import LCM, LCMPubSubBase, Topic as LCMTopic
 from dimos.protocol.pubsub.impl.zenohpubsub import Topic as ZenohTopic, Zenoh, ZenohPubSubBase
+from dimos.protocol.pubsub.patterns import Glob
 from dimos.protocol.service.zenohservice import ZenohSessionPool
 from dimos.visualization.rerun.bridge import RerunBridgeModule
 
@@ -120,9 +121,13 @@ def _recorded_archetypes(path: Path, entity: str) -> set[str]:
     return archetypes
 
 
+def _rerun_image(image: Image) -> Any:
+    return image.to_rerun()
+
+
 @pytest.mark.native_rust
 @pytest.mark.parametrize("backend", ("lcm", "zenoh"))
-def test_extension_clause_8_mixed_stream_uses_python_for_light_and_rust_for_heavy(
+def test_glob_callback_only_sends_matching_heavy_packets_to_python(
     backend: Backend,
     native_process: Callable[[dict[str, Any]], subprocess.Popen[bytes]],
     publisher_factory: Callable[[Backend, bool], LCMPubSubBase | ZenohPubSubBase],
@@ -130,7 +135,7 @@ def test_extension_clause_8_mixed_stream_uses_python_for_light_and_rust_for_heav
     tmp_path: Path,
     wait_until,
 ) -> None:
-    """Mixed LCM and Zenoh streams keep heavy payloads out of Python."""
+    """Native-owned heavy packets stay out of Python beside a callable Glob."""
     recording_id = f"native-rerun-{backend}-{tmp_path.name}"
     recording_path = tmp_path / f"{backend}.rrd"
     topic_base = f"e2e/{backend}"
@@ -141,11 +146,13 @@ def test_extension_clause_8_mixed_stream_uses_python_for_light_and_rust_for_heav
         topic_type = ZenohTopic
         topic_prefix = "dimos/"
     image_topic = topic_type(f"{topic_prefix}{topic_base}/image", Image)
+    python_image_topic = topic_type(f"{topic_prefix}{topic_base}/python/image", Image)
     points_topic = topic_type(f"{topic_prefix}{topic_base}/points", PointCloud2)
     boxes_topic = topic_type(f"{topic_prefix}{topic_base}/boxes", PointCloud2)
     ignored_topic = topic_type(f"{topic_prefix}{topic_base}/ignored", PointCloud2)
     light_topic = topic_type(f"{topic_prefix}{topic_base}/light", PointStamped)
     light_entity = f"world/{topic_base}/light"
+    python_image_entity = f"world/{topic_base}/python/image"
     expected_entities = {
         f"world/{topic_base}/image",
         f"world/{topic_base}/points",
@@ -153,6 +160,7 @@ def test_extension_clause_8_mixed_stream_uses_python_for_light_and_rust_for_heav
     }
     ignored_entity = f"world/{topic_base}/ignored"
     visual_override = {
+        Glob(f"world/{topic_base}/python/*"): _rerun_image,
         f"world/{topic_base}/points": {
             "voxel_size": 0.02,
             "colors": [255, 0, 0],
@@ -184,6 +192,7 @@ def test_extension_clause_8_mixed_stream_uses_python_for_light_and_rust_for_heav
     mocker.patch("dimos.visualization.rerun.bridge.rr.get_recording_id", return_value=recording_id)
     mocker.patch.object(bridge, "_log_connect_hints")
     python_log = mocker.patch("dimos.visualization.rerun.bridge.rr.log")
+    python_accept = mocker.spy(bridge, "_decode_in_python")
     python_callback = mocker.spy(bridge, "_on_packet")
     image_decode = mocker.spy(Image, "lcm_decode")
     pointcloud_decode = mocker.spy(PointCloud2, "lcm_decode")
@@ -212,7 +221,7 @@ def test_extension_clause_8_mixed_stream_uses_python_for_light_and_rust_for_heav
         "dimos.visualization.rerun.bridge.start_native_rerun_bridge", side_effect=start_native
     )
     publisher = publisher_factory(backend)
-    image = Image(np.array([[[1, 2, 3]]], dtype=np.uint8), frame_id="camera", ts=1.0)
+    image = Image(np.full((2, 2, 3), [1, 2, 3], dtype=np.uint8), frame_id="camera", ts=1.0)
     pointcloud = PointCloud2.from_numpy(
         np.array([[1.0, 2.0, 3.0]], dtype=np.float32), frame_id="lidar", timestamp=1.0
     )
@@ -220,12 +229,14 @@ def test_extension_clause_8_mixed_stream_uses_python_for_light_and_rust_for_heav
 
     def publish_until_recorded() -> bool:
         publisher.publish(image_topic, image)
+        publisher.publish(python_image_topic, image)
         publisher.publish(points_topic, pointcloud)
         publisher.publish(boxes_topic, pointcloud)
         publisher.publish(ignored_topic, pointcloud)
         publisher.publish(light_topic, light)
+        python_entities = {call.args[0] for call in python_log.call_args_list}
         return (
-            python_log.called
+            python_image_entity in python_entities
             and recording_path.exists()
             and expected_entities <= _recorded_entity_paths(recording_path)
         )
@@ -246,15 +257,25 @@ def test_extension_clause_8_mixed_stream_uses_python_for_light_and_rust_for_heav
     recorded_entities = _recorded_entity_paths(recording_path)
     assert expected_entities <= recorded_entities
     assert ignored_entity not in recorded_entities
-    callback_types = [call.args[1].lcm_type for call in python_callback.call_args_list]
-    assert callback_types and set(callback_types) == {PointStamped}
-    assert light_decode.call_count == python_callback.call_count
-    assert image_decode.call_count == 0
+    assert python_image_entity not in recorded_entities
+    callback_topics = {call.args[1].topic for call in python_callback.call_args_list}
+    expected_python_topics = {python_image_topic.topic, light_topic.topic}
+    assert callback_topics == expected_python_topics
+    accepted_topics = {call.args[0].topic for call in python_accept.call_args_list}
+    assert accepted_topics == expected_python_topics
+    image_callbacks = sum(
+        call.args[1].topic == python_image_topic.topic for call in python_callback.call_args_list
+    )
+    light_callbacks = sum(
+        call.args[1].topic == light_topic.topic for call in python_callback.call_args_list
+    )
+    assert image_decode.call_count == image_callbacks
+    assert light_decode.call_count == light_callbacks
     assert pointcloud_decode.call_count == 0
-    assert image_convert.call_count == 0
+    assert image_convert.call_count == image_callbacks
     assert pointcloud_convert.call_count == 0
     python_entities = {call.args[0] for call in python_log.call_args_list}
-    assert python_entities == {light_entity}
+    assert python_entities == {light_entity, python_image_entity}
     assert any(isinstance(call.args[1], rr.Points3D) for call in python_log.call_args_list)
     assert _recorded_archetypes(recording_path, f"world/{topic_base}/image") == {
         "rerun.archetypes.Image",

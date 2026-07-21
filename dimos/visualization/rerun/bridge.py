@@ -414,8 +414,8 @@ class RerunBridgeModule(Module):
         if self.config.blueprint:
             rr.send_blueprint(_with_graph_tab(self.config.blueprint()))
 
-        python_paths: list[str] = []
-        hidden_paths: list[str] = []
+        python_paths: list[str | Glob] = []
+        hidden_paths: list[str | Glob] = []
         native_settings: dict[str, NativeTopicConfig] = {}
         for path, converter in self.config.visual_override.items():
             if isinstance(converter, NativeTopicConfig):
@@ -424,11 +424,12 @@ class RerunBridgeModule(Module):
                         "native converter settings require an exact string entity path"
                     )
                 native_settings[path] = converter
-            elif isinstance(path, str):
-                if callable(converter):
-                    python_paths.append(path)
-                elif converter is None:
-                    hidden_paths.append(path)
+            elif callable(converter):
+                python_paths.append(path)
+            elif converter is None:
+                hidden_paths.append(path)
+
+        non_native_paths = python_paths + hidden_paths
 
         transport = self.config.g.transport
         pubsub: LCMPubSubBase | ZenohPubSubBase
@@ -453,7 +454,10 @@ class RerunBridgeModule(Module):
             lcm_url=lcm_url,
             max_hz=self.config.max_hz,
             native_topics=native_settings,
-            python_topics=python_paths + hidden_paths,
+            python_topic_patterns=[
+                path.pattern for path in non_native_paths if isinstance(path, Glob)
+            ],
+            python_topics=[path for path in non_native_paths if isinstance(path, str)],
             heavy_types=list(HEAVY_LCM_TYPE_NAMES),
             recording_id=rr.get_recording_id(),
             zenoh_connect=zenoh_connect,
@@ -469,7 +473,12 @@ class RerunBridgeModule(Module):
                 pubsub.subscribe_all(
                     self._on_packet,
                     self._decode_in_python,
-                    heavy=[path.removeprefix(self.config.entity_prefix) for path in python_paths],
+                    heavy=[
+                        path.removeprefix(self.config.entity_prefix)
+                        if isinstance(path, str)
+                        else Glob(path.glob.removeprefix(self.config.entity_prefix))
+                        for path in python_paths
+                    ],
                 )
             )
         )

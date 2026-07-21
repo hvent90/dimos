@@ -21,6 +21,7 @@ use std::time::{Duration, Instant};
 use anyhow::{bail, Context, Result};
 use dimos_lcm::{Lcm, LcmOptions};
 use lcm_msgs::sensor_msgs::{Image as LcmImage, PointCloud2, PointField};
+use regex::Regex;
 use rerun::{ChannelDatatype, ColorModel, FillMode, RecordingStream};
 use serde::Deserialize;
 use tokio::sync::Notify;
@@ -39,6 +40,7 @@ struct Config {
     lcm_url: String,
     max_hz: HashMap<String, f64>,
     native_topics: HashMap<String, NativeTopicConfig>,
+    python_topic_patterns: Vec<String>,
     python_topics: Vec<String>,
     heavy_types: Vec<String>,
     recording_id: String,
@@ -125,6 +127,7 @@ struct Sink {
     last_log: HashMap<String, Instant>,
     min_interval: HashMap<String, Duration>,
     native_topics: HashMap<String, NativeTopicConfig>,
+    python_topic_patterns: Vec<Regex>,
     python_topics: HashSet<String>,
     recording: RecordingStream,
 }
@@ -143,12 +146,18 @@ impl Sink {
             .filter(|(_, hz)| **hz > 0.0)
             .map(|(entity, hz)| (entity.clone(), Duration::from_secs_f64(1.0 / hz)))
             .collect();
+        let python_topic_patterns = config
+            .python_topic_patterns
+            .iter()
+            .map(|pattern| Regex::new(&format!("^(?:{pattern})$")))
+            .collect::<Result<Vec<_>, _>>()?;
         Ok(Self {
             attached: HashMap::new(),
             entity_prefix: config.entity_prefix.clone(),
             last_log: HashMap::new(),
             min_interval,
             native_topics: config.native_topics.clone(),
+            python_topic_patterns,
             python_topics: config.python_topics.iter().cloned().collect(),
             recording,
         })
@@ -157,7 +166,12 @@ impl Sink {
     fn log(&mut self, channel: &str, payload: Vec<u8>) -> Result<()> {
         let (log, topic) = classify(channel).unwrap();
         let entity = format!("{}{}", self.entity_prefix, topic);
-        if self.python_topics.contains(&entity) {
+        if self.python_topics.contains(&entity)
+            || self
+                .python_topic_patterns
+                .iter()
+                .any(|pattern| pattern.is_match(&entity))
+        {
             return Ok(());
         }
         let topic_config = self

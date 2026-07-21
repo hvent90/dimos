@@ -96,7 +96,7 @@ class LCMPubSubBase(LCMService, AllPubSub[Topic, Any]):
         self,
         callback: Callable[[Any, Topic], Any],
         accept: Callable[[Topic], bool] = accept_all,
-        heavy: bool | Sequence[str] = True,
+        heavy: bool | Sequence[str | Glob] = True,
     ) -> Callable[[], None]:
         def filtered(message: Any, topic: Topic) -> None:
             if accept(topic):
@@ -107,7 +107,9 @@ class LCMPubSubBase(LCMService, AllPubSub[Topic, Any]):
         allowed = () if heavy is False else tuple(heavy)
         heavy_types = "|".join(re.escape(name) for name in HEAVY_LCM_TYPE_NAMES)
         if allowed:
-            allowed_channels = "|".join(re.escape(name) for name in allowed)
+            allowed_channels = "|".join(
+                name.pattern if isinstance(name, Glob) else re.escape(name) for name in allowed
+            )
             pattern = (
                 f"^(?:{allowed_channels})#(?:{heavy_types})$|^(?!(?:.*)#(?:{heavy_types})$).*$"
             )

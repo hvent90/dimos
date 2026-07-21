@@ -24,6 +24,7 @@ from dimos.msgs.geometry_msgs.Twist import Twist
 from dimos.msgs.sensor_msgs.Image import Image
 from dimos.msgs.sensor_msgs.PointCloud2 import PointCloud2
 from dimos.protocol.pubsub.impl.lcmpubsub import LCMPubSubBase, Topic
+from dimos.protocol.pubsub.patterns import Glob
 from dimos.visualization.rerun.bridge import RerunBridgeModule
 
 
@@ -69,6 +70,10 @@ def _pointcloud() -> PointCloud2:
     return PointCloud2.from_numpy(
         np.array([[1.0, 2.0, 3.0]], dtype=np.float32), frame_id="lidar", timestamp=1.0
     )
+
+
+def _rerun_image(image: Image) -> Any:
+    return image.to_rerun()
 
 
 def _start_bridge(bridge: RerunBridgeModule, mocker) -> None:
@@ -158,3 +163,48 @@ def test_bridge_native_startup_failure_surfaces_without_python_heavy_logging(
 
     assert decode.call_count == 0
     assert log.call_count == 0
+
+
+def test_callable_glob_only_subscribes_matching_heavy_packets_to_python(
+    bridge: RerunBridgeModule,
+    mocker,
+    raw_lcm: LCMPubSubBase,
+    retry_until,
+) -> None:
+    bridge.config.visual_override = {Glob("world/glob/*"): _rerun_image}
+    _start_bridge(bridge, mocker)
+    native = mocker.Mock()
+    start_native = mocker.patch(
+        "dimos.visualization.rerun.bridge.start_native_rerun_bridge", return_value=native
+    )
+    accepted = mocker.spy(bridge, "_decode_in_python")
+    received_topics: set[str] = set()
+    received = threading.Event()
+    matched_topic = Topic("/glob/matched", Image)
+    unmatched_topic = Topic("/outside/unmatched", Image)
+    light_topic = Topic("/glob/light", Twist)
+    expected_topics = {matched_topic.topic, light_topic.topic}
+
+    def on_message(_: Any, topic: Topic) -> None:
+        received_topics.add(topic.topic)
+        if received_topics == expected_topics:
+            received.set()
+
+    mocker.patch.object(bridge, "_on_message", side_effect=on_message)
+    image = _image()
+    twist = Twist((1.0, 0.0, 0.0), (0.0, 0.0, 0.0))
+
+    bridge.start()
+    retry_until(
+        received,
+        lambda: (
+            raw_lcm.publish(unmatched_topic, image.lcm_encode()),
+            raw_lcm.publish(matched_topic, image.lcm_encode()),
+            raw_lcm.publish(light_topic, twist.lcm_encode()),
+        ),
+    )
+
+    accepted_topics = {call.args[0].topic for call in accepted.call_args_list}
+    assert accepted_topics == expected_topics
+    assert received_topics == expected_topics
+    assert start_native.call_args.kwargs["python_topic_patterns"] == [Glob("world/glob/*").pattern]
