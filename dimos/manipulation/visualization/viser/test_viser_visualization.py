@@ -1102,9 +1102,7 @@ def test_scene_display_mode_controls_only_primary_robot() -> None:
 
 
 def test_scene_detects_collision_geometry_from_viser_root_frame() -> None:
-    scene = ViserManipulationScene(
-        FakeServer(), FakeViserUrdfWithCollisionRoot, preview_fps=10.0
-    )
+    scene = ViserManipulationScene(FakeServer(), FakeViserUrdfWithCollisionRoot, preview_fps=10.0)
     scene.prepared_urdf_path = lambda config: "dummy.urdf"
     config = SimpleNamespace(
         name="arm",
@@ -1150,9 +1148,7 @@ def test_scene_display_mode_falls_back_without_collision_geometry() -> None:
 
 
 def test_scene_missing_collision_uses_magenta_visual_substitute() -> None:
-    scene = ViserManipulationScene(
-        FakeServer(), FakeViserUrdfWithoutCollision, preview_fps=10.0
-    )
+    scene = ViserManipulationScene(FakeServer(), FakeViserUrdfWithoutCollision, preview_fps=10.0)
     scene.prepared_urdf_path = lambda config: "dummy.urdf"
     config = SimpleNamespace(
         name="arm",

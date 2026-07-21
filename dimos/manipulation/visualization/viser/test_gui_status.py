@@ -132,7 +132,10 @@ def test_robot_display_control_is_labelled_and_initialized_from_scene() -> None:
     scene = DisplayScene("collision")
     display_gui = DisplayGui()
     panel = ViserPanelGui(
-        StatusOnlyServer(), StatusOnlyAdapter(), ViserVisualizationConfig(), cast("ViserManipulationScene", scene)
+        StatusOnlyServer(),
+        StatusOnlyAdapter(),
+        ViserVisualizationConfig(),
+        cast("ViserManipulationScene", scene),
     )
 
     panel._build_scene_controls(display_gui)
@@ -148,7 +151,10 @@ def test_robot_display_control_applies_immediately_and_syncs_on_refresh() -> Non
     scene = DisplayScene()
     display_gui = DisplayGui()
     panel = ViserPanelGui(
-        StatusOnlyServer(), StatusOnlyAdapter(), ViserVisualizationConfig(), cast("ViserManipulationScene", scene)
+        StatusOnlyServer(),
+        StatusOnlyAdapter(),
+        ViserVisualizationConfig(),
+        cast("ViserManipulationScene", scene),
     )
     panel._build_scene_controls(display_gui)
     assert display_gui.dropdown is not None
@@ -168,7 +174,10 @@ def test_robot_display_control_defaults_and_noops_for_legacy_scene_stub() -> Non
     scene = SimpleNamespace(has_reference_grid=lambda: False)
     display_gui = DisplayGui()
     panel = ViserPanelGui(
-        StatusOnlyServer(), StatusOnlyAdapter(), ViserVisualizationConfig(), cast("ViserManipulationScene", scene)
+        StatusOnlyServer(),
+        StatusOnlyAdapter(),
+        ViserVisualizationConfig(),
+        cast("ViserManipulationScene", scene),
     )
 
     panel._build_scene_controls(display_gui)
@@ -186,7 +195,10 @@ def test_robot_display_warning_is_conditional_and_updates_with_mode() -> None:
     scene = DisplayScene("collision", has_collision=False)
     display_gui = DisplayGui()
     panel = ViserPanelGui(
-        StatusOnlyServer(), StatusOnlyAdapter(), ViserVisualizationConfig(), cast("ViserManipulationScene", scene)
+        StatusOnlyServer(),
+        StatusOnlyAdapter(),
+        ViserVisualizationConfig(),
+        cast("ViserManipulationScene", scene),
     )
 
     panel._build_scene_controls(display_gui)

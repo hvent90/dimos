@@ -261,9 +261,7 @@ class ViserPanelGui:
         if handle is None or self._closed or self.scene is None:
             return
         mode = str(getattr(self.scene, "robot_display_mode", "visual")).lower()
-        has_collision = bool(
-            getattr(self.scene, "collision_geometry_available", False)
-        )
+        has_collision = bool(getattr(self.scene, "collision_geometry_available", False))
         visible = mode in {"collision", "both"} and not has_collision
         self._set_optional_handle_attr(handle, "visible", visible)
 
