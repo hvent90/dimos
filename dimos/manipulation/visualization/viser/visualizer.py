@@ -45,7 +45,6 @@ if TYPE_CHECKING:
     from dimos.manipulation.planning.monitor.world_monitor import WorldMonitor
     from dimos.manipulation.planning.spec.models import (
         JointPath,
-        Obstacle,
         PlanningSceneInfo,
         WorldRobotID,
     )
@@ -137,10 +136,6 @@ class ViserManipulationVisualizer:
         except Exception:
             self.close()
             raise
-
-    def add_obstacle(self, obstacle: Obstacle) -> None:
-        """Accept world obstacles; Viser currently leaves obstacle rendering to the world backend."""
-        return None
 
     def get_visualization_url(self) -> str | None:
         return None if self._runtime is None else self._runtime.url
