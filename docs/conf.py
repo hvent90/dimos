@@ -8,14 +8,12 @@ of Mintlify components used by the introduction and quickstart pages.
 from __future__ import annotations
 
 import os
-import re
-import shutil
 from pathlib import Path
+import re
 
 from docutils.parsers.rst import directives
-from sphinx.directives.other import Include
 from myst_parser.parsers.sphinx_ import MystParser
-
+from sphinx.directives.other import Include
 
 project = "Dimensional"
 copyright = "2026, Dimensional Team"
@@ -88,9 +86,14 @@ _COMPONENT_OPEN = re.compile(
     r"^(?P<indent>\s*)<(?P<name>Columns|CardGroup|Card)\b(?P<attrs>[^>]*)>\s*$"
 )
 _COMPONENT_CLOSE = re.compile(r"^\s*</(?P<name>Columns|CardGroup|Card)>\s*$")
-_ATTRIBUTE = re.compile(r"(?P<key>title|href|cols|icon)=[{]?(?:\"(?P<quoted>[^\"]*)\"|(?P<braced>[^}\s]+))[}]?")
+_ATTRIBUTE = re.compile(
+    r"(?P<key>title|href|cols|icon)=[{]?(?:\"(?P<quoted>[^\"]*)\"|(?P<braced>[^}\s]+))[}]?"
+)
 _ICON = re.compile(r"<Icon\b[^>]*/>")
-_LEGACY_LEXERS = re.compile(r"^(?P<indent>\s*)(?P<fence>`{3,}|~{3,})(?P<lexer>results|pikchr|node|diagon)(?P<rest>.*)$", re.MULTILINE)
+_LEGACY_LEXERS = re.compile(
+    r"^(?P<indent>\s*)(?P<fence>`{3,}|~{3,})(?P<lexer>results|pikchr|node|diagon)(?P<rest>.*)$",
+    re.MULTILINE,
+)
 _IMAGE = re.compile(r"!\[(?P<alt>[^]]*)\]\((?P<path>[^)]+)\)")
 _MINTLIFY_DOC_LINK = re.compile(
     r"(?P<opening>\()(?P<path>/docs/[^)#\s]+)\.md(?P<anchor>#[^)\s]+)?(?P<closing>\))"
@@ -154,7 +157,9 @@ def _mintlify_components(text: str) -> str:
                 href = _attribute(attrs, "href")
                 icon = _attribute(attrs, "icon") or "spark"
                 output.append(f":::\u007bgrid-item-card\u007d {title}")
-                output.append(f":class-card: dimos-card dimos-icon-{re.sub(r'[^a-z0-9-]', '-', icon.lower())}")
+                output.append(
+                    f":class-card: dimos-card dimos-icon-{re.sub(r'[^a-z0-9-]', '-', icon.lower())}"
+                )
                 if href:
                     output.append(f":link: {_canonical_card_route(href)}")
                 output.append("")
@@ -241,8 +246,8 @@ def _strip_frontmatter_title(text: str) -> str:
         end = next(index for index, line in enumerate(lines[1:], 1) if line.strip() == "---")
     except StopIteration:
         return text
-    lines = lines[:end + 1]
-    body = text.splitlines(keepends=True)[end + 1:]
+    lines = lines[: end + 1]
+    body = text.splitlines(keepends=True)[end + 1 :]
     frontmatter = [line for line in lines[1:-1] if not re.match(r"^\s*title\s*:", line)]
     if not frontmatter:
         return "".join(body)
@@ -254,7 +259,9 @@ def _coding_agents_landing(text: str) -> str:
 
     if not text.startswith(_CODING_AGENTS_LANDING):
         return text
-    return _CODING_AGENTS_LANDING + """
+    return (
+        _CODING_AGENTS_LANDING
+        + """
 The coding-agent notes are organized as a small toolkit: start with the
 workflow guides, then use the documentation utilities when you are changing
 the docs themselves.
@@ -294,6 +301,7 @@ Executable code blocks, doc links, and diagrams for writing docs.
 :::
 ::::
 """
+    )
 
 
 def _normalise_markdown_source(text: str, source_path: Path) -> str:
