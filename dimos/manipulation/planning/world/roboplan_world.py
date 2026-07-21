@@ -25,7 +25,6 @@ from contextlib import contextmanager
 from dataclasses import dataclass, field, replace
 from pathlib import Path
 import tempfile
-from threading import RLock
 import time
 from typing import TYPE_CHECKING
 import xml.etree.ElementTree as ET
@@ -94,7 +93,6 @@ class RoboPlanWorld:
         self._finalized = False
         self._live_context = RoboPlanContext()
         self._srdf_tempdirs: list[tempfile.TemporaryDirectory[str]] = []
-        self._obstacle_lock = RLock()
 
     # Robot Management
 
@@ -143,23 +141,21 @@ class RoboPlanWorld:
 
     def add_obstacle(self, obstacle: Obstacle) -> str:
         """Add a supported obstacle to the RoboPlan scene."""
-        with self._obstacle_lock:
-            obstacle_id = obstacle.name
-            if obstacle_id in self._obstacles:
-                return obstacle_id
-            self._add_obstacle_to_scene(obstacle, obstacle_id)
-            self._obstacles[obstacle_id] = obstacle
+        obstacle_id = obstacle.name
+        if obstacle_id in self._obstacles:
             return obstacle_id
+        self._add_obstacle_to_scene(obstacle, obstacle_id)
+        self._obstacles[obstacle_id] = obstacle
+        return obstacle_id
 
     def remove_obstacle(self, obstacle_id: str) -> bool:
         """Remove an obstacle from the RoboPlan scene."""
-        with self._obstacle_lock:
-            if obstacle_id not in self._obstacles:
-                return False
-            scene = self._require_scene()
-            scene.removeGeometry(obstacle_id)
-            del self._obstacles[obstacle_id]
-            return True
+        if obstacle_id not in self._obstacles:
+            return False
+        scene = self._require_scene()
+        scene.removeGeometry(obstacle_id)
+        del self._obstacles[obstacle_id]
+        return True
 
     def update_obstacle_pose(self, obstacle_id: str, pose: PoseStamped) -> bool:
         """Update an obstacle pose and invalidate collision scratch."""
