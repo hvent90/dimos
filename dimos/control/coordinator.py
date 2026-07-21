@@ -25,6 +25,7 @@ Features:
 - Aggregated preemption notifications
 """
 
+from contextlib import suppress
 from dataclasses import dataclass, field
 import inspect
 import threading
@@ -210,6 +211,7 @@ class ControlCoordinator(Module):
     def _setup_from_config(self) -> None:
         """Create hardware and tasks from config (called on start)."""
         hardware_added: list[str] = []
+        tasks_added: list[TaskName] = []
 
         try:
             for component in self.config.hardware:
@@ -218,19 +220,22 @@ class ControlCoordinator(Module):
 
             for task_cfg in self.config.tasks:
                 task = self._create_task_from_config(task_cfg)
-                self.add_task(task, task_type=task_cfg.type, stream_bind=task_cfg.stream_bind)
+                if self.add_task(task, task_type=task_cfg.type, stream_bind=task_cfg.stream_bind):
+                    tasks_added.append(task.name)
                 if task_cfg.auto_start:
                     start = getattr(task, "start", None)
                     if callable(start):
                         start()
 
         except Exception:
-            # Rollback: clean up all successfully added hardware
+            # Roll back everything this call added, tasks first: an active task
+            # blocks removal of the hardware whose joints it claims.
+            for task_name in tasks_added:
+                with suppress(Exception):
+                    self.remove_task(task_name)
             for hw_id in hardware_added:
-                try:
+                with suppress(Exception):
                     self.remove_hardware(hw_id)
-                except Exception:
-                    pass
             raise
 
     def _setup_hardware(self, component: HardwareComponent) -> None:

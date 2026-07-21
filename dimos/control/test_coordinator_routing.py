@@ -821,6 +821,13 @@ class TestSubclassDeclaredStreams:
         assert taps["custom_in"].subscribed
 
 
+class ActiveProbeTask(ProbeTask):
+    """Probe that claims its joints for real, so remove_hardware can refuse it."""
+
+    def is_active(self) -> bool:
+        return True
+
+
 class TestStreamBind:
     """Per-instance remapping of a card's inputs onto other ports."""
 
@@ -879,6 +886,33 @@ class TestStreamBind:
 
         assert coordinator.get_task("a").probe_commands == []
         assert len(coordinator.get_task("b").probe_commands) == 1
+
+    def test_bad_task_config_rolls_back_the_whole_setup(self, make_coordinator, register_card):
+        card = self._fanout_card(register_card)
+        base_joints = make_twist_base_joints("base")
+        coordinator, _ = make_coordinator(
+            coordinator_cls=FanoutCoordinator,
+            hardware=[_base_component()],
+            tasks=[
+                TaskConfig(
+                    name="good",
+                    type=card,
+                    joint_names=base_joints,
+                    stream_bind={"sensor_in": "a_in"},
+                ),
+                TaskConfig(name="bad", type=card, stream_bind={"sensor_in": "no_such_port"}),
+            ],
+        )
+        coordinator._create_task_from_config = lambda cfg: ActiveProbeTask(
+            cfg.name, frozenset(cfg.joint_names)
+        )
+
+        with pytest.raises(ValueError, match="no_such_port"):
+            coordinator.start()
+
+        # Tasks go first, or "good" is active on the base joints and pins the hardware.
+        assert coordinator.list_tasks() == []
+        assert coordinator.list_hardware() == []
 
     def test_unknown_stream_bind_key_is_loud(self, make_coordinator, register_card):
         card = register_card(
