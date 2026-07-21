@@ -23,9 +23,7 @@ import pytest
 from dimos.hardware.manipulators.piper.adapter import PiperAdapter
 
 
-def test_connect_reports_missing_sdk(
-    mocker: Any, capsys: pytest.CaptureFixture[str]
-) -> None:
+def test_connect_reports_missing_sdk(mocker: Any, capsys: pytest.CaptureFixture[str]) -> None:
     mocker.patch.dict(sys.modules, {"piper_sdk": None})
 
     assert not PiperAdapter().connect()

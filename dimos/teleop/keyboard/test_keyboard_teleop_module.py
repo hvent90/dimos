@@ -91,9 +91,7 @@ def test_twist_from_keys_maps_rotation_keys_to_eef_angular_twist() -> None:
     assert angular == (0.5, -0.5, 0.5)
 
 
-def test_final_key_release_publishes_zero_velocity(
-    module: KeyboardTeleopModule, mocker
-) -> None:
+def test_final_key_release_publishes_zero_velocity(module: KeyboardTeleopModule, mocker) -> None:
     publish = mocker.patch.object(module.coordinator_ee_twist_command, "publish")
     held = {keyboard_mod.pygame.K_w}
     event = keyboard_mod.pygame.event.Event(keyboard_mod.pygame.KEYUP, key=keyboard_mod.pygame.K_w)

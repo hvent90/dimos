@@ -44,9 +44,7 @@ def piper_sdk(mocker: Any) -> Any:
         )
     )
     sdk.gripper_position = 0
-    sdk.GripperCtrl.side_effect = lambda position, *_: setattr(
-        sdk, "gripper_position", position
-    )
+    sdk.GripperCtrl.side_effect = lambda position, *_: setattr(sdk, "gripper_position", position)
     sdk.GetArmGripperMsgs.side_effect = lambda: SimpleNamespace(
         gripper_state=SimpleNamespace(grippers_angle=sdk.gripper_position)
     )
