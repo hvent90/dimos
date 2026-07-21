@@ -81,7 +81,7 @@ class PiperAdapter(ManipulatorAdapter):
         self._can_port = address
         self._dof = dof
         self._gripper_speed = gripper_speed
-        self._sdk: Any = None
+        self._sdk: C_PiperInterface_V2 | None = None
         self._connected: bool = False
         self._enabled: bool = False
         self._gripper_initialized: bool = False
@@ -90,21 +90,22 @@ class PiperAdapter(ManipulatorAdapter):
     def connect(self) -> bool:
         """Connect to Piper via CAN bus."""
         try:
-            self._sdk = C_PiperInterface_V2(
+            sdk = C_PiperInterface_V2(
                 can_name=self._can_port,
                 judge_flag=True,  # Enable safety checks
                 can_auto_init=True,  # Let SDK handle CAN initialization
                 dh_is_offset=False,
             )
+            self._sdk = sdk
 
             # Connect to CAN port
-            self._sdk.ConnectPort(piper_init=True, start_thread=True)
+            sdk.ConnectPort(piper_init=True, start_thread=True)
 
             # Wait for initialization
             time.sleep(0.025)
 
             # Check connection by trying to get status
-            status = self._sdk.GetArmStatus()
+            status = sdk.GetArmStatus()
             if status is not None:
                 if not self._initialize_startup_state():
                     self._close_failed_connection()
