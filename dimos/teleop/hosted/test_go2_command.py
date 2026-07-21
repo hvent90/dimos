@@ -344,3 +344,28 @@ def test_nav_goal_rejected_when_estopped(
 
     module.goal_request.publish.assert_not_called()
     assert acks == [(13, False)]
+
+
+# ─── robot-type declaration (operator UI cockpit select) ─────────────
+
+
+def test_init_declares_robot_type_to_broker(module: Go2CommandModule) -> None:
+    """__init__ pushes ROBOT_TYPE to the shared broker provider, which sends it
+    in the session-create POST so the operator dashboard opens the Go2 cockpit."""
+    from dimos.protocol.pubsub.impl.webrtc.providers.broker import BrokerProvider
+
+    assert module.ROBOT_TYPE == "go2"
+    assert BrokerProvider._robot_type == "go2"
+
+
+def test_broker_requires_declared_robot_type(monkeypatch: pytest.MonkeyPatch) -> None:
+    """No silent default: with no command module having declared a kind, the
+    provider refuses to build a session rather than guessing 'go2'."""
+    from dimos.protocol.pubsub.impl.webrtc.providers.broker import BrokerProvider
+
+    monkeypatch.setattr(BrokerProvider, "_robot_type", None)
+    with pytest.raises(RuntimeError, match="robot_type not declared"):
+        BrokerProvider._require_robot_type()
+
+    BrokerProvider.set_robot_type("go2")
+    assert BrokerProvider._require_robot_type() == "go2"

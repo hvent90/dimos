@@ -38,7 +38,7 @@ from collections.abc import Callable
 import contextlib
 import json
 import time
-from typing import TYPE_CHECKING, Any
+from typing import TYPE_CHECKING, Any, ClassVar
 
 from dimos.protocol.pubsub.impl.webrtc.providers.sdp import propagate_bundle_candidates
 from dimos.protocol.pubsub.impl.webrtc.providers.spec import (
@@ -94,6 +94,31 @@ class BrokerProvider(AsyncProviderBase):
 
     INBOUND_CHANNELS = ("cmd_unreliable", "state_reliable")
     OUTBOUND_CHANNELS = ("state_reliable_back", "map_unreliable")
+
+    # Robot kind for the create-session POST — the sole source of truth, declared
+    # by the hosted command module (its ROBOT_TYPE) via set_robot_type() at init.
+    # Class-level: exactly one broker session and one robot kind per process, and
+    # the command module + provider share that process. No default — if nothing
+    # declares it, _require_robot_type() raises rather than silently guessing.
+    _robot_type: ClassVar[str | None] = None
+
+    @classmethod
+    def set_robot_type(cls, robot_type: str) -> None:
+        """Declare the robot kind sent to the broker at session create, so the
+        operator UI auto-selects the cockpit. Called by the hosted command module
+        at init. Idempotent, last write wins."""
+        cls._robot_type = str(robot_type)
+
+    @classmethod
+    def _require_robot_type(cls) -> str:
+        """The declared robot kind, or raise — a hosted session must not create
+        without one (no silent default)."""
+        if cls._robot_type is None:
+            raise RuntimeError(
+                "robot_type not declared: a hosted command module must set ROBOT_TYPE "
+                "(via BrokerProvider.set_robot_type) before the broker session is created"
+            )
+        return cls._robot_type
 
     def __init__(self, config: BrokerConfig | None = None) -> None:
         if not WEBRTC_AVAILABLE:
@@ -223,6 +248,8 @@ class BrokerProvider(AsyncProviderBase):
                     # robot_id is optional — broker derives it from the API key.
                     **({"robot_id": self._robot_id} if self._robot_id else {}),
                     "robot_name": self._robot_name,
+                    # Declared by the hosted command module at init; raises if unset.
+                    "robot_type": self._require_robot_type(),
                     "sdp_offer": self._pc.localDescription.sdp,
                 },
             )

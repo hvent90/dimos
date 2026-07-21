@@ -22,7 +22,7 @@ from __future__ import annotations
 import json
 import math
 import time
-from typing import Any
+from typing import Any, ClassVar
 
 from dimos_lcm.geometry_msgs import TwistStamped as LCMTwistStamped
 from reactivex.disposable import Disposable
@@ -33,7 +33,9 @@ from dimos.core.stream import In, Out
 from dimos.msgs.geometry_msgs.PoseStamped import PoseStamped
 from dimos.msgs.geometry_msgs.TwistStamped import TwistStamped
 from dimos.msgs.std_msgs.Bool import Bool
+from dimos.protocol.pubsub.impl.webrtc.providers.broker import BrokerProvider
 from dimos.robot.manipulators.common.topics import EEF_TWIST_TASK_NAME
+from dimos.teleop.hosted.robot_type import RobotType
 from dimos.teleop.quest.quest_extensions import ArmTeleopConfig, ArmTeleopModule
 from dimos.teleop.quest.quest_types import Hand
 from dimos.teleop.utils.teleop_transforms import webxr_to_robot
@@ -48,6 +50,11 @@ class ArmCommandConfig(ArmTeleopConfig):
 
 class ArmCommandModule(ArmTeleopModule):
     """Operator command/E-STOP plane for a coordinator-driven arm."""
+
+    # Robot kind this command surface targets. __init__ declares it to the shared
+    # broker provider (BrokerProvider.set_robot_type) so the session POST tells the
+    # operator UI which cockpit to open.
+    ROBOT_TYPE: ClassVar[RobotType] = RobotType.XARM
 
     config: ArmCommandConfig
 
@@ -64,6 +71,9 @@ class ArmCommandModule(ArmTeleopModule):
 
     def __init__(self, **kwargs: Any) -> None:
         super().__init__(**kwargs)
+        # Declare our kind to the shared broker provider (same worker); the
+        # session POST carries it so the operator UI picks the arm cockpit.
+        BrokerProvider.set_robot_type(self.ROBOT_TYPE)
         self._estopped = False
         self._last_twist_ts = 0.0
         self._last_pose_ts = {Hand.LEFT: 0.0, Hand.RIGHT: 0.0}

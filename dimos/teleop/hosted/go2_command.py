@@ -25,7 +25,7 @@ from __future__ import annotations
 import json
 import math
 import time
-from typing import Any
+from typing import Any, ClassVar
 
 from dimos_lcm.std_msgs import Bool
 from reactivex.disposable import Disposable
@@ -36,8 +36,10 @@ from dimos.core.module import Module, ModuleConfig
 from dimos.core.stream import In, Out
 from dimos.msgs.geometry_msgs.PoseStamped import PoseStamped
 from dimos.msgs.geometry_msgs.Twist import Twist
+from dimos.protocol.pubsub.impl.webrtc.providers.broker import BrokerProvider
 from dimos.robot.unitree.go2.connection import GO2Connection
 from dimos.teleop.hosted.command_executor import SerializedCommandExecutor
+from dimos.teleop.hosted.robot_type import RobotType
 from dimos.utils.logging_config import setup_logger
 
 logger = setup_logger()
@@ -77,6 +79,11 @@ class Go2CommandConfig(ModuleConfig):
 class Go2CommandModule(Module):
     """Operator command/E-STOP/drive plane, driving GO2Connection over RPC."""
 
+    # Robot kind this command surface targets. __init__ declares it to the shared
+    # broker provider (BrokerProvider.set_robot_type) so the session POST tells the
+    # operator UI which cockpit to open.
+    ROBOT_TYPE: ClassVar[RobotType] = RobotType.GO2
+
     config: Go2CommandConfig
 
     # RPC ref to the driver (framework injects an RPCClient) for discrete commands.
@@ -97,6 +104,9 @@ class Go2CommandModule(Module):
     def __init__(self, **kwargs: Any) -> None:
         """Init command state (executor, safety epoch, posture, drive timers)."""
         super().__init__(**kwargs)
+        # Declare our kind to the shared broker provider (same worker); the
+        # session POST carries it so the operator UI picks the Go2 cockpit.
+        BrokerProvider.set_robot_type(self.ROBOT_TYPE)
         self._estopped = False
         self._cmd = SerializedCommandExecutor(
             lambda nonce, ok: self._send_ack(nonce, ok), lambda: self._estopped
