@@ -132,7 +132,8 @@ class TestStandup:
         assert conn.standup() is False
         conn._conn.change_mode.assert_not_called()  # refuses rather than forcing WALKING
 
-    def test_arms_from_damping_once_each_mode_is_confirmed(self, conn):
+    def test_arms_from_damping_with_one_request_per_transition(self, conn):
+        conn.mode_settle = 0.0
         conn._conn.get_mode.side_effect = [
             RobotMode.DAMPING,  # standup() reads the starting mode
             RobotMode.PREPARE,  # PREPARE confirmed
@@ -140,7 +141,15 @@ class TestStandup:
         ]
         assert conn.standup() is True
         requested = [call.args[0] for call in conn._conn.change_mode.call_args_list]
-        assert requested == [RobotMode.PREPARE, RobotMode.WALKING]
+        assert requested == [RobotMode.PREPARE, RobotMode.WALKING]  # exactly one each
+
+    def test_settles_after_each_confirmed_transition(self, conn):
+        # The mode flag leads the physical motion: the next request must wait it out.
+        conn.mode_settle = 0.1
+        conn._conn.get_mode.side_effect = [RobotMode.PREPARE, RobotMode.WALKING]
+        start = time.perf_counter()
+        assert conn._arm(RobotMode.DAMPING) is True
+        assert time.perf_counter() - start >= 0.2  # one settle per transition
 
     def test_fails_when_mode_is_never_confirmed(self, conn):
         conn.mode_transition_timeout = 0.2
@@ -148,16 +157,12 @@ class TestStandup:
         assert conn.standup() is False
         conn._conn.change_mode.assert_called_once_with(RobotMode.WALKING)
 
-    def test_rerequests_mode_until_the_robot_accepts(self, conn):
-        # The robot ignores requests while mid-motion, accepting only a later re-request.
-        conn.mode_request_retry = 0.05
-        conn._conn.get_mode.side_effect = lambda: (
-            RobotMode.WALKING if conn._conn.change_mode.call_count >= 3 else RobotMode.PREPARE
-        )
-        assert conn.standup() is True
-        assert conn._conn.change_mode.call_count >= 3
-        assert all(c.args[0] == RobotMode.WALKING for c in conn._conn.change_mode.call_args_list)
-
     def test_transport_error_returns_false_instead_of_raising(self, conn):
         conn._conn.get_mode.side_effect = grpc.RpcError("transient")
         assert conn.standup() is False
+
+    def test_is_armed_only_in_walking(self, conn):
+        conn._conn.get_mode.return_value = RobotMode.WALKING
+        assert conn.is_armed() is True
+        conn._conn.get_mode.return_value = RobotMode.DAMPING
+        assert conn.is_armed() is False

@@ -18,6 +18,11 @@ Scope: the K1 over booster-rpc exposes a camera (JPEG over WebSocket) and base
 velocity control (+ stand/sit mode changes). It has no world-frame odometry or
 lidar, so this connection implements only the `Camera` spec: no `odom`/`lidar`/
 `pointcloud` ports, and therefore no mapping/navigation tier.
+
+Arm the robot into WALKING with the Booster app before launching a blueprint,
+the same convention as the G1. start() only verifies the mode. The `standup`
+RPC / `stand` skill perform the full DAMPING -> PREPARE -> WALKING sequence
+and must only be invoked deliberately, with the robot secured and clear.
 """
 
 import asyncio
@@ -127,11 +132,13 @@ class K1Connection(Module, Camera):
             "inaccurate until replaced with a measured calibration."
         )
 
-        # On standup failure keep the camera and RPCs alive for diagnosis.
-        if not self.standup():
+        # Like the G1, the robot must be armed by the operator before launch. start()
+        # never commands mode transitions: a standup as a launch side effect is unsafe.
+        if not self._connection.is_armed():
             logger.error(
-                "K1 did not reach WALKING on start. Velocity commands will be dropped. "
-                "Resolve the robot's mode, then call the `standup` RPC (or `stand` skill)."
+                "K1 is not in WALKING mode. Velocity commands will be dropped. "
+                "Arm it with the Booster app, or call the `standup` RPC (or `stand` "
+                "skill) once the robot is clear."
             )
         logger.info("K1Connection started (ip=%s)", self.config.ip)
 

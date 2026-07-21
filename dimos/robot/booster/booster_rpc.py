@@ -50,7 +50,7 @@ logger = setup_logger()
 SEND_HZ = 30.0  # gRPC send rate to the robot, kept under booster-rpc's ~58/sec move ceiling
 CMD_VEL_TIMEOUT_S = 0.5  # dead-man: send one zero if no new command arrives within this window
 MODE_TRANSITION_TIMEOUT_S = 15.0  # give up if the robot never reports the requested mode
-MODE_REQUEST_RETRY_S = 1.0  # the robot ignores mode requests while mid-motion, so re-issue
+MODE_SETTLE_S = 5.0  # the mode flag confirms acceptance, not completion: wait out the motion
 MODE_POLL_S = 0.1
 
 
@@ -78,7 +78,7 @@ class BoosterRPCConnection:
         self.cmd_vel_timeout = CMD_VEL_TIMEOUT_S
         self.send_hz = SEND_HZ
         self.mode_transition_timeout = MODE_TRANSITION_TIMEOUT_S
-        self.mode_request_retry = MODE_REQUEST_RETRY_S
+        self.mode_settle = MODE_SETTLE_S
 
     def stop(self) -> None:
         self._sender_stop.set()
@@ -159,6 +159,10 @@ class BoosterRPCConnection:
             time.sleep(1.0 / self.send_hz)
         return False
 
+    def is_armed(self) -> bool:
+        """True if the robot is in WALKING mode and will accept velocity commands."""
+        return bool(self._get_mode() == RobotMode.WALKING)
+
     def standup(self) -> bool:
         """Arm the robot for walking; no-op if already WALKING.
 
@@ -181,27 +185,31 @@ class BoosterRPCConnection:
         return self._change_mode(RobotMode.WALKING)
 
     def _change_mode(self, target: RobotMode) -> bool:
-        """Request `target` until the robot reports it.
+        """Request `target` once, confirm the robot reports it, then wait out the motion.
 
-        The robot silently ignores mode requests while it is still physically completing
-        the previous transition, so the request is re-issued while polling.
+        The mode flag flips when the request is accepted, seconds before the physical
+        transition completes. Requesting the next mode mid-motion is unsafe (the robot
+        may execute it from an unstable posture), so a settle wait follows confirmation.
         """
         start = time.monotonic()
+        try:
+            with self._lock:
+                self._conn.change_mode(target)
+        except grpc.RpcError as e:
+            logger.warning("Booster change_mode(%s) failed: %s", target, e)
+            return False
         deadline = start + self.mode_transition_timeout
         while time.monotonic() < deadline:
-            try:
-                with self._lock:
-                    self._conn.change_mode(target)
-            except grpc.RpcError as e:
-                logger.warning("Booster change_mode(%s) failed: %s", target, e)
-            retry_at = min(time.monotonic() + self.mode_request_retry, deadline)
-            while time.monotonic() < retry_at:
-                if self._get_mode() == target:
-                    logger.info(
-                        "Booster mode -> %s (confirmed in %.2fs)", target, time.monotonic() - start
-                    )
-                    return True
-                time.sleep(MODE_POLL_S)
+            if self._get_mode() == target:
+                logger.info(
+                    "Booster mode -> %s (confirmed in %.2fs, settling %.1fs)",
+                    target,
+                    time.monotonic() - start,
+                    self.mode_settle,
+                )
+                time.sleep(self.mode_settle)
+                return True
+            time.sleep(MODE_POLL_S)
         logger.warning(
             "Booster mode %s not reached within %ss", target, self.mode_transition_timeout
         )
