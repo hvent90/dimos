@@ -136,6 +136,11 @@ uv run lerobot-train \
 Use `--policy.device=cuda` on an NVIDIA training host. Apple-silicon Macs use
 `mps`; CPU-only hosts can use `cpu` for a slow smoke test.
 
+ACT is the tested A1Z policy type, but the runtime uses LeRobot's policy
+factory rather than hard-coding ACT. Another LeRobot policy type can be used
+when its checkpoint exposes the same single RGB image input, seven-value state
+input, and seven-value action output.
+
 After the host setup passes, run the trained policy. Loading and hardware
 initialization require confirmation, and inference starts only after live RGB
 and seven-joint observations are ready:
@@ -157,8 +162,9 @@ camera/coordinator/policy module stack used by a full blueprint, and invokes
 ## Turn trained policies into an agentic robot
 
 Once individual checkpoints pass `run-policy`, put them in one catalog and
-give the behaviors stable, meaningful skill names. The complete blueprint can
-stay small:
+give the behaviors stable, meaningful skill names. Checkpoints are loaded on
+first use and cached, so the running robot can execute several trained
+behaviors without restarting. The complete blueprint can stay small:
 
 ```python
 from dimos.agents.annotation import skill
