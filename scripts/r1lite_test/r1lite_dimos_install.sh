@@ -10,7 +10,7 @@
 #     bash scripts/r1lite_test/r1lite_dimos_install.sh
 #
 # Idempotent; prompts before every host change. Host changes (with consent):
-#   docker.io (apt)   container "dimos-dev-r1lite"   py3.10 venv in it  
+#   docker.io (apt)   container "dimos-dev-r1lite"   py3.10 venv in it
 #   /etc/sysctl.d/60-dimos.conf. Does NOT touch the Galaxea stack.
 # One pause mid-run: the ghcr IMAGE is private (repo isn't), so it's
 # transferred from the laptop over the cable when the script asks.
