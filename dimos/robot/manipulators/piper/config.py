@@ -18,8 +18,6 @@ from __future__ import annotations
 
 from pathlib import Path
 
-from pydantic import Field
-
 from dimos.control.components import HardwareComponent, HardwareType, make_joints
 from dimos.core.global_config import global_config
 from dimos.manipulation.planning.spec.config import RobotModelConfig
@@ -52,12 +50,6 @@ PIPER_HOME_JOINTS = [
     0.9771515619106422,
     -0.13286819850920156,
 ]
-
-
-class PiperRobotModelConfig(RobotModelConfig):
-    """Piper-specific robot model configuration."""
-
-    preset_poses: dict[str, list[float]] = Field(default_factory=dict)
 
 
 def _adapter_kwargs(home_joints: list[float] | None = None) -> dict[str, object]:
@@ -140,10 +132,10 @@ def make_piper_model_config(
     joint_prefix: str | None = None,
     coordinator_task_name: str | None = None,
     home_joints: list[float] | None = None,
-) -> PiperRobotModelConfig:
+) -> RobotModelConfig:
     dof = 6
     model_home_joints = list(home_joints) if home_joints is not None else list(PIPER_HOME_JOINTS)
-    return PiperRobotModelConfig(
+    return RobotModelConfig(
         name=name,
         model_path=PIPER_MODEL_PATH,
         base_pose=base_pose(),
@@ -161,5 +153,4 @@ def make_piper_model_config(
         coordinator_task_name=coordinator_task_name or f"traj_{name}",
         gripper_hardware_id=name,
         home_joints=model_home_joints,
-        preset_poses={"home": list(model_home_joints)},
     )

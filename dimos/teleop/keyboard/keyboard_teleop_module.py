@@ -57,9 +57,9 @@ logger = setup_logger()
 # Force X11 driver to avoid OpenGL threading issues
 os.environ["SDL_VIDEODRIVER"] = "x11"
 
-# Jog speeds
-LINEAR_SPEED = 0.05  # m/s
-ANGULAR_SPEED = 0.5  # rad/s
+# Default jog speeds
+DEFAULT_LINEAR_SPEED = 0.05  # m/s
+DEFAULT_ANGULAR_SPEED = 0.5  # rad/s
 # Normalized gripper command values.
 GRIPPER_OPEN_POSITION = 1.0
 GRIPPER_CLOSED_POSITION = 0.0
@@ -70,8 +70,8 @@ TwistVector = tuple[float, float, float]
 
 class KeyboardTeleopConfig(ModuleConfig):
     task_name: str = EEF_TWIST_TASK_NAME
-    linear_speed: float = LINEAR_SPEED
-    angular_speed: float = ANGULAR_SPEED
+    linear_speed: float = DEFAULT_LINEAR_SPEED
+    angular_speed: float = DEFAULT_ANGULAR_SPEED
     gripper_open_position: float = GRIPPER_OPEN_POSITION
 
 
@@ -268,8 +268,8 @@ class KeyboardTeleopModule(Module):
 def _twist_from_keys(
     keys: ScancodeWrapper | set[int],
     *,
-    linear_speed: float = LINEAR_SPEED,
-    angular_speed: float = ANGULAR_SPEED,
+    linear_speed: float,
+    angular_speed: float,
 ) -> tuple[TwistVector, TwistVector]:
     linear = [0.0, 0.0, 0.0]
     angular = [0.0, 0.0, 0.0]

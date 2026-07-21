@@ -14,21 +14,19 @@ from dimos.robot.manipulators.piper.config import (
 )
 
 
-def test_piper_model_config_exposes_default_home_preset() -> None:
+def test_piper_model_config_uses_default_home_joints() -> None:
     config = make_piper_model_config()
 
-    assert config.preset_poses["home"] == config.home_joints == PIPER_HOME_JOINTS
-    assert len(config.preset_poses["home"]) == 6
+    assert config.home_joints == PIPER_HOME_JOINTS
+    assert config.home_joints is not PIPER_HOME_JOINTS
 
 
-def test_piper_model_config_exposes_supplied_home_preset() -> None:
+def test_piper_model_config_uses_supplied_home_joints() -> None:
     home_joints = [0.1, 0.2, 0.3, 0.4, 0.5, 0.6]
     config = make_piper_model_config(home_joints=home_joints)
 
-    assert config.preset_poses["home"] == home_joints
     assert config.home_joints == home_joints
-    assert len(config.preset_poses["home"]) == 6
-    assert config.preset_poses["home"] is not home_joints
+    assert config.home_joints is not home_joints
 
 
 def test_piper_defaults_to_mock_without_can_port(monkeypatch) -> None:

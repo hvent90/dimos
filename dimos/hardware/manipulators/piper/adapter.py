@@ -20,6 +20,7 @@ DimOS Units: angles=radians, distance=meters
 
 from __future__ import annotations
 
+from collections.abc import Callable
 import math
 import time
 from typing import Any
@@ -179,14 +180,32 @@ class PiperAdapter(ManipulatorAdapter):
         sdk = self._sdk
         if sdk is not None:
             if self._enabled:
-                try:
-                    sdk.DisablePiper()
-                except Exception:
-                    logger.exception("Failed to disable Piper after startup failure")
-            try:
-                sdk.DisconnectPort()
-            except Exception:
-                logger.exception("Failed to disconnect Piper after startup failure")
+                self._attempt_cleanup_step(
+                    sdk.DisablePiper,
+                    exception_message="Failed to disable Piper after startup failure",
+                )
+            self._attempt_cleanup_step(
+                sdk.DisconnectPort,
+                exception_message="Failed to disconnect Piper after startup failure",
+            )
+        self._clear_connection_state()
+
+    def _attempt_cleanup_step(
+        self,
+        action: Callable[[], Any],
+        *,
+        false_message: str | None = None,
+        exception_message: str,
+    ) -> None:
+        """Run one best-effort shutdown action and retain its failure logging."""
+        try:
+            if action() is False and false_message is not None:
+                logger.error(false_message)
+        except Exception:
+            logger.exception(exception_message)
+
+    def _clear_connection_state(self) -> None:
+        """Clear all local state after a connection attempt ends."""
         self._sdk = None
         self._connected = False
         self._enabled = False
@@ -196,33 +215,28 @@ class PiperAdapter(ManipulatorAdapter):
         """Disconnect from Piper."""
         sdk = self._sdk
         if sdk is None:
-            self._connected = False
-            self._enabled = False
-            self._gripper_initialized = False
+            self._clear_connection_state()
             return
-        try:
-            if not self._move_to_zero_position():
-                logger.error("Piper did not reach its zero position before disconnect")
-        except Exception:
-            logger.exception("Error homing Piper before disconnect")
-        try:
-            if not self._deactivate_gripper():
-                logger.error("Failed to deactivate Piper gripper")
-        except Exception:
-            logger.exception("Error deactivating Piper gripper")
-        try:
-            sdk.DisablePiper()
-        except Exception:
-            logger.exception("Error disabling Piper")
-        try:
-            sdk.DisconnectPort()
-        except Exception:
-            logger.exception("Error disconnecting Piper CAN port")
-        finally:
-            self._sdk = None
-            self._connected = False
-            self._enabled = False
-            self._gripper_initialized = False
+
+        self._attempt_cleanup_step(
+            self._move_to_zero_position,
+            false_message="Piper did not reach its zero position before disconnect",
+            exception_message="Error homing Piper before disconnect",
+        )
+        self._attempt_cleanup_step(
+            self._deactivate_gripper,
+            false_message="Failed to deactivate Piper gripper",
+            exception_message="Error deactivating Piper gripper",
+        )
+        self._attempt_cleanup_step(
+            sdk.DisablePiper,
+            exception_message="Error disabling Piper",
+        )
+        self._attempt_cleanup_step(
+            sdk.DisconnectPort,
+            exception_message="Error disconnecting Piper CAN port",
+        )
+        self._clear_connection_state()
 
     def is_connected(self) -> bool:
         """Check if connected to Piper."""

@@ -23,11 +23,9 @@ from dimos.msgs.sensor_msgs.JointState import JointState
 from dimos.robot.manipulators.common.topics import EEF_TWIST_TASK_NAME
 import dimos.teleop.keyboard.keyboard_teleop_module as keyboard_mod
 from dimos.teleop.keyboard.keyboard_teleop_module import (
-    ANGULAR_SPEED,
     GRIPPER_CLOSED_POSITION,
     GRIPPER_JOINT_NAME,
     GRIPPER_OPEN_POSITION,
-    LINEAR_SPEED,
     KeyboardTeleopModule,
     _twist_from_keys,
 )
@@ -75,20 +73,24 @@ def test_publish_twist_defaults_to_zero_twist(module: KeyboardTeleopModule, mock
 
 def test_twist_from_keys_maps_translation_keys_to_eef_linear_twist() -> None:
     linear, angular = _twist_from_keys(
-        PressedKeys(keyboard_mod.pygame.K_w, keyboard_mod.pygame.K_d, keyboard_mod.pygame.K_q)
+        PressedKeys(keyboard_mod.pygame.K_w, keyboard_mod.pygame.K_d, keyboard_mod.pygame.K_q),
+        linear_speed=0.05,
+        angular_speed=0.5,
     )
 
-    assert linear == (LINEAR_SPEED, -LINEAR_SPEED, LINEAR_SPEED)
+    assert linear == (0.05, -0.05, 0.05)
     assert angular == (0.0, 0.0, 0.0)
 
 
 def test_twist_from_keys_maps_rotation_keys_to_eef_angular_twist() -> None:
     linear, angular = _twist_from_keys(
-        PressedKeys(keyboard_mod.pygame.K_r, keyboard_mod.pygame.K_g, keyboard_mod.pygame.K_y)
+        PressedKeys(keyboard_mod.pygame.K_r, keyboard_mod.pygame.K_g, keyboard_mod.pygame.K_y),
+        linear_speed=0.05,
+        angular_speed=0.5,
     )
 
     assert linear == (0.0, 0.0, 0.0)
-    assert angular == (ANGULAR_SPEED, -ANGULAR_SPEED, ANGULAR_SPEED)
+    assert angular == (0.5, -0.5, 0.5)
 
 
 def test_keyup_of_last_motion_key_publishes_zero_immediately(
@@ -117,7 +119,7 @@ def test_keyup_preserves_remaining_motion_key(module: KeyboardTeleopModule, mock
     assert held == {keyboard_mod.pygame.K_a}
     assert publish.call_count == 1
     msg = publish.call_args.args[0]
-    assert [msg.linear.x, msg.linear.y, msg.linear.z] == [0.0, LINEAR_SPEED, 0.0]
+    assert [msg.linear.x, msg.linear.y, msg.linear.z] == [0.0, 0.05, 0.0]
 
 
 def test_keyup_publishes_directly_without_timeout_wait(
