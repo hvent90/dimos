@@ -1,8 +1,11 @@
-Dimensional
-===========
+Welcome to Dimensional
+======================
 
-Build physical applications in Python with the modern operating system for
-generalist robotics.
+.. include:: introduction.mdx
+   :parser: myst_parser.sphinx_
+   :body-only:
+   :relative-images:
+   :relative-docs: .
 
 .. toctree::
    :maxdepth: 1

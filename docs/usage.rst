@@ -11,7 +11,6 @@ Usage
    :maxdepth: 1
    :titlesonly:
 
-   Concepts <usage/index>
    Modules <usage/modules>
    Blueprints <usage/blueprints>
    Configuration <usage/configuration>
@@ -26,3 +25,8 @@ Usage
    Data streams <usage/data-streams>
    Sensor streams <usage/sensor-streams>
    Transports <usage/transports>
+
+.. toctree::
+   :hidden:
+
+   usage/index

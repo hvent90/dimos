@@ -14,3 +14,4 @@ Manipulation
    manipulation/adding_a_custom_arm
    manipulation/openarm_integration
    manipulation/a750
+   manipulation/agentic

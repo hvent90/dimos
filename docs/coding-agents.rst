@@ -18,5 +18,3 @@ Coding agent notes
    coding-agents/docs/index
    coding-agents/docs/codeblocks
    coding-agents/docs/doclinks
-   agents/domain
-   agents/issue-tracker
