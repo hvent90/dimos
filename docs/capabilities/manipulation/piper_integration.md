@@ -43,10 +43,10 @@ hardware.
 
 The Piper blueprints are defined in:
 
-- [`basic.py`](/dimos/robot/manipulators/piper/blueprints/basic.py) — coordinator
-- [`teleop.py`](/dimos/robot/manipulators/piper/blueprints/teleop.py) — keyboard,
+- [`robot/manipulators/piper/blueprints/basic.py`](/dimos/robot/manipulators/piper/blueprints/basic.py) — coordinator
+- [`robot/manipulators/piper/blueprints/teleop.py`](/dimos/robot/manipulators/piper/blueprints/teleop.py) — keyboard,
   Cartesian, and Quest teleoperation compositions
-- [`config.py`](/dimos/robot/manipulators/piper/config.py) — hardware and model
+- [`robot/manipulators/piper/config.py`](/dimos/robot/manipulators/piper/config.py) — hardware and model
   configuration
 
 The manipulation requirements include Drake and `piper-sdk`. Follow the
