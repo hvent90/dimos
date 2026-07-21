@@ -29,7 +29,7 @@ from dimos.core.global_config import GlobalConfig
 from dimos.core.resource import CompositeResource
 from dimos.core.stream import In, Out
 from dimos.core.tf_module import TfModule, TfModuleConfig, on_static_publish
-from dimos.memory2.replay import Replay, resolve_db_path
+from dimos.memory2.replay import Replay, ReplayStream, resolve_db_path
 from dimos.memory2.store.sqlite import SqliteStore
 from dimos.msgs.geometry_msgs.PoseStamped import PoseStamped
 from dimos.msgs.geometry_msgs.Transform import Transform
@@ -57,6 +57,7 @@ class ConnectionConfig(TfModuleConfig):
     mode: Go2Mode = Go2Mode.DEFAULT
     lidar: bool = True
     camera: bool = True
+    velocity_api: bool = False
     # "mcf" for stair traversal, "normal" for basic, None to leave it as is
     motion_mode: str | None = None
     # Per-device AES-128 key (Go2 fw >=1.1.15); defaults from GlobalConfig.
@@ -84,11 +85,15 @@ class Go2ConnectionProtocol(Protocol):
     def video_stream(self) -> Observable[Image]: ...
     def lowstate_stream(self) -> Observable[LowStateMsg]: ...
     def move(self, twist: Twist, duration: float = 0.0) -> bool: ...
+    def stop_movement(self) -> None: ...
     def standup(self) -> bool: ...
     def liedown(self) -> bool: ...
     def balance_stand(self) -> bool: ...
-    def set_obstacle_avoidance(self, enabled: bool = True) -> None: ...
+    def sport_command(self, api_id: int) -> bool: ...
+    def set_obstacle_avoidance(self, enabled: bool = True) -> bool: ...
     def set_rage_mode(self, enable: bool) -> bool: ...
+    def set_light(self, level: int) -> bool: ...
+    def switch_joystick(self, enable: bool = True) -> bool: ...
     def publish_request(self, topic: str, data: dict) -> dict: ...  # type: ignore[type-arg]
 
 
@@ -96,6 +101,7 @@ def make_connection(
     ip: str | None,
     cfg: GlobalConfig,
     aes_128_key: str | None = None,
+    velocity_api: bool = False,
 ) -> Go2ConnectionProtocol:
     connection_type = cfg.unitree_connection_type.lower()
 
@@ -112,7 +118,11 @@ def make_connection(
         return DimSimConnection(cfg)
     elif connection_type == "webrtc":
         assert ip is not None, "IP address must be provided"
-        return UnitreeWebRTCConnection(ip, aes_128_key=aes_128_key)
+        return UnitreeWebRTCConnection(
+            ip,
+            aes_128_key=aes_128_key,
+            velocity_api=velocity_api,
+        )
     else:
         raise ValueError(f"Unknown simulator {cfg.simulation!r}. Choose from: mujoco, dimsim")
 
@@ -153,8 +163,15 @@ class ReplayConnection(UnitreeWebRTCConnection, CompositeResource):
     def balance_stand(self) -> bool:
         return True
 
-    def set_obstacle_avoidance(self, enabled: bool = True) -> None:
+    def sport_command(self, api_id: int) -> bool:
+        return True
+
+    def stop_movement(self) -> None:
+        # No webrtc deadman timer to cancel; the cmd_vel timeout covers replay.
         pass
+
+    def set_obstacle_avoidance(self, enabled: bool = True) -> bool:
+        return True
 
     def set_motion_mode(self, name: str) -> None:
         pass
@@ -162,13 +179,35 @@ class ReplayConnection(UnitreeWebRTCConnection, CompositeResource):
     def set_rage_mode(self, enable: bool) -> bool:
         return True
 
+    def set_light(self, level: int) -> bool:
+        return True
+
+    def switch_joystick(self, enable: bool = True) -> bool:
+        return True
+
+    def _stream_name(self, *names: str) -> str:
+        """Return the first of ``names`` present in the dataset (stream naming
+        changed over time: mid360 recordings use go2_lidar/go2_odom, older ones
+        lidar/odom)."""
+        available = self.replay.list_streams()
+        for name in names:
+            if name in available:
+                return name
+        raise KeyError(f"None of {names!r} in dataset {self.dataset!r}; available: {available}")
+
     @simple_mcache
     def lidar_stream(self) -> Observable[PointCloud2]:
-        return self.replay.streams.lidar.observable()
+        stream: ReplayStream[PointCloud2] = self.replay.stream(
+            self._stream_name("go2_lidar", "lidar")
+        )
+        return stream.observable()
 
     @simple_mcache
     def odom_stream(self) -> Observable[PoseStamped]:
-        return self.replay.streams.odom.observable()
+        stream: ReplayStream[PoseStamped] = self.replay.stream(
+            self._stream_name("go2_odom", "odom")
+        )
+        return stream.observable()
 
     @simple_mcache
     def video_stream(self) -> Observable[Image]:
@@ -216,7 +255,10 @@ class GO2Connection(TfModule, Camera, Pointcloud):
     def __init__(self, **kwargs: Any) -> None:
         super().__init__(**kwargs)
         self.connection = make_connection(
-            self.config.ip, self.config.g, aes_128_key=self.config.aes_128_key
+            self.config.ip,
+            self.config.g,
+            aes_128_key=self.config.aes_128_key,
+            velocity_api=self.config.velocity_api,
         )
         self._camera_info_static = camera_info_static()
 
@@ -231,7 +273,7 @@ class GO2Connection(TfModule, Camera, Pointcloud):
         self.connection.start()
 
         def on_image(image: Image) -> None:
-            image.frame_id = self.frame_mapping["camera_optical"]
+            image.frame_id = self.namespaced(self.frame_mapping["camera_optical"])
             self.color_image.publish(image)
             self._latest_video_frame = image
 
@@ -258,16 +300,23 @@ class GO2Connection(TfModule, Camera, Pointcloud):
 
     @rpc
     def stop(self) -> None:
-        self.liedown()
+        # Best-effort steps: teardown must always reach the WebRTC disconnect.
+        try:
+            self.liedown()
+        except Exception:
+            logger.warning("liedown on stop failed (link already down?) — continuing teardown")
 
         if self.connection:
-            self.connection.stop()
+            try:
+                self.connection.stop()
+            except Exception:
+                logger.warning("connection stop failed", exc_info=True)
 
         super().stop()
 
     @on_static_publish
     def _publish_camera_info(self) -> None:
-        self._camera_info_static.frame_id = self.frame_mapping["camera_optical"]
+        self._camera_info_static.frame_id = self.namespaced(self.frame_mapping["camera_optical"])
         self.camera_info.publish(self._camera_info_static)
 
     def _publish_tf(self, msg: PoseStamped) -> None:
@@ -281,7 +330,7 @@ class GO2Connection(TfModule, Camera, Pointcloud):
             )
         )
         if self.odom.transport:
-            msg.frame_id = self.frame_mapping["parent"]
+            msg.frame_id = self.namespaced(self.frame_mapping["parent"])
             self.odom.publish(msg)
 
     @rpc
@@ -314,6 +363,31 @@ class GO2Connection(TfModule, Camera, Pointcloud):
         logger.info("Rage Mode", enabled=enable)
         return result
 
+    @rpc
+    def sport_command(self, api_id: int) -> bool:
+        """Send a parameterless SPORT_MOD command by api_id (Hello, Damp, ...)."""
+        return self.connection.sport_command(api_id)
+
+    @rpc
+    def set_light(self, level: int) -> bool:
+        """Head-LED brightness level 0-10 (0 = off)."""
+        return self.connection.set_light(level)
+
+    @rpc
+    def set_obstacle_avoidance(self, enabled: bool = True) -> bool:
+        """Toggle the onboard obstacle avoidance."""
+        return self.connection.set_obstacle_avoidance(enabled)
+
+    @rpc
+    def switch_joystick(self, enable: bool = True) -> bool:
+        """Firmware joystick listening on/off (WASD stick emulation needs it on)."""
+        return self.connection.switch_joystick(enable)
+
+    @rpc
+    def stop_movement(self) -> None:
+        """Zero the base immediately (webrtc deadman stop)."""
+        self.connection.stop_movement()
+
     def _on_lowstate(self, msg: LowStateMsg) -> None:
         """Cache the latest low-level state push (battery, IMU, motors, etc.)."""
         self._latest_lowstate = msg
@@ -325,6 +399,12 @@ class GO2Connection(TfModule, Camera, Pointcloud):
         Use this skill to answer battery / power / charge questions. Returns
         None if no low-level state has been received yet.
         """
+        return self.battery_soc()
+
+    @rpc
+    def battery_soc(self) -> int | None:
+        """Battery SOC 0-100 (or None until lowstate arrives). Plain RPC — no
+        skill-log spam, for the hosted telemetry poll."""
         try:
             return int(self._latest_lowstate["data"]["bms_state"]["soc"])  # type: ignore[index]
         except (KeyError, TypeError, ValueError):

@@ -25,6 +25,7 @@ from typing import (
     ClassVar,
     Literal,
     Protocol,
+    TypeGuard,
     get_args,
     get_origin,
     get_type_hints,
@@ -40,10 +41,11 @@ from dimos.core.introspection.module.render import render_module_io
 from dimos.core.resource import CompositeResource
 from dimos.core.rpc_client import RpcCall
 from dimos.core.stream import In, Out, RemoteOut, Transport
-from dimos.protocol.rpc.pubsubrpc import LCMRPC
+from dimos.core.transport_factory import rpc_backend, tf_backend
+from dimos.msgs.geometry_msgs.Transform import Transform
 from dimos.protocol.rpc.spec import DEFAULT_RPC_TIMEOUT, DEFAULT_RPC_TIMEOUTS, RPCSpec
 from dimos.protocol.service.spec import BaseConfig, Configurable
-from dimos.protocol.tf.tf import LCMTF, TFSpec
+from dimos.protocol.tf.tf import TFSpec
 from dimos.utils import colors
 from dimos.utils.generic import classproperty
 from dimos.utils.logging_config import setup_logger
@@ -102,15 +104,49 @@ def get_loop() -> tuple[asyncio.AbstractEventLoop, threading.Thread | None]:
 Deployment = Literal["python", "docker"]
 
 
+class _NamespacedTf:
+    """Wraps a module's TFSpec so a namespaced module (e.g. ``.namespace("robot0")``)
+    has the prefix applied to every transform it publishes. Two Go2s can then
+    publish "base_link" without colliding in the shared TF tree. Reads (``get``,
+    ``get_pose``) and every other call pass straight through — a module queries
+    the tree with whatever frame ids it already knows."""
+
+    def __init__(self, tf: TFSpec, namespaced: Callable[[str], str]) -> None:
+        self._tf = tf
+        self._namespaced = namespaced
+
+    def _prefix(self, transform: Transform) -> Transform:
+        return Transform(
+            translation=transform.translation,
+            rotation=transform.rotation,
+            frame_id=self._namespaced(transform.frame_id),
+            child_frame_id=self._namespaced(transform.child_frame_id),
+            ts=transform.ts,
+        )
+
+    def publish(self, *transforms: Transform) -> None:
+        self._tf.publish(*(self._prefix(transform) for transform in transforms))
+
+    def publish_static(self, *transforms: Transform) -> None:
+        self._tf.publish_static(*(self._prefix(transform) for transform in transforms))
+
+    def __getattr__(self, name: str) -> Any:
+        return getattr(self._tf, name)
+
+
 class ModuleConfig(BaseConfig):
-    rpc_transport: type[RPCSpec] = LCMRPC
+    rpc_transport: type[RPCSpec] = Field(default_factory=rpc_backend)
     default_rpc_timeout: float = DEFAULT_RPC_TIMEOUT
     rpc_timeouts: dict[str, float] = Field(default_factory=lambda: dict(DEFAULT_RPC_TIMEOUTS))
-    tf_transport: type[TFSpec] = LCMTF  # type: ignore[type-arg]
+    tf_transport: type[TFSpec] = Field(default_factory=tf_backend)  # type: ignore[type-arg]
     frame_id_prefix: str | None = None
     frame_id: str | None = None
     # how others remap frame names; TODO: also expose this at the blueprint level
     frame_mapping: dict[str, str] = Field(default_factory=dict)
+    # Set by the coordinator when the same module class is deployed more than
+    # once (see BlueprintAtom.instance_name). Changes the RPC topic prefix
+    # from the class name to this name.
+    instance_name: str | None = None
     g: GlobalConfig = global_config
 
 
@@ -157,8 +193,10 @@ class ModuleBase(Configurable, CompositeResource):
                 rpc_timeouts=self.config.rpc_timeouts,
                 default_rpc_timeout=self.config.default_rpc_timeout,
             )
-            self.rpc.serve_module_rpc(self)
+            # start() before serve_module_rpc(): Zenoh's subscribe needs an open
+            # session (acquired in start()), whereas LCM tolerates either order.
             self.rpc.start()  # type: ignore[attr-defined]
+            self.rpc.serve_module_rpc(self, name=self.config.instance_name)
         except ValueError:
             ...
 
@@ -170,9 +208,18 @@ class ModuleBase(Configurable, CompositeResource):
     @property
     def frame_id(self) -> str:
         base = self.config.frame_id or self.__class__.__name__
-        if self.config.frame_id_prefix:
-            return f"{self.config.frame_id_prefix}/{base}"
-        return base
+        return self.namespaced(base)
+
+    def namespaced(self, frame_id: str) -> str:
+        """Prefix a frame id with this module's namespace (``frame_id_prefix``).
+
+        Idempotent and a no-op when the module isn't namespaced. Use it for frame
+        ids that leave the module outside ``self.tf`` (message headers like
+        ``image.frame_id``) so they stay consistent with the published TF tree."""
+        prefix = self.config.frame_id_prefix
+        if not prefix or frame_id.startswith(f"{prefix}/"):
+            return frame_id
+        return f"{prefix}/{frame_id}"
 
     @rpc
     def build(self) -> None:
@@ -291,9 +338,11 @@ class ModuleBase(Configurable, CompositeResource):
     @property
     def tf(self):  # type: ignore[no-untyped-def]
         if self._tf is None:
-            # self._tf = self.config.tf_transport()
-            self._tf = LCMTF()
-        return self._tf
+            self._tf = self.config.tf_transport()
+        transport = self._tf
+        if self.config.frame_id_prefix:
+            return _NamespacedTf(transport, self.namespaced)
+        return transport
 
     @tf.setter
     def tf(self, value) -> None:  # type: ignore[no-untyped-def]
@@ -835,7 +884,7 @@ class Module(ModuleBase):
 ModuleSpec = tuple[type[ModuleBase], GlobalConfig, dict[str, Any]]
 
 
-def is_module_type(value: Any) -> bool:
+def is_module_type(value: object) -> TypeGuard[type[Module]]:
     try:
         return inspect.isclass(value) and issubclass(value, Module)
     except Exception:

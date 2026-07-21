@@ -1,4 +1,6 @@
-# Transforms
+---
+title: "Transforms"
+---
 
 ## The Problem: Everything Measures from Its Own Perspective
 
@@ -200,7 +202,7 @@ Every module has access to `self.tf`, a transform service that:
 - **Looks up** transforms between any two frames
 - **Buffers** historical transforms for temporal queries
 
-The TF service is implemented in [`tf.py`](/dimos/protocol/tf/tf.py) and is lazily initialized on first access.
+The TF service is implemented in [`protocol/tf/tf.py`](/dimos/protocol/tf/tf.py) and is lazily initialized on first access.
 
 ### Multi-Module Transform Example
 
@@ -365,7 +367,7 @@ Transform tree:
 
 You can view these transforms in 3D using the Rerun viewer (see [Visualization](/docs/usage/visualization.md)).
 
-![transforms](assets/transforms.png)
+![transforms](https://raw.githubusercontent.com/dimensionalOS/dimos-docs-assets/main/usage/assets/transforms.png)
 
 Key points:
 
@@ -413,7 +415,7 @@ text "CameraModule" italic at ((CL.x + CO.x)/2, CL.s.y - 0.25in)
 
 ## Transform Buffer
 
-`self.tf` on module is a transform buffer. This is a standalone class that maintains a temporal buffer of transforms (default 10 seconds) allowing queries at past timestamps, you can use it directly:
+`self.tf` on a module is a transform buffer. This is a standalone class that maintains a temporal buffer of transforms (default 10 seconds) allowing queries at past timestamps, you can use it directly:
 
 ```python
 import time

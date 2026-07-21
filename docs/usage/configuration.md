@@ -1,4 +1,6 @@
-# Configuration
+---
+title: "Configuration"
+---
 
 Dimos provides a `Configurable` base class. See [`service/spec.py`](/dimos/protocol/service/spec.py#L22).
 
@@ -109,7 +111,6 @@ Config(
         robot_width=0.3,
         robot_rotation_diameter=0.6,
         nerf_speed=1.0,
-        planner_robot_speed=None,
         mcp_port=9990,
         build_native=False,
         dtop=False,

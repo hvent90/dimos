@@ -18,34 +18,44 @@ import os
 import platform
 import tempfile
 import threading
+import time
 import uuid
-
-# With pytest-xdist, pick a per-worker bucket and pin env vars *before*
-# any dimos module is imported, so parallel workers don't share LCM bus,
-# MCP port, or state directory. ``LCMConfig`` captures ``LCM_DEFAULT_URL``
-# at import time; ``GlobalConfig`` captures ``MCP_PORT``; ``run_registry``
-# captures ``XDG_STATE_HOME``. ``LCM_DEFAULT_URL`` in particular has to be
-# an env var (not just a fixture) because subprocess workers spawned by
-# ``ModuleCoordinator`` create their own ``LCMConfig`` / ``LCMRPC``
-# instances internally and can't receive a fixture value — they inherit
-# our env at fork time.
-#
-# Single-worker runs (no xdist) keep the defaults, so external processes
-# with hard-coded ports (e.g. the dimsim Deno bridge, which binds to LCM
-# 7667) can still talk to the test bus.
-_worker = os.environ.get("PYTEST_XDIST_WORKER")
-if _worker:
-    _BUCKET = (
-        int.from_bytes(hashlib.blake2b(_worker.encode(), digest_size=2).digest(), "big") % 5000
-    )
-    os.environ["LCM_DEFAULT_URL"] = f"udpm://239.255.76.67:{7700 + _BUCKET}?ttl=0"
-    os.environ["MCP_PORT"] = str(20000 + _BUCKET)
-    os.environ["XDG_STATE_HOME"] = tempfile.mkdtemp(prefix=f"dimos-test-state-{_worker}-")
 
 # Tag every pytest descendant so a sidecar watchdog can sweep strays (dimsim, rerun, etc).
 DIMOS_PYTEST_RUN_ID_ENV = "DIMOS_PYTEST_RUN_ID"
+_worker = os.environ.get("PYTEST_XDIST_WORKER")
 if not _worker:
     os.environ[DIMOS_PYTEST_RUN_ID_ENV] = f"pytest-{uuid.uuid4().hex[:16]}"
+
+# Pin every pytest session to its own LCM bus *before* any dimos module is
+# imported (``LCMConfig`` captures ``LCM_DEFAULT_URL`` at import time), so
+# messages from processes outside the session (a dev ``dimos`` daemon, a
+# leaked DimSim bridge, a concurrent pytest run) can't leak into
+# subscribe_all/pattern tests. It has to be an env var (not just a fixture)
+# because subprocesses spawned by tests (``ModuleCoordinator`` workers, the
+# DimSim Deno bridge) create their own LCM instances and inherit our env.
+#
+# Buckets are seeded with the session run id so concurrent sessions on one
+# machine can't collide. xdist workers mix in the worker name, and also get
+# a per-worker MCP port (``GlobalConfig`` captures ``MCP_PORT``) and state
+# dir (``run_registry`` captures ``XDG_STATE_HOME``), which only collide
+# between parallel workers. Exporting ``LCM_DEFAULT_URL`` yourself opts a
+# single-worker session out of the isolation, deliberately joining it to an
+# external bus.
+
+
+def _lcm_bucket(seed: str) -> int:
+    return int.from_bytes(hashlib.blake2b(seed.encode(), digest_size=2).digest(), "big") % 5000
+
+
+_run_id = os.environ[DIMOS_PYTEST_RUN_ID_ENV]
+if _worker:
+    _BUCKET = _lcm_bucket(f"{_run_id}:{_worker}")
+    os.environ["LCM_DEFAULT_URL"] = f"udpm://239.255.76.67:{7700 + _BUCKET}?ttl=0"
+    os.environ["MCP_PORT"] = str(20000 + _BUCKET)
+    os.environ["XDG_STATE_HOME"] = tempfile.mkdtemp(prefix=f"dimos-test-state-{_worker}-")
+elif "LCM_DEFAULT_URL" not in os.environ:
+    os.environ["LCM_DEFAULT_URL"] = f"udpm://239.255.76.67:{7700 + _lcm_bucket(_run_id)}?ttl=0"
 
 # Raise the open-file limit. Each LCM transport opens at least one
 # multicast socket; with pytest-xdist workers running many in parallel,
@@ -64,9 +74,16 @@ with suppress(ImportError, ValueError, OSError):
 
 from dotenv import load_dotenv
 import pytest
+import tqdm
 
 from dimos.core.coordination.module_coordinator import ModuleCoordinator
 from dimos.core.coordination.process_lifecycle import spawn_watchdog
+from dimos.utils.testing.waiting import retry_until as _retry_until, wait_until as _wait_until
+
+# The first tqdm bar constructed in the process spawns a TMonitor daemon thread that lives until
+# interpreter exit. If that first bar happens inside a test, monitor_threads flags it as a leak. The
+# monitor only re-tunes miniters for smooth interactive rendering, so disable it for tests.
+tqdm.tqdm.monitor_interval = 0
 
 load_dotenv()
 
@@ -132,6 +149,18 @@ def lcm_url() -> str:
     return os.environ.get("LCM_DEFAULT_URL", "udpm://239.255.76.67:7667?ttl=0")
 
 
+@pytest.fixture
+def wait_until():
+    """Poll a predicate until it's true or a timeout elapses. See dimos.utils.testing.waiting."""
+    return _wait_until
+
+
+@pytest.fixture
+def retry_until():
+    """Retry an action until a threading.Event fires. See dimos.utils.testing.waiting."""
+    return _retry_until
+
+
 @pytest.hookimpl(tryfirst=True)
 def pytest_collection_modifyitems(config, items):
     _skipif_markers = {
@@ -176,11 +205,13 @@ def pytest_sessionfinish(session):
 
     yield
 
-    # Check for session-level thread leaks at teardown
+    # Check for session-level thread leaks at teardown. A stopped thread that
+    # lingers in the registry (e.g. a zenoh pyo3-closure thread awaiting reaping)
+    # is not a leak, so only count threads that are still running.
     final_threads = [
         t
         for t in threading.enumerate()
-        if t.name != "MainThread" and t.ident not in _session_threads
+        if t.name != "MainThread" and t.ident not in _session_threads and t.is_alive()
     ]
 
     if final_threads:
@@ -204,47 +235,57 @@ def monitor_threads(request):
 
     with _seen_threads_lock:
         before = _before_test_threads.get(test_name, set())
-        current = {t.ident for t in threading.enumerate() if t.ident is not None}
 
-        # New threads are ones that exist now but didn't exist before this test
-        new_thread_ids = current - before
+    # Threads intentionally left running for the whole process and cleaned up on
+    # exit, so they don't count as per-test leaks.
+    expected_persistent_thread_prefixes = [
+        "Dask-Offload",
+        # HuggingFace safetensors conversion thread - no user cleanup API
+        # https://github.com/huggingface/transformers/issues/29513
+        "Thread-auto_conversion",
+    ]
 
-        if not new_thread_ids:
-            return
+    def live_new_threads():
+        # Threads created during this test that are still running. A thread that
+        # has already stopped is not a leak -- it's done, just not yet reaped
+        # from threading's registry -- so we key on is_alive(), not presence.
+        result = []
+        for t in threading.enumerate():
+            if t.ident is None or t.ident in before or t.name == "MainThread":
+                continue
+            if any(t.name.startswith(prefix) for prefix in expected_persistent_thread_prefixes):
+                continue
+            if t.is_alive():
+                result.append(t)
+        return result
 
-        # Get the actual thread objects for new threads
-        new_threads = [
-            t for t in threading.enumerate() if t.ident in new_thread_ids and t.name != "MainThread"
-        ]
+    # Some C extensions tear their callback threads down asynchronously, so a
+    # thread can stay alive briefly after the test cleaned up its owner (notably
+    # zenoh's pyo3-closure threads, freed shortly after the session is closed).
+    # A single snapshot races that teardown and flags a thread that is about to
+    # exit. Give new threads a grace period to drain; only ones that stay alive
+    # are real leaks (a genuinely leaked thread never exits).
+    deadline = time.monotonic() + 5.0
+    leaked = live_new_threads()
+    while leaked and time.monotonic() < deadline:
+        time.sleep(0.02)
+        leaked = live_new_threads()
 
-        # Filter out expected persistent threads that are shared globally
-        # These threads are intentionally left running and cleaned up on process exit
-        expected_persistent_thread_prefixes = [
-            "Dask-Offload",
-            # HuggingFace safetensors conversion thread - no user cleanup API
-            # https://github.com/huggingface/transformers/issues/29513
-            "Thread-auto_conversion",
-        ]
-        new_threads = [
-            t
-            for t in new_threads
-            if not any(t.name.startswith(prefix) for prefix in expected_persistent_thread_prefixes)
-        ]
+    if not leaked:
+        return
 
-        # Filter out threads we've already seen (from previous tests)
-        truly_new = [t for t in new_threads if t.ident not in _seen_threads]
+    with _seen_threads_lock:
+        # Report each leaked thread only once across the session.
+        truly_new = [t for t in leaked if t.ident not in _seen_threads]
+        for t in leaked:
+            _seen_threads.add(t.ident)
 
-        # Mark all new threads as seen
-        for t in new_threads:
-            if t.ident is not None:
-                _seen_threads.add(t.ident)
+    if not truly_new:
+        return
 
-        if not truly_new:
-            return
+    thread_names = [t.name for t in truly_new]
 
-        thread_names = [t.name for t in truly_new]
-
-        pytest.fail(
-            f"Non-closed threads created during this test. Thread names: {thread_names}. "
-            "Please look at the first test that fails and fix that."
-        )
+    pytest.fail(
+        f"Non-closed threads created during this test. Thread names: {thread_names}. "
+        "Please look at the first test that fails and fix that."
+    )
