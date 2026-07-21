@@ -424,7 +424,7 @@ def retag(
     suite = load_suite(manifest)
     cfg = EvalConfig()
     final = load_or_build_final_map(suite.db_path(), suite, cfg)
-    trajectory = load_trajectory(suite.db_path(), suite.odom_stream)
+    trajectory = load_trajectory(suite.db_path(), suite.odom_stream, suite.end_ts_seconds())
     changed = 0
     for case in suite.cases:
         if "auto" not in case.tags:
@@ -461,7 +461,9 @@ def pick_case(
     from dimos.navigation.nav_3d.evaluator.viz import turbo_by_height
 
     store, final = _open(dataset)
-    trajectory = load_trajectory(store.suite.db_path(), store.suite.odom_stream)
+    trajectory = load_trajectory(
+        store.suite.db_path(), store.suite.odom_stream, store.suite.end_ts_seconds()
+    )
     foot = trajectory.positions - np.array([0.0, 0.0, store.cfg.robot_height], dtype=np.float32)
     pick_cases(
         dataset,

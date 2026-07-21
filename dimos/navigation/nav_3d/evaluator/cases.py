@@ -50,14 +50,20 @@ class Suite:
     lidar_stream: str = "pointlio_lidar"
     odom_stream: str = "pointlio_odometry"
     # Recording location override, defaulting to data/<dataset>.db.
-    # Set this to keep a recording outside data/.
+    # Set this to keep a recording outside data/, in case you don't want it to be tracked.
     db: str | None = None
+    # Discard frames after this timestamp
+    end_ts: int | None = None
     path: Path | None = None
 
     def db_path(self) -> Path:
         if self.db is not None:
             return Path(self.db).expanduser()
         return resolve_named_path(self.dataset, ".db")
+
+    def end_ts_seconds(self) -> float | None:
+        """end_ts in the recording's second-based observation timestamps."""
+        return None if self.end_ts is None else self.end_ts / 1e9
 
 
 def load_suite(path: Path) -> Suite:
@@ -95,6 +101,7 @@ def load_suite(path: Path) -> Suite:
         lidar_stream=str(raw.get("lidar_stream", "pointlio_lidar")),
         odom_stream=str(raw.get("odom_stream", "pointlio_odometry")),
         db=str(raw["db"]) if "db" in raw else None,
+        end_ts=int(raw["end_ts"]) if "end_ts" in raw else None,
         path=path,
     )
 
@@ -118,6 +125,8 @@ def save_suite(suite: Suite, path: Path | None = None) -> Path:
         doc["lidar_stream"] = suite.lidar_stream
     if suite.odom_stream != "pointlio_odometry":
         doc["odom_stream"] = suite.odom_stream
+    if suite.end_ts is not None:
+        doc["end_ts"] = suite.end_ts
     entries = []
     for case in suite.cases:
         entry: dict[str, object] = {

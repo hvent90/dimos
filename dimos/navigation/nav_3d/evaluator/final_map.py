@@ -86,13 +86,16 @@ def _cache_path(db_path: Path, params: dict[str, float | int | str]) -> Path:
 
 
 def _final_params(suite: Suite, cfg: EvalConfig) -> dict[str, float | int | str]:
-    return {
+    params: dict[str, float | int | str] = {
         **cfg.mapper_fingerprint(),
         "align_tol": cfg.align_tol,
         "lidar_stream": suite.lidar_stream,
         "odom_stream": suite.odom_stream,
         "cache_version": CACHE_VERSION,
     }
+    if suite.end_ts is not None:
+        params["end_ts"] = suite.end_ts
+    return params
 
 
 def replay_frames(
@@ -157,7 +160,9 @@ def load_or_build_final_map(db_path: Path, suite: Suite, cfg: EvalConfig) -> Fin
 
     logger.info("building final map for %s (cache miss)", db_path.name)
     final, _ = replay_frames(
-        iter_world_frames(db_path, suite.lidar_stream, suite.odom_stream, cfg.align_tol),
+        iter_world_frames(
+            db_path, suite.lidar_stream, suite.odom_stream, cfg.align_tol, suite.end_ts_seconds()
+        ),
         cfg.make_mapper(),
         cfg.voxel_size,
         np.array([], dtype=np.float64),
@@ -206,7 +211,9 @@ def load_or_build_checkpoints(
 
     logger.info("building %d map checkpoints for %s (cache miss)", len(times), db_path.name)
     final, snapshots = replay_frames(
-        iter_world_frames(db_path, suite.lidar_stream, suite.odom_stream, cfg.align_tol),
+        iter_world_frames(
+            db_path, suite.lidar_stream, suite.odom_stream, cfg.align_tol, suite.end_ts_seconds()
+        ),
         cfg.make_mapper(),
         cfg.voxel_size,
         times,

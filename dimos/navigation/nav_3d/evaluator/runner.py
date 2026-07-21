@@ -54,9 +54,6 @@ if TYPE_CHECKING:
 logger = setup_logger()
 
 MAX_COLLISIONS_KEPT = 50
-# The goal counts as seen when the incremental map has an occupied voxel
-# within this distance of it at plan time.
-GOAL_SEEN_RADIUS_M = 1.0
 
 
 @dataclass
@@ -102,11 +99,9 @@ class CaseResult:
     goal: tuple[float, float, float]
     tags: list[str]
     l_ref: float
-    l_ref_snapped: bool
     plan_ts: float
     online_voxels: int
     map_update_ms: float
-    goal_seen: bool
     expect_fail: bool
     online: PlanOutcome
     final: PlanOutcome
@@ -254,13 +249,6 @@ def score_negative(raw: PlanOutcome) -> PlanOutcome:
     return replace(raw, success=refused, spl=1.0 if refused else 0.0)
 
 
-def _goal_seen(online_points: NDArray[np.float32], goal: tuple[float, float, float]) -> bool:
-    if len(online_points) == 0:
-        return False
-    d = np.linalg.norm(online_points - np.asarray(goal, dtype=np.float32), axis=1)
-    return bool(d.min() <= GOAL_SEEN_RADIUS_M)
-
-
 def _dynamic_candidate(
     online: PlanOutcome,
     final: PlanOutcome,
@@ -309,7 +297,7 @@ def run_suite(
     suite: Suite, cfg: EvalConfig, threads: int = 1, keep_artifacts: bool = False
 ) -> DatasetResult:
     db_path = suite.db_path()
-    trajectory = load_trajectory(db_path, suite.odom_stream)
+    trajectory = load_trajectory(db_path, suite.odom_stream, suite.end_ts_seconds())
     final = load_or_build_final_map(db_path, suite, cfg)
     obstacle_keys = final.occupied_keys
 
@@ -363,7 +351,6 @@ def run_suite(
             goal=case.goal,
             tags=case.tags,
             l_ref=ref.length,
-            l_ref_snapped=ref.snapped,
             **rest,  # type: ignore[arg-type]
         )
 
@@ -379,7 +366,6 @@ def run_suite(
             plan_ts=float("inf"),
             online_voxels=len(final.occupied),
             map_update_ms=0.0,
-            goal_seen=True,
             expect_fail=case.expect_fail,
             online=outcome,
             final=outcome,
@@ -419,7 +405,6 @@ def run_suite(
                 online_out = _no_plan(0.0)
                 online_wp = None
             end = online_wp[-1] if online_wp is not None and len(online_wp) else None
-            goal_seen = _goal_seen(online_points, case.goal)
             dynamic_candidate, blocking = (
                 (False, [])
                 if case.expect_final_fail
@@ -431,7 +416,6 @@ def run_suite(
                 plan_ts=float(checkpoints.times[k]),
                 online_voxels=len(keys),
                 map_update_ms=map_update_ms,
-                goal_seen=goal_seen,
                 expect_fail=False,
                 online=online_out,
                 final=final_out,

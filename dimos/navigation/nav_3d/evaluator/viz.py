@@ -208,7 +208,7 @@ def write_rrd(report: Report, suites: list[Suite], cfg: EvalConfig, out: Path) -
         suite = suites_by_dataset[dataset.dataset]
         db_path = suite.db_path()
         final = load_or_build_final_map(db_path, suite, cfg)
-        trajectory = load_trajectory(db_path, suite.odom_stream)
+        trajectory = load_trajectory(db_path, suite.odom_stream, suite.end_ts_seconds())
         root = dataset.dataset
 
         rr.log(

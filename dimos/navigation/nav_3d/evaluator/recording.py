@@ -60,11 +60,13 @@ def iter_world_frames(
     lidar_stream: str,
     odom_stream: str,
     align_tol: float = 0.05,
+    end_ts: float | None = None,
 ) -> Iterator[Frame]:
     """Yield lidar frames registered into the world by their aligned odometry pose.
 
-    Clouds must be sensor-frame. Legacy recordings with pre-registered
-    world-frame clouds are rejected. Re-record them.
+    Frames at or after end_ts (seconds) are skipped. Clouds must be sensor-frame.
+    Legacy recordings with pre-registered world-frame clouds are rejected.
+    Re-record them.
     """
     store = SqliteStore(path=str(db_path))
     with store:
@@ -72,6 +74,8 @@ def iter_world_frames(
         odom = store.stream(odom_stream, Odometry).order_by("ts")
         for pair_obs in lidar.align(odom, tolerance=align_tol):
             lidar_obs, odom_obs = pair_obs.data
+            if end_ts is not None and lidar_obs.ts >= end_ts:
+                break
             if lidar_obs.data.frame_id == "world":
                 raise ValueError(
                     f"{db_path}: stream {lidar_stream!r} has pre-registered world-frame "
@@ -94,12 +98,14 @@ def iter_world_frames(
             )
 
 
-def load_trajectory(db_path: Path, odom_stream: str) -> Trajectory:
+def load_trajectory(db_path: Path, odom_stream: str, end_ts: float | None = None) -> Trajectory:
     store = SqliteStore(path=str(db_path))
     ts: list[float] = []
     positions: list[tuple[float, float, float]] = []
     with store:
         for obs in store.stream(odom_stream, Odometry).order_by("ts"):
+            if end_ts is not None and obs.ts >= end_ts:
+                break
             o = obs.data
             ts.append(obs.ts)
             positions.append((float(o.position.x), float(o.position.y), float(o.position.z)))
