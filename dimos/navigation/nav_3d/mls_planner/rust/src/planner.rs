@@ -115,7 +115,7 @@ pub fn plan(
     let start_candidates =
         snap_candidates(&plg.surface_lookup, start_pose, voxel_size, z_tolerance_m);
     if start_candidates.is_empty() {
-        tracing::warn!(
+        tracing::debug!(
             ?start_pose,
             "plan failed: start does not snap to any surface cell"
         );
@@ -124,14 +124,14 @@ pub fn plan(
     let Some(goal_coord) =
         snap_pose_to_cell(&plg.surface_lookup, goal_pose, voxel_size, z_tolerance_m)
     else {
-        tracing::warn!(
+        tracing::debug!(
             ?goal_pose,
             "plan failed: goal does not snap to any surface cell"
         );
         return None;
     };
     let Some(goal_cell) = plg.cells.id(goal_coord) else {
-        tracing::warn!(?goal_coord, "plan failed: goal cell is not in the graph");
+        tracing::debug!(?goal_coord, "plan failed: goal cell is not in the graph");
         return None;
     };
 
@@ -145,7 +145,7 @@ pub fn plan(
         .expect("walk_preds returns at least the start cell");
     if !node_cells.contains(&goal_node) {
         let Some((node, path)) = nearest_node(&plg.cells, goal_cell, &node_cells) else {
-            tracing::warn!(
+            tracing::debug!(
                 ?goal_coord,
                 "plan failed: goal's connected component has no graph node"
             );
@@ -179,7 +179,7 @@ pub fn plan(
         }
     }
     let Some((lead_in, node_seq)) = entry else {
-        tracing::warn!(
+        tracing::debug!(
             candidates = start_candidates.len().min(MAX_SNAP_ATTEMPTS),
             reachable_nodes = cost_to_go.len(),
             total_nodes = plg.nodes.len(),

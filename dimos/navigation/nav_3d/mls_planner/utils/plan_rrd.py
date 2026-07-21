@@ -330,7 +330,7 @@ def _process_frame(
         t0 = perf_counter()
         planner.update_region(pts, (ox, oy), radius, z_min, z_max, float(pz))
         t1 = perf_counter()
-        waypoints = planner.plan(start, goal)
+        waypoints = planner.plan_or_truncate(start, goal)
         t2 = perf_counter()
         _log_path_wp(waypoints, f"world/paths/{label}", color)
         if j == 0:

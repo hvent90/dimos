@@ -53,6 +53,20 @@ fn extract_points(points: &Bound<'_, PyAny>) -> PyResult<Vec<(f32, f32, f32)>> {
         .collect())
 }
 
+/// Pack waypoints into a (W, 3) float32 numpy array.
+fn waypoint_array(py: Python<'_>, waypoints: Vec<(f32, f32, f32)>) -> Bound<'_, PyArray2<f32>> {
+    let mut flat: Vec<f32> = Vec::with_capacity(waypoints.len() * 3);
+    for (x, y, z) in waypoints {
+        flat.push(x);
+        flat.push(y);
+        flat.push(z);
+    }
+    let n = flat.len() / 3;
+    Array2::from_shape_vec((n, 3), flat)
+        .expect("3 elements pushed per waypoint")
+        .into_pyarray(py)
+}
+
 #[pymethods]
 impl MLSPlanner {
     #[new]
@@ -230,18 +244,22 @@ impl MLSPlanner {
         goal: (f32, f32, f32),
     ) -> Option<Bound<'py, PyArray2<f32>>> {
         let waypoints = py.allow_threads(|| self.planner.plan(start, goal, &self.config))?;
-        let mut flat: Vec<f32> = Vec::with_capacity(waypoints.len() * 3);
-        for (x, y, z) in waypoints {
-            flat.push(x);
-            flat.push(y);
-            flat.push(z);
-        }
-        let n = flat.len() / 3;
-        Some(
-            Array2::from_shape_vec((n, 3), flat)
-                .expect("3 elements pushed per waypoint")
-                .into_pyarray(py),
-        )
+        Some(waypoint_array(py, waypoints))
+    }
+
+    /// Plan with the robot's replan policy: a full plan, else the safe prefix
+    /// of the cached path to the same goal. Returns `(W, 3)` float32 waypoints,
+    /// empty when nothing ahead is traversable (stop).
+    fn plan_or_truncate<'py>(
+        &mut self,
+        py: Python<'py>,
+        start: (f32, f32, f32),
+        goal: (f32, f32, f32),
+    ) -> Bound<'py, PyArray2<f32>> {
+        let config = &self.config;
+        let planner = &mut self.planner;
+        let waypoints = py.allow_threads(move || planner.plan_or_truncate(start, goal, config));
+        waypoint_array(py, waypoints)
     }
 
     fn voxel_count(&self) -> usize {
