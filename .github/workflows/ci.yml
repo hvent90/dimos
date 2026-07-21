@@ -134,6 +134,12 @@ jobs:
             dimos/mapping/ray_tracing/test_transformer.py \
             dimos/navigation/nav_3d/mls_planner/test_mls_planner.py \
             dimos/navigation/nav_3d/mls_planner/test_transformer.py
+      - name: Test native Rerun bridge
+        run: |
+          source .venv/bin/activate
+          python -m pytest -v -m native_rust \
+            --override-ini="addopts=--timeout=600 --timeout-method=thread -v --import-mode=importlib -p no:launch_testing -p no:launch_ros" \
+            dimos/visualization/rerun/test_native_bridge.py
 
   md-babel:
     timeout-minutes: 15
@@ -282,13 +288,13 @@ jobs:
       - name: Install dependencies
         run: uv sync --group tests --frozen
       - name: Run tests
-        run: uv run pytest --numprocesses=3 --cov=dimos/ --junitxml=junit.xml -m 'not (self_hosted or mujoco or self_hosted_large)'
+        run: uv run pytest --numprocesses=3 --cov=dimos/ --junitxml=junit.xml -m 'not (self_hosted or mujoco or self_hosted_large or native_rust)'
       - name: Re-run the failing tests with maximum verbosity
         if: failure()
         env:
           COLOR: yes
         run: >-  # `exit 1` makes sure that the job remains red with flaky runs
-          uv run pytest --no-cov -vvvvv --lf  -m 'not (self_hosted or mujoco or self_hosted_large)' && exit 1
+          uv run pytest --no-cov -vvvvv --lf  -m 'not (self_hosted or mujoco or self_hosted_large or native_rust)' && exit 1
         shell: bash
       - name: Turn coverage into xml
         run: uv run python -m coverage xml

@@ -120,7 +120,7 @@ def _recorded_archetypes(path: Path, entity: str) -> set[str]:
     return archetypes
 
 
-@pytest.mark.self_hosted
+@pytest.mark.native_rust
 @pytest.mark.parametrize("backend", ("lcm", "zenoh"))
 def test_extension_clause_8_mixed_stream_uses_python_for_light_and_rust_for_heavy(
     backend: Backend,
