@@ -29,7 +29,11 @@ from dimos.robot.manipulators.openarm.blueprints.teleop import (
     keyboard_teleop_openarm,
     keyboard_teleop_openarm_mock,
 )
-from dimos.robot.manipulators.piper.blueprints.teleop import keyboard_teleop_piper
+from dimos.robot.manipulators.piper.blueprints.teleop import (
+    coordinator_teleop_piper,
+    keyboard_teleop_piper,
+)
+from dimos.robot.manipulators.piper.config import make_piper_model_config
 from dimos.robot.manipulators.xarm.blueprints.basic import (
     dual_xarm6_planner,
     xarm6_planner_only,
@@ -47,6 +51,8 @@ from dimos.robot.manipulators.xarm.config import (
 )
 from dimos.simulation.engines.mujoco_sim_module import MujocoSimModuleConfig
 from dimos.teleop.keyboard.keyboard_teleop_module import KeyboardTeleopModule
+from dimos.teleop.quest.blueprints import teleop_quest_piper
+from dimos.teleop.quest.quest_extensions import ArmTeleopModule
 
 
 def _module_kwargs(blueprint: Blueprint, module_type: type) -> dict[str, Any]:
@@ -63,6 +69,29 @@ def _manipulation_config(blueprint: Blueprint) -> ManipulationModuleConfig:
 
 def _coordinator_tasks(blueprint: Blueprint) -> list[TaskConfig]:
     return _module_kwargs(blueprint, ControlCoordinator)["tasks"]
+
+
+def test_quest_piper_teleop_routes_to_declarative_teleop_task() -> None:
+    arm_kwargs = _module_kwargs(teleop_quest_piper, ArmTeleopModule)
+    assert arm_kwargs["task_names"] == {"left": "teleop_piper"}
+    assert "coordinator_cartesian_command" in teleop_quest_piper.remapping_map.values()
+
+
+def test_piper_teleop_declares_teleop_and_trajectory_tasks() -> None:
+    tasks = _coordinator_tasks(coordinator_teleop_piper)
+    assert [(task.name, task.type) for task in tasks] == [
+        ("teleop_piper", "teleop_ik"),
+        ("traj_arm", "trajectory"),
+    ]
+    assert make_piper_model_config().coordinator_task_name == "traj_arm"
+
+
+def test_piper_keyboard_declares_high_priority_gripper_servo() -> None:
+    tasks = _coordinator_tasks(keyboard_teleop_piper)
+    servo = next(task for task in tasks if task.name == "servo_gripper")
+    assert servo.type == "servo"
+    assert servo.joint_names == ["arm/gripper"]
+    assert servo.priority > next(task.priority for task in tasks if task.type == "eef_twist")
 
 
 def test_planner_helper_defaults_to_no_visualization() -> None:

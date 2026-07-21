@@ -129,7 +129,8 @@
           {
             "group": "Teleoperation",
             "pages": [
-              "capabilities/teleoperation/hosted"
+              "capabilities/teleoperation/hosted",
+              "capabilities/teleoperation/piper"
             ]
           }
         ]
@@ -467,6 +468,10 @@
     {
       "source": "/docs/capabilities/teleoperation/hosted.md",
       "destination": "/capabilities/teleoperation/hosted"
+    },
+    {
+      "source": "/docs/capabilities/teleoperation/piper.md",
+      "destination": "/capabilities/teleoperation/piper"
     },
     {
       "source": "/docs/platforms/quadruped/go2/index.md",

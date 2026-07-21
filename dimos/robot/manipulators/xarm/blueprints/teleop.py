@@ -132,8 +132,12 @@ coordinator_combined_xarm6 = ControlCoordinator.blueprint(
     ],
 )
 
-_xarm7_teleop_hw = xarm7_hardware("arm", gripper=True)
-_xarm6_teleop_hw = xarm6_hardware("arm", gripper=True)
+_xarm7_teleop_hw = xarm7_hardware(
+    "arm", gripper=True, gripper_open_position=0.85, gripper_closed_position=0.0
+)
+_xarm6_teleop_hw = xarm6_hardware(
+    "arm", gripper=True, gripper_open_position=0.85, gripper_closed_position=0.0
+)
 
 coordinator_teleop_xarm7 = autoconnect(
     ControlCoordinator.blueprint(
@@ -147,7 +151,7 @@ coordinator_teleop_xarm7 = autoconnect(
                 name="teleop_xarm",
                 params={
                     "gripper_joint": make_gripper_joints("arm")[0],
-                    "gripper_open_pos": 0.85,
+                    "gripper_open_pos": 1.0,
                     "gripper_closed_pos": 0.0,
                 },
             ),
@@ -168,7 +172,7 @@ coordinator_teleop_xarm6 = autoconnect(
                 name="teleop_xarm",
                 params={
                     "gripper_joint": make_gripper_joints("arm")[0],
-                    "gripper_open_pos": 0.85,
+                    "gripper_open_pos": 1.0,
                     "gripper_closed_pos": 0.0,
                 },
             ),
