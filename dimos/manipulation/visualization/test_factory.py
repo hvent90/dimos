@@ -96,8 +96,8 @@ class FakeWorld:
     ) -> tuple[NDArray[np.float64], NDArray[np.float64]]:
         return (np.array([], dtype=np.float64), np.array([], dtype=np.float64))
 
-    def add_obstacle(self, obstacle: Obstacle) -> str:
-        return "obstacle-1"
+    def add_obstacle(self, obstacle: Obstacle) -> bool:
+        return True
 
     def remove_obstacle(self, obstacle_id: str) -> bool:
         return True
@@ -168,9 +168,9 @@ class FakeMeshcatWorld(FakeWorld):
         self.native_calls: list[str] = []
         self.visualization_calls: list[tuple[object, ...]] = []
 
-    def add_obstacle(self, obstacle: Obstacle) -> str:
+    def add_obstacle(self, obstacle: Obstacle) -> bool:
         self.native_calls.append("add")
-        return obstacle.name
+        return True
 
     def remove_obstacle(self, obstacle_id: str) -> bool:
         self.native_calls.append("remove")

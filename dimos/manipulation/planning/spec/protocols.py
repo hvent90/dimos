@@ -79,8 +79,8 @@ class WorldSpec(Protocol):
         ...
 
     # Obstacle Management
-    def add_obstacle(self, obstacle: Obstacle) -> str:
-        """Add an obstacle to the world. Returns unique obstacle ID."""
+    def add_obstacle(self, obstacle: Obstacle) -> bool:
+        """Add an obstacle to the world. Returns whether it was inserted."""
         ...
 
     def remove_obstacle(self, obstacle_id: str) -> bool:

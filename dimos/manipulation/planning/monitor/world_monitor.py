@@ -110,12 +110,13 @@ class WorldMonitor:
     # Obstacle Management
 
     def add_obstacle(self, obstacle: Obstacle) -> str:
-        """Add an obstacle. Returns obstacle_id."""
+        """Add an obstacle, returning its name or empty string if not inserted."""
         with self._lock:
-            obstacle_count = len(self._world.get_obstacles())
-            obstacle_id = self._world.add_obstacle(obstacle)
-            inserted = len(self._world.get_obstacles()) > obstacle_count
-            if inserted and self._visualization is not None:
+            inserted = self._world.add_obstacle(obstacle)
+            if not inserted:
+                return ""
+            obstacle_id = obstacle.name
+            if self._visualization is not None:
                 try:
                     self._visualization.add_vis_obstacle(obstacle_id, obstacle)
                 except Exception:

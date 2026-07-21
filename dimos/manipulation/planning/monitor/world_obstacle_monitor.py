@@ -150,6 +150,8 @@ class WorldObstacleMonitor:
             return
 
         obstacle_id = self._add_obstacle(obstacle)
+        if not obstacle_id:
+            return
         self._collision_objects[msg.id] = obstacle_id
 
         logger.debug(f"Added collision object '{msg.id}' as '{obstacle_id}'")
@@ -257,6 +259,8 @@ class WorldObstacleMonitor:
                     # Add new obstacle
                     obstacle = self._detection_to_obstacle(detection)
                     obstacle_id = self._add_obstacle(obstacle)
+                    if not obstacle_id:
+                        continue
                     self._perception_objects[det_id] = obstacle_id
                     self._perception_timestamps[det_id] = current_time
 
@@ -480,6 +484,8 @@ class WorldObstacleMonitor:
             for oid, obj, obstacle in prepared:
                 assert isinstance(obj, Object)
                 obs_id = self._add_obstacle(obstacle)
+                if not obs_id:
+                    continue
                 self._object_obstacles[oid] = obs_id
                 result.append(
                     {

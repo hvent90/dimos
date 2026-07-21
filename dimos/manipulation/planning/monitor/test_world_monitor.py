@@ -47,8 +47,10 @@ class FakeWorld:
 
     def add_obstacle(self, obstacle):
         self.calls.append(("add_obstacle", obstacle))
-        self.obstacles.setdefault(obstacle.name, obstacle)
-        return obstacle.name
+        if obstacle.name in self.obstacles:
+            return False
+        self.obstacles[obstacle.name] = obstacle
+        return True
 
     def remove_obstacle(self, obstacle_id):
         self.calls.append(("remove_obstacle", obstacle_id))
@@ -240,7 +242,7 @@ def test_world_monitor_does_not_forward_duplicate_adds() -> None:
         visualization=fake_viz,
     )  # type: ignore[arg-type]
     monitor.add_obstacle(obstacle)
-    monitor.add_obstacle(obstacle)
+    assert monitor.add_obstacle(obstacle) == ""
     assert fake_viz.added_obstacles == [("box", obstacle)]
 
 

@@ -139,14 +139,14 @@ class RoboPlanWorld:
 
     # Obstacle Management
 
-    def add_obstacle(self, obstacle: Obstacle) -> str:
+    def add_obstacle(self, obstacle: Obstacle) -> bool:
         """Add a supported obstacle to the RoboPlan scene."""
         obstacle_id = obstacle.name
         if obstacle_id in self._obstacles:
-            return obstacle_id
+            return False
         self._add_obstacle_to_scene(obstacle, obstacle_id)
         self._obstacles[obstacle_id] = obstacle
-        return obstacle_id
+        return True
 
     def remove_obstacle(self, obstacle_id: str) -> bool:
         """Remove an obstacle from the RoboPlan scene."""
