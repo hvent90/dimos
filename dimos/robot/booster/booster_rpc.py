@@ -16,7 +16,7 @@
 
 The transport layer for Booster robots, analogous to `unitree_webrtc.py` for
 Unitree: it owns the vendor SDK and exposes a non-blocking velocity sink, a camera
-stream, and stand/sit mode changes. It is robot-agnostic — both the K1 and the T1
+stream, and stand/sit mode changes. It is robot-agnostic, so both the K1 and the T1
 connection Modules build on it. Robot-specific wiring (stream ports, camera
 intrinsics, blueprints) lives in each robot's `connection.py`.
 
@@ -49,11 +49,11 @@ logger = setup_logger()
 SEND_HZ = 30.0  # gRPC send rate to the robot, kept under booster-rpc's ~58/sec move ceiling
 CMD_VEL_TIMEOUT_S = 0.5  # dead-man: send one zero if no new command arrives within this window
 MODE_TRANSITION_TIMEOUT_S = 10.0  # give up if the robot never reports the requested mode
-MODE_POLL_S = 0.1  # how often to re-read get_mode() while awaiting a transition
+MODE_POLL_S = 0.1
 
 
 class BoosterRPCConnection:
-    """Low-level wrapper around booster-rpc; the Module never touches the SDK directly.
+    """Low-level wrapper around booster-rpc. The Module never touches the SDK directly.
 
     booster-rpc's ``move`` is a synchronous gRPC call with a ~58/sec ceiling, so a
     high-rate publisher (the 100 Hz coordinator) would back it up. ``move()`` is
@@ -79,7 +79,7 @@ class BoosterRPCConnection:
     def stop(self) -> None:
         self._sender_stop.set()
         self._sender_done.wait(timeout=DEFAULT_THREAD_JOIN_TIMEOUT)
-        self._send(0.0, 0.0, 0.0)  # final stop
+        self._send(0.0, 0.0, 0.0)
         with self._lock:
             self._conn.close()
 
@@ -152,7 +152,7 @@ class BoosterRPCConnection:
         if mode == RobotMode.WALKING:
             return True
         if mode not in (RobotMode.DAMPING, RobotMode.PREPARE):
-            logger.warning("Booster standup: unexpected mode %s; not forcing WALKING", mode)
+            logger.warning("Booster standup: unexpected mode %s, not forcing WALKING", mode)
             return False
         return self._arm(mode)
 

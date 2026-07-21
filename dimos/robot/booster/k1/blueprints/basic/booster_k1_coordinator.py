@@ -68,11 +68,9 @@ booster_k1_coordinator = (
     )
     .remappings(
         [
-            # Free up the bare `cmd_vel` name for the teleop/twist publishers; the
-            # connection now listens on /booster_k1/cmd_vel (what the adapter emits).
+            # The connection listens on /booster_k1/cmd_vel (the adapter's output).
             (K1Connection, "cmd_vel", "k1_cmd_vel"),
-            # Route the viewer-side WASD surfaces onto /cmd_vel so they feed the
-            # coordinator's twist_command instead of a dead-end topic.
+            # Viewer WASD publishes tele_cmd_vel: feed it to the coordinator's twist_command.
             (WebsocketVisModule, "tele_cmd_vel", "cmd_vel"),
             (RerunWebSocketServer, "tele_cmd_vel", "cmd_vel"),
         ]

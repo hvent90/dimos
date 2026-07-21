@@ -32,10 +32,8 @@ from dimos.robot.unitree.keyboard_teleop import KeyboardTeleop
 from dimos.visualization.rerun.websocket_server import RerunWebSocketServer
 from dimos.web.websocket_vis.websocket_vis_module import WebsocketVisModule
 
-# publish_only_when_active keeps each surface silent while idle (one zero Twist on
-# release, then quiet) so the two /cmd_vel publishers don't fight; the connection's
-# dead-man timer halts the robot when commands stop. The viewer WASD output
-# (tele_cmd_vel) is remapped onto cmd_vel so it reaches K1Connection.
+# publish_only_when_active sends one zero Twist on key release then stays silent,
+# so the two /cmd_vel publishers don't fight over an idle robot.
 booster_k1_keyboard_teleop = autoconnect(
     booster_k1_basic,
     KeyboardTeleop.blueprint(publish_only_when_active=True),

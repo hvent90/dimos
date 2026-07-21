@@ -24,7 +24,7 @@ from unittest.mock import patch
 
 import pytest
 
-# booster_rpc is an optional extra; skip cleanly if it isn't installed.
+# booster_rpc is an optional extra, skip cleanly if it isn't installed.
 pytest.importorskip("booster_rpc")
 
 from booster_rpc import RobotMode
@@ -52,7 +52,7 @@ def conn():
 
 @pytest.fixture
 async def start_sender(conn):
-    """Runs the production `run_sender()`; always torn down via the production `stop()`."""
+    """Runs the production `run_sender()`, always torn down via the production `stop()`."""
     tasks: list[asyncio.Task] = []
 
     def start() -> None:
@@ -74,7 +74,7 @@ class TestMoveIsNonBlocking:
         assert time.perf_counter() - start < 0.05
 
     def test_latest_command_wins_no_queue(self, conn):
-        # Commands coalesce to the latest; they are not queued.
+        # Commands coalesce to the latest, not queued.
         conn.move(_twist(vx=0.1))
         conn.move(_twist(vx=0.9, vyaw=0.3))
         assert conn._latest == (0.9, 0.0, 0.3)

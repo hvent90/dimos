@@ -44,7 +44,7 @@ from dimos.utils.logging_config import setup_logger
 
 logger = setup_logger()
 
-# K1 camera intrinsics — placeholders until a measured calibration replaces them.
+# Placeholder K1 camera intrinsics until a measured calibration exists.
 CAMERA_WIDTH = 544
 CAMERA_HEIGHT = 306
 CAMERA_FX = 400.0
@@ -52,7 +52,7 @@ CAMERA_FY = 400.0
 CAMERA_CX = 272.0
 CAMERA_CY = 153.0
 CAMERA_INFO_REPUBLISH_S = 1.0  # re-emit static intrinsics on a timer for late subscribers
-CMD_REFRESH_S = 0.1  # walk() resend period; must stay well below booster_rpc.CMD_VEL_TIMEOUT_S
+CMD_REFRESH_S = 0.1  # walk() resend period, kept well below booster_rpc.CMD_VEL_TIMEOUT_S
 
 
 class ConnectionConfig(ModuleConfig):
@@ -60,12 +60,11 @@ class ConnectionConfig(ModuleConfig):
 
 
 def make_connection(ip: str, cfg: GlobalConfig) -> BoosterRPCConnection:
-    # Real hardware only; add sim/replay branches (keyed off cfg) here when they exist.
+    # cfg reserved for future sim/replay backends.
     return BoosterRPCConnection(ip)
 
 
 def _camera_info_static() -> CameraInfo:
-    # TODO: replace with measured K1 camera intrinsics (these are placeholders).
     return CameraInfo(
         frame_id="camera_optical",
         height=CAMERA_HEIGHT,
@@ -87,9 +86,7 @@ class K1Connection(Module, Camera):
 
     config: ConnectionConfig
 
-    # input: velocity command from MovementManager / teleop
     cmd_vel: In[Twist]
-    # outputs: the Camera spec (color_image + camera_info)
     color_image: Out[Image]
     camera_info: Out[CameraInfo]
 
@@ -126,15 +123,14 @@ class K1Connection(Module, Camera):
         self._camera_info_future = self.spawn(self._publish_camera_info())
 
         logger.warning(
-            "K1 camera intrinsics are placeholders; 3D projection/perception will be "
+            "K1 camera intrinsics are placeholders. 3D projection/perception will be "
             "inaccurate until replaced with a measured calibration."
         )
 
-        # Arm the robot so it accepts velocity commands. On failure keep the module
-        # (and camera) running for diagnosis, but say loudly that moves will be dropped.
+        # On standup failure keep the camera and RPCs alive for diagnosis.
         if not self.standup():
             logger.error(
-                "K1 did not reach WALKING on start; velocity commands will be dropped. "
+                "K1 did not reach WALKING on start. Velocity commands will be dropped. "
                 "Resolve the robot's mode, then call the `standup` RPC (or `stand` skill)."
             )
         logger.info("K1Connection started (ip=%s)", self.config.ip)
@@ -171,16 +167,16 @@ class K1Connection(Module, Camera):
     def walk(self, x: float, y: float = 0.0, yaw: float = 0.0, duration: float = 0.0) -> str:
         """Walk at the given velocity for `duration` seconds, then stop (blocks until stopped).
 
-        A positive `duration` is required; pick it from the distance and speed.
+        A positive `duration` is required. Pick it from the distance and speed.
 
         Args:
             x: Forward velocity (m/s)
             y: Left/right velocity (m/s)
             yaw: Rotational velocity (rad/s)
-            duration: How long to move (seconds); must be > 0
+            duration: How long to move (seconds), must be > 0
         """
         if duration <= 0:
-            return "Specify a positive duration (seconds); compute it from the distance and speed."
+            return "Specify a positive duration (seconds). Compute it from the distance and speed."
         twist = Twist(linear=Vector3(x, y, 0.0), angular=Vector3(0.0, 0.0, yaw))
         deadline = time.monotonic() + duration
         while time.monotonic() < deadline:
@@ -188,7 +184,7 @@ class K1Connection(Module, Camera):
             time.sleep(CMD_REFRESH_S)
         self.move(Twist(linear=Vector3(0.0, 0.0, 0.0), angular=Vector3(0.0, 0.0, 0.0)))
         if self._connection.send_failed:
-            return "The robot rejected the move commands; check that it is armed (mode WALKING)."
+            return "The robot rejected the move commands. Check that it is armed (mode WALKING)."
         return f"Moved at velocity=({x}, {y}, {yaw}) for {duration}s then stopped."
 
     @skill
