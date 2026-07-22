@@ -24,6 +24,7 @@ from langchain.agents import create_agent
 from langchain.chat_models import init_chat_model
 from langchain_core.messages import HumanMessage
 from langchain_core.messages.base import BaseMessage
+from langchain_core.runnables import RunnableConfig
 from langchain_core.tools import StructuredTool
 from langchain_openai import ChatOpenAI
 from langgraph.graph.state import CompiledStateGraph
@@ -31,6 +32,7 @@ from reactivex.disposable import Disposable
 
 from dimos.agents.mcp import tool_stream
 from dimos.agents.system_prompt import SYSTEM_PROMPT
+from dimos.agents.usage import UsageTracker
 from dimos.agents.utils import pretty_print_langchain_message
 from dimos.constants import DEFAULT_THREAD_JOIN_TIMEOUT
 from dimos.core.core import rpc
@@ -340,12 +342,17 @@ class McpClient(Module):
         pretty_print_langchain_message(message)
         self.agent.publish(message)
 
-        for update in state_graph.stream({"messages": self._history}, stream_mode="updates"):
+        tracker = UsageTracker()
+        config: RunnableConfig = {"callbacks": [tracker]}
+        for update in state_graph.stream(
+            {"messages": self._history}, config=config, stream_mode="updates"
+        ):
             for node_output in update.values():
                 for msg in node_output.get("messages", []):
                     self._history.append(msg)
                     pretty_print_langchain_message(msg)
                     self.agent.publish(msg)
+        logger.info("Agent trajectory usage", **tracker.totals())
 
         if self._message_queue.empty():
             self.agent_idle.publish(True)
