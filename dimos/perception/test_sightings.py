@@ -93,6 +93,33 @@ def test_scan_events_and_vocabulary_coverage(tmp_path: Path) -> None:
         assert not log.ever_in_vocabulary("fire extinguisher")
 
 
+def test_rescan_does_not_duplicate_rows(tmp_path: Path) -> None:
+    with SightingsLog(tmp_path / "s.db") as log:
+        log.record_scan(
+            _sample_rows(),
+            t0=99.0,
+            t1=110.0,
+            vocabulary=["couch", "chair"],
+            source="a",
+            frames=20,
+        )
+        # Same window scanned again: identical (name, object_id, ts) rows are
+        # skipped; the coverage event still records with 0 new sightings.
+        log.record_scan(
+            _sample_rows(),
+            t0=99.0,
+            t1=110.0,
+            vocabulary=["couch", "chair"],
+            source="a",
+            frames=20,
+        )
+        assert log.names() == {"couch": 2, "chair": 1}
+        events = log.scan_events()
+        assert len(events) == 2
+        assert events[0].sightings == 3
+        assert events[1].sightings == 0
+
+
 def test_empty_log(tmp_path: Path) -> None:
     with SightingsLog(tmp_path / "empty.db") as log:
         assert log.sightings() == []

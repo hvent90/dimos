@@ -108,9 +108,18 @@ class SightingsLog:
         source: str,
         frames: int,
     ) -> None:
-        """Append one scan pass: its sightings plus the coverage event."""
+        """Append one scan pass: its sightings plus the coverage event.
+
+        Rows whose (name, object_id, ts) already exist are skipped, so
+        re-scanning the same window (or a belief fold re-reporting an object
+        not seen since the last scan) doesn't duplicate history.
+        """
+        existing = {(s.name, s.object_id, s.ts) for s in self.sightings()}
         stream = self._store.stream(SIGHTINGS_STREAM, str)
+        appended = 0
         for s in sightings:
+            if (s.name, s.object_id, s.ts) in existing:
+                continue
             tags: dict[str, Any] = {
                 "object_id": s.object_id,
                 "source": source,
@@ -119,6 +128,7 @@ class SightingsLog:
             if s.confidence is not None:
                 tags["confidence"] = s.confidence
             stream.append(s.name, ts=s.ts, pose=s.position, tags=tags)
+            appended += 1
         self._store.stream(SCAN_EVENTS_STREAM, str).append(
             source,
             ts=t1,
@@ -126,7 +136,7 @@ class SightingsLog:
                 "t0": t0,
                 "vocabulary": list(vocabulary),
                 "frames": frames,
-                "sightings": len(sightings),
+                "sightings": appended,
             },
         )
 
