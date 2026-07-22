@@ -34,16 +34,21 @@ from typing import TYPE_CHECKING, Any
 
 import numpy as np
 from numpy.typing import NDArray
+from reactivex.disposable import Disposable
 
 from dimos.agents.annotation import skill
 from dimos.agents.skill_result import CommonSkillError, SkillResult
 from dimos.core.core import rpc
 from dimos.core.module import Module, ModuleConfig
+from dimos.core.stream import In
 from dimos.mapping.occupancy.polygons import points_in_polygon, polygon_from_flat
+from dimos.mapping.occupancy.room_segmentation import segment_rooms
+from dimos.mapping.occupancy.room_store import RoomStore
 from dimos.memory2.replay import resolve_db_path
 from dimos.memory2.store.sqlite import SqliteStore
 from dimos.memory2.type.observation import Observation
 from dimos.msgs.geometry_msgs.Transform import Transform
+from dimos.msgs.nav_msgs.OccupancyGrid import OccupancyGrid
 from dimos.msgs.sensor_msgs.CameraInfo import CameraInfo
 from dimos.perception.sightings import DEFAULT_SIGHTINGS_DB, Sighting, SightingsLog
 from dimos.utils.logging_config import setup_logger
@@ -147,6 +152,7 @@ class SceneMemorySkillContainer(Module):
     """Agent skills over recorded spatio-temporal memory (pose trail queries)."""
 
     config: SceneMemoryConfig
+    global_costmap: In[OccupancyGrid]
 
     def __init__(self, **kwargs: Any) -> None:
         super().__init__(**kwargs)
@@ -154,14 +160,22 @@ class SceneMemorySkillContainer(Module):
         self._trail_lock = threading.Lock()
         self._detector: Detector | None = None
         self._detector_lock = threading.Lock()
+        self._grid_lock = threading.Lock()
+        self._latest_grid: OccupancyGrid | None = None
 
     @rpc
     def start(self) -> None:
         super().start()
+        if self.global_costmap.transport:
+            self.register_disposable(Disposable(self.global_costmap.subscribe(self._on_costmap)))
 
     @rpc
     def stop(self) -> None:
         super().stop()
+
+    def _on_costmap(self, grid: OccupancyGrid) -> None:
+        with self._grid_lock:
+            self._latest_grid = grid
 
     def _trail_db(self) -> str:
         if self.config.trail_db:
@@ -340,27 +354,32 @@ class SceneMemorySkillContainer(Module):
         n_frames = 0
         t_lo = float("inf")
         t_hi = float("-inf")
-        with SqliteStore(path=str(db_path), must_exist=True) as store:
-            for frame in iter_lidar_scan(
-                store,
-                detector,
-                self.config.camera_info,
-                self.config.base_to_optical,
-                sample_period_s=self.config.scan_sample_period_s,
-            ):
-                n_frames += 1
-                t_lo = min(t_lo, frame.ts)
-                t_hi = max(t_hi, frame.ts)
-                for s in frame.sightings:
-                    sightings.append(
-                        Sighting(
-                            name=s.name,
-                            ts=s.ts,
-                            position=s.position,
-                            object_id=str(s.track_id) if s.track_id >= 0 else "",
-                            confidence=s.confidence,
+        try:
+            with SqliteStore(path=str(db_path), must_exist=True) as store:
+                for frame in iter_lidar_scan(
+                    store,
+                    detector,
+                    self.config.camera_info,
+                    self.config.base_to_optical,
+                    sample_period_s=self.config.scan_sample_period_s,
+                ):
+                    n_frames += 1
+                    t_lo = min(t_lo, frame.ts)
+                    t_hi = max(t_hi, frame.ts)
+                    for s in frame.sightings:
+                        sightings.append(
+                            Sighting(
+                                name=s.name,
+                                ts=s.ts,
+                                position=s.position,
+                                object_id=str(s.track_id) if s.track_id >= 0 else "",
+                                confidence=s.confidence,
+                            )
                         )
-                    )
+        except LookupError as e:
+            return SkillResult.fail(
+                "EXECUTION_FAILED", f"Recording is missing a required stream: {e}"
+            )
         if n_frames == 0:
             return SkillResult.fail(
                 "EXECUTION_FAILED", "No frames with aligned odom+lidar found in the recording"
@@ -424,4 +443,67 @@ class SceneMemorySkillContainer(Module):
             position=[x, y, z],
             first_ts=round(matches[0].ts, 3),
             count=len(matches),
+        )
+
+    @skill
+    def derive_rooms(self) -> SkillResult[CommonSkillError]:
+        """Segment the current occupancy map into rooms and remember them.
+
+        Runs room segmentation over the latest global costmap and persists
+        the result (room polygons, areas, doorways). Call this after the map
+        has grown before asking room questions.
+        """
+        with self._grid_lock:
+            grid = self._latest_grid
+        if grid is None:
+            return SkillResult.fail(
+                "INVALID_STATE", "No occupancy map received yet — is mapping running?"
+            )
+        segmentation = segment_rooms(grid)
+        with RoomStore(self.config.sightings_db) as store:
+            store.save(segmentation, source="scene_memory.derive_rooms")
+        rooms = segmentation.rooms()
+        corridors = segmentation.corridors()
+        return SkillResult.ok(
+            f"Derived {len(rooms)} room(s) and {len(corridors)} corridor(s) from the "
+            f"map ({segmentation.explored_fraction:.0%} explored — the count can rise "
+            f"as more area is mapped).",
+            n_rooms=len(rooms),
+            n_corridors=len(corridors),
+            n_doorways=len(segmentation.doorways),
+            explored_fraction=segmentation.explored_fraction,
+            derived_ts=round(segmentation.derived_ts, 3),
+        )
+
+    @skill
+    def rooms(self) -> SkillResult[CommonSkillError]:
+        """How many rooms are there? Lists the remembered rooms with areas.
+
+        Reads the last derive_rooms result. The count is a lower bound while
+        the map is partially explored.
+        """
+        with RoomStore(self.config.sightings_db) as store:
+            room_set = store.latest()
+        if room_set is None:
+            return SkillResult.fail(
+                "INVALID_STATE", "No rooms derived yet — call derive_rooms first."
+            )
+        rooms = room_set.by_kind("room")
+        corridors = room_set.by_kind("corridor")
+        return SkillResult.ok(
+            f"{len(rooms)} room(s) and {len(corridors)} corridor(s) known, from a map "
+            f"{room_set.explored_fraction:.0%} explored (counts are lower bounds on a "
+            f"partial map).",
+            rooms=[
+                {
+                    "id": r.id,
+                    "kind": r.kind,
+                    "area_m2": r.area_m2,
+                    "centroid": [round(r.centroid_xy[0], 2), round(r.centroid_xy[1], 2)],
+                }
+                for r in room_set.rooms
+            ],
+            n_doorways=len(room_set.doorways),
+            explored_fraction=room_set.explored_fraction,
+            derived_ts=round(room_set.derived_ts, 3),
         )

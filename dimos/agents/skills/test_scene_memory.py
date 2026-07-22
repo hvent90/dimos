@@ -25,6 +25,7 @@ from dimos.agents.skills.scene_memory import (
 )
 from dimos.memory2.store.sqlite import SqliteStore
 from dimos.msgs.geometry_msgs.PoseStamped import PoseStamped
+from dimos.msgs.nav_msgs.OccupancyGrid import OccupancyGrid
 from dimos.perception.sightings import Sighting, SightingsLog
 
 T0 = 1_000_000.0
@@ -238,6 +239,55 @@ def test_scan_for_objects_rejects_empty_prompt(tmp_path: Path) -> None:
         result = module.scan_for_objects(["  "])
         assert not result.success
         assert result.error_code == "INVALID_INPUT"
+    finally:
+        module.stop()
+
+
+def _two_room_grid() -> "OccupancyGrid":
+    cells = np.full((84, 166), 100, dtype=np.int16)
+    cells[2:-2, 2:-2] = 0
+    cells[:, 82:84] = 100
+    cells[34:50, 82:84] = 0
+    return OccupancyGrid(grid=cells.astype(np.int8), resolution=0.05, ts=777.0)
+
+
+def test_derive_rooms_and_rooms_skills(tmp_path: Path) -> None:
+    module = SceneMemorySkillContainer(sightings_db=str(tmp_path / "scene.db"))
+    module.start()
+    try:
+        no_map = module.derive_rooms()
+        assert not no_map.success
+        assert no_map.error_code == "INVALID_STATE"
+
+        module._on_costmap(_two_room_grid())
+        derived = module.derive_rooms()
+        assert derived.success
+        assert derived.metadata["n_rooms"] == 2
+        assert derived.metadata["n_corridors"] == 0
+        assert derived.metadata["n_doorways"] == 1
+        assert derived.metadata["derived_ts"] == 777.0
+    finally:
+        module.stop()
+    # A fresh container instance answers rooms() from the persisted store.
+    fresh = SceneMemorySkillContainer(sightings_db=str(tmp_path / "scene.db"))
+    fresh.start()
+    try:
+        result = fresh.rooms()
+        assert result.success
+        assert [r["id"] for r in result.metadata["rooms"]] == [1, 2]
+        assert result.metadata["n_doorways"] == 1
+        assert "2 room(s)" in result.message
+    finally:
+        fresh.stop()
+
+
+def test_rooms_before_derivation_fails_cleanly(tmp_path: Path) -> None:
+    module = SceneMemorySkillContainer(sightings_db=str(tmp_path / "scene.db"))
+    module.start()
+    try:
+        result = module.rooms()
+        assert not result.success
+        assert result.error_code == "INVALID_STATE"
     finally:
         module.stop()
 
