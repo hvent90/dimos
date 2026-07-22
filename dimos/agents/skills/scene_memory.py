@@ -17,16 +17,20 @@
 The pose trail comes from a memory2 recording (the replay DB by default):
 the ``odom`` stream's timestamped poses answer "when was the robot in
 region R" and "where was the robot at time t". Regions are 2D polygons in
-world coordinates. All timestamps are recording-time epoch seconds — the
-same time base the recording's streams carry.
+world coordinates. Object queries read the persistent sightings log
+(``dimos.perception.sightings``), populated by the ``scan_for_objects``
+skill (color + lidar recordings, no depth needed). All timestamps are
+recording-time epoch seconds — the same time base the recording's streams
+carry.
 """
 
 from __future__ import annotations
 
 from dataclasses import dataclass
 from datetime import datetime, timezone
+from pathlib import Path
 import threading
-from typing import Any
+from typing import TYPE_CHECKING, Any
 
 import numpy as np
 from numpy.typing import NDArray
@@ -39,7 +43,13 @@ from dimos.mapping.occupancy.polygons import points_in_polygon, polygon_from_fla
 from dimos.memory2.replay import resolve_db_path
 from dimos.memory2.store.sqlite import SqliteStore
 from dimos.memory2.type.observation import Observation
+from dimos.msgs.geometry_msgs.Transform import Transform
+from dimos.msgs.sensor_msgs.CameraInfo import CameraInfo
+from dimos.perception.sightings import DEFAULT_SIGHTINGS_DB, Sighting, SightingsLog
 from dimos.utils.logging_config import setup_logger
+
+if TYPE_CHECKING:
+    from dimos.perception.detection.detectors.base import Detector
 
 logger = setup_logger()
 
@@ -123,6 +133,14 @@ class SceneMemoryConfig(ModuleConfig):
     trail_db: str = ""
     # Candidate pose streams, first match wins (naming varies by recording rig).
     trail_streams: list[str] = ["go2_odom", "odom"]
+    # Persistent sightings store (survives restarts, unlike RAM-only tracks).
+    sightings_db: str | Path = DEFAULT_SIGHTINGS_DB
+    # Camera intrinsics + static base_link->camera_optical mount, needed only
+    # by scan_for_objects (wired per robot in the blueprint).
+    camera_info: CameraInfo | None = None
+    base_to_optical: Transform | None = None
+    detector_conf: float = 0.4
+    scan_sample_period_s: float = 0.5
 
 
 class SceneMemorySkillContainer(Module):
@@ -134,6 +152,8 @@ class SceneMemorySkillContainer(Module):
         super().__init__(**kwargs)
         self._trail: PoseTrail | None = None
         self._trail_lock = threading.Lock()
+        self._detector: Detector | None = None
+        self._detector_lock = threading.Lock()
 
     @rpc
     def start(self) -> None:
@@ -144,7 +164,16 @@ class SceneMemorySkillContainer(Module):
         super().stop()
 
     def _trail_db(self) -> str:
-        return self.config.trail_db or self.config.g.replay_db
+        if self.config.trail_db:
+            return self.config.trail_db
+        # Only fall back to the replay dataset when actually replaying it —
+        # on a live robot that dataset is unrelated history and answering
+        # from it would be a confident hallucination.
+        if self.config.g.replay:
+            return self.config.g.replay_db
+        raise LookupError(
+            "No trail recording configured (set scene_memory_skill_container.trail_db)"
+        )
 
     def _get_trail(self) -> PoseTrail:
         with self._trail_lock:
@@ -258,4 +287,141 @@ class SceneMemorySkillContainer(Module):
             last_exit_ts=round(exit_, 3),
             trail_start_ts=round(t0, 3),
             trail_end_ts=round(t1, 3),
+        )
+
+    def _get_detector(self) -> Detector:
+        with self._detector_lock:
+            if self._detector is None:
+                # Lazy import: pulls in torch/ultralytics, which most skills
+                # never need.
+                from dimos.perception.detection.detectors.yoloe import (
+                    Yoloe2DDetector,
+                    YoloePromptMode,
+                )
+
+                self._detector = Yoloe2DDetector(
+                    prompt_mode=YoloePromptMode.PROMPT, conf=self.config.detector_conf
+                )
+            return self._detector
+
+    @skill
+    def scan_for_objects(self, prompt: list[str]) -> SkillResult[CommonSkillError]:
+        """Scan the recording for objects and log every sighting to memory.
+
+        Runs open-vocabulary detection over the recorded camera frames and
+        positions each detection in the world using the recording's lidar.
+        Only object types named in the prompt can be found — everything else
+        is invisible to this scan. Sightings persist across restarts.
+
+        Args:
+            prompt: Object type names to look for, e.g.
+                ["chair", "couch", "potted plant"].
+        """
+        vocabulary = sorted({p.strip() for p in prompt if p.strip()})
+        if not vocabulary:
+            return SkillResult.fail("INVALID_INPUT", "prompt must name at least one object type")
+        if self.config.camera_info is None or self.config.base_to_optical is None:
+            return SkillResult.fail(
+                "NOT_CONFIGURED",
+                "scan_for_objects needs camera_info and base_to_optical configured",
+            )
+        try:
+            db_path = resolve_db_path(self._trail_db())
+        except (FileNotFoundError, LookupError) as e:
+            return SkillResult.fail("NOT_CONFIGURED", f"No recording available: {e}")
+
+        # Import here with the detector: the scan lane is optional heavy metal.
+        from dimos.perception.lidar_scan import iter_lidar_scan
+
+        detector = self._get_detector()
+        detector.set_prompts(text=vocabulary)  # type: ignore[attr-defined]
+
+        sightings: list[Sighting] = []
+        n_frames = 0
+        t_lo = float("inf")
+        t_hi = float("-inf")
+        with SqliteStore(path=str(db_path), must_exist=True) as store:
+            for frame in iter_lidar_scan(
+                store,
+                detector,
+                self.config.camera_info,
+                self.config.base_to_optical,
+                sample_period_s=self.config.scan_sample_period_s,
+            ):
+                n_frames += 1
+                t_lo = min(t_lo, frame.ts)
+                t_hi = max(t_hi, frame.ts)
+                for s in frame.sightings:
+                    sightings.append(
+                        Sighting(
+                            name=s.name,
+                            ts=s.ts,
+                            position=s.position,
+                            object_id=str(s.track_id) if s.track_id >= 0 else "",
+                            confidence=s.confidence,
+                        )
+                    )
+        if n_frames == 0:
+            return SkillResult.fail(
+                "EXECUTION_FAILED", "No frames with aligned odom+lidar found in the recording"
+            )
+        with SightingsLog(self.config.sightings_db) as log:
+            log.record_scan(
+                sightings,
+                t0=t_lo,
+                t1=t_hi,
+                vocabulary=vocabulary,
+                source="scene_memory.scan_for_objects",
+                frames=n_frames,
+            )
+        by_name: dict[str, int] = {}
+        for row in sightings:
+            by_name[row.name] = by_name.get(row.name, 0) + 1
+        return SkillResult.ok(
+            f"Scanned {n_frames} frames; logged {len(sightings)} sightings: {by_name}. "
+            f"Vocabulary was {vocabulary} — other object types were not looked for.",
+            sightings_by_name=by_name,
+            frames=n_frames,
+            scanned_t0=round(t_lo, 3),
+            scanned_t1=round(t_hi, 3),
+            vocabulary=vocabulary,
+        )
+
+    @skill
+    def last_seen_object(self, name: str) -> SkillResult[CommonSkillError]:
+        """When and where did you last see an object? Reads the sightings log.
+
+        Answers from all past scans, including objects that are no longer in
+        view. Run scan_for_objects first if nothing has been scanned yet.
+
+        Args:
+            name: Object type name exactly as scanned, e.g. "couch".
+        """
+        with SightingsLog(self.config.sightings_db) as log:
+            matches = log.sightings(name)
+            known = log.names()
+            ever_in_vocab = log.ever_in_vocabulary(name)
+        if not matches:
+            qualifier = (
+                "it was in the scan vocabulary but never detected"
+                if ever_in_vocab
+                else "it was never in any scan's vocabulary, so it would not have been "
+                "detected even if present"
+            )
+            return SkillResult.ok(
+                f"No sightings of '{name}' — {qualifier}. Objects sighted so far: {sorted(known)}.",
+                sightings=0,
+                ever_in_vocabulary=ever_in_vocab,
+                known_names=sorted(known),
+            )
+        last = matches[-1]
+        x, y, z = (round(v, 2) for v in last.position)
+        return SkillResult.ok(
+            f"Last saw '{name}' at {_iso(last.ts)} UTC at world position ({x}, {y}, {z}). "
+            f"{len(matches)} sighting(s) total between {_iso(matches[0].ts)} and "
+            f"{_iso(last.ts)} UTC.",
+            last_ts=round(last.ts, 3),
+            position=[x, y, z],
+            first_ts=round(matches[0].ts, 3),
+            count=len(matches),
         )

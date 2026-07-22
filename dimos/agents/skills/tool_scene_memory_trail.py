@@ -22,8 +22,9 @@ the robot actually saw::
         --db go2_china_office --out /tmp/trail_check
 
 The default region is a 4x4 m box around the recording's start pose - for
-go2_china_office the expected result is two visits (the robot starts there,
-leaves ~20 s in, and passes through again ~30 s in).
+go2_china_office the expected result is four visits (the robot starts
+there, leaves ~20 s in, and passes back through around t+30, t+103, and
+t+114 s).
 """
 
 from __future__ import annotations

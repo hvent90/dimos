@@ -59,6 +59,9 @@ class WorldBeliefModuleConfig(MemoryModuleConfig):
     # and uses this value only as the base naming convention for sibling-session recall.
     db_path: str | Path = _STATE_DIR / "recordings" / "worldbelief.db"
     history_path: str | Path = _HISTORY_PATH
+    # When set, every scan() appends its observations to this persistent
+    # sightings log (dimos.perception.sightings). Empty = disabled.
+    sightings_db: str | Path = ""
     scan_prompts: list[str] = Field(default_factory=list)
     depth_tolerance_s: float = Field(default=0.1, gt=0.0)
     stationary_hz: float = Field(default=1.0, gt=0.0)
@@ -299,6 +302,28 @@ class WorldBeliefModule(Module):
             return SkillResult.fail("INVALID_STATE", str(exc))
         except ScanIncompleteError as exc:
             return SkillResult.fail("EXECUTION_FAILED", f"Scan incomplete: {exc}")
+
+        if self.config.sightings_db:
+            from dimos.perception.sightings import Sighting, SightingsLog
+
+            rows = [
+                Sighting(
+                    name=obj.name,
+                    ts=float(obj.last_seen_ts or obj.ts),
+                    position=(float(obj.center.x), float(obj.center.y), float(obj.center.z)),
+                    object_id=str(obj.object_id),
+                )
+                for obj in observations
+            ]
+            with SightingsLog(self.config.sightings_db) as log:
+                log.record_scan(
+                    rows,
+                    t0=result.source_end_ts - window,
+                    t1=result.source_end_ts,
+                    vocabulary=list(vocabulary),
+                    source="worldbelief.scan",
+                    frames=result.folded_frames,
+                )
 
         frame_id = self.config.belief.frame_id
         self.detections_3d.publish(

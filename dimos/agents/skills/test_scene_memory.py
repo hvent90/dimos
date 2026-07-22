@@ -25,6 +25,7 @@ from dimos.agents.skills.scene_memory import (
 )
 from dimos.memory2.store.sqlite import SqliteStore
 from dimos.msgs.geometry_msgs.PoseStamped import PoseStamped
+from dimos.perception.sightings import Sighting, SightingsLog
 
 T0 = 1_000_000.0
 
@@ -152,6 +153,102 @@ def test_missing_db_fails_cleanly(tmp_path: Path) -> None:
     module = SceneMemorySkillContainer(trail_db=str(tmp_path / "missing.db"))
     module.start()
     try:
+        result = module.robot_trail_info()
+        assert not result.success
+        assert result.error_code == "NOT_CONFIGURED"
+    finally:
+        module.stop()
+
+
+@pytest.fixture()
+def sightings_db(tmp_path: Path) -> Path:
+    db = tmp_path / "sightings.db"
+    with SightingsLog(db) as log:
+        log.record_scan(
+            [
+                Sighting(name="couch", ts=T0 + 5.0, position=(1.0, 2.0, 0.1)),
+                Sighting(name="couch", ts=T0 + 9.0, position=(1.1, 2.0, 0.1)),
+                Sighting(name="tv", ts=T0 + 7.0, position=(4.0, 0.5, 1.2)),
+            ],
+            t0=T0,
+            t1=T0 + 10.0,
+            vocabulary=["couch", "tv", "plant"],
+            source="test",
+            frames=12,
+        )
+    return db
+
+
+def test_last_seen_object(sightings_db: Path) -> None:
+    module = SceneMemorySkillContainer(sightings_db=str(sightings_db))
+    module.start()
+    try:
+        result = module.last_seen_object("couch")
+        assert result.success
+        assert result.metadata["last_ts"] == T0 + 9.0
+        assert result.metadata["position"] == [1.1, 2.0, 0.1]
+        assert result.metadata["count"] == 2
+    finally:
+        module.stop()
+
+
+def test_last_seen_object_in_vocabulary_but_never_seen(sightings_db: Path) -> None:
+    # "plant" was looked for but never detected — the answer must say so
+    # rather than fabricate a sighting.
+    module = SceneMemorySkillContainer(sightings_db=str(sightings_db))
+    module.start()
+    try:
+        result = module.last_seen_object("plant")
+        assert result.success
+        assert result.metadata["sightings"] == 0
+        assert result.metadata["ever_in_vocabulary"] is True
+        assert "never detected" in result.message
+    finally:
+        module.stop()
+
+
+def test_last_seen_object_never_in_vocabulary(sightings_db: Path) -> None:
+    module = SceneMemorySkillContainer(sightings_db=str(sightings_db))
+    module.start()
+    try:
+        result = module.last_seen_object("fire extinguisher")
+        assert result.success
+        assert result.metadata["ever_in_vocabulary"] is False
+        assert "never in any scan's vocabulary" in result.message
+        assert result.metadata["known_names"] == ["couch", "tv"]
+    finally:
+        module.stop()
+
+
+def test_scan_for_objects_requires_camera_config(trail_db: Path, tmp_path: Path) -> None:
+    module = SceneMemorySkillContainer(trail_db=str(trail_db), sightings_db=str(tmp_path / "s.db"))
+    module.start()
+    try:
+        result = module.scan_for_objects(["chair"])
+        assert not result.success
+        assert result.error_code == "NOT_CONFIGURED"
+    finally:
+        module.stop()
+
+
+def test_scan_for_objects_rejects_empty_prompt(tmp_path: Path) -> None:
+    module = SceneMemorySkillContainer(sightings_db=str(tmp_path / "s.db"))
+    module.start()
+    try:
+        result = module.scan_for_objects(["  "])
+        assert not result.success
+        assert result.error_code == "INVALID_INPUT"
+    finally:
+        module.stop()
+
+
+def test_no_trail_db_outside_replay_fails_cleanly() -> None:
+    # Without an explicit trail_db and outside replay mode, the skills must
+    # refuse rather than answer from the default replay dataset.
+    module = SceneMemorySkillContainer()
+    module.start()
+    try:
+        assert not module.config.g.replay
         result = module.robot_trail_info()
         assert not result.success
         assert result.error_code == "NOT_CONFIGURED"
