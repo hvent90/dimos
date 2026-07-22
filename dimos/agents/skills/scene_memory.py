@@ -41,16 +41,25 @@ from dimos.agents.skill_result import CommonSkillError, SkillResult
 from dimos.core.core import rpc
 from dimos.core.module import Module, ModuleConfig
 from dimos.core.stream import In
-from dimos.mapping.occupancy.polygons import points_in_polygon, polygon_from_flat
+from dimos.mapping.occupancy.polygons import (
+    distance_to_polygon,
+    points_in_polygon,
+    polygon_from_flat,
+)
 from dimos.mapping.occupancy.room_segmentation import segment_rooms
-from dimos.mapping.occupancy.room_store import RoomStore
+from dimos.mapping.occupancy.room_store import RoomStore, StoredRoom, StoredRoomSet
 from dimos.memory2.replay import resolve_db_path
 from dimos.memory2.store.sqlite import SqliteStore
 from dimos.memory2.type.observation import Observation
 from dimos.msgs.geometry_msgs.Transform import Transform
 from dimos.msgs.nav_msgs.OccupancyGrid import OccupancyGrid
 from dimos.msgs.sensor_msgs.CameraInfo import CameraInfo
-from dimos.perception.sightings import DEFAULT_SIGHTINGS_DB, Sighting, SightingsLog
+from dimos.perception.sightings import (
+    DEFAULT_SIGHTINGS_DB,
+    ScanEvent,
+    Sighting,
+    SightingsLog,
+)
 from dimos.utils.logging_config import setup_logger
 
 if TYPE_CHECKING:
@@ -61,6 +70,10 @@ logger = setup_logger()
 # Bridge gaps between in-region odom samples up to this long (sensor dropouts
 # and doorway-straddling flicker), so one visit doesn't splinter into many.
 DEFAULT_VISIT_GAP_S = 2.0
+
+# Detections flicker frame to frame far more than odom does, so bridge larger
+# gaps when grouping an object's in-region sightings into stays.
+SIGHTING_VISIT_GAP_S = 5.0
 
 
 def visit_intervals(
@@ -132,6 +145,113 @@ def load_pose_trail(db_path: str, stream_names: list[str]) -> PoseTrail:
     return PoseTrail(ts=np.asarray(ts_list), xy=np.asarray(xy_list))
 
 
+def _sightings_xy(sightings: list[Sighting]) -> NDArray[np.float64]:
+    return np.array([[s.position[0], s.position[1]] for s in sightings], dtype=np.float64).reshape(
+        -1, 2
+    )
+
+
+# Room polygons outline free space, but objects are obstacles — their lidar
+# positions sit in occupied cells just outside every polygon (walls, furniture
+# clusters). Points inside no polygon therefore snap to the nearest room
+# within this distance; on go2_short every such sighting was within 0.64 m of
+# its nearest room. Sightings deep in a furniture band between rooms can be
+# nearly equidistant to two rooms, so a snapped assignment near the midline
+# is a coin toss — acceptable for room-level queries.
+DEFAULT_SIGHTING_SNAP_M = 0.75
+
+
+def assign_to_rooms(
+    points_xy: NDArray[np.float64],
+    rooms: tuple[StoredRoom, ...],
+    snap_m: float = DEFAULT_SIGHTING_SNAP_M,
+) -> NDArray[np.int32]:
+    """Exclusively assign each point to a room id (0 = no room).
+
+    A point inside a room polygon belongs to that room; otherwise it snaps
+    to the room with the nearest outline if that is within ``snap_m``.
+    """
+    if len(points_xy) == 0 or not rooms:
+        return np.zeros(len(points_xy), dtype=np.int32)
+    effective = np.empty((len(points_xy), len(rooms)))
+    for j, room in enumerate(rooms):
+        inside = points_in_polygon(points_xy, room.polygon)
+        effective[:, j] = np.where(inside, 0.0, distance_to_polygon(points_xy, room.polygon))
+    ids = np.asarray([r.id for r in rooms], dtype=np.int32)
+    assigned: NDArray[np.int32] = np.where(
+        effective.min(axis=1) <= snap_m, ids[effective.argmin(axis=1)], 0
+    ).astype(np.int32)
+    return assigned
+
+
+@dataclass(frozen=True)
+class RegionCoverage:
+    """Evidence that scan passes actually covered a region."""
+
+    scan_passes: int
+    passes_covering_region: int
+    last_covered_ts: float | None  # set iff passes_covering_region > 0
+
+
+def region_scan_coverage(
+    polygon: NDArray[np.float64],
+    events: list[ScanEvent],
+    sightings: list[Sighting],
+    sighting_in_region: NDArray[np.bool_],
+    trail: PoseTrail | None,
+) -> RegionCoverage:
+    """How well past scans covered a region, from the evidence already stored.
+
+    A scan pass covers the region when the robot was inside it during the
+    pass's window (pose trail) or one of the pass's sightings — of any
+    object — resolved into it (``sighting_in_region``, one flag per
+    sighting: the camera positioned objects there).
+    """
+    sighting_ts = np.asarray([s.ts for s in sightings])
+    trail_inside = points_in_polygon(trail.xy, polygon) if trail is not None else None
+    covering = 0
+    last: float | None = None
+    for event in events:
+        evidence: list[float] = []
+        if trail is not None and trail_inside is not None:
+            in_window = trail_inside & (trail.ts >= event.t0) & (trail.ts <= event.ts)
+            if in_window.any():
+                evidence.append(float(trail.ts[in_window].max()))
+        if sightings:
+            in_window = sighting_in_region & (sighting_ts >= event.t0) & (sighting_ts <= event.ts)
+            if in_window.any():
+                evidence.append(float(sighting_ts[in_window].max()))
+        if evidence:
+            covering += 1
+            last = max(evidence) if last is None else max(last, max(evidence))
+    return RegionCoverage(
+        scan_passes=len(events), passes_covering_region=covering, last_covered_ts=last
+    )
+
+
+def _vocabulary_sentence(name: str, ever_in_vocab: bool) -> str:
+    if ever_in_vocab:
+        return f"'{name}' was in the scan vocabulary."
+    return (
+        f"'{name}' was never in any scan's vocabulary, so it would not have been "
+        "detected even if present."
+    )
+
+
+def _coverage_sentence(coverage: RegionCoverage, label: str) -> str:
+    if coverage.scan_passes == 0:
+        return "Nothing has been scanned yet — run scan_for_objects first."
+    if coverage.passes_covering_region == 0:
+        return (
+            f"No scan pass is known to have covered {label}, so this is weak evidence of absence."
+        )
+    assert coverage.last_covered_ts is not None
+    return (
+        f"{coverage.passes_covering_region} of {coverage.scan_passes} scan pass(es) "
+        f"covered {label}, most recently at {_iso(coverage.last_covered_ts)} UTC."
+    )
+
+
 class SceneMemoryConfig(ModuleConfig):
     # Recording holding the robot's pose trail: a dataset name or .db path,
     # resolved like the replay DB. Defaults to the session's replay DB.
@@ -146,6 +266,9 @@ class SceneMemoryConfig(ModuleConfig):
     base_to_optical: Transform | None = None
     detector_conf: float = 0.4
     scan_sample_period_s: float = 0.5
+    # Max distance a sighting outside every room polygon may snap to the
+    # nearest room (see assign_to_rooms).
+    sighting_snap_m: float = DEFAULT_SIGHTING_SNAP_M
 
 
 class SceneMemorySkillContainer(Module):
@@ -200,6 +323,13 @@ class SceneMemorySkillContainer(Module):
                     samples=len(self._trail.ts),
                 )
             return self._trail
+
+    def _trail_or_none(self) -> PoseTrail | None:
+        """The pose trail if available — coverage answers degrade without it."""
+        try:
+            return self._get_trail()
+        except (FileNotFoundError, LookupError):
+            return None
 
     @skill
     def robot_trail_info(self) -> SkillResult[CommonSkillError]:
@@ -443,6 +573,226 @@ class SceneMemorySkillContainer(Module):
             position=[x, y, z],
             first_ts=round(matches[0].ts, 3),
             count=len(matches),
+        )
+
+    def _resolve_region(
+        self, room_id: int | None, region: list[float] | None
+    ) -> tuple[NDArray[np.float64], str, StoredRoomSet | None]:
+        """Resolve a queried region to (polygon, human label, latest room set).
+
+        Raises:
+            ValueError: neither/malformed input, or an unknown room id.
+            LookupError: a room id was given but no rooms were derived yet.
+        """
+        if room_id is not None and region is not None:
+            raise ValueError("Give either room_id or region, not both")
+        with RoomStore(self.config.sightings_db) as store:
+            room_set = store.latest()
+        if region is not None:
+            return polygon_from_flat(region), "the given region", room_set
+        if room_id is None:
+            raise ValueError("Provide either a room_id (see rooms()) or a region polygon")
+        if room_set is None:
+            raise LookupError("No rooms derived yet — call derive_rooms first.")
+        room = next((r for r in room_set.rooms if r.id == room_id), None)
+        if room is None:
+            raise ValueError(
+                f"No room with id {room_id}; known ids: {[r.id for r in room_set.rooms]}"
+            )
+        return room.polygon, f"room {room_id}", room_set
+
+    def _membership(
+        self,
+        points_xy: NDArray[np.float64],
+        polygon: NDArray[np.float64],
+        room_id: int | None,
+        room_set: StoredRoomSet | None,
+    ) -> NDArray[np.bool_]:
+        """Which points count as inside the queried region.
+
+        Room queries use exclusive nearest-room assignment (a wall-adjacent
+        sighting belongs to exactly one room); raw-polygon queries accept
+        anything inside or within the snap distance of the outline.
+        """
+        if len(points_xy) == 0:
+            return np.zeros(0, dtype=bool)
+        if room_id is not None and room_set is not None:
+            assigned = assign_to_rooms(points_xy, room_set.rooms, self.config.sighting_snap_m)
+            member: NDArray[np.bool_] = assigned == room_id
+            return member
+        inside = points_in_polygon(points_xy, polygon)
+        near = distance_to_polygon(points_xy, polygon) <= self.config.sighting_snap_m
+        return inside | near
+
+    def _region_coverage(
+        self,
+        polygon: NDArray[np.float64],
+        room_id: int | None,
+        room_set: StoredRoomSet | None,
+        log: SightingsLog,
+    ) -> tuple[RegionCoverage, dict[str, Any]]:
+        """Coverage of the queried region, plus metadata for a "never" answer."""
+        events = log.scan_events()
+        everything = log.sightings()
+        trail = self._trail_or_none()
+        xy = _sightings_xy(everything)
+        member = self._membership(xy, polygon, room_id, room_set)
+        coverage = region_scan_coverage(polygon, events, everything, member, trail)
+        meta: dict[str, Any] = {
+            "scan_passes": coverage.scan_passes,
+            "scan_passes_covering_region": coverage.passes_covering_region,
+            "region_last_scanned_ts": (
+                round(coverage.last_covered_ts, 3) if coverage.last_covered_ts is not None else None
+            ),
+        }
+        if room_set is not None:
+            assigned = assign_to_rooms(xy, room_set.rooms, self.config.sighting_snap_m)
+            meta["rooms_with_scan_coverage"] = [
+                r.id
+                for r in room_set.rooms
+                if region_scan_coverage(
+                    r.polygon, events, everything, assigned == r.id, trail
+                ).passes_covering_region
+            ]
+        return coverage, meta
+
+    @skill
+    def last_seen_object_in_region(
+        self, name: str, room_id: int | None = None, region: list[float] | None = None
+    ) -> SkillResult[CommonSkillError]:
+        """When and where did you last see an object in a specific room/region?
+
+        Answers from the sightings log. If the object was later seen somewhere
+        else, the answer is still its last sighting inside the queried region.
+        Identify the region by room_id (from rooms()) or by a raw polygon.
+
+        Args:
+            name: Object type name exactly as scanned, e.g. "couch".
+            room_id: Room id from the rooms() skill.
+            region: Region polygon in world coordinates, instead of room_id:
+                flattened [x1, y1, x2, y2, ...] (at least 3 vertices).
+        """
+        try:
+            polygon, label, room_set = self._resolve_region(room_id, region)
+        except ValueError as e:
+            return SkillResult.fail("INVALID_INPUT", str(e))
+        except LookupError as e:
+            return SkillResult.fail("INVALID_STATE", str(e))
+        with SightingsLog(self.config.sightings_db) as log:
+            matches = log.sightings(name)
+            inside = self._membership(_sightings_xy(matches), polygon, room_id, room_set)
+            if not matches:
+                ever_in_vocab = log.ever_in_vocabulary(name)
+                known = sorted(log.names())
+                coverage, coverage_meta = self._region_coverage(polygon, room_id, room_set, log)
+                return SkillResult.ok(
+                    f"No sightings of '{name}' anywhere. "
+                    f"{_vocabulary_sentence(name, ever_in_vocab)} "
+                    f"Objects sighted so far: {known}.",
+                    in_region_count=0,
+                    ever_in_vocabulary=ever_in_vocab,
+                    known_names=known,
+                    **coverage_meta,
+                )
+            if not inside.any():
+                ever_in_vocab = log.ever_in_vocabulary(name)
+                coverage, coverage_meta = self._region_coverage(polygon, room_id, room_set, log)
+                last = matches[-1]
+                x, y = round(last.position[0], 2), round(last.position[1], 2)
+                return SkillResult.ok(
+                    f"Never saw '{name}' in {label} — though it was sighted "
+                    f"{len(matches)} time(s) elsewhere, last at {_iso(last.ts)} UTC "
+                    f"at ({x}, {y}). {_coverage_sentence(coverage, label)}",
+                    in_region_count=0,
+                    ever_in_vocabulary=ever_in_vocab,
+                    last_elsewhere_ts=round(last.ts, 3),
+                    **coverage_meta,
+                )
+        in_region = [s for s, flag in zip(matches, inside.tolist(), strict=True) if flag]
+        intervals = visit_intervals(
+            np.asarray([s.ts for s in matches]), inside, max_gap_s=SIGHTING_VISIT_GAP_S
+        )
+        last_in = in_region[-1]
+        enter, exit_ = intervals[-1]
+        later_elsewhere = [
+            s for s, flag in zip(matches, inside.tolist(), strict=True) if not flag and s.ts > exit_
+        ]
+        note = ""
+        later_meta: dict[str, Any] = {}
+        if later_elsewhere:
+            note = (
+                f" Note: '{name}' was later seen outside {label}, most recently at "
+                f"{_iso(later_elsewhere[-1].ts)} UTC."
+            )
+            later_meta["later_elsewhere_ts"] = round(later_elsewhere[-1].ts, 3)
+        x, y, z = (round(v, 2) for v in last_in.position)
+        return SkillResult.ok(
+            f"Last saw '{name}' in {label} at {_iso(last_in.ts)} UTC at ({x}, {y}, {z}); "
+            f"that stay spanned {_iso(enter)}..{_iso(exit_)} UTC. "
+            f"{len(in_region)} sighting(s) in the region total.{note}",
+            last_ts=round(last_in.ts, 3),
+            position=[x, y, z],
+            last_interval=[round(enter, 3), round(exit_, 3)],
+            visits=[[round(a, 3), round(b, 3)] for a, b in intervals],
+            in_region_count=len(in_region),
+            **later_meta,
+        )
+
+    @skill
+    def object_ever_in_region(
+        self, name: str, room_id: int | None = None, region: list[float] | None = None
+    ) -> SkillResult[CommonSkillError]:
+        """Has an object ever been seen in a specific room or region?
+
+        A "never" answer is qualified by coverage — whether any scan pass
+        actually covered the region, and whether the object type was ever in
+        a scan's vocabulary — because absence of sightings only counts as
+        evidence when the region was scanned for that object type.
+
+        Args:
+            name: Object type name exactly as scanned, e.g. "couch".
+            room_id: Room id from the rooms() skill.
+            region: Region polygon in world coordinates, instead of room_id:
+                flattened [x1, y1, x2, y2, ...] (at least 3 vertices).
+        """
+        try:
+            polygon, label, room_set = self._resolve_region(room_id, region)
+        except ValueError as e:
+            return SkillResult.fail("INVALID_INPUT", str(e))
+        except LookupError as e:
+            return SkillResult.fail("INVALID_STATE", str(e))
+        with SightingsLog(self.config.sightings_db) as log:
+            matches = log.sightings(name)
+            inside = self._membership(_sightings_xy(matches), polygon, room_id, room_set)
+            if inside.any():
+                in_region = [s for s, flag in zip(matches, inside.tolist(), strict=True) if flag]
+                intervals = visit_intervals(
+                    np.asarray([s.ts for s in matches]), inside, max_gap_s=SIGHTING_VISIT_GAP_S
+                )
+                return SkillResult.ok(
+                    f"Yes — '{name}' was seen in {label}: {len(in_region)} sighting(s) "
+                    f"between {_iso(in_region[0].ts)} and {_iso(in_region[-1].ts)} UTC.",
+                    ever_seen_in_region=True,
+                    first_ts=round(in_region[0].ts, 3),
+                    last_ts=round(in_region[-1].ts, 3),
+                    visits=[[round(a, 3), round(b, 3)] for a, b in intervals],
+                    in_region_count=len(in_region),
+                )
+            ever_in_vocab = log.ever_in_vocabulary(name)
+            coverage, coverage_meta = self._region_coverage(polygon, room_id, room_set, log)
+        elsewhere = (
+            f" It was seen {len(matches)} time(s) outside the region, "
+            f"last at {_iso(matches[-1].ts)} UTC."
+            if matches
+            else ""
+        )
+        return SkillResult.ok(
+            f"No — '{name}' was never seen in {label}.{elsewhere} "
+            f"{_vocabulary_sentence(name, ever_in_vocab)} {_coverage_sentence(coverage, label)}",
+            ever_seen_in_region=False,
+            ever_in_vocabulary=ever_in_vocab,
+            sightings_elsewhere=len(matches),
+            **coverage_meta,
         )
 
     @skill

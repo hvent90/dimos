@@ -53,6 +53,42 @@ def points_in_polygon(
     return result
 
 
+def distance_to_polygon(
+    points: NDArray[np.float64], polygon: NDArray[np.float64]
+) -> NDArray[np.float64]:
+    """Euclidean distance from each 2D point to the polygon outline.
+
+    The distance is to the boundary, not the filled shape — points inside
+    the polygon get their distance to the nearest edge, not 0.
+
+    Args:
+        points: (N, 2) array of x, y coordinates.
+        polygon: (M, 2) array of vertices in order (open or closed ring),
+            M >= 3.
+    Returns:
+        (N,) distances in the polygon's units.
+    """
+    points = np.asarray(points, dtype=np.float64)
+    polygon = np.asarray(polygon, dtype=np.float64)
+    if polygon.ndim != 2 or polygon.shape[1] != 2 or polygon.shape[0] < 3:
+        raise ValueError(f"polygon must be (M>=3, 2), got shape {polygon.shape}")
+    if points.ndim != 2 or points.shape[1] != 2:
+        raise ValueError(f"points must be (N, 2), got shape {points.shape}")
+
+    edge_start = polygon  # (M, 2)
+    edge_vec = np.roll(polygon, -1, axis=0) - polygon  # (M, 2)
+    to_point = points[:, None, :] - edge_start[None, :, :]  # (N, M, 2)
+    length_sq = (edge_vec * edge_vec).sum(axis=1)  # (M,)
+    t = np.clip(
+        (to_point * edge_vec[None, :, :]).sum(axis=2) / np.maximum(length_sq, 1e-12), 0.0, 1.0
+    )  # (N, M) position of the closest point along each edge
+    closest = edge_start[None, :, :] + t[..., None] * edge_vec[None, :, :]
+    distances: NDArray[np.float64] = np.linalg.norm(points[:, None, :] - closest, axis=2).min(
+        axis=1
+    )
+    return distances
+
+
 def polygon_from_flat(flat: list[float]) -> NDArray[np.float64]:
     """Convert a flat [x1, y1, x2, y2, ...] list to an (M, 2) polygon array."""
     if len(flat) < 6 or len(flat) % 2 != 0:

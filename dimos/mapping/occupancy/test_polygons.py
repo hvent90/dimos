@@ -15,7 +15,11 @@
 import numpy as np
 import pytest
 
-from dimos.mapping.occupancy.polygons import points_in_polygon, polygon_from_flat
+from dimos.mapping.occupancy.polygons import (
+    distance_to_polygon,
+    points_in_polygon,
+    polygon_from_flat,
+)
 
 UNIT_SQUARE = np.array([[0.0, 0.0], [1.0, 0.0], [1.0, 1.0], [0.0, 1.0]])
 
@@ -68,6 +72,28 @@ def test_empty_points() -> None:
 def test_degenerate_polygon_rejected() -> None:
     with pytest.raises(ValueError, match="polygon"):
         points_in_polygon(np.array([[0.0, 0.0]]), np.array([[0.0, 0.0], [1.0, 1.0]]))
+
+
+def test_distance_to_polygon() -> None:
+    points = np.array(
+        [
+            [2.0, 0.5],  # 1.0 right of the right edge
+            [0.5, 0.5],  # center: 0.5 from every edge
+            [1.0, 1.0],  # exactly on a vertex
+            [0.5, -0.25],  # below the bottom edge
+        ]
+    )
+    assert distance_to_polygon(points, UNIT_SQUARE).tolist() == [1.0, 0.5, 0.0, 0.25]
+
+
+def test_distance_to_polygon_beyond_edge_ends() -> None:
+    # Closest feature is a corner, not an edge interior.
+    distances = distance_to_polygon(np.array([[2.0, 2.0]]), UNIT_SQUARE)
+    assert distances.tolist() == [pytest.approx(np.sqrt(2.0))]
+
+
+def test_distance_to_polygon_empty_points() -> None:
+    assert distance_to_polygon(np.empty((0, 2)), UNIT_SQUARE).shape == (0,)
 
 
 def test_polygon_from_flat() -> None:
