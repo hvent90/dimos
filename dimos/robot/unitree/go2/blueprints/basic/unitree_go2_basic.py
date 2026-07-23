@@ -18,6 +18,7 @@ from typing import Any
 
 from dimos.core.coordination.blueprints import autoconnect
 from dimos.core.global_config import global_config
+from dimos.perception.scene_graph import SCENE_GRAPH_ROOM_Z
 from dimos.robot.unitree.go2.connection import GO2Connection
 from dimos.visualization.vis_module import vis_module
 
@@ -40,6 +41,17 @@ def _convert_navigation_costmap(grid: Any) -> Any:
         opacity=0.2,
         background="#484981",
     )
+
+
+def _convert_scene_graph_rooms(polygons: Any) -> Any:
+    # Room outlines drawn at the raised room-layer height (layered DSG look).
+    return polygons.to_rerun(z_offset=SCENE_GRAPH_ROOM_Z, color=(250, 200, 60, 255), radii=0.03)
+
+
+def _convert_scene_graph_edges(segments: Any) -> Any:
+    # Graph edges already carry their true z (room ends raised by the
+    # publisher) — suppress the type's default lift.
+    return segments.to_rerun(z_offset=0.0)
 
 
 def _static_base_link(rr: Any) -> list[Any]:
@@ -90,6 +102,8 @@ rerun_config: dict[str, Any] = {
         "world/global_map": _convert_global_map,
         "world/merged_map": _convert_global_map,
         "world/navigation_costmap": _convert_navigation_costmap,
+        "world/scene_graph_rooms": _convert_scene_graph_rooms,
+        "world/scene_graph_edges": _convert_scene_graph_edges,
     },
     "max_hz": {
         "world/global_map": 0,  # publishes at ~7.8 Hz

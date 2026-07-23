@@ -64,6 +64,36 @@ class StoredRoomSet:
     def by_kind(self, kind: str) -> tuple[StoredRoom, ...]:
         return tuple(r for r in self.rooms if r.kind == kind)
 
+    @classmethod
+    def from_segmentation(cls, segmentation: RoomSegmentation, source: str) -> StoredRoomSet:
+        """The in-memory equivalent of save-then-latest for one derivation."""
+        return cls(
+            derived_ts=segmentation.derived_ts,
+            source=source,
+            explored_fraction=segmentation.explored_fraction,
+            rooms=tuple(
+                StoredRoom(
+                    id=region.id,
+                    kind=region.kind,
+                    area_m2=region.area_m2,
+                    centroid_xy=region.centroid_xy,
+                    anchor_xy=region.anchor_xy,
+                    max_clearance_m=region.max_clearance_m,
+                    polygon=region.polygon,
+                    derived_ts=segmentation.derived_ts,
+                )
+                for region in segmentation.regions
+            ),
+            doorways=tuple(
+                {
+                    "between": list(d.between),
+                    "xy": [round(v, 3) for v in d.position_xy],
+                    "width_m": d.approx_width_m,
+                }
+                for d in segmentation.doorways
+            ),
+        )
+
 
 class RoomStore:
     """Append/query API over persisted room derivations. Context manager."""

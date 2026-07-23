@@ -60,7 +60,7 @@ class WorldBeliefModuleConfig(MemoryModuleConfig):
     db_path: str | Path = _STATE_DIR / "recordings" / "worldbelief.db"
     history_path: str | Path = _HISTORY_PATH
     # When set, every scan() appends its observations to this persistent
-    # sightings log (dimos.perception.sightings). Empty = disabled.
+    # scene graph (dimos.perception.scene_graph). Empty = disabled.
     sightings_db: str | Path = ""
     scan_prompts: list[str] = Field(default_factory=list)
     depth_tolerance_s: float = Field(default=0.1, gt=0.0)
@@ -304,7 +304,9 @@ class WorldBeliefModule(Module):
             return SkillResult.fail("EXECUTION_FAILED", f"Scan incomplete: {exc}")
 
         if self.config.sightings_db:
-            from dimos.perception.sightings import Sighting, SightingsLog
+            # Lazy import: the scene graph pulls in the mapping stack, which
+            # this module otherwise never needs.
+            from dimos.perception.scene_graph import SceneGraph, Sighting
 
             rows = [
                 Sighting(
@@ -315,8 +317,9 @@ class WorldBeliefModule(Module):
                 )
                 for obj in observations
             ]
-            with SightingsLog(self.config.sightings_db) as log:
-                log.record_scan(
+            with SceneGraph(self.config.sightings_db) as graph:
+                graph.ensure_migrated()
+                graph.fold_scan(
                     rows,
                     t0=result.source_end_ts - window,
                     t1=result.source_end_ts,

@@ -54,6 +54,7 @@ migrating a pre-graph DB.
 from __future__ import annotations
 
 from dataclasses import dataclass, replace
+import math
 from pathlib import Path
 from types import TracebackType
 from typing import Any
@@ -61,7 +62,8 @@ from typing import Any
 import numpy as np
 from numpy.typing import NDArray
 
-from dimos.mapping.occupancy.polygons import distance_to_polygon, points_in_polygon
+from dimos.constants import STATE_DIR
+from dimos.mapping.occupancy.polygons import assign_to_polygons
 from dimos.mapping.occupancy.room_store import RoomStore, StoredRoomSet
 from dimos.memory2.store.sqlite import SqliteStore
 from dimos.memory2.type.observation import Observation
@@ -70,6 +72,7 @@ NODES_STREAM = "scene_graph_nodes"
 EDGES_STREAM = "scene_graph_edges"
 SIGHTINGS_STREAM = "sightings"
 SCAN_EVENTS_STREAM = "scan_events"
+DEFAULT_SIGHTINGS_DB = STATE_DIR / "scene_memory" / "sightings.db"
 
 BUILDING_ID = "building_0"
 AGENT_ID = "agent_0"
@@ -87,6 +90,19 @@ ATTACH_RADIUS_M = 0.75
 # no polygon snap to the nearest room within this distance (on go2_short all
 # such sightings were within 0.64 m of their nearest room).
 SIGHTING_SNAP_M = 0.75
+
+# A re-scan of the same window is a duplicate, not new history — but track
+# ids are per-detector-session counters and detected positions jitter at
+# the centimetre level between runs (observed ≤ 0.05 m on go2_short), so
+# neither can be part of an exact dedupe key. Same name + same frame ts +
+# within this radius = the same sighting; genuinely distinct same-name
+# detections in one frame sit ≥ 1.1 m apart on go2_short.
+SIGHTING_DEDUPE_M = 0.25
+
+# Render height of the room layer in the viewer (outlines, anchors, and the
+# room end of contains edges) — the Hydra-style layered-DSG picture. Shared
+# by the publisher (scene_memory) and the blueprint's visual overrides.
+SCENE_GRAPH_ROOM_Z = 2.0
 
 
 @dataclass(frozen=True)
@@ -244,6 +260,15 @@ class SceneGraph:
     ) -> None:
         self._store.stop()
 
+    def refresh(self) -> None:
+        """Drop the in-memory state cache; the next read reloads from disk.
+
+        Needed when another SceneGraph instance may have written to the same
+        DB since this instance last loaded.
+        """
+        self._nodes = None
+        self._edges = None
+
     def _load(self) -> tuple[dict[str, SceneNode], dict[tuple[str, str, str], SceneEdge]]:
         """Current state: the latest row per node id / edge key, in row order."""
         if self._nodes is None or self._edges is None:
@@ -336,33 +361,27 @@ class SceneGraph:
             ts,
         )
 
-    def _live_regions(self) -> list[SceneNode]:
+    def regions(self) -> list[SceneNode]:
         """Live room/corridor nodes, ordered by node index (deterministic)."""
         nodes, _ = self._load()
-        regions = [n for n in nodes.values() if n.layer in ("room", "corridor") and not n.retired]
-        return sorted(regions, key=lambda n: _node_index(n.id))
+        live = [n for n in nodes.values() if n.layer in ("room", "corridor") and not n.retired]
+        return sorted(live, key=lambda n: _node_index(n.id))
 
-    def _assign_regions(
-        self, points_xy: NDArray[np.float64], regions: list[SceneNode]
+    def assign_regions(
+        self, points_xy: NDArray[np.float64], regions: list[SceneNode] | None = None
     ) -> list[str]:
         """Exclusively assign points to region node ids ("" = no region).
 
         A point inside a region polygon belongs to it; otherwise it snaps to
         the region with the nearest outline within ``snap_m``. Ties break to
-        the lowest region index (argmin picks the first of the sorted list).
+        the lowest region index.
         """
+        if regions is None:
+            regions = self.regions()
         if len(points_xy) == 0 or not regions:
             return [""] * len(points_xy)
-        effective = np.empty((len(points_xy), len(regions)))
-        for j, region in enumerate(regions):
-            polygon = region.polygon()
-            inside = points_in_polygon(points_xy, polygon)
-            effective[:, j] = np.where(inside, 0.0, distance_to_polygon(points_xy, polygon))
-        best = effective.argmin(axis=1)
-        return [
-            regions[j].id if effective[i, j] <= self._snap_m else ""
-            for i, j in enumerate(best.tolist())
-        ]
+        indices = assign_to_polygons(points_xy, [r.polygon() for r in regions], self._snap_m)
+        return [regions[j].id if j >= 0 else "" for j in indices.tolist()]
 
     def _attach(self, rows: list[Sighting]) -> tuple[list[Sighting], list[str], list[str]]:
         """Fold sighting rows through the attachment rule, in ts order.
@@ -372,7 +391,7 @@ class SceneGraph:
         node and re-checks containment; does NOT write sighting rows.
         """
         nodes, _ = self._load()
-        regions = self._live_regions()
+        regions = self.regions()
         next_object = 1 + max((_node_index(i) for i in nodes if i.startswith("object_")), default=0)
         live_objects = {n.id: n for n in nodes.values() if n.layer == "object" and not n.retired}
         created: list[str] = []
@@ -397,7 +416,10 @@ class SceneGraph:
                 )
                 node = replace(
                     node,
-                    position=s.position,
+                    # The position cache tracks the latest sighting by ts, so
+                    # folding an older window later must not regress it.
+                    position=s.position if s.ts >= node.last_seen_ts else node.position,
+                    first_seen_ts=min(node.first_seen_ts, s.ts),
                     last_seen_ts=max(node.last_seen_ts, s.ts),
                     sightings=node.sightings + 1,
                 )
@@ -419,7 +441,7 @@ class SceneGraph:
                 next_object += 1
                 created.append(node.id)
             live_objects[node.id] = node
-            room_id = self._assign_regions(xy, regions)[0]
+            room_id = self.assign_regions(xy, regions)[0]
             assigned.append(replace(s, node_id=node.id, room_id=room_id))
 
         touched = created + list(updated)
@@ -429,7 +451,7 @@ class SceneGraph:
             node = live_objects[node_id]
             self._append_node(node, node.last_seen_ts)
             if regions:
-                room_id = self._assign_regions(np.asarray([node.xy], dtype=np.float64), regions)[0]
+                room_id = self.assign_regions(np.asarray([node.xy], dtype=np.float64), regions)[0]
                 parent = room_id if room_id else BUILDING_ID
             else:
                 parent = BUILDING_ID
@@ -449,19 +471,22 @@ class SceneGraph:
     ) -> FoldResult:
         """Fold one scan pass: attach sightings to nodes, log everything.
 
-        Rows whose (name, object_id, ts) already exist are skipped, so
-        re-scanning the same window doesn't duplicate history. The scan
-        event is recorded even when nothing new was seen — coverage counts.
+        A row is a duplicate — skipped — when the same name was already
+        logged at the same frame ts within SIGHTING_DEDUPE_M, so re-scanning
+        the same window doesn't duplicate history. The scan event is
+        recorded even when nothing new was seen — coverage counts.
         ``agent_position`` (the robot's pose at the end of the scanned
         window) updates the agent node when given.
         """
-        existing = {(s.name, s.object_id, s.ts) for s in self.sightings()}
+        existing: dict[tuple[str, float], list[tuple[float, float, float]]] = {}
+        for s in self.sightings():
+            existing.setdefault((s.name, s.ts), []).append(s.position)
         fresh: list[Sighting] = []
         for s in sorted(sightings, key=lambda r: r.ts):
-            key = (s.name, s.object_id, s.ts)
-            if key in existing:
+            near = existing.setdefault((s.name, s.ts), [])
+            if any(math.dist(s.position, p) <= SIGHTING_DEDUPE_M for p in near):
                 continue
-            existing.add(key)
+            near.append(s.position)
             fresh.append(replace(s, source=source, vocabulary=tuple(vocabulary)))
 
         assigned, created, updated = self._attach(fresh)
@@ -531,7 +556,7 @@ class SceneGraph:
         nodes, edges = self._load()
         self._ensure_building(ts)
 
-        old_regions = self._live_regions()
+        old_regions = self.regions()
         old_ids = {n.id for n in old_regions}
         for edge in list(edges.values()):
             if not edge.retired and (edge.parent_id in old_ids or edge.child_id in old_ids):
@@ -590,16 +615,16 @@ class SceneGraph:
                 ts,
             )
 
-        regions = self._live_regions()
+        regions = self.regions()
         for node in [n for n in nodes.values() if n.layer == "object" and not n.retired]:
-            room_id = self._assign_regions(np.asarray([node.xy], dtype=np.float64), regions)[0]
+            room_id = self.assign_regions(np.asarray([node.xy], dtype=np.float64), regions)[0]
             self._set_parent(node.id, room_id if room_id else BUILDING_ID, ts)
 
         rows = self.sightings()
         needs_backfill = [s for s in rows if not s.room_id]
         if needs_backfill:
             xy = np.asarray([s.position[:2] for s in needs_backfill], dtype=np.float64)
-            resolved = self._assign_regions(xy, regions)
+            resolved = self.assign_regions(xy, regions)
             fixes = {
                 id(s): room_id
                 for s, room_id in zip(needs_backfill, resolved, strict=True)
@@ -625,7 +650,7 @@ class SceneGraph:
         legacy = [s for s in rows if not s.node_id]
         if not legacy:
             return 0
-        if not self._live_regions():
+        if not self.regions():
             with RoomStore(self._path) as room_store:
                 room_set = room_store.latest()
             if room_set is not None:

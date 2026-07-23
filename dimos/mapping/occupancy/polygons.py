@@ -14,6 +14,8 @@
 
 """2D polygon containment tests for map regions (rooms, hand-labeled zones)."""
 
+from collections.abc import Sequence
+
 import numpy as np
 from numpy.typing import NDArray
 
@@ -87,6 +89,30 @@ def distance_to_polygon(
         axis=1
     )
     return distances
+
+
+def assign_to_polygons(
+    points: NDArray[np.float64],
+    polygons: Sequence[NDArray[np.float64]],
+    snap: float,
+) -> NDArray[np.int64]:
+    """Exclusively assign each point to one polygon index (-1 = none).
+
+    A point inside a polygon belongs to it (distance 0); otherwise it snaps
+    to the polygon with the nearest outline if that is within ``snap``.
+    Ties break to the lowest polygon index.
+    """
+    if len(points) == 0 or not polygons:
+        return np.full(len(points), -1, dtype=np.int64)
+    effective = np.empty((len(points), len(polygons)))
+    for j, polygon in enumerate(polygons):
+        inside = points_in_polygon(points, polygon)
+        effective[:, j] = np.where(inside, 0.0, distance_to_polygon(points, polygon))
+    best = effective.argmin(axis=1)
+    assigned: NDArray[np.int64] = np.where(
+        effective[np.arange(len(points)), best] <= snap, best, -1
+    ).astype(np.int64)
+    return assigned
 
 
 def polygon_from_flat(flat: list[float]) -> NDArray[np.float64]:

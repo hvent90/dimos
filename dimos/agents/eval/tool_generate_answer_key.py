@@ -44,7 +44,7 @@ from dimos.mapping.occupancy.room_segmentation import segment_rooms
 from dimos.mapping.occupancy.room_store import RoomStore
 from dimos.mapping.occupancy.tool_room_segmentation_replay import rebuild_grid
 from dimos.memory2.replay import resolve_db_path
-from dimos.perception.sightings import SightingsLog
+from dimos.perception.scene_graph import SceneGraph
 from dimos.robot.unitree.go2.connection import BASE_TO_OPTICAL, GO2Connection
 
 
@@ -93,8 +93,8 @@ def main() -> None:
     finally:
         module.stop()
 
-    with SightingsLog(scene_db) as log:
-        sightings = log.sightings()
+    with SceneGraph(scene_db) as graph:
+        sightings = graph.sightings()
     with RoomStore(scene_db) as store:
         room_set = store.latest()
     assert room_set is not None

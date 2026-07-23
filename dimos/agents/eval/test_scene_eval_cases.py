@@ -23,7 +23,7 @@ from dimos.agents.eval.scene_eval_cases import (
 )
 from dimos.agents.skills.scene_memory import PoseTrail
 from dimos.mapping.occupancy.room_store import StoredRoom, StoredRoomSet
-from dimos.perception.sightings import Sighting
+from dimos.perception.scene_graph import Sighting
 
 T0 = 1_000_000.0
 

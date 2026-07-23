@@ -23,6 +23,7 @@ import pytest
 
 from dimos.mapping.occupancy.room_segmentation import segment_rooms
 from dimos.mapping.occupancy.room_store import RoomStore
+from dimos.memory2.store.sqlite import SqliteStore
 from dimos.msgs.nav_msgs.OccupancyGrid import OccupancyGrid
 from dimos.perception.scene_graph import (
     AGENT_ID,
@@ -31,7 +32,6 @@ from dimos.perception.scene_graph import (
     SceneGraph,
     Sighting,
 )
-from dimos.perception.sightings import Sighting as LegacySighting, SightingsLog
 
 T0 = 1_000_000.0
 
@@ -141,6 +141,29 @@ def test_refold_same_scan_is_deduped(tmp_path: Path) -> None:
         assert len(graph.scan_events()) == 2
 
 
+def test_refold_with_jitter_and_new_track_ids_is_deduped(tmp_path: Path) -> None:
+    # Track ids are per-detector-session counters and re-detected positions
+    # jitter by centimetres, so a re-scan never reproduces exact rows.
+    db = tmp_path / "scene.db"
+    with SceneGraph(db) as graph:
+        _fold_couch_and_tv(graph)
+        again = graph.fold_scan(
+            [
+                Sighting(name="couch", ts=T0 + 2.0, position=(2.02, 1.97, 0.11), object_id="58"),
+                Sighting(name="couch", ts=T0 + 3.0, position=(2.13, 2.08, 0.09), object_id="58"),
+                Sighting(name="tv", ts=T0 + 5.0, position=(6.03, 2.01, 1.18), object_id="59"),
+            ],
+            t0=T0,
+            t1=T0 + 10.0,
+            vocabulary=["couch", "tv"],
+            source="test",
+            frames=10,
+        )
+        assert again.appended_sightings == 0
+        assert again.created_node_ids == ()
+        assert len(graph.sightings()) == 3
+
+
 def test_same_name_far_apart_is_two_nodes(tmp_path: Path) -> None:
     db = tmp_path / "scene.db"
     with SceneGraph(db) as graph:
@@ -157,6 +180,54 @@ def test_same_name_far_apart_is_two_nodes(tmp_path: Path) -> None:
         )
         assert result.created_node_ids == ("object_1", "object_2")
         assert [n.name for n in graph.nodes(layer="object")] == ["person", "person"]
+
+
+def test_out_of_order_fold_keeps_latest_position(tmp_path: Path) -> None:
+    db = tmp_path / "scene.db"
+    with SceneGraph(db) as graph:
+        graph.fold_scan(
+            [Sighting(name="couch", ts=T0 + 20.0, position=(2.0, 2.0, 0.1))],
+            t0=T0 + 15.0,
+            t1=T0 + 25.0,
+            vocabulary=["couch"],
+            source="test",
+            frames=3,
+        )
+        # An earlier window folded later must not regress the position cache.
+        graph.fold_scan(
+            [Sighting(name="couch", ts=T0 + 2.0, position=(2.3, 2.1, 0.1))],
+            t0=T0,
+            t1=T0 + 10.0,
+            vocabulary=["couch"],
+            source="test",
+            frames=3,
+        )
+        couch = graph.node("object_1")
+        assert couch is not None
+        assert couch.position == (2.0, 2.0, 0.1)
+        assert couch.first_seen_ts == T0 + 2.0
+        assert couch.last_seen_ts == T0 + 20.0
+        assert couch.sightings == 2
+
+
+def test_same_frame_same_name_detections_both_kept(tmp_path: Path) -> None:
+    # Two same-name detections in one frame share ts and a blank track id;
+    # both must survive dedupe and become two far-apart nodes.
+    db = tmp_path / "scene.db"
+    with SceneGraph(db) as graph:
+        result = graph.fold_scan(
+            [
+                Sighting(name="person", ts=T0 + 1.0, position=(-3.1, 0.1, 0.3)),
+                Sighting(name="person", ts=T0 + 1.0, position=(4.0, 6.6, 0.3)),
+            ],
+            t0=T0,
+            t1=T0 + 5.0,
+            vocabulary=["person"],
+            source="test",
+            frames=1,
+        )
+        assert result.appended_sightings == 2
+        assert result.created_node_ids == ("object_1", "object_2")
 
 
 def test_fold_without_rooms_parents_to_building(tmp_path: Path) -> None:
@@ -240,23 +311,39 @@ def test_restart_survival_across_processes(tmp_path: Path) -> None:
         assert graph.sightings("couch")[0].node_id == "object_1"
 
 
+def _record_legacy_rows(
+    db: Path, rows: list[tuple[str, float, tuple[float, float, float]]], vocabulary: list[str]
+) -> None:
+    """Write first-pass-format rows: no node_id/room_id tags anywhere."""
+    with SqliteStore(path=str(db)) as store:
+        sightings = store.stream("sightings", str)
+        for name, ts, position in rows:
+            sightings.append(
+                name,
+                ts=ts,
+                pose=position,
+                tags={"object_id": "", "source": "legacy", "vocabulary": vocabulary},
+            )
+        store.stream("scan_events", str).append(
+            "legacy",
+            ts=T0 + 10.0,
+            tags={"t0": T0, "vocabulary": vocabulary, "frames": 10, "sightings": len(rows)},
+        )
+
+
 def _seed_legacy_db(db: Path) -> None:
     """A pre-graph DB: bare sighting rows + a stored room derivation."""
     with RoomStore(db) as store:
         store.save(segment_rooms(_two_room_grid()), source="legacy")
-    with SightingsLog(db) as log:
-        log.record_scan(
-            [
-                LegacySighting(name="couch", ts=T0 + 2.0, position=(*LEFT_XY, 0.1)),
-                LegacySighting(name="couch", ts=T0 + 3.0, position=(2.1, 2.05, 0.1)),
-                LegacySighting(name="tv", ts=T0 + 5.0, position=(*RIGHT_XY, 1.2)),
-            ],
-            t0=T0,
-            t1=T0 + 10.0,
-            vocabulary=["couch", "tv"],
-            source="legacy",
-            frames=10,
-        )
+    _record_legacy_rows(
+        db,
+        [
+            ("couch", T0 + 2.0, (*LEFT_XY, 0.1)),
+            ("couch", T0 + 3.0, (2.1, 2.05, 0.1)),
+            ("tv", T0 + 5.0, (*RIGHT_XY, 1.2)),
+        ],
+        vocabulary=["couch", "tv"],
+    )
 
 
 def test_migration_assigns_ids_and_rooms(tmp_path: Path) -> None:
@@ -299,15 +386,7 @@ def test_migration_is_deterministic_and_idempotent(tmp_path: Path) -> None:
 
 def test_migration_without_rooms_then_backfill(tmp_path: Path) -> None:
     db = tmp_path / "legacy.db"
-    with SightingsLog(db) as log:
-        log.record_scan(
-            [LegacySighting(name="couch", ts=T0 + 2.0, position=(*LEFT_XY, 0.1))],
-            t0=T0,
-            t1=T0 + 10.0,
-            vocabulary=["couch"],
-            source="legacy",
-            frames=5,
-        )
+    _record_legacy_rows(db, [("couch", T0 + 2.0, (*LEFT_XY, 0.1))], vocabulary=["couch"])
     with SceneGraph(db) as graph:
         assert graph.ensure_migrated() == 1
         assert graph.parent_id("object_1") == BUILDING_ID

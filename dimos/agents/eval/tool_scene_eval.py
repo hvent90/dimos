@@ -56,7 +56,7 @@ from dimos.agents.skills.scene_memory import (
 from dimos.mapping.occupancy.polygons import points_in_polygon, polygon_from_flat
 from dimos.mapping.occupancy.room_store import RoomStore
 from dimos.memory2.replay import resolve_db_path
-from dimos.perception.sightings import SightingsLog
+from dimos.perception.scene_graph import SceneGraph
 
 
 def check_storage(case: CaseEntry, key: AnswerKey, scene_db: Path, trail: PoseTrail) -> str:
@@ -69,8 +69,9 @@ def check_storage(case: CaseEntry, key: AnswerKey, scene_db: Path, trail: PoseTr
             return f"trail visits {visits} != expected {expected['visits']}"
         return ""
     if case.query == 2:
-        with SightingsLog(scene_db) as log:
-            last = log.last(expected["name"])
+        with SceneGraph(scene_db) as graph:
+            matches = graph.sightings(expected["name"])
+        last = matches[-1] if matches else None
         if last is None:
             return f"no sightings of {expected['name']} in store"
         if round(last.ts, 3) != expected["last_ts"]:
@@ -87,8 +88,8 @@ def check_storage(case: CaseEntry, key: AnswerKey, scene_db: Path, trail: PoseTr
             return f"store has {n_rooms}+{n_corridors} rooms, expected {expected}"
         return ""
     if case.query == 4:
-        with SightingsLog(scene_db) as log:
-            sightings = log.sightings()
+        with SceneGraph(scene_db) as graph:
+            sightings = graph.sightings()
         with RoomStore(scene_db) as store:
             room_set = store.latest()
         assert room_set is not None
@@ -106,10 +107,10 @@ def check_storage(case: CaseEntry, key: AnswerKey, scene_db: Path, trail: PoseTr
             return f"global last ts {entry.last_ts} != expected {expected['global_last_ts']}"
         return ""
     if case.query == 5:
-        with SightingsLog(scene_db) as log:
-            matches = log.sightings(expected["name"])
-            in_vocab = log.ever_in_vocabulary(expected["name"])
-            events = log.scan_events()
+        with SceneGraph(scene_db) as graph:
+            matches = graph.sightings(expected["name"])
+            in_vocab = graph.ever_in_vocabulary(expected["name"])
+            events = graph.scan_events()
         if matches:
             return f"unexpected sightings of {expected['name']}: {len(matches)}"
         if in_vocab:

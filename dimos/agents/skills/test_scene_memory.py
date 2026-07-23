@@ -12,8 +12,11 @@
 # See the License for the specific language governing permissions and
 # limitations under the License.
 
-from collections.abc import Iterator
+"""Core scene-memory skills: trail, find/near, last_seen, derive/persist."""
+
+from collections.abc import Callable, Iterator
 from pathlib import Path
+from typing import Any
 
 import numpy as np
 import pytest
@@ -26,14 +29,12 @@ from dimos.agents.skills.scene_memory import (
 from dimos.memory2.store.sqlite import SqliteStore
 from dimos.msgs.geometry_msgs.PoseStamped import PoseStamped
 from dimos.msgs.nav_msgs.OccupancyGrid import OccupancyGrid
-from dimos.perception.sightings import Sighting, SightingsLog
+from dimos.perception.scene_graph import BUILDING_ID, SceneGraph, Sighting
 
 T0 = 1_000_000.0
 
-# 1 Hz walk: 5 s at x=5 (inside region), 5 s at x=50 (outside), 3 s back at
-# x=5 (inside again), ending outside at x=50.
+# 1 Hz walk: 5 s at x=5, 5 s at x=50, 3 s back at x=5, ending at x=50.
 _SEGMENTS = [(5.0, 5), (50.0, 5), (5.0, 3), (50.0, 2)]
-REGION = [0.0, 0.0, 10.0, 0.0, 10.0, 10.0, 0.0, 10.0]  # square containing x=5, y=5
 
 
 def _trail_points() -> list[tuple[float, float, float]]:
@@ -58,12 +59,17 @@ def trail_db(tmp_path_factory: pytest.TempPathFactory) -> Path:
 
 
 @pytest.fixture()
-def container(trail_db: Path) -> Iterator[SceneMemorySkillContainer]:
-    module = SceneMemorySkillContainer(trail_db=str(trail_db))
-    module.start()
-    try:
-        yield module
-    finally:
+def make_container() -> Iterator[Callable[..., SceneMemorySkillContainer]]:
+    started: list[SceneMemorySkillContainer] = []
+
+    def make(**kwargs: Any) -> SceneMemorySkillContainer:
+        module = SceneMemorySkillContainer(**kwargs)
+        module.start()
+        started.append(module)
+        return module
+
+    yield make
+    for module in started:
         module.stop()
 
 
@@ -106,66 +112,79 @@ def test_load_pose_trail_missing_stream(trail_db: Path) -> None:
         load_pose_trail(str(trail_db), ["nonexistent"])
 
 
-def test_robot_trail_info(container: SceneMemorySkillContainer) -> None:
-    result = container.robot_trail_info()
+def test_get_scene_reports_time_range_and_honest_room_absence(
+    trail_db: Path, tmp_path: Path, make_container: Callable[..., SceneMemorySkillContainer]
+) -> None:
+    module = make_container(trail_db=str(trail_db), sightings_db=str(tmp_path / "scene.db"))
+    result = module.get_scene()
     assert result.success
-    assert result.metadata["start_ts"] == T0
-    assert result.metadata["end_ts"] == T0 + 14.0
-    assert result.metadata["samples"] == 15
+    assert result.metadata["time_range"] == [T0, T0 + 14.0]
+    assert result.metadata["regions"] == []
+    assert result.metadata["agent"]["position"] == [50.0, 5.0, 0.0]
+    assert "No rooms are derived yet" in result.message
 
 
-def test_robot_position_at(container: SceneMemorySkillContainer) -> None:
-    result = container.robot_position_at(T0 + 7.2)
+def test_where_am_i_at_time(
+    trail_db: Path, tmp_path: Path, make_container: Callable[..., SceneMemorySkillContainer]
+) -> None:
+    module = make_container(trail_db=str(trail_db), sightings_db=str(tmp_path / "scene.db"))
+    result = module.where_am_i(T0 + 7.2)
     assert result.success
     assert result.metadata["ts"] == T0 + 7.0
-    assert result.metadata["x"] == 50.0
-    assert result.metadata["y"] == 5.0
+    assert result.metadata["node"]["position"] == [50.0, 5.0, 0.0]
+    assert result.metadata["node"]["id"] == "agent_0"
+    # No rooms derived: containment is honestly absent, not invented.
+    assert result.metadata["node"]["parent"] is None
 
 
-def test_robot_position_at_outside_trail(container: SceneMemorySkillContainer) -> None:
-    result = container.robot_position_at(T0 - 100.0)
+def test_where_am_i_defaults_to_end_of_trail(
+    trail_db: Path, tmp_path: Path, make_container: Callable[..., SceneMemorySkillContainer]
+) -> None:
+    module = make_container(trail_db=str(trail_db), sightings_db=str(tmp_path / "scene.db"))
+    result = module.where_am_i()
+    assert result.success
+    assert result.metadata["ts"] == T0 + 14.0
+    assert result.metadata["node"]["position"] == [50.0, 5.0, 0.0]
+
+
+def test_where_am_i_outside_trail(
+    trail_db: Path, tmp_path: Path, make_container: Callable[..., SceneMemorySkillContainer]
+) -> None:
+    module = make_container(trail_db=str(trail_db), sightings_db=str(tmp_path / "scene.db"))
+    result = module.where_am_i(T0 - 100.0)
     assert not result.success
     assert result.error_code == "INVALID_INPUT"
 
 
-def test_robot_visits_to_region(container: SceneMemorySkillContainer) -> None:
-    result = container.robot_visits_to_region(REGION)
-    assert result.success
-    # Two visits: t0..t0+4 and t0+10..t0+12; the last exit is the answer to
-    # "when were you last in the region".
-    assert result.metadata["visits"] == [[T0, T0 + 4.0], [T0 + 10.0, T0 + 12.0]]
-    assert result.metadata["last_exit_ts"] == T0 + 12.0
-
-
-def test_robot_visits_to_region_never(container: SceneMemorySkillContainer) -> None:
-    result = container.robot_visits_to_region([100.0, 100.0, 101.0, 100.0, 101.0, 101.0])
-    assert result.success
-    assert result.metadata["visits"] == []
-    assert "never" in result.message
-
-
-def test_robot_visits_to_region_bad_polygon(container: SceneMemorySkillContainer) -> None:
-    result = container.robot_visits_to_region([1.0, 2.0, 3.0])
+def test_missing_trail_db_fails_cleanly(
+    tmp_path: Path, make_container: Callable[..., SceneMemorySkillContainer]
+) -> None:
+    module = make_container(
+        trail_db=str(tmp_path / "missing.db"), sightings_db=str(tmp_path / "scene.db")
+    )
+    result = module.where_am_i()
     assert not result.success
-    assert result.error_code == "INVALID_INPUT"
+    assert result.error_code == "NOT_CONFIGURED"
 
 
-def test_missing_db_fails_cleanly(tmp_path: Path) -> None:
-    module = SceneMemorySkillContainer(trail_db=str(tmp_path / "missing.db"))
-    module.start()
-    try:
-        result = module.robot_trail_info()
-        assert not result.success
-        assert result.error_code == "NOT_CONFIGURED"
-    finally:
-        module.stop()
+def test_no_trail_db_outside_replay_fails_cleanly(
+    tmp_path: Path, make_container: Callable[..., SceneMemorySkillContainer]
+) -> None:
+    # Without an explicit trail_db and outside replay mode, the skills must
+    # refuse rather than answer from the default replay dataset.
+    module = make_container(sightings_db=str(tmp_path / "scene.db"))
+    assert not module.config.g.replay
+    result = module.where_am_i()
+    assert not result.success
+    assert result.error_code == "NOT_CONFIGURED"
 
 
 @pytest.fixture()
-def sightings_db(tmp_path: Path) -> Path:
-    db = tmp_path / "sightings.db"
-    with SightingsLog(db) as log:
-        log.record_scan(
+def seeded_db(tmp_path: Path) -> Path:
+    """couch x2 + tv folded through the graph; 'plant' looked for, never seen."""
+    db = tmp_path / "scene.db"
+    with SceneGraph(db) as graph:
+        graph.fold_scan(
             [
                 Sighting(name="couch", ts=T0 + 5.0, position=(1.0, 2.0, 0.1)),
                 Sighting(name="couch", ts=T0 + 9.0, position=(1.1, 2.0, 0.1)),
@@ -173,77 +192,141 @@ def sightings_db(tmp_path: Path) -> Path:
             ],
             t0=T0,
             t1=T0 + 10.0,
-            vocabulary=["couch", "tv", "plant"],
+            vocabulary=["couch", "plant", "tv"],
             source="test",
             frames=12,
         )
     return db
 
 
-def test_last_seen_object(sightings_db: Path) -> None:
-    module = SceneMemorySkillContainer(sightings_db=str(sightings_db))
-    module.start()
-    try:
-        result = module.last_seen_object("couch")
-        assert result.success
-        assert result.metadata["last_ts"] == T0 + 9.0
-        assert result.metadata["position"] == [1.1, 2.0, 0.1]
-        assert result.metadata["count"] == 2
-    finally:
-        module.stop()
+def test_last_seen_object(
+    seeded_db: Path, make_container: Callable[..., SceneMemorySkillContainer]
+) -> None:
+    module = make_container(sightings_db=str(seeded_db))
+    result = module.last_seen("couch")
+    assert result.success
+    assert result.metadata["last_sighting"] == {
+        "ts": T0 + 9.0,
+        "position": [1.1, 2.0, 0.1],
+        "room_id": None,
+        "node_id": "object_1",
+    }
+    assert result.metadata["sightings_matched"] == 2
+    assert result.metadata["in_node"] is None
+    assert result.metadata["last_interval"] == [T0 + 5.0, T0 + 9.0]
+    # The canonical node payload with lineage rides along.
+    node = result.metadata["node"]
+    assert node["id"] == "object_1"
+    assert node["parent"] == BUILDING_ID
+    assert node["ancestors"] == [{"id": BUILDING_ID, "layer": "building"}]
 
 
-def test_last_seen_object_in_vocabulary_but_never_seen(sightings_db: Path) -> None:
+def test_last_seen_in_vocabulary_but_never_seen(
+    seeded_db: Path, make_container: Callable[..., SceneMemorySkillContainer]
+) -> None:
     # "plant" was looked for but never detected — the answer must say so
     # rather than fabricate a sighting.
-    module = SceneMemorySkillContainer(sightings_db=str(sightings_db))
-    module.start()
-    try:
-        result = module.last_seen_object("plant")
-        assert result.success
-        assert result.metadata["sightings"] == 0
-        assert result.metadata["ever_in_vocabulary"] is True
-        assert "never detected" in result.message
-    finally:
-        module.stop()
+    module = make_container(sightings_db=str(seeded_db))
+    result = module.last_seen("plant")
+    assert result.success
+    assert result.metadata["sightings_matched"] == 0
+    assert result.metadata["ever_in_vocabulary"] is True
+    assert result.metadata["coverage"]["scan_passes"] == 1
+    assert "was in the scan vocabulary" in result.message
 
 
-def test_last_seen_object_never_in_vocabulary(sightings_db: Path) -> None:
-    module = SceneMemorySkillContainer(sightings_db=str(sightings_db))
-    module.start()
-    try:
-        result = module.last_seen_object("fire extinguisher")
-        assert result.success
-        assert result.metadata["ever_in_vocabulary"] is False
-        assert "never in any scan's vocabulary" in result.message
-        assert result.metadata["known_names"] == ["couch", "tv"]
-    finally:
-        module.stop()
+def test_last_seen_never_in_vocabulary(
+    seeded_db: Path, make_container: Callable[..., SceneMemorySkillContainer]
+) -> None:
+    module = make_container(sightings_db=str(seeded_db))
+    result = module.last_seen("fire extinguisher")
+    assert result.success
+    assert result.metadata["ever_in_vocabulary"] is False
+    assert "never in any scan's vocabulary" in result.message
+    assert result.metadata["known_names"] == ["couch", "tv"]
 
 
-def test_scan_for_objects_requires_camera_config(trail_db: Path, tmp_path: Path) -> None:
-    module = SceneMemorySkillContainer(trail_db=str(trail_db), sightings_db=str(tmp_path / "s.db"))
-    module.start()
-    try:
-        result = module.scan_for_objects(["chair"])
-        assert not result.success
-        assert result.error_code == "NOT_CONFIGURED"
-    finally:
-        module.stop()
+def test_seen_between_window(
+    seeded_db: Path, make_container: Callable[..., SceneMemorySkillContainer]
+) -> None:
+    module = make_container(sightings_db=str(seeded_db))
+    result = module.seen_between("couch", T0, T0 + 6.0)
+    assert result.success
+    assert result.metadata["sightings_matched"] == 1
+    assert result.metadata["last_sighting"]["ts"] == T0 + 5.0
+    assert result.metadata["window"] == [T0, T0 + 6.0]
+
+    empty = module.seen_between("couch", T0 + 10.0, T0 + 20.0)
+    assert empty.success
+    assert empty.metadata["sightings_matched"] == 0
+
+    bad = module.seen_between("couch", T0 + 5.0, T0 + 1.0)
+    assert not bad.success
+    assert bad.error_code == "INVALID_INPUT"
 
 
-def test_scan_for_objects_rejects_empty_prompt(tmp_path: Path) -> None:
-    module = SceneMemorySkillContainer(sightings_db=str(tmp_path / "s.db"))
-    module.start()
-    try:
-        result = module.scan_for_objects(["  "])
-        assert not result.success
-        assert result.error_code == "INVALID_INPUT"
-    finally:
-        module.stop()
+def test_find_hit_and_miss(
+    seeded_db: Path, make_container: Callable[..., SceneMemorySkillContainer]
+) -> None:
+    module = make_container(sightings_db=str(seeded_db))
+    hit = module.find("couch")
+    assert hit.success
+    assert [h["id"] for h in hit.metadata["hits"]] == ["object_1"]
+    assert hit.metadata["hits"][0]["ancestors"] == [{"id": BUILDING_ID, "layer": "building"}]
+
+    by_id = module.find("object_2")
+    assert [h["id"] for h in by_id.metadata["hits"]] == ["object_2"]
+
+    miss = module.find("unicorn")
+    assert miss.success
+    assert miss.metadata["hits"] == []
+    assert miss.metadata["ever_in_vocabulary"] is False
+    assert miss.metadata["known_names"] == ["couch", "tv"]
+
+    empty = module.find("  ")
+    assert not empty.success
+    assert empty.error_code == "INVALID_INPUT"
 
 
-def _two_room_grid() -> "OccupancyGrid":
+def test_near(seeded_db: Path, make_container: Callable[..., SceneMemorySkillContainer]) -> None:
+    module = make_container(sightings_db=str(seeded_db))
+    # couch object_1 at (1.1, 2.0); tv object_2 at (4.0, 0.5) — 3.26 m apart.
+    result = module.near(node_id="object_1", radius=4.0)
+    assert result.success
+    assert [h["id"] for h in result.metadata["hits"]] == ["object_2"]
+    assert result.metadata["hits"][0]["distance_m"] == pytest.approx(3.26, abs=0.01)
+
+    nothing = module.near(node_id="object_1", radius=1.0)
+    assert nothing.metadata["hits"] == []
+
+    by_xy = module.near(xy=[4.0, 0.5], radius=0.5)
+    assert [h["id"] for h in by_xy.metadata["hits"]] == ["object_2"]
+
+    bad = module.near(node_id="object_1", xy=[0.0, 0.0])
+    assert not bad.success
+    assert bad.error_code == "INVALID_INPUT"
+    neither = module.near()
+    assert not neither.success
+
+
+def test_nodes_in_and_expand(
+    seeded_db: Path, make_container: Callable[..., SceneMemorySkillContainer]
+) -> None:
+    module = make_container(sightings_db=str(seeded_db))
+    listing = module.nodes_in(BUILDING_ID)
+    assert listing.success
+    assert listing.metadata["count"] == 2
+    assert [c["id"] for c in listing.metadata["children"]] == ["object_1", "object_2"]
+
+    same = module.expand(BUILDING_ID)
+    assert same.metadata["children"] == listing.metadata["children"]
+
+    unknown = module.expand("room_99")
+    assert not unknown.success
+    assert unknown.error_code == "INVALID_INPUT"
+
+
+def _two_room_grid() -> OccupancyGrid:
     cells = np.full((84, 166), 100, dtype=np.int16)
     cells[2:-2, 2:-2] = 0
     cells[:, 82:84] = 100
@@ -251,56 +334,53 @@ def _two_room_grid() -> "OccupancyGrid":
     return OccupancyGrid(grid=cells.astype(np.int8), resolution=0.05, ts=777.0)
 
 
-def test_derive_rooms_and_rooms_skills(tmp_path: Path) -> None:
-    module = SceneMemorySkillContainer(sightings_db=str(tmp_path / "scene.db"))
-    module.start()
-    try:
-        no_map = module.derive_rooms()
-        assert not no_map.success
-        assert no_map.error_code == "INVALID_STATE"
+def test_derive_rooms_and_restart_survival(
+    tmp_path: Path, make_container: Callable[..., SceneMemorySkillContainer]
+) -> None:
+    db = tmp_path / "scene.db"
+    module = make_container(sightings_db=str(db))
+    no_map = module.derive_rooms()
+    assert not no_map.success
+    assert no_map.error_code == "INVALID_STATE"
 
-        module._on_costmap(_two_room_grid())
-        derived = module.derive_rooms()
-        assert derived.success
-        assert derived.metadata["n_rooms"] == 2
-        assert derived.metadata["n_corridors"] == 0
-        assert derived.metadata["n_doorways"] == 1
-        assert derived.metadata["derived_ts"] == 777.0
-    finally:
-        module.stop()
-    # A fresh container instance answers rooms() from the persisted store.
-    fresh = SceneMemorySkillContainer(sightings_db=str(tmp_path / "scene.db"))
-    fresh.start()
-    try:
-        result = fresh.rooms()
-        assert result.success
-        assert [r["id"] for r in result.metadata["rooms"]] == [1, 2]
-        assert result.metadata["n_doorways"] == 1
-        assert "2 room(s)" in result.message
-    finally:
-        fresh.stop()
+    module._on_costmap(_two_room_grid())
+    derived = module.derive_rooms()
+    assert derived.success
+    assert derived.metadata["n_rooms"] == 2
+    assert derived.metadata["n_corridors"] == 0
+    assert derived.metadata["n_doorways"] == 1
+    assert derived.metadata["derived_ts"] == 777.0
+    assert derived.metadata["region_ids"] == ["room_1", "room_2"]
 
+    # Re-deriving the unchanged map keeps the node ids stable.
+    again = module.derive_rooms()
+    assert again.success
+    assert again.metadata["region_ids"] == ["room_1", "room_2"]
+    assert "unchanged" in again.message
 
-def test_rooms_before_derivation_fails_cleanly(tmp_path: Path) -> None:
-    module = SceneMemorySkillContainer(sightings_db=str(tmp_path / "scene.db"))
-    module.start()
-    try:
-        result = module.rooms()
-        assert not result.success
-        assert result.error_code == "INVALID_STATE"
-    finally:
-        module.stop()
+    # A fresh container answers from the persisted graph.
+    fresh = make_container(sightings_db=str(db))
+    scene = fresh.get_scene()
+    assert scene.success
+    assert [r["id"] for r in scene.metadata["regions"]] == ["room_1", "room_2"]
+    assert scene.metadata["n_doorways"] == 1
+    listing = fresh.nodes_in(BUILDING_ID)
+    assert listing.metadata["count"] == 2
 
 
-def test_no_trail_db_outside_replay_fails_cleanly() -> None:
-    # Without an explicit trail_db and outside replay mode, the skills must
-    # refuse rather than answer from the default replay dataset.
-    module = SceneMemorySkillContainer()
-    module.start()
-    try:
-        assert not module.config.g.replay
-        result = module.robot_trail_info()
-        assert not result.success
-        assert result.error_code == "NOT_CONFIGURED"
-    finally:
-        module.stop()
+def test_scan_for_objects_requires_camera_config(
+    trail_db: Path, tmp_path: Path, make_container: Callable[..., SceneMemorySkillContainer]
+) -> None:
+    module = make_container(trail_db=str(trail_db), sightings_db=str(tmp_path / "s.db"))
+    result = module.scan_for_objects(["chair"])
+    assert not result.success
+    assert result.error_code == "NOT_CONFIGURED"
+
+
+def test_scan_for_objects_rejects_empty_prompt(
+    tmp_path: Path, make_container: Callable[..., SceneMemorySkillContainer]
+) -> None:
+    module = make_container(sightings_db=str(tmp_path / "s.db"))
+    result = module.scan_for_objects(["  "])
+    assert not result.success
+    assert result.error_code == "INVALID_INPUT"

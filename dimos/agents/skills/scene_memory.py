@@ -12,16 +12,23 @@
 # See the License for the specific language governing permissions and
 # limitations under the License.
 
-"""Skills answering spatio-temporal queries from recorded robot memory.
+"""Scene-graph memory skills: hierarchical spatial queries over recorded memory.
 
-The pose trail comes from a memory2 recording (the replay DB by default):
-the ``odom`` stream's timestamped poses answer "when was the robot in
-region R" and "where was the robot at time t". Regions are 2D polygons in
-world coordinates. Object queries read the persistent sightings log
-(``dimos.perception.sightings``), populated by the ``scan_for_objects``
-skill (color + lidar recordings, no depth needed). All timestamps are
-recording-time epoch seconds — the same time base the recording's streams
-carry.
+The query surface over :class:`dimos.perception.scene_graph.SceneGraph`
+(design increment 3): nine deterministic reads and two agent-initiated
+mutations. Every result that contains a node carries the canonical payload —
+id, layer, position, timestamps, ``parent`` and ``ancestors`` — so lineage
+("which room is that?") is part of every answer, and temporal queries read
+the full sightings log, never node caches.
+
+The robot's pose trail comes from a memory2 recording (the replay DB by
+default): the ``odom`` stream answers agent-position questions and feeds
+scan coverage. All timestamps are recording-time epoch seconds — the same
+time base the recording's streams carry.
+
+The container republishes the graph on three viewer streams after each
+mutation (room outline polygons, labeled node markers, containment/adjacency
+edges); the Rerun bridge renders them over the costmap during replay.
 """
 
 from __future__ import annotations
@@ -40,25 +47,31 @@ from dimos.agents.annotation import skill
 from dimos.agents.skill_result import CommonSkillError, SkillResult
 from dimos.core.core import rpc
 from dimos.core.module import Module, ModuleConfig
-from dimos.core.stream import In
-from dimos.mapping.occupancy.polygons import (
-    distance_to_polygon,
-    points_in_polygon,
-    polygon_from_flat,
-)
-from dimos.mapping.occupancy.room_segmentation import segment_rooms
+from dimos.core.stream import In, Out
+from dimos.mapping.occupancy.polygons import assign_to_polygons, points_in_polygon
+from dimos.mapping.occupancy.room_segmentation import RoomSegmentation, segment_rooms
 from dimos.mapping.occupancy.room_store import RoomStore, StoredRoom, StoredRoomSet
 from dimos.memory2.replay import resolve_db_path
 from dimos.memory2.store.sqlite import SqliteStore
 from dimos.memory2.type.observation import Observation
 from dimos.msgs.geometry_msgs.Transform import Transform
+from dimos.msgs.nav_msgs.ContourPolygons3D import ContourPolygons3D
+from dimos.msgs.nav_msgs.LineSegments3D import LineSegments3D
 from dimos.msgs.nav_msgs.OccupancyGrid import OccupancyGrid
 from dimos.msgs.sensor_msgs.CameraInfo import CameraInfo
-from dimos.perception.sightings import (
+from dimos.msgs.sensor_msgs.PointCloud2 import PointCloud2
+from dimos.msgs.visualization_msgs.EntityMarkers import EntityMarkers, Marker
+from dimos.perception.scene_graph import (
+    AGENT_ID,
+    ATTACH_RADIUS_M,
+    BUILDING_ID,
     DEFAULT_SIGHTINGS_DB,
+    SCENE_GRAPH_ROOM_Z,
+    SIGHTING_SNAP_M,
     ScanEvent,
+    SceneGraph,
+    SceneNode,
     Sighting,
-    SightingsLog,
 )
 from dimos.utils.logging_config import setup_logger
 
@@ -74,6 +87,16 @@ DEFAULT_VISIT_GAP_S = 2.0
 # Detections flicker frame to frame far more than odom does, so bridge larger
 # gaps when grouping an object's in-region sightings into stays.
 SIGHTING_VISIT_GAP_S = 5.0
+
+# Kept name for callers that predate the graph (see scene_graph.SIGHTING_SNAP_M).
+DEFAULT_SIGHTING_SNAP_M = SIGHTING_SNAP_M
+
+# Viewer edge color coding rides the LineSegments3D traversability channel:
+# >= 0.9 renders green (contains), 0.4..0.9 yellow (adjacent).
+_CONTAINS_TRAV = 1.0
+_ADJACENT_TRAV = 0.5
+
+_AGENT_NAMES = {"agent", "agent_0", "robot"}
 
 
 def visit_intervals(
@@ -145,42 +168,21 @@ def load_pose_trail(db_path: str, stream_names: list[str]) -> PoseTrail:
     return PoseTrail(ts=np.asarray(ts_list), xy=np.asarray(xy_list))
 
 
-def _sightings_xy(sightings: list[Sighting]) -> NDArray[np.float64]:
-    return np.array([[s.position[0], s.position[1]] for s in sightings], dtype=np.float64).reshape(
-        -1, 2
-    )
-
-
-# Room polygons outline free space, but objects are obstacles — their lidar
-# positions sit in occupied cells just outside every polygon (walls, furniture
-# clusters). Points inside no polygon therefore snap to the nearest room
-# within this distance; on go2_short every such sighting was within 0.64 m of
-# its nearest room. Sightings deep in a furniture band between rooms can be
-# nearly equidistant to two rooms, so a snapped assignment near the midline
-# is a coin toss — acceptable for room-level queries.
-DEFAULT_SIGHTING_SNAP_M = 0.75
-
-
 def assign_to_rooms(
     points_xy: NDArray[np.float64],
     rooms: tuple[StoredRoom, ...],
     snap_m: float = DEFAULT_SIGHTING_SNAP_M,
 ) -> NDArray[np.int32]:
-    """Exclusively assign each point to a room id (0 = no room).
+    """Exclusively assign each point to a stored-room id (0 = no room).
 
     A point inside a room polygon belongs to that room; otherwise it snaps
     to the room with the nearest outline if that is within ``snap_m``.
     """
     if len(points_xy) == 0 or not rooms:
         return np.zeros(len(points_xy), dtype=np.int32)
-    effective = np.empty((len(points_xy), len(rooms)))
-    for j, room in enumerate(rooms):
-        inside = points_in_polygon(points_xy, room.polygon)
-        effective[:, j] = np.where(inside, 0.0, distance_to_polygon(points_xy, room.polygon))
+    indices = assign_to_polygons(points_xy, [r.polygon for r in rooms], snap_m)
     ids = np.asarray([r.id for r in rooms], dtype=np.int32)
-    assigned: NDArray[np.int32] = np.where(
-        effective.min(axis=1) <= snap_m, ids[effective.argmin(axis=1)], 0
-    ).astype(np.int32)
+    assigned: NDArray[np.int32] = np.where(indices >= 0, ids[indices], 0).astype(np.int32)
     return assigned
 
 
@@ -191,6 +193,7 @@ class RegionCoverage:
     scan_passes: int
     passes_covering_region: int
     last_covered_ts: float | None  # set iff passes_covering_region > 0
+    vocabulary: tuple[str, ...] = ()  # union over covering passes
 
 
 def region_scan_coverage(
@@ -211,6 +214,7 @@ def region_scan_coverage(
     trail_inside = points_in_polygon(trail.xy, polygon) if trail is not None else None
     covering = 0
     last: float | None = None
+    vocabulary: set[str] = set()
     for event in events:
         evidence: list[float] = []
         if trail is not None and trail_inside is not None:
@@ -223,9 +227,13 @@ def region_scan_coverage(
                 evidence.append(float(sighting_ts[in_window].max()))
         if evidence:
             covering += 1
+            vocabulary.update(event.vocabulary)
             last = max(evidence) if last is None else max(last, max(evidence))
     return RegionCoverage(
-        scan_passes=len(events), passes_covering_region=covering, last_covered_ts=last
+        scan_passes=len(events),
+        passes_covering_region=covering,
+        last_covered_ts=last,
+        vocabulary=tuple(sorted(vocabulary)),
     )
 
 
@@ -252,13 +260,48 @@ def _coverage_sentence(coverage: RegionCoverage, label: str) -> str:
     )
 
 
+def _node_payload(graph: SceneGraph, node: SceneNode) -> dict[str, Any]:
+    """The canonical node payload: state + ``parent`` + ``ancestors``.
+
+    ``extent`` is null for objects (the go2 lane produces positions only);
+    room/corridor nodes summarize their outline as an axis-aligned bbox
+    ``[x_min, y_min, x_max, y_max]`` (the full polygon stays in storage).
+    """
+    extent: list[float] | None = None
+    if node.layer in ("room", "corridor") and node.extent is not None:
+        polygon = node.polygon()
+        extent = [
+            round(float(polygon[:, 0].min()), 2),
+            round(float(polygon[:, 1].min()), 2),
+            round(float(polygon[:, 0].max()), 2),
+            round(float(polygon[:, 1].max()), 2),
+        ]
+    return {
+        "id": node.id,
+        "name": node.name,
+        "layer": node.layer,
+        "position": [round(v, 3) for v in node.position] if node.position is not None else None,
+        "extent": extent,
+        "first_seen_ts": round(node.first_seen_ts, 3),
+        "last_seen_ts": round(node.last_seen_ts, 3),
+        "sightings": node.sightings,
+        "parent": graph.parent_id(node.id),
+        "ancestors": [{"id": a.id, "layer": a.layer} for a in graph.ancestors(node.id)],
+    }
+
+
+def _lineage_sentence(payload: dict[str, Any]) -> str:
+    chain = [payload["id"], *(a["id"] for a in payload["ancestors"])]
+    return " -> ".join(chain)
+
+
 class SceneMemoryConfig(ModuleConfig):
     # Recording holding the robot's pose trail: a dataset name or .db path,
     # resolved like the replay DB. Defaults to the session's replay DB.
     trail_db: str = ""
     # Candidate pose streams, first match wins (naming varies by recording rig).
     trail_streams: list[str] = ["go2_odom", "odom"]
-    # Persistent sightings store (survives restarts, unlike RAM-only tracks).
+    # The scene-graph store (persists across restarts).
     sightings_db: str | Path = DEFAULT_SIGHTINGS_DB
     # Camera intrinsics + static base_link->camera_optical mount, needed only
     # by scan_for_objects (wired per robot in the blueprint).
@@ -266,16 +309,19 @@ class SceneMemoryConfig(ModuleConfig):
     base_to_optical: Transform | None = None
     detector_conf: float = 0.4
     scan_sample_period_s: float = 0.5
-    # Max distance a sighting outside every room polygon may snap to the
-    # nearest room (see assign_to_rooms).
-    sighting_snap_m: float = DEFAULT_SIGHTING_SNAP_M
+    # Fold geometry (see scene_graph module constants).
+    sighting_snap_m: float = SIGHTING_SNAP_M
+    attach_radius_m: float = ATTACH_RADIUS_M
 
 
 class SceneMemorySkillContainer(Module):
-    """Agent skills over recorded spatio-temporal memory (pose trail queries)."""
+    """Agent skills over the persistent scene graph (rooms, objects, time)."""
 
     config: SceneMemoryConfig
     global_costmap: In[OccupancyGrid]
+    scene_graph_rooms: Out[ContourPolygons3D]
+    scene_graph_markers: Out[EntityMarkers]
+    scene_graph_edges: Out[LineSegments3D]
 
     def __init__(self, **kwargs: Any) -> None:
         super().__init__(**kwargs)
@@ -285,12 +331,21 @@ class SceneMemorySkillContainer(Module):
         self._detector_lock = threading.Lock()
         self._grid_lock = threading.Lock()
         self._latest_grid: OccupancyGrid | None = None
+        # Serializes graph mutations (fold, derivation, migration).
+        self._mutate_lock = threading.Lock()
 
     @rpc
     def start(self) -> None:
         super().start()
         if self.global_costmap.transport:
             self.register_disposable(Disposable(self.global_costmap.subscribe(self._on_costmap)))
+        with self._mutate_lock, self._graph() as graph:
+            migrated = graph.ensure_migrated()
+            if migrated:
+                logger.info("Migrated pre-graph sightings into the scene graph", rows=migrated)
+            nodes = graph.nodes()
+            if nodes:  # initial load: show the persisted graph in the viewer
+                self._publish_graph(graph, ts=max(n.last_seen_ts for n in nodes))
 
     @rpc
     def stop(self) -> None:
@@ -300,6 +355,13 @@ class SceneMemorySkillContainer(Module):
         with self._grid_lock:
             self._latest_grid = grid
 
+    def _graph(self) -> SceneGraph:
+        return SceneGraph(
+            self.config.sightings_db,
+            attach_radius_m=self.config.attach_radius_m,
+            snap_m=self.config.sighting_snap_m,
+        )
+
     def _trail_db(self) -> str:
         if self.config.trail_db:
             return self.config.trail_db
@@ -308,20 +370,14 @@ class SceneMemorySkillContainer(Module):
         # from it would be a confident hallucination.
         if self.config.g.replay:
             return self.config.g.replay_db
-        raise LookupError(
-            "No trail recording configured (set scene_memory_skill_container.trail_db)"
-        )
+        raise LookupError("No trail recording configured (set scenememoryskillcontainer.trail_db)")
 
     def _get_trail(self) -> PoseTrail:
         with self._trail_lock:
             if self._trail is None:
                 path = resolve_db_path(self._trail_db())
                 self._trail = load_pose_trail(str(path), self.config.trail_streams)
-                logger.info(
-                    "Loaded pose trail",
-                    db=str(path),
-                    samples=len(self._trail.ts),
-                )
+                logger.info("Loaded pose trail", db=str(path), samples=len(self._trail.ts))
             return self._trail
 
     def _trail_or_none(self) -> PoseTrail | None:
@@ -331,107 +387,52 @@ class SceneMemorySkillContainer(Module):
         except (FileNotFoundError, LookupError):
             return None
 
-    @skill
-    def robot_trail_info(self) -> SkillResult[CommonSkillError]:
-        """Describe the robot's recorded pose trail: time range and coverage.
+    def _ensure_rooms(self, graph: SceneGraph) -> str:
+        """Auto-derive rooms once for a rooms-dependent read.
 
-        Call this first to learn the recording's absolute time range (epoch
-        seconds, UTC) so you can convert relative times like "30 seconds in"
-        into the timestamps other trail skills expect.
+        Returns a note for the honest-absence case ("" when rooms exist or
+        were just derived): with no grid received the read proceeds without
+        rooms rather than failing — object/agent nodes still serve.
         """
-        try:
-            trail = self._get_trail()
-        except (FileNotFoundError, LookupError) as e:
-            return SkillResult.fail("NOT_CONFIGURED", f"No pose trail available: {e}")
-        t0, t1 = trail.time_range()
-        bounds_min = trail.xy.min(axis=0)
-        bounds_max = trail.xy.max(axis=0)
-        return SkillResult.ok(
-            f"Pose trail: {len(trail.ts)} samples from {_iso(t0)} to {_iso(t1)} UTC "
-            f"({t1 - t0:.1f} s).",
-            start_ts=round(t0, 3),
-            end_ts=round(t1, 3),
-            duration_s=round(t1 - t0, 1),
-            samples=len(trail.ts),
-            xy_bounds=[
-                [round(float(bounds_min[0]), 2), round(float(bounds_min[1]), 2)],
-                [round(float(bounds_max[0]), 2), round(float(bounds_max[1]), 2)],
-            ],
-        )
-
-    @skill
-    def robot_position_at(self, t: float, tolerance: float = 2.0) -> SkillResult[CommonSkillError]:
-        """Where was the robot at time t? Returns the nearest recorded pose.
-
-        Args:
-            t: Timestamp in recording-time epoch seconds (see robot_trail_info
-                for the recording's time range).
-            tolerance: Max seconds between t and the nearest pose sample.
-        """
-        try:
-            trail = self._get_trail()
-        except (FileNotFoundError, LookupError) as e:
-            return SkillResult.fail("NOT_CONFIGURED", f"No pose trail available: {e}")
-        t0, t1 = trail.time_range()
-        i = int(np.argmin(np.abs(trail.ts - t)))
-        dt = float(abs(trail.ts[i] - t))
-        if dt > tolerance:
-            return SkillResult.fail(
-                "INVALID_INPUT",
-                f"No pose within {tolerance} s of t={t}; trail covers "
-                f"{t0:.3f}..{t1:.3f} ({_iso(t0)}..{_iso(t1)} UTC).",
+        if graph.regions():
+            return ""
+        with self._grid_lock:
+            grid = self._latest_grid
+        if grid is None:
+            return (
+                "No rooms are derived yet and no occupancy map has been received, "
+                "so answers have no room lineage."
             )
-        x, y = float(trail.xy[i, 0]), float(trail.xy[i, 1])
-        return SkillResult.ok(
-            f"At {_iso(float(trail.ts[i]))} UTC the robot was at "
-            f"({x:.2f}, {y:.2f}) in the world frame.",
-            ts=round(float(trail.ts[i]), 3),
-            x=round(x, 3),
-            y=round(y, 3),
-        )
+        with self._mutate_lock:
+            graph.refresh()
+            if not graph.regions():
+                self._derive_into(graph)
+        return ""
 
-    @skill
-    def robot_visits_to_region(self, region: list[float]) -> SkillResult[CommonSkillError]:
-        """When was the robot inside a region? Lists visits, most recent last.
+    def _derive_into(self, graph: SceneGraph) -> tuple[RoomSegmentation, bool]:
+        """Segment the latest grid into the graph; no-op on an unchanged grid.
 
-        Answers "when were you last in <region>": the last visit's end time is
-        when the robot was last there.
-
-        Args:
-            region: Region polygon in world coordinates, flattened
-                [x1, y1, x2, y2, x3, y3, ...] (at least 3 vertices).
+        Writes the derivation record (evidence) via RoomStore, applies room
+        nodes/edges to the graph, and republishes the viewer streams.
+        Callers hold ``_mutate_lock``.
         """
-        try:
-            polygon = polygon_from_flat(region)
-        except ValueError as e:
-            return SkillResult.fail("INVALID_INPUT", str(e))
-        try:
-            trail = self._get_trail()
-        except (FileNotFoundError, LookupError) as e:
-            return SkillResult.fail("NOT_CONFIGURED", f"No pose trail available: {e}")
-
-        t0, t1 = trail.time_range()
-        inside = points_in_polygon(trail.xy, polygon)
-        intervals = visit_intervals(trail.ts, inside)
-        if not intervals:
-            return SkillResult.ok(
-                f"The robot was never inside that region during the recorded trail "
-                f"({_iso(t0)}..{_iso(t1)} UTC, {t1 - t0:.1f} s of full pose coverage).",
-                visits=[],
-                trail_start_ts=round(t0, 3),
-                trail_end_ts=round(t1, 3),
-            )
-        enter, exit_ = intervals[-1]
-        return SkillResult.ok(
-            f"The robot was last in the region from {_iso(enter)} to {_iso(exit_)} UTC "
-            f"(left {t1 - exit_:.1f} s before the end of the trail). "
-            f"{len(intervals)} visit(s) total.",
-            visits=[[round(a, 3), round(b, 3)] for a, b in intervals],
-            last_enter_ts=round(enter, 3),
-            last_exit_ts=round(exit_, 3),
-            trail_start_ts=round(t0, 3),
-            trail_end_ts=round(t1, 3),
-        )
+        with self._grid_lock:
+            grid = self._latest_grid
+        assert grid is not None, "callers check a grid exists"
+        segmentation = segment_rooms(grid)
+        regions = graph.regions()
+        if regions and all(
+            r.metadata.get("derived_ts") == segmentation.derived_ts for r in regions
+        ):
+            # Same grid re-derived: keep the existing nodes — replacing them
+            # would churn room ids for zero information.
+            return segmentation, False
+        source = "scene_memory.derive_rooms"
+        with RoomStore(self.config.sightings_db) as store:
+            store.save(segmentation, source=source)
+        graph.apply_rooms(StoredRoomSet.from_segmentation(segmentation, source=source))
+        self._publish_graph(graph, ts=segmentation.derived_ts)
+        return segmentation, True
 
     def _get_detector(self) -> Detector:
         with self._detector_lock:
@@ -449,18 +450,23 @@ class SceneMemorySkillContainer(Module):
             return self._detector
 
     @skill
-    def scan_for_objects(self, prompt: list[str]) -> SkillResult[CommonSkillError]:
-        """Scan the recording for objects and log every sighting to memory.
+    def scan_for_objects(self, prompt: list[str] | str) -> SkillResult[CommonSkillError]:
+        """Scan the recording for objects and fold sightings into the scene graph.
 
-        Runs open-vocabulary detection over the recorded camera frames and
-        positions each detection in the world using the recording's lidar.
-        Only object types named in the prompt can be found — everything else
-        is invisible to this scan. Sightings persist across restarts.
+        Runs open-vocabulary detection over the recorded camera frames,
+        positions each detection in the world using the recording's lidar,
+        and attaches every sighting to a persistent object node (stable ids
+        like object_7). Only object types named in the prompt can be found —
+        everything else is invisible to this scan. Results persist across
+        restarts.
 
         Args:
             prompt: Object type names to look for, e.g.
-                ["chair", "couch", "potted plant"].
+                ["chair", "couch", "potted plant"] or "chair, couch".
         """
+        # A bare string over MCP would otherwise iterate per character.
+        if isinstance(prompt, str):
+            prompt = prompt.split(",")
         vocabulary = sorted({p.strip() for p in prompt if p.strip()})
         if not vocabulary:
             return SkillResult.fail("INVALID_INPUT", "prompt must name at least one object type")
@@ -484,6 +490,7 @@ class SceneMemorySkillContainer(Module):
         n_frames = 0
         t_lo = float("inf")
         t_hi = float("-inf")
+        agent_position: tuple[float, float, float] | None = None
         try:
             with SqliteStore(path=str(db_path), must_exist=True) as store:
                 for frame in iter_lidar_scan(
@@ -496,6 +503,7 @@ class SceneMemorySkillContainer(Module):
                     n_frames += 1
                     t_lo = min(t_lo, frame.ts)
                     t_hi = max(t_hi, frame.ts)
+                    agent_position = (frame.robot_xy[0], frame.robot_xy[1], 0.0)
                     for s in frame.sightings:
                         sightings.append(
                             Sighting(
@@ -514,22 +522,29 @@ class SceneMemorySkillContainer(Module):
             return SkillResult.fail(
                 "EXECUTION_FAILED", "No frames with aligned odom+lidar found in the recording"
             )
-        with SightingsLog(self.config.sightings_db) as log:
-            log.record_scan(
+        with self._mutate_lock, self._graph() as graph:
+            result = graph.fold_scan(
                 sightings,
                 t0=t_lo,
                 t1=t_hi,
                 vocabulary=vocabulary,
                 source="scene_memory.scan_for_objects",
                 frames=n_frames,
+                agent_position=agent_position,
             )
+            self._publish_graph(graph, ts=t_hi)
         by_name: dict[str, int] = {}
         for row in sightings:
             by_name[row.name] = by_name.get(row.name, 0) + 1
         return SkillResult.ok(
-            f"Scanned {n_frames} frames; logged {len(sightings)} sightings: {by_name}. "
+            f"Scanned {n_frames} frames; {result.appended_sightings} new sighting(s): {by_name}. "
+            f"Object nodes: {len(result.created_node_ids)} created, "
+            f"{len(result.updated_node_ids)} updated. "
             f"Vocabulary was {vocabulary} — other object types were not looked for.",
             sightings_by_name=by_name,
+            appended_sightings=result.appended_sightings,
+            created_nodes=list(result.created_node_ids),
+            updated_nodes=list(result.updated_node_ids),
             frames=n_frames,
             scanned_t0=round(t_lo, 3),
             scanned_t1=round(t_hi, 3),
@@ -537,271 +552,13 @@ class SceneMemorySkillContainer(Module):
         )
 
     @skill
-    def last_seen_object(self, name: str) -> SkillResult[CommonSkillError]:
-        """When and where did you last see an object? Reads the sightings log.
-
-        Answers from all past scans, including objects that are no longer in
-        view. Run scan_for_objects first if nothing has been scanned yet.
-
-        Args:
-            name: Object type name exactly as scanned, e.g. "couch".
-        """
-        with SightingsLog(self.config.sightings_db) as log:
-            matches = log.sightings(name)
-            known = log.names()
-            ever_in_vocab = log.ever_in_vocabulary(name)
-        if not matches:
-            qualifier = (
-                "it was in the scan vocabulary but never detected"
-                if ever_in_vocab
-                else "it was never in any scan's vocabulary, so it would not have been "
-                "detected even if present"
-            )
-            return SkillResult.ok(
-                f"No sightings of '{name}' — {qualifier}. Objects sighted so far: {sorted(known)}.",
-                sightings=0,
-                ever_in_vocabulary=ever_in_vocab,
-                known_names=sorted(known),
-            )
-        last = matches[-1]
-        x, y, z = (round(v, 2) for v in last.position)
-        return SkillResult.ok(
-            f"Last saw '{name}' at {_iso(last.ts)} UTC at world position ({x}, {y}, {z}). "
-            f"{len(matches)} sighting(s) total between {_iso(matches[0].ts)} and "
-            f"{_iso(last.ts)} UTC.",
-            last_ts=round(last.ts, 3),
-            position=[x, y, z],
-            first_ts=round(matches[0].ts, 3),
-            count=len(matches),
-        )
-
-    def _resolve_region(
-        self, room_id: int | None, region: list[float] | None
-    ) -> tuple[NDArray[np.float64], str, StoredRoomSet | None]:
-        """Resolve a queried region to (polygon, human label, latest room set).
-
-        Raises:
-            ValueError: neither/malformed input, or an unknown room id.
-            LookupError: a room id was given but no rooms were derived yet.
-        """
-        if room_id is not None and region is not None:
-            raise ValueError("Give either room_id or region, not both")
-        with RoomStore(self.config.sightings_db) as store:
-            room_set = store.latest()
-        if region is not None:
-            return polygon_from_flat(region), "the given region", room_set
-        if room_id is None:
-            raise ValueError("Provide either a room_id (see rooms()) or a region polygon")
-        if room_set is None:
-            raise LookupError("No rooms derived yet — call derive_rooms first.")
-        room = next((r for r in room_set.rooms if r.id == room_id), None)
-        if room is None:
-            raise ValueError(
-                f"No room with id {room_id}; known ids: {[r.id for r in room_set.rooms]}"
-            )
-        return room.polygon, f"room {room_id}", room_set
-
-    def _membership(
-        self,
-        points_xy: NDArray[np.float64],
-        polygon: NDArray[np.float64],
-        room_id: int | None,
-        room_set: StoredRoomSet | None,
-    ) -> NDArray[np.bool_]:
-        """Which points count as inside the queried region.
-
-        Room queries use exclusive nearest-room assignment (a wall-adjacent
-        sighting belongs to exactly one room); raw-polygon queries accept
-        anything inside or within the snap distance of the outline.
-        """
-        if len(points_xy) == 0:
-            return np.zeros(0, dtype=bool)
-        if room_id is not None and room_set is not None:
-            assigned = assign_to_rooms(points_xy, room_set.rooms, self.config.sighting_snap_m)
-            member: NDArray[np.bool_] = assigned == room_id
-            return member
-        inside = points_in_polygon(points_xy, polygon)
-        near = distance_to_polygon(points_xy, polygon) <= self.config.sighting_snap_m
-        return inside | near
-
-    def _region_coverage(
-        self,
-        polygon: NDArray[np.float64],
-        room_id: int | None,
-        room_set: StoredRoomSet | None,
-        log: SightingsLog,
-    ) -> tuple[RegionCoverage, dict[str, Any]]:
-        """Coverage of the queried region, plus metadata for a "never" answer."""
-        events = log.scan_events()
-        everything = log.sightings()
-        trail = self._trail_or_none()
-        xy = _sightings_xy(everything)
-        member = self._membership(xy, polygon, room_id, room_set)
-        coverage = region_scan_coverage(polygon, events, everything, member, trail)
-        meta: dict[str, Any] = {
-            "scan_passes": coverage.scan_passes,
-            "scan_passes_covering_region": coverage.passes_covering_region,
-            "region_last_scanned_ts": (
-                round(coverage.last_covered_ts, 3) if coverage.last_covered_ts is not None else None
-            ),
-        }
-        if room_set is not None:
-            assigned = assign_to_rooms(xy, room_set.rooms, self.config.sighting_snap_m)
-            meta["rooms_with_scan_coverage"] = [
-                r.id
-                for r in room_set.rooms
-                if region_scan_coverage(
-                    r.polygon, events, everything, assigned == r.id, trail
-                ).passes_covering_region
-            ]
-        return coverage, meta
-
-    @skill
-    def last_seen_object_in_region(
-        self, name: str, room_id: int | None = None, region: list[float] | None = None
-    ) -> SkillResult[CommonSkillError]:
-        """When and where did you last see an object in a specific room/region?
-
-        Answers from the sightings log. If the object was later seen somewhere
-        else, the answer is still its last sighting inside the queried region.
-        Identify the region by room_id (from rooms()) or by a raw polygon.
-
-        Args:
-            name: Object type name exactly as scanned, e.g. "couch".
-            room_id: Room id from the rooms() skill.
-            region: Region polygon in world coordinates, instead of room_id:
-                flattened [x1, y1, x2, y2, ...] (at least 3 vertices).
-        """
-        try:
-            polygon, label, room_set = self._resolve_region(room_id, region)
-        except ValueError as e:
-            return SkillResult.fail("INVALID_INPUT", str(e))
-        except LookupError as e:
-            return SkillResult.fail("INVALID_STATE", str(e))
-        with SightingsLog(self.config.sightings_db) as log:
-            matches = log.sightings(name)
-            inside = self._membership(_sightings_xy(matches), polygon, room_id, room_set)
-            if not matches:
-                ever_in_vocab = log.ever_in_vocabulary(name)
-                known = sorted(log.names())
-                coverage, coverage_meta = self._region_coverage(polygon, room_id, room_set, log)
-                return SkillResult.ok(
-                    f"No sightings of '{name}' anywhere. "
-                    f"{_vocabulary_sentence(name, ever_in_vocab)} "
-                    f"Objects sighted so far: {known}.",
-                    in_region_count=0,
-                    ever_in_vocabulary=ever_in_vocab,
-                    known_names=known,
-                    **coverage_meta,
-                )
-            if not inside.any():
-                ever_in_vocab = log.ever_in_vocabulary(name)
-                coverage, coverage_meta = self._region_coverage(polygon, room_id, room_set, log)
-                last = matches[-1]
-                x, y = round(last.position[0], 2), round(last.position[1], 2)
-                return SkillResult.ok(
-                    f"Never saw '{name}' in {label} — though it was sighted "
-                    f"{len(matches)} time(s) elsewhere, last at {_iso(last.ts)} UTC "
-                    f"at ({x}, {y}). {_coverage_sentence(coverage, label)}",
-                    in_region_count=0,
-                    ever_in_vocabulary=ever_in_vocab,
-                    last_elsewhere_ts=round(last.ts, 3),
-                    **coverage_meta,
-                )
-        in_region = [s for s, flag in zip(matches, inside.tolist(), strict=True) if flag]
-        intervals = visit_intervals(
-            np.asarray([s.ts for s in matches]), inside, max_gap_s=SIGHTING_VISIT_GAP_S
-        )
-        last_in = in_region[-1]
-        enter, exit_ = intervals[-1]
-        later_elsewhere = [
-            s for s, flag in zip(matches, inside.tolist(), strict=True) if not flag and s.ts > exit_
-        ]
-        note = ""
-        later_meta: dict[str, Any] = {}
-        if later_elsewhere:
-            note = (
-                f" Note: '{name}' was later seen outside {label}, most recently at "
-                f"{_iso(later_elsewhere[-1].ts)} UTC."
-            )
-            later_meta["later_elsewhere_ts"] = round(later_elsewhere[-1].ts, 3)
-        x, y, z = (round(v, 2) for v in last_in.position)
-        return SkillResult.ok(
-            f"Last saw '{name}' in {label} at {_iso(last_in.ts)} UTC at ({x}, {y}, {z}); "
-            f"that stay spanned {_iso(enter)}..{_iso(exit_)} UTC. "
-            f"{len(in_region)} sighting(s) in the region total.{note}",
-            last_ts=round(last_in.ts, 3),
-            position=[x, y, z],
-            last_interval=[round(enter, 3), round(exit_, 3)],
-            visits=[[round(a, 3), round(b, 3)] for a, b in intervals],
-            in_region_count=len(in_region),
-            **later_meta,
-        )
-
-    @skill
-    def object_ever_in_region(
-        self, name: str, room_id: int | None = None, region: list[float] | None = None
-    ) -> SkillResult[CommonSkillError]:
-        """Has an object ever been seen in a specific room or region?
-
-        A "never" answer is qualified by coverage — whether any scan pass
-        actually covered the region, and whether the object type was ever in
-        a scan's vocabulary — because absence of sightings only counts as
-        evidence when the region was scanned for that object type.
-
-        Args:
-            name: Object type name exactly as scanned, e.g. "couch".
-            room_id: Room id from the rooms() skill.
-            region: Region polygon in world coordinates, instead of room_id:
-                flattened [x1, y1, x2, y2, ...] (at least 3 vertices).
-        """
-        try:
-            polygon, label, room_set = self._resolve_region(room_id, region)
-        except ValueError as e:
-            return SkillResult.fail("INVALID_INPUT", str(e))
-        except LookupError as e:
-            return SkillResult.fail("INVALID_STATE", str(e))
-        with SightingsLog(self.config.sightings_db) as log:
-            matches = log.sightings(name)
-            inside = self._membership(_sightings_xy(matches), polygon, room_id, room_set)
-            if inside.any():
-                in_region = [s for s, flag in zip(matches, inside.tolist(), strict=True) if flag]
-                intervals = visit_intervals(
-                    np.asarray([s.ts for s in matches]), inside, max_gap_s=SIGHTING_VISIT_GAP_S
-                )
-                return SkillResult.ok(
-                    f"Yes — '{name}' was seen in {label}: {len(in_region)} sighting(s) "
-                    f"between {_iso(in_region[0].ts)} and {_iso(in_region[-1].ts)} UTC.",
-                    ever_seen_in_region=True,
-                    first_ts=round(in_region[0].ts, 3),
-                    last_ts=round(in_region[-1].ts, 3),
-                    visits=[[round(a, 3), round(b, 3)] for a, b in intervals],
-                    in_region_count=len(in_region),
-                )
-            ever_in_vocab = log.ever_in_vocabulary(name)
-            coverage, coverage_meta = self._region_coverage(polygon, room_id, room_set, log)
-        elsewhere = (
-            f" It was seen {len(matches)} time(s) outside the region, "
-            f"last at {_iso(matches[-1].ts)} UTC."
-            if matches
-            else ""
-        )
-        return SkillResult.ok(
-            f"No — '{name}' was never seen in {label}.{elsewhere} "
-            f"{_vocabulary_sentence(name, ever_in_vocab)} {_coverage_sentence(coverage, label)}",
-            ever_seen_in_region=False,
-            ever_in_vocabulary=ever_in_vocab,
-            sightings_elsewhere=len(matches),
-            **coverage_meta,
-        )
-
-    @skill
     def derive_rooms(self) -> SkillResult[CommonSkillError]:
-        """Segment the current occupancy map into rooms and remember them.
+        """Segment the current occupancy map into rooms and update the graph.
 
-        Runs room segmentation over the latest global costmap and persists
-        the result (room polygons, areas, doorways). Call this after the map
-        has grown before asking room questions.
+        Writes room/corridor nodes, containment and doorway-adjacency edges,
+        and re-checks which room contains each object. Rooms-dependent reads
+        auto-derive once, so calling this explicitly is only needed after
+        the map has grown.
         """
         with self._grid_lock:
             grid = self._latest_grid
@@ -809,51 +566,743 @@ class SceneMemorySkillContainer(Module):
             return SkillResult.fail(
                 "INVALID_STATE", "No occupancy map received yet — is mapping running?"
             )
-        segmentation = segment_rooms(grid)
-        with RoomStore(self.config.sightings_db) as store:
-            store.save(segmentation, source="scene_memory.derive_rooms")
+        with self._mutate_lock, self._graph() as graph:
+            segmentation, changed = self._derive_into(graph)
+            region_ids = [n.id for n in graph.regions()]
         rooms = segmentation.rooms()
         corridors = segmentation.corridors()
+        note = "" if changed else " The map is unchanged since the last derivation — kept it."
         return SkillResult.ok(
             f"Derived {len(rooms)} room(s) and {len(corridors)} corridor(s) from the "
             f"map ({segmentation.explored_fraction:.0%} explored — the count can rise "
-            f"as more area is mapped).",
+            f"as more area is mapped).{note}",
             n_rooms=len(rooms),
             n_corridors=len(corridors),
             n_doorways=len(segmentation.doorways),
             explored_fraction=segmentation.explored_fraction,
             derived_ts=round(segmentation.derived_ts, 3),
+            region_ids=region_ids,
         )
 
     @skill
-    def rooms(self) -> SkillResult[CommonSkillError]:
-        """How many rooms are there? Lists the remembered rooms with areas.
+    def find(self, text: str) -> SkillResult[CommonSkillError]:
+        """Find objects or rooms by name or id; every hit carries its lineage.
 
-        Reads the last derive_rooms result. The count is a lower bound while
-        the map is partially explored.
+        Deterministic matching over the scene graph (exact id, exact name,
+        then substring). A miss says whether the name was ever in any scan's
+        vocabulary — if not, scan_for_objects with that name first.
+
+        Args:
+            text: An object/room name or node id, e.g. "couch" or "room_3".
         """
-        with RoomStore(self.config.sightings_db) as store:
-            room_set = store.latest()
-        if room_set is None:
-            return SkillResult.fail(
-                "INVALID_STATE", "No rooms derived yet — call derive_rooms first."
+        wanted = text.strip().lower()
+        if not wanted:
+            return SkillResult.fail("INVALID_INPUT", "text must not be empty")
+        with self._graph() as graph:
+            note = self._ensure_rooms(graph)
+            candidates = [n for n in graph.nodes() if n.layer in ("object", "room", "corridor")]
+
+            def rank(n: SceneNode) -> int:
+                if n.id.lower() == wanted:
+                    return 0
+                if n.name.lower() == wanted:
+                    return 1
+                return 2
+
+            hits = sorted(
+                (n for n in candidates if rank(n) < 2 or wanted in n.name.lower()),
+                key=lambda n: (rank(n), n.layer, n.id),
             )
-        rooms = room_set.by_kind("room")
-        corridors = room_set.by_kind("corridor")
-        return SkillResult.ok(
-            f"{len(rooms)} room(s) and {len(corridors)} corridor(s) known, from a map "
-            f"{room_set.explored_fraction:.0%} explored (counts are lower bounds on a "
-            f"partial map).",
-            rooms=[
-                {
-                    "id": r.id,
-                    "kind": r.kind,
-                    "area_m2": r.area_m2,
-                    "centroid": [round(r.centroid_xy[0], 2), round(r.centroid_xy[1], 2)],
+            if not hits:
+                ever = graph.ever_in_vocabulary(wanted)
+                known = sorted(graph.names())
+                region_ids = [r.id for r in graph.regions()]
+                return SkillResult.ok(
+                    f"No node matches '{text}'. {_vocabulary_sentence(text, ever)} "
+                    f"Objects sighted so far: {known}; regions: {region_ids}.{note}",
+                    hits=[],
+                    ever_in_vocabulary=ever,
+                    known_names=known,
+                    region_ids=region_ids,
+                )
+            payloads = [_node_payload(graph, n) for n in hits]
+            described = [
+                f"{p['id']} ({p['name']}) in {p['parent']}"
+                if p["parent"]
+                else f"{p['id']} ({p['name']})"
+                for p in payloads
+            ]
+            return SkillResult.ok(
+                f"{len(hits)} match(es) for '{text}': {'; '.join(described)}.{note}",
+                hits=payloads,
+            )
+
+    @skill
+    def get_scene(self) -> SkillResult[CommonSkillError]:
+        """Collapsed scene overview: rooms, object counts, coverage, the agent.
+
+        Call this first. Returns the recording's absolute time range (epoch
+        seconds, UTC — the anchor for relative-time questions), each room and
+        corridor with its object count and scan coverage, the doorway count,
+        the explored fraction, and which room the agent is in. Drill into any
+        node with expand/nodes_in.
+        """
+        with self._graph() as graph:
+            note = self._ensure_rooms(graph)
+            regions = graph.regions()
+            events = graph.scan_events()
+            rows = graph.sightings()
+            trail = self._trail_or_none()
+
+            region_entries = []
+            for r in regions:
+                member = np.asarray([s.room_id == r.id for s in rows], dtype=bool)
+                coverage = region_scan_coverage(r.polygon(), events, rows, member, trail)
+                region_entries.append(
+                    {
+                        "id": r.id,
+                        "kind": r.layer,
+                        "area_m2": r.metadata.get("area_m2"),
+                        "objects": sum(1 for c in graph.children(r.id) if c.layer == "object"),
+                        "coverage": {
+                            "scan_passes_covering": coverage.passes_covering_region,
+                            "last_covered_ts": round(coverage.last_covered_ts, 3)
+                            if coverage.last_covered_ts is not None
+                            else None,
+                            "vocabulary": list(coverage.vocabulary),
+                        },
+                    }
+                )
+
+            agent_entry: dict[str, Any] | None = None
+            if trail is not None:
+                x, y = float(trail.xy[-1, 0]), float(trail.xy[-1, 1])
+                room_id = graph.assign_regions(np.asarray([[x, y]]))[0]
+                agent_entry = {
+                    "id": AGENT_ID,
+                    "position": [round(x, 3), round(y, 3), 0.0],
+                    "room": room_id or None,
+                    "ts": round(float(trail.ts[-1]), 3),
                 }
-                for r in room_set.rooms
-            ],
-            n_doorways=len(room_set.doorways),
-            explored_fraction=room_set.explored_fraction,
-            derived_ts=round(room_set.derived_ts, 3),
+
+            n_rooms = sum(1 for r in regions if r.layer == "room")
+            n_corridors = len(regions) - n_rooms
+            objects = graph.nodes(layer="object")
+            n_doorways = len(graph.edges(kind="adjacent"))
+            explored = regions[0].metadata.get("explored_fraction") if regions else None
+
+            parts = [
+                f"Scene: {n_rooms} room(s) + {n_corridors} corridor(s)"
+                + (f" ({explored:.0%} explored)" if explored is not None else ""),
+                f"{len(objects)} object node(s), {n_doorways} doorway(s).",
+            ]
+            metadata: dict[str, Any] = {
+                "regions": region_entries,
+                "total_objects": len(objects),
+                "n_doorways": n_doorways,
+                "explored_fraction": explored,
+                "agent": agent_entry,
+            }
+            if trail is not None:
+                t0, t1 = trail.time_range()
+                parts.append(f"Recording {_iso(t0)}..{_iso(t1)} UTC ({t1 - t0:.1f} s).")
+                metadata["time_range"] = [round(t0, 3), round(t1, 3)]
+            if agent_entry is not None:
+                parts.append(
+                    f"Agent at ({agent_entry['position'][0]}, {agent_entry['position'][1]})"
+                    + (f" in {agent_entry['room']}." if agent_entry["room"] else ".")
+                )
+            if note:
+                parts.append(note)
+            return SkillResult.ok(" ".join(parts), **metadata)
+
+    def _children_result(self, node_id: str) -> SkillResult[CommonSkillError]:
+        with self._graph() as graph:
+            note = self._ensure_rooms(graph)
+            node = graph.node(node_id)
+            if node is None:
+                region_ids = [r.id for r in graph.regions()]
+                return SkillResult.fail(
+                    "INVALID_INPUT",
+                    f"No node '{node_id}'. Known regions: {region_ids}; "
+                    "use find() or get_scene() to discover ids.",
+                )
+            children = graph.children(node_id)
+            payloads = [_node_payload(graph, c) for c in children]
+            retired_note = (
+                " (this node is retired — a newer derivation replaced it)" if node.retired else ""
+            )
+            described = ", ".join(f"{p['name']} ({p['id']})" for p in payloads) or "nothing"
+            return SkillResult.ok(
+                f"{node_id}{retired_note} contains {len(children)} node(s): {described}.{note}",
+                node_id=node_id,
+                count=len(children),
+                children=payloads,
+            )
+
+    @skill
+    def expand(self, node_id: str) -> SkillResult[CommonSkillError]:
+        """Expand one node into its children (incremental disclosure).
+
+        Walk the scene top-down: get_scene() first, then expand the node you
+        care about (e.g. a room) instead of pulling the whole graph.
+
+        Args:
+            node_id: Node to expand, e.g. "building_0" or "room_3".
+        """
+        return self._children_result(node_id)
+
+    @skill
+    def nodes_in(self, node_id: str) -> SkillResult[CommonSkillError]:
+        """List (and count) everything contained in a node, deterministically.
+
+        "What's in room 3?" / "how many rooms are there?" — counting happens
+        here, not by eyeballing: nodes_in("building_0") counts rooms;
+        nodes_in("room_3") counts that room's objects.
+
+        Args:
+            node_id: Containment node, e.g. "room_3" or "building_0".
+        """
+        return self._children_result(node_id)
+
+    @skill
+    def adjacent(self, node_id: str) -> SkillResult[CommonSkillError]:
+        """Which rooms share a doorway with this room/corridor?
+
+        Answers from the derived doorway records: each neighbor comes with
+        the doorway position and approximate width.
+
+        Args:
+            node_id: A room or corridor id, e.g. "room_3" or "corridor_6".
+        """
+        with self._graph() as graph:
+            note = self._ensure_rooms(graph)
+            node = graph.node(node_id)
+            if node is None:
+                region_ids = [r.id for r in graph.regions()]
+                return SkillResult.fail(
+                    "INVALID_INPUT",
+                    f"No node '{node_id}'. Known regions: {region_ids}.",
+                )
+            neighbors = graph.adjacent_rooms(node_id)
+            entries: list[dict[str, Any]] = [
+                {
+                    "node": _node_payload(graph, n),
+                    "doorway_xy": [round(float(v), 3) for v in doorway.get("xy", [])],
+                    "doorway_width_m": doorway.get("width_m"),
+                }
+                for n, doorway in neighbors
+            ]
+            described = ", ".join(
+                f"{e['node']['id']} (doorway at {tuple(e['doorway_xy'])}, "
+                f"{e['doorway_width_m']} m wide)"
+                for e in entries
+            )
+            message = (
+                f"{node_id} shares doorways with: {described}.{note}"
+                if entries
+                else f"{node_id} has no recorded doorway adjacency.{note}"
+            )
+            return SkillResult.ok(message, node_id=node_id, neighbors=entries)
+
+    @skill
+    def near(
+        self, node_id: str = "", xy: list[float] | None = None, radius: float = 2.0
+    ) -> SkillResult[CommonSkillError]:
+        """What is within a radius of a node or point? Deterministic geometry.
+
+        Distances are between node positions only — object extents are not
+        available in this recording lane, so results say "position within
+        radius", not "surface within radius".
+
+        Args:
+            node_id: Center node id, e.g. "object_5" (give this OR xy).
+            xy: Center as world [x, y] instead of a node id.
+            radius: Search radius in meters.
+        """
+        if bool(node_id) == (xy is not None):
+            return SkillResult.fail("INVALID_INPUT", "Give either node_id or xy, not both")
+        if xy is not None and len(xy) != 2:
+            return SkillResult.fail("INVALID_INPUT", "xy must be [x, y]")
+        if radius <= 0:
+            return SkillResult.fail("INVALID_INPUT", "radius must be positive")
+        with self._graph() as graph:
+            if node_id:
+                center_node = graph.node(node_id)
+                if center_node is None or center_node.position is None:
+                    return SkillResult.fail(
+                        "INVALID_INPUT", f"No positioned node '{node_id}' — use find() first."
+                    )
+                cx, cy = center_node.xy
+            else:
+                assert xy is not None
+                cx, cy = float(xy[0]), float(xy[1])
+            candidates = [
+                n
+                for n in [*graph.nodes(layer="object"), *graph.nodes(layer="agent")]
+                if n.position is not None and n.id != node_id
+            ]
+            hits = []
+            for n in candidates:
+                distance = float(np.hypot(n.xy[0] - cx, n.xy[1] - cy))
+                if distance <= radius:
+                    hits.append((distance, n))
+            hits.sort(key=lambda pair: pair[0])
+            payloads = [
+                {**_node_payload(graph, n), "distance_m": round(distance, 2)}
+                for distance, n in hits
+            ]
+            described = ", ".join(f"{p['name']} ({p['id']}) {p['distance_m']} m" for p in payloads)
+            return SkillResult.ok(
+                f"{len(hits)} node(s) within {radius} m of ({cx:.2f}, {cy:.2f}): "
+                f"{described or 'none'}. Distances are between stored positions only "
+                "(extents unavailable in this lane).",
+                center=[round(cx, 3), round(cy, 3)],
+                radius_m=radius,
+                hits=payloads,
+            )
+
+    @skill
+    def where_am_i(self, t: float | None = None) -> SkillResult[CommonSkillError]:
+        """Which room is the robot in — now, or at a past time t?
+
+        Resolves the agent's position from the recorded pose trail (t=None
+        means the end of the trail) and its room from the scene graph.
+
+        Args:
+            t: Optional timestamp in recording-time epoch seconds (see
+                get_scene() for the recording's time range).
+        """
+        try:
+            trail = self._get_trail()
+        except (FileNotFoundError, LookupError) as e:
+            return SkillResult.fail("NOT_CONFIGURED", f"No pose trail available: {e}")
+        t0, t1 = trail.time_range()
+        if t is None:
+            i = len(trail.ts) - 1
+        else:
+            i = int(np.argmin(np.abs(trail.ts - t)))
+            if abs(float(trail.ts[i]) - t) > 2.0:
+                return SkillResult.fail(
+                    "INVALID_INPUT",
+                    f"No pose within 2 s of t={t}; trail covers {t0:.3f}..{t1:.3f} "
+                    f"({_iso(t0)}..{_iso(t1)} UTC).",
+                )
+        ts = float(trail.ts[i])
+        x, y = float(trail.xy[i, 0]), float(trail.xy[i, 1])
+        with self._graph() as graph:
+            note = self._ensure_rooms(graph)
+            room_id = graph.assign_regions(np.asarray([[x, y]]))[0]
+            ancestors: list[dict[str, Any]] = []
+            if room_id:
+                room = graph.node(room_id)
+                assert room is not None
+                ancestors = [
+                    {"id": room.id, "layer": room.layer},
+                    *({"id": a.id, "layer": a.layer} for a in graph.ancestors(room_id)),
+                ]
+            elif graph.node(BUILDING_ID) is not None:
+                ancestors = [{"id": BUILDING_ID, "layer": "building"}]
+            payload = {
+                "id": AGENT_ID,
+                "name": "agent",
+                "layer": "agent",
+                "position": [round(x, 3), round(y, 3), 0.0],
+                "extent": None,
+                "parent": room_id or (BUILDING_ID if ancestors else None),
+                "ancestors": ancestors,
+            }
+            when = f"at {_iso(ts)} UTC" if t is not None else f"as of {_iso(ts)} UTC (end of trail)"
+            place = f"in {room_id}" if room_id else "in no derived room"
+            return SkillResult.ok(
+                f"The robot was at ({x:.2f}, {y:.2f}) {place} {when}."
+                + (
+                    f" Lineage: {AGENT_ID} -> " + " -> ".join(a["id"] for a in ancestors) + "."
+                    if ancestors
+                    else ""
+                )
+                + (f" {note}" if note else ""),
+                node=payload,
+                ts=round(ts, 3),
+            )
+
+    @skill
+    def last_seen(self, name: str, in_node: str = "") -> SkillResult[CommonSkillError]:
+        """When and where was something last seen? The spatio-temporal workhorse.
+
+        Reads the full sightings log (not node caches), so it stays correct
+        when the subject later moved elsewhere: with in_node set, the answer
+        is the last sighting INSIDE that node, plus a note if it was later
+        seen outside. name="agent" answers for the robot from its pose
+        trail ("when were you last in room 4?"). A miss returns a
+        coverage-qualified negative, never a bare "no".
+
+        Args:
+            name: Object name as scanned (e.g. "couch"), or "agent" for the
+                robot itself.
+            in_node: Optional containment filter — a room/corridor id from
+                get_scene() (e.g. "room_2") or "building_0". Empty = anywhere.
+        """
+        return self._seen_query(name, in_node, window=None)
+
+    @skill
+    def seen_between(
+        self, name: str, t0: float, t1: float, in_node: str = ""
+    ) -> SkillResult[CommonSkillError]:
+        """Was something seen in a time window (optionally inside a node)?
+
+        Same answer shape as last_seen, restricted to sightings with
+        t0 <= ts <= t1 (recording-time epoch seconds; get_scene() gives the
+        recording's range).
+
+        Args:
+            name: Object name as scanned, or "agent" for the robot itself.
+            t0: Window start, epoch seconds.
+            t1: Window end, epoch seconds.
+            in_node: Optional containment filter node id. Empty = anywhere.
+        """
+        if t1 <= t0:
+            return SkillResult.fail("INVALID_INPUT", f"Need t0 < t1, got {t0}..{t1}")
+        return self._seen_query(name, in_node, window=(t0, t1))
+
+    def _resolve_filter_node(
+        self, graph: SceneGraph, in_node: str
+    ) -> tuple[SceneNode | None, SkillResult[CommonSkillError] | None]:
+        """Resolve an in_node filter to a region node (None = whole building)."""
+        node = graph.node(in_node)
+        if node is None:
+            region_ids = [r.id for r in graph.regions()]
+            return None, SkillResult.fail(
+                "INVALID_INPUT",
+                f"No node '{in_node}'. Known regions: {region_ids}; "
+                "rooms may not be derived yet (see get_scene).",
+            )
+        if node.layer == "building":
+            return None, None  # everything is in the building
+        if node.layer not in ("room", "corridor"):
+            return None, SkillResult.fail(
+                "INVALID_INPUT",
+                f"in_node must be a room, corridor, or {BUILDING_ID}; "
+                f"'{in_node}' is a {node.layer}.",
+            )
+        return node, None
+
+    def _seen_query(
+        self, name: str, in_node: str, window: tuple[float, float] | None
+    ) -> SkillResult[CommonSkillError]:
+        with self._graph() as graph:
+            note = self._ensure_rooms(graph) if in_node else ""
+            if name.strip().lower() in _AGENT_NAMES:
+                return self._agent_seen(graph, in_node, window)
+            region: SceneNode | None = None
+            if in_node:
+                region, error = self._resolve_filter_node(graph, in_node)
+                if error is not None:
+                    return error
+            all_rows = graph.sightings(name)
+            rows = [s for s in all_rows if window is None or window[0] <= s.ts <= window[1]]
+            member = [region is None or s.room_id == region.id for s in rows]
+            in_rows = [s for s, m in zip(rows, member, strict=True) if m]
+            if not in_rows:
+                return self._seen_miss(graph, name, in_node, region, window, all_rows, note)
+
+            visits = visit_intervals(
+                np.asarray([s.ts for s in rows]),
+                np.asarray(member, dtype=bool),
+                max_gap_s=SIGHTING_VISIT_GAP_S,
+            )
+            last = in_rows[-1]
+            enter, exit_ = visits[-1]
+            later_elsewhere = [
+                s for s, m in zip(rows, member, strict=True) if not m and s.ts > exit_
+            ]
+            node = graph.node(last.node_id)
+            payload = _node_payload(graph, node) if node is not None else None
+            x, y, z = (round(v, 2) for v in last.position)
+            place = f" in {last.room_id}" if last.room_id else ""
+            label = f" in {in_node}" if in_node else ""
+            note_later = ""
+            extra: dict[str, Any] = {}
+            if in_node and later_elsewhere:
+                note_later = (
+                    f" Note: '{name}' was later seen outside {in_node}, most recently at "
+                    f"{_iso(later_elsewhere[-1].ts)} UTC."
+                )
+                extra["later_elsewhere_ts"] = round(later_elsewhere[-1].ts, 3)
+            if window is not None:
+                extra["window"] = [round(window[0], 3), round(window[1], 3)]
+            return SkillResult.ok(
+                f"Last saw '{name}'{label} at {_iso(last.ts)} UTC at ({x}, {y}, {z}){place}; "
+                f"that stay spanned {_iso(enter)}..{_iso(exit_)} UTC. "
+                f"{len(in_rows)} sighting(s) total.{note_later}{note}",
+                name=name,
+                last_sighting={
+                    "ts": round(last.ts, 3),
+                    "position": [x, y, z],
+                    "room_id": last.room_id or None,
+                    "node_id": last.node_id,
+                },
+                node=payload,
+                visits=[[round(a, 3), round(b, 3)] for a, b in visits],
+                last_interval=[round(enter, 3), round(exit_, 3)],
+                sightings_matched=len(in_rows),
+                in_node=in_node or None,
+                **extra,
+            )
+
+    def _seen_miss(
+        self,
+        graph: SceneGraph,
+        name: str,
+        in_node: str,
+        region: SceneNode | None,
+        window: tuple[float, float] | None,
+        all_rows: list[Sighting],
+        note: str,
+    ) -> SkillResult[CommonSkillError]:
+        """The coverage-qualified negative — never a bare "no"."""
+        ever = graph.ever_in_vocabulary(name)
+        known = sorted(graph.names())
+        events = graph.scan_events()
+        trail = self._trail_or_none()
+        everything = graph.sightings()
+        if region is not None:
+            member = np.asarray([s.room_id == region.id for s in everything], dtype=bool)
+            coverage = region_scan_coverage(region.polygon(), events, everything, member, trail)
+            label = in_node
+        else:
+            last_event = events[-1].ts if events else None
+            coverage = RegionCoverage(
+                scan_passes=len(events),
+                passes_covering_region=len(events),
+                last_covered_ts=last_event,
+            )
+            label = "anywhere scanned"
+        where = f" in {in_node}" if in_node else ""
+        when = f" between {_iso(window[0])} and {_iso(window[1])} UTC" if window is not None else ""
+        elsewhere = ""
+        extra: dict[str, Any] = {}
+        if all_rows:
+            last_any = all_rows[-1]
+            elsewhere = (
+                f" It was sighted {len(all_rows)} time(s) outside that filter, last at "
+                f"{_iso(last_any.ts)} UTC"
+                + (f" in {last_any.room_id}" if last_any.room_id else "")
+                + "."
+            )
+            extra["last_elsewhere_ts"] = round(last_any.ts, 3)
+        if window is not None:
+            extra["window"] = [round(window[0], 3), round(window[1], 3)]
+        return SkillResult.ok(
+            f"Never saw '{name}'{where}{when}.{elsewhere} "
+            f"{_vocabulary_sentence(name, ever)} {_coverage_sentence(coverage, label)}"
+            + (f" Objects sighted so far: {known}." if not all_rows else "")
+            + note,
+            name=name,
+            sightings_matched=0,
+            ever_in_vocabulary=ever,
+            known_names=known,
+            coverage={
+                "scan_passes": coverage.scan_passes,
+                "passes_covering_region": coverage.passes_covering_region,
+                "region_last_scanned_ts": round(coverage.last_covered_ts, 3)
+                if coverage.last_covered_ts is not None
+                else None,
+            },
+            in_node=in_node or None,
+            **extra,
+        )
+
+    def _agent_seen(
+        self, graph: SceneGraph, in_node: str, window: tuple[float, float] | None
+    ) -> SkillResult[CommonSkillError]:
+        """last_seen/seen_between for the robot itself, from the pose trail.
+
+        Region membership uses the strict room polygon (the robot moves
+        through free space; the snap rule exists for object positions that
+        land in walls). The agent node's containment is resolved here at
+        query time — nothing writes it continuously.
+        """
+        try:
+            trail = self._get_trail()
+        except (FileNotFoundError, LookupError) as e:
+            return SkillResult.fail("NOT_CONFIGURED", f"No pose trail available: {e}")
+        region: SceneNode | None = None
+        if in_node:
+            region, error = self._resolve_filter_node(graph, in_node)
+            if error is not None:
+                return error
+        keep = (
+            np.ones(len(trail.ts), dtype=bool)
+            if window is None
+            else (trail.ts >= window[0]) & (trail.ts <= window[1])
+        )
+        ts = trail.ts[keep]
+        xy = trail.xy[keep]
+        t0, t1 = trail.time_range()
+        if len(ts) == 0:
+            return SkillResult.fail(
+                "INVALID_INPUT",
+                f"The trail has no samples in that window; it covers {_iso(t0)}..{_iso(t1)} UTC.",
+            )
+        member = (
+            points_in_polygon(xy, region.polygon())
+            if region is not None
+            else np.ones(len(ts), dtype=bool)
+        )
+        visits = visit_intervals(ts, member, max_gap_s=DEFAULT_VISIT_GAP_S)
+        extra: dict[str, Any] = {}
+        if window is not None:
+            extra["window"] = [round(window[0], 3), round(window[1], 3)]
+        current_room = graph.assign_regions(np.asarray([trail.xy[-1]]))[0]
+        agent_payload = {
+            "id": AGENT_ID,
+            "name": "agent",
+            "layer": "agent",
+            "position": [round(float(trail.xy[-1, 0]), 3), round(float(trail.xy[-1, 1]), 3), 0.0],
+            "extent": None,
+            "parent": current_room or None,
+            "ancestors": (
+                [
+                    {"id": current_room, "layer": graph.node(current_room).layer},  # type: ignore[union-attr]
+                    *({"id": a.id, "layer": a.layer} for a in graph.ancestors(current_room)),
+                ]
+                if current_room
+                else []
+            ),
+        }
+        if not visits:
+            where = f" inside {in_node}" if in_node else ""
+            when = (
+                f" between {_iso(window[0])} and {_iso(window[1])} UTC"
+                if window is not None
+                else ""
+            )
+            return SkillResult.ok(
+                f"The robot was never{where}{when} during the recorded trail "
+                f"({_iso(t0)}..{_iso(t1)} UTC — full pose coverage, so this is a "
+                "confident negative).",
+                name="agent",
+                sightings_matched=0,
+                in_node=in_node or None,
+                node=agent_payload,
+                visits=[],
+                trail_start_ts=round(t0, 3),
+                trail_end_ts=round(t1, 3),
+                **extra,
+            )
+        enter, exit_ = visits[-1]
+        member_idx = np.nonzero(member)[0]
+        last_i = int(member_idx[-1])
+        last_ts = float(ts[last_i])
+        lx, ly = float(xy[last_i, 0]), float(xy[last_i, 1])
+        last_room = (
+            region.id if region is not None else graph.assign_regions(np.asarray([[lx, ly]]))[0]
+        )
+        if in_node and float(ts[-1]) > exit_:
+            extra["later_elsewhere_ts"] = round(float(ts[-1]), 3)
+        where = f" in {in_node}" if in_node else ""
+        after = f" (left {t1 - exit_:.1f} s before the end of the trail)" if in_node else ""
+        return SkillResult.ok(
+            f"The robot was last{where} from {_iso(enter)} to {_iso(exit_)} UTC{after}. "
+            f"{len(visits)} visit(s) total.",
+            name="agent",
+            last_sighting={
+                "ts": round(last_ts, 3),
+                "position": [round(lx, 3), round(ly, 3), 0.0],
+                "room_id": last_room or None,
+                "node_id": AGENT_ID,
+            },
+            node=agent_payload,
+            visits=[[round(a, 3), round(b, 3)] for a, b in visits],
+            last_interval=[round(enter, 3), round(exit_, 3)],
+            sightings_matched=int(member.sum()),
+            in_node=in_node or None,
+            **extra,
+        )
+
+    def _publish_graph(self, graph: SceneGraph, ts: float) -> None:
+        """Republish the graph on the viewer streams (rooms, markers, edges).
+
+        Rooms render as outline polygons; objects/agent/room anchors as
+        labeled points (rooms raised to SCENE_GRAPH_ROOM_Z for the layered
+        look); contains edges drop from room anchors to objects, adjacent
+        edges run anchor-doorway-anchor. ``ts`` is recording time so the
+        viewer timeline lines up with the replayed camera/lidar streams.
+        """
+        if not self.scene_graph_markers.transport:
+            return
+        regions = graph.regions()
+        objects = graph.nodes(layer="object")
+        agent = graph.node(AGENT_ID)
+
+        if regions:
+            polygons = [r.polygon() for r in regions]
+            points = np.vstack([np.column_stack([p, np.zeros(len(p))]) for p in polygons])
+            ids = np.concatenate(
+                [np.full(len(p), i + 1, dtype=np.float64) for i, p in enumerate(polygons)]
+            )
+            cloud = PointCloud2.from_numpy(points, frame_id="world", timestamp=ts, intensities=ids)
+            self.scene_graph_rooms.publish(
+                ContourPolygons3D(ts=ts, frame_id="world", raw_bytes=cloud.lcm_encode())
+            )
+
+        markers = [
+            Marker(
+                entity_id=n.id,
+                label=n.name,
+                entity_type="object",
+                x=n.position[0],
+                y=n.position[1],
+                z=n.position[2],
+            )
+            for n in objects
+            if n.position is not None
+        ]
+        markers += [
+            Marker(
+                entity_id=r.id,
+                label=r.id,
+                entity_type="location",
+                x=r.xy[0],
+                y=r.xy[1],
+                z=SCENE_GRAPH_ROOM_Z,
+            )
+            for r in regions
+        ]
+        if agent is not None and agent.position is not None:
+            markers.append(
+                Marker(
+                    entity_id=AGENT_ID,
+                    label="agent",
+                    entity_type="person",
+                    x=agent.position[0],
+                    y=agent.position[1],
+                    z=agent.position[2],
+                )
+            )
+        self.scene_graph_markers.publish(EntityMarkers(markers=markers, ts=ts))
+
+        anchors = {r.id: r.xy for r in regions}
+        segments: list[tuple[tuple[float, float, float], tuple[float, float, float]]] = []
+        traversability: list[float] = []
+        for n in objects:
+            parent = graph.parent_id(n.id)
+            if parent in anchors and n.position is not None:
+                ax, ay = anchors[parent]
+                segments.append(((ax, ay, SCENE_GRAPH_ROOM_Z), n.position))
+                traversability.append(_CONTAINS_TRAV)
+        for edge in graph.edges(kind="adjacent"):
+            if edge.parent_id in anchors and edge.child_id in anchors:
+                pax, pay = anchors[edge.parent_id]
+                cax, cay = anchors[edge.child_id]
+                mid = edge.metadata.get("xy") or [(pax + cax) / 2, (pay + cay) / 2]
+                mx, my = float(mid[0]), float(mid[1])
+                segments.append(((pax, pay, SCENE_GRAPH_ROOM_Z), (mx, my, SCENE_GRAPH_ROOM_Z)))
+                segments.append(((mx, my, SCENE_GRAPH_ROOM_Z), (cax, cay, SCENE_GRAPH_ROOM_Z)))
+                traversability += [_ADJACENT_TRAV, _ADJACENT_TRAV]
+        self.scene_graph_edges.publish(
+            LineSegments3D(
+                ts=ts, frame_id="world", segments=segments, traversability=traversability
+            )
         )

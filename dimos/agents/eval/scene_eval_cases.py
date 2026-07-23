@@ -55,7 +55,7 @@ from dimos.mapping.occupancy.polygons import (
     polygon_from_flat,
 )
 from dimos.mapping.occupancy.room_store import StoredRoomSet
-from dimos.perception.sightings import Sighting
+from dimos.perception.scene_graph import Sighting
 from dimos.utils.logging_config import setup_logger
 
 logger = setup_logger()
