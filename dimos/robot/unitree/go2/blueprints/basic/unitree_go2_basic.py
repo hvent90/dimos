@@ -44,8 +44,9 @@ def _convert_navigation_costmap(grid: Any) -> Any:
 
 
 def _convert_scene_graph_rooms(polygons: Any) -> Any:
-    # Room outlines drawn at the raised room-layer height (layered DSG look).
-    return polygons.to_rerun(z_offset=SCENE_GRAPH_ROOM_Z, color=(250, 200, 60, 255), radii=0.03)
+    # Filled floor-plan fills just under the room-anchor layer; per-room
+    # tints match the segmentation debug renders.
+    return polygons.to_rerun_mesh(z_offset=SCENE_GRAPH_ROOM_Z - 0.02)
 
 
 def _convert_scene_graph_edges(segments: Any) -> Any:

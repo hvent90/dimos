@@ -99,10 +99,11 @@ SIGHTING_SNAP_M = 0.75
 # detections in one frame sit ≥ 1.1 m apart on go2_short.
 SIGHTING_DEDUPE_M = 0.25
 
-# Render height of the room layer in the viewer (outlines, anchors, and the
-# room end of contains edges) — the Hydra-style layered-DSG picture. Shared
-# by the publisher (scene_memory) and the blueprint's visual overrides.
-SCENE_GRAPH_ROOM_Z = 2.0
+# Render height of the room layer in the viewer (fills, anchors, adjacency
+# edges, and the room end of contains edges): a floor-plan look, just above
+# the costmap mesh so the fills don't z-fight it. Shared by the publisher
+# (scene_memory) and the blueprint's visual overrides.
+SCENE_GRAPH_ROOM_Z = 0.05
 
 
 @dataclass(frozen=True)

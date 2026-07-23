@@ -1227,11 +1227,12 @@ class SceneMemorySkillContainer(Module):
     def _publish_graph(self, graph: SceneGraph, ts: float) -> None:
         """Republish the graph on the viewer streams (rooms, markers, edges).
 
-        Rooms render as outline polygons; objects/agent/room anchors as
-        labeled points (rooms raised to SCENE_GRAPH_ROOM_Z for the layered
-        look); contains edges drop from room anchors to objects, adjacent
-        edges run anchor-doorway-anchor. ``ts`` is recording time so the
-        viewer timeline lines up with the replayed camera/lidar streams.
+        Rooms render as filled floor-plan polygons at ground level (the
+        polygon id in the cloud is the region's numeric id, so viewer tints
+        match the 2D debug renders); objects/agent/room anchors as labeled
+        points; contains edges run object to room anchor, adjacent edges
+        anchor-doorway-anchor. ``ts`` is recording time so the viewer
+        timeline lines up with the replayed camera/lidar streams.
         """
         if not (
             self.scene_graph_rooms.transport
@@ -1246,8 +1247,13 @@ class SceneMemorySkillContainer(Module):
         if regions and self.scene_graph_rooms.transport:
             polygons = [r.polygon() for r in regions]
             points = np.vstack([np.column_stack([p, np.zeros(len(p))]) for p in polygons])
+            # Polygon id = the region's numeric id ("room_3" -> 3), keying the
+            # same palette as the 2D debug renders.
             ids = np.concatenate(
-                [np.full(len(p), i + 1, dtype=np.float64) for i, p in enumerate(polygons)]
+                [
+                    np.full(len(p), float(r.id.rsplit("_", 1)[-1]), dtype=np.float64)
+                    for r, p in zip(regions, polygons, strict=True)
+                ]
             )
             cloud = PointCloud2.from_numpy(points, frame_id="world", timestamp=ts, intensities=ids)
             self.scene_graph_rooms.publish(
