@@ -12,14 +12,16 @@
 # See the License for the specific language governing permissions and
 # limitations under the License.
 
-"""Run the scene-memory eval: five queries, three layers per case.
+"""Run the scene-memory eval: ten queries, three layers per case.
 
-Layer (a) asserts the fact exists in storage (direct store queries),
-layer (b) calls the skill directly, layer (c) asks the full MCP agent the
-natural-language question and grades the answer with an LLM judge, logging
-tokens and steps per trajectory. Layer (c) needs the replay daemon running
-against the seeded scene DB (the tool prints the launch command when the
-MCP server is unreachable and marks those cells NOT RUN)::
+Layer (a) asserts the fact exists in storage (direct scene-graph reads,
+recomputed independently of the skills), layer (b) calls the skill
+directly and asserts on its binding metadata contract, layer (c) asks the
+full MCP agent the natural-language question and grades the answer with an
+LLM judge, logging tokens and steps per trajectory. Layer (c) needs the
+replay daemon running against the seeded scene DB (the tool prints the
+launch command when the MCP server is unreachable and marks those cells
+NOT RUN)::
 
     uv run python dimos/agents/eval/tool_scene_eval.py \
         --key /tmp/scene_eval/go2_short/answer_key.yaml \
@@ -46,144 +48,233 @@ from dimos.agents.eval.agent_driver import (
 )
 from dimos.agents.eval.answer_key import AnswerKey, CaseEntry, load_answer_key
 from dimos.agents.eval.judge import DEFAULT_JUDGE_MODEL, judge_answer
-from dimos.agents.eval.scene_eval_cases import object_entries
+from dimos.agents.eval.scene_eval_cases import (
+    RegionShape,
+    node_room_assignments,
+    object_entries,
+    region_at,
+)
 from dimos.agents.skills.scene_memory import (
     PoseTrail,
     SceneMemorySkillContainer,
     load_pose_trail,
     visit_intervals,
 )
-from dimos.mapping.occupancy.polygons import points_in_polygon, polygon_from_flat
-from dimos.mapping.occupancy.room_store import RoomStore
+from dimos.mapping.occupancy.polygons import points_in_polygon
 from dimos.memory2.replay import resolve_db_path
 from dimos.perception.scene_graph import SceneGraph
+
+
+def _graph_regions(graph: SceneGraph) -> list[RegionShape]:
+    return [RegionShape(id=n.id, kind=n.layer, polygon=n.polygon()) for n in graph.regions()]
 
 
 def check_storage(case: CaseEntry, key: AnswerKey, scene_db: Path, trail: PoseTrail) -> str:
     """Layer (a): does the expected fact exist in the stores? '' = pass."""
     expected = case.expected
-    if case.query == 1:
-        inside = points_in_polygon(trail.xy, polygon_from_flat(case.skill_args["region"]))
-        visits = [[round(a, 3), round(b, 3)] for a, b in visit_intervals(trail.ts, inside)]
-        if visits != expected["visits"]:
-            return f"trail visits {visits} != expected {expected['visits']}"
-        return ""
-    if case.query == 2:
-        with SceneGraph(scene_db) as graph:
+    with SceneGraph(scene_db) as graph:
+        regions = _graph_regions(graph)
+        if case.query == 1:
+            region = next((r for r in regions if r.id == expected["in_node"]), None)
+            if region is None:
+                return f"region {expected['in_node']} not in graph"
+            inside = points_in_polygon(trail.xy, region.polygon)
+            visits = [[round(a, 3), round(b, 3)] for a, b in visit_intervals(trail.ts, inside)]
+            if visits != expected["visits"]:
+                return f"trail visits {visits} != expected {expected['visits']}"
+            return ""
+        if case.query == 2:
             matches = graph.sightings(expected["name"])
-        last = matches[-1] if matches else None
-        if last is None:
-            return f"no sightings of {expected['name']} in store"
-        if round(last.ts, 3) != expected["last_ts"]:
-            return f"last sighting ts {last.ts} != expected {expected['last_ts']}"
-        return ""
-    if case.query == 3:
-        with RoomStore(scene_db) as store:
-            room_set = store.latest()
-        if room_set is None:
-            return "no room derivation in store"
-        n_rooms = len(room_set.by_kind("room"))
-        n_corridors = len(room_set.by_kind("corridor"))
-        if (n_rooms, n_corridors) != (expected["n_rooms"], expected["n_corridors"]):
-            return f"store has {n_rooms}+{n_corridors} rooms, expected {expected}"
-        return ""
-    if case.query == 4:
-        with SceneGraph(scene_db) as graph:
+            if not matches:
+                return f"no sightings of {expected['name']} in store"
+            if round(matches[-1].ts, 3) != expected["last_ts"]:
+                return f"last sighting ts {matches[-1].ts} != expected {expected['last_ts']}"
+            return ""
+        if case.query == 3:
+            n_rooms = sum(1 for r in regions if r.kind == "room")
+            n_corridors = sum(1 for r in regions if r.kind == "corridor")
+            if (n_rooms, n_corridors) != (expected["n_rooms"], expected["n_corridors"]):
+                return f"graph has {n_rooms}+{n_corridors} regions, expected {expected}"
+            return ""
+        if case.query == 4:
             sightings = graph.sightings()
-        with RoomStore(scene_db) as store:
-            room_set = store.latest()
-        assert room_set is not None
-        entry = next(
-            (o for o in object_entries(sightings, room_set) if o.name == expected["name"]), None
-        )
-        if entry is None:
-            return f"no sightings of {expected['name']} in store"
-        stay = next((r for r in entry.rooms if r.room_id == expected["room_id"]), None)
-        if stay is None:
-            return f"no {expected['name']} sightings resolve to room {expected['room_id']}"
-        if stay.last_ts != expected["last_in_room_ts"]:
-            return f"last in-room ts {stay.last_ts} != expected {expected['last_in_room_ts']}"
-        if entry.last_ts != expected["global_last_ts"]:
-            return f"global last ts {entry.last_ts} != expected {expected['global_last_ts']}"
-        return ""
-    if case.query == 5:
-        with SceneGraph(scene_db) as graph:
+            entry = next(
+                (o for o in object_entries(sightings, regions) if o.name == expected["name"]),
+                None,
+            )
+            if entry is None:
+                return f"no sightings of {expected['name']} in store"
+            stay = next((r for r in entry.rooms if r.room_id == expected["in_node"]), None)
+            if stay is None:
+                return f"no {expected['name']} sightings resolve to {expected['in_node']}"
+            if stay.last_ts != expected["last_in_room_ts"]:
+                return f"last in-room ts {stay.last_ts} != expected {expected['last_in_room_ts']}"
+            if entry.last_ts != expected["later_elsewhere_ts"]:
+                return (
+                    f"global last ts {entry.last_ts} != expected {expected['later_elsewhere_ts']}"
+                )
+            return ""
+        if case.query == 5:
             matches = graph.sightings(expected["name"])
-            in_vocab = graph.ever_in_vocabulary(expected["name"])
-            events = graph.scan_events()
-        if matches:
-            return f"unexpected sightings of {expected['name']}: {len(matches)}"
-        if in_vocab:
-            return f"{expected['name']} unexpectedly in a scan vocabulary"
-        if not events:
-            return "no scan events in store (coverage qualifier would be empty)"
-        return ""
+            if matches:
+                return f"unexpected sightings of {expected['name']}: {len(matches)}"
+            if graph.ever_in_vocabulary(expected["name"]):
+                return f"{expected['name']} unexpectedly in a scan vocabulary"
+            if not graph.scan_events():
+                return "no scan events in store (coverage qualifier would be empty)"
+            return ""
+        if case.query in (6, 7):
+            matches = graph.sightings(expected["name"])
+            if not matches:
+                return f"no sightings of {expected['name']} in store"
+            last = matches[-1]
+            if (last.room_id or "") != expected["room_id"]:
+                return f"last sighting room {last.room_id!r} != expected {expected['room_id']!r}"
+            if case.query == 6:
+                dx = abs(last.position[0] - expected["position"][0])
+                dy = abs(last.position[1] - expected["position"][1])
+                if max(dx, dy) > expected["position_tolerance_m"]:
+                    return f"last position {last.position} not within tolerance of {expected['position']}"
+            return ""
+        if case.query == 8:
+            assignments = node_room_assignments(graph.sightings(), regions)
+            names = sorted(
+                name for name, room in assignments.values() if room == expected["room_id"]
+            )
+            if names != expected["object_names"]:
+                return f"recomputed containment {names} != expected {expected['object_names']}"
+            return ""
+        if case.query == 9:
+            region = region_at(trail.xy[-1], regions)
+            if region is None or region.id != expected["room_id"]:
+                return f"trail end resolves to {region.id if region else None}, expected {expected['room_id']}"
+            return ""
+        if case.query == 10:
+            neighbors = sorted(n.id for n, _d in graph.adjacent_rooms(expected["node_id"]))
+            if neighbors != expected["neighbor_ids"]:
+                return f"graph adjacency {neighbors} != expected {expected['neighbor_ids']}"
+            return ""
     raise ValueError(f"Unknown query {case.query}")
 
 
 def check_skill(case: CaseEntry, metadata: dict[str, Any]) -> str:
-    """Layer (b): does the direct skill call return the expected fact?"""
+    """Layer (b): does the skill's metadata match the binding contract?"""
     expected = case.expected
     if case.query == 1:
         if metadata.get("visits") != expected["visits"]:
             return f"visits {metadata.get('visits')} != expected {expected['visits']}"
-        if metadata.get("last_exit_ts") != expected["last_exit_ts"]:
-            return f"last_exit_ts {metadata.get('last_exit_ts')} != {expected['last_exit_ts']}"
+        if metadata.get("last_interval") != expected["last_interval"]:
+            return f"last_interval {metadata.get('last_interval')} != {expected['last_interval']}"
+        if metadata.get("in_node") != expected["in_node"]:
+            return f"in_node {metadata.get('in_node')} != {expected['in_node']}"
         return ""
     if case.query == 2:
-        if metadata.get("last_ts") != expected["last_ts"]:
-            return f"last_ts {metadata.get('last_ts')} != expected {expected['last_ts']}"
+        sighting = metadata.get("last_sighting") or {}
+        if sighting.get("ts") != expected["last_ts"]:
+            return f"last_sighting.ts {sighting.get('ts')} != expected {expected['last_ts']}"
+        if metadata.get("sightings_matched") != expected["sightings"]:
+            return (
+                f"sightings_matched {metadata.get('sightings_matched')} != {expected['sightings']}"
+            )
         return ""
     if case.query == 3:
-        rooms = metadata.get("rooms", [])
-        n_rooms = sum(1 for r in rooms if r["kind"] == "room")
-        n_corridors = sum(1 for r in rooms if r["kind"] == "corridor")
+        regions = metadata.get("regions", [])
+        n_rooms = sum(1 for r in regions if r["kind"] == "room")
+        n_corridors = sum(1 for r in regions if r["kind"] == "corridor")
         if (n_rooms, n_corridors) != (expected["n_rooms"], expected["n_corridors"]):
             return f"skill reports {n_rooms}+{n_corridors}, expected {expected}"
         return ""
     if case.query == 4:
-        if metadata.get("last_ts") != expected["last_in_room_ts"]:
-            return f"last_ts {metadata.get('last_ts')} != expected {expected['last_in_room_ts']}"
-        if metadata.get("later_elsewhere_ts") != expected["global_last_ts"]:
+        sighting = metadata.get("last_sighting") or {}
+        if sighting.get("ts") != expected["last_in_room_ts"]:
+            return (
+                f"last_sighting.ts {sighting.get('ts')} != expected {expected['last_in_room_ts']}"
+            )
+        if metadata.get("later_elsewhere_ts") != expected["later_elsewhere_ts"]:
             return (
                 f"later_elsewhere_ts {metadata.get('later_elsewhere_ts')} != "
-                f"expected {expected['global_last_ts']} (trap evidence missing)"
+                f"expected {expected['later_elsewhere_ts']} (trap evidence missing)"
             )
+        if metadata.get("last_interval") != expected["last_interval"]:
+            return f"last_interval {metadata.get('last_interval')} != {expected['last_interval']}"
         return ""
     if case.query == 5:
-        if metadata.get("ever_seen_in_region") is not False:
-            return f"ever_seen_in_region {metadata.get('ever_seen_in_region')} != False"
+        if metadata.get("sightings_matched") != 0:
+            return f"sightings_matched {metadata.get('sightings_matched')} != 0"
         if metadata.get("ever_in_vocabulary") is not False:
             return f"ever_in_vocabulary {metadata.get('ever_in_vocabulary')} != False"
+        coverage = metadata.get("coverage") or {}
+        missing = [
+            k
+            for k in ("scan_passes", "passes_covering_region", "region_last_scanned_ts")
+            if k not in coverage
+        ]
+        if missing:
+            return f"coverage keys missing: {missing}"
+        return ""
+    if case.query == 6:
+        # Several same-name nodes may match; "where is my X" means the most
+        # recently seen one.
+        hits = [h for h in metadata.get("hits", []) if h["name"] == expected["name"]]
+        hit = max(hits, key=lambda h: h["last_seen_ts"], default=None)
+        if hit is None:
+            return f"no find hit for {expected['name']}"
+        if (hit.get("parent") or "") != expected["room_id"]:
+            return f"hit parent {hit.get('parent')!r} != expected {expected['room_id']!r}"
+        dx = abs(hit["position"][0] - expected["position"][0])
+        dy = abs(hit["position"][1] - expected["position"][1])
+        if max(dx, dy) > expected["position_tolerance_m"]:
+            return f"hit position {hit['position']} not within tolerance of {expected['position']}"
+        return ""
+    if case.query == 7:
+        sighting = metadata.get("last_sighting") or {}
+        if sighting.get("room_id") != expected["room_id"]:
+            return f"last_sighting.room_id {sighting.get('room_id')!r} != {expected['room_id']!r}"
+        return ""
+    if case.query == 8:
+        children = metadata.get("children", [])
+        names = sorted(c["name"] for c in children if c.get("layer") == "object")
+        if names != expected["object_names"]:
+            return f"children {names} != expected {expected['object_names']}"
+        return ""
+    if case.query == 9:
+        node = metadata.get("node") or {}
+        if node.get("parent") != expected["room_id"]:
+            return f"node.parent {node.get('parent')!r} != expected {expected['room_id']!r}"
+        return ""
+    if case.query == 10:
+        neighbors = sorted(e["node"]["id"] for e in metadata.get("neighbors", []))
+        if neighbors != expected["neighbor_ids"]:
+            return f"neighbors {neighbors} != expected {expected['neighbor_ids']}"
         return ""
     raise ValueError(f"Unknown query {case.query}")
 
 
 def room_set_summary(scene_db: Path) -> dict[str, Any]:
-    """What room derivation is current — the agent may have re-derived."""
-    with RoomStore(scene_db) as store:
-        room_set = store.latest()
-    if room_set is None:
+    """What region set is current — the agent may have re-derived rooms."""
+    with SceneGraph(scene_db) as graph:
+        regions = graph.regions()
+    if not regions:
         return {"derived": False}
     return {
         "derived": True,
-        "source": room_set.source,
-        "derived_ts": room_set.derived_ts,
-        "n_rooms": len(room_set.by_kind("room")),
-        "n_corridors": len(room_set.by_kind("corridor")),
+        "n_rooms": sum(1 for r in regions if r.layer == "room"),
+        "n_corridors": sum(1 for r in regions if r.layer == "corridor"),
+        "region_ids": [r.id for r in regions],
     }
 
 
 def daemon_launch_command(scene_db: Path, recording: str) -> str:
+    # The -o prefix is the module class name lowercased (no underscores).
     return (
-        f"uv run dimos -o scene_memory_skill_container.sightings_db={scene_db} "
-        f"--replay --replay-db {recording} run unitree-go2-agentic --daemon"
+        f"uv run dimos --replay --replay-db {recording} run unitree-go2-agentic "
+        f"-o scenememoryskillcontainer.sightings_db={scene_db} --daemon"
     )
 
 
 def print_table(rows: list[dict[str, Any]]) -> None:
     header = (
-        f"{'case':<22} {'storage':<8} {'skill':<8} {'agent':<9} {'halluc':<7} "
+        f"{'case':<26} {'storage':<8} {'skill':<8} {'agent':<9} {'halluc':<7} "
         f"{'tok in/out':<14} {'llm':<4} {'tools':<5}"
     )
     print(header)
@@ -194,7 +285,7 @@ def print_table(rows: list[dict[str, Any]]) -> None:
         usage = agent.get("usage", {})
         tok = f"{usage['input_tokens']}/{usage['output_tokens']}" if usage else "-"
         print(
-            f"{row['case']:<22} "
+            f"{row['case']:<26} "
             f"{'PASS' if row['storage'] == '' else 'FAIL':<8} "
             f"{'PASS' if row['skill'] == '' else 'FAIL':<8} "
             f"{score if score is not None else 'NOT RUN':<9} "

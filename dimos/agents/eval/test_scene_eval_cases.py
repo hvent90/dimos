@@ -16,39 +16,41 @@
 
 import numpy as np
 
+from dimos.agents.eval.answer_key import AnswerKey
 from dimos.agents.eval.scene_eval_cases import (
+    RegionShape,
     build_answer_key,
     find_trap_instances,
     object_entries,
 )
 from dimos.agents.skills.scene_memory import PoseTrail
-from dimos.mapping.occupancy.room_store import StoredRoom, StoredRoomSet
 from dimos.perception.scene_graph import Sighting
 
 T0 = 1_000_000.0
 
 
-def _room(room_id: int, x0: float, y0: float, x1: float, y1: float) -> StoredRoom:
-    return StoredRoom(
-        id=room_id,
-        kind="room",
-        area_m2=(x1 - x0) * (y1 - y0),
-        centroid_xy=((x0 + x1) / 2, (y0 + y1) / 2),
-        anchor_xy=((x0 + x1) / 2, (y0 + y1) / 2),
-        max_clearance_m=1.0,
+def _region(region_id: str, kind: str, x0: float, y0: float, x1: float, y1: float) -> RegionShape:
+    return RegionShape(
+        id=region_id,
+        kind=kind,
         polygon=np.array([[x0, y0], [x1, y0], [x1, y1], [x0, y1]], dtype=np.float64),
-        derived_ts=900.0,
     )
 
 
-# Two 4x4 m rooms: room 1 around (2, 2), room 2 around (7, 2).
-ROOM_SET = StoredRoomSet(
-    derived_ts=900.0,
-    source="test",
-    explored_fraction=0.5,
-    rooms=(_room(1, 0.0, 0.0, 4.0, 4.0), _room(2, 5.0, 0.0, 9.0, 4.0)),
-    doorways=(),
-)
+# Two 4x4 m rooms around (2, 2) and (7, 2), plus a corridor above room_1
+# that shares its doorway with both rooms.
+REGIONS = [
+    _region("room_1", "room", 0.0, 0.0, 4.0, 4.0),
+    _region("room_2", "room", 5.0, 0.0, 9.0, 4.0),
+    _region("corridor_3", "corridor", 0.0, 5.0, 9.0, 7.0),
+]
+ADJACENCY = {
+    "room_1": ["corridor_3"],
+    "room_2": ["corridor_3"],
+    "corridor_3": ["room_1", "room_2"],
+}
+COVERED_ROOMS = ["room_1", "room_2"]
+EXPLORED = 0.5
 
 # The robot starts in room 1, crosses to room 2, revisits room 1, then leaves.
 TRAIL = PoseTrail(
@@ -57,89 +59,143 @@ TRAIL = PoseTrail(
 )
 
 # "box" is the trap object: last seen in room 1 at T0+4, later in room 2 at
-# T0+8. "couch" exists so query 2 prefers it.
+# T0+8 (far apart -> two nodes, as the fold would assign). "couch" exists so
+# queries 2/6 prefer it; "person" for query 7.
 SIGHTINGS = [
-    Sighting(name="box", ts=T0 + 2.0, position=(2.0, 2.0, 0.1)),
-    Sighting(name="box", ts=T0 + 3.0, position=(2.0, 2.0, 0.1)),
-    Sighting(name="box", ts=T0 + 4.0, position=(2.0, 2.0, 0.1)),
-    Sighting(name="box", ts=T0 + 8.0, position=(7.0, 2.0, 0.1)),
-    Sighting(name="couch", ts=T0 + 3.0, position=(7.0, 1.0, 0.2)),
-    Sighting(name="couch", ts=T0 + 6.0, position=(7.0, 1.0, 0.2)),
+    Sighting(name="box", ts=T0 + 2.0, position=(2.0, 2.0, 0.1), node_id="object_1"),
+    Sighting(name="box", ts=T0 + 3.0, position=(2.0, 2.0, 0.1), node_id="object_1"),
+    Sighting(name="box", ts=T0 + 4.0, position=(2.0, 2.0, 0.1), node_id="object_1"),
+    Sighting(name="box", ts=T0 + 8.0, position=(7.0, 2.0, 0.1), node_id="object_2"),
+    Sighting(name="couch", ts=T0 + 3.0, position=(7.0, 1.0, 0.2), node_id="object_3"),
+    Sighting(name="couch", ts=T0 + 6.0, position=(7.0, 1.0, 0.2), node_id="object_3"),
+    Sighting(name="person", ts=T0 + 9.0, position=(2.5, 2.5, 0.4), node_id="object_4"),
 ]
-VOCABULARY = ["box", "couch", "mug"]
+VOCABULARY = ["box", "couch", "mug", "person"]
 
 
-def _build_key() -> object:
-    return build_answer_key("test_rec", TRAIL, SIGHTINGS, VOCABULARY, ROOM_SET)
+def _build_key(queries: tuple[int, ...] | None = None, sightings: list | None = None) -> AnswerKey:
+    kwargs = {} if queries is None else {"queries": queries}
+    return build_answer_key(
+        "test_rec",
+        TRAIL,
+        SIGHTINGS if sightings is None else sightings,
+        VOCABULARY,
+        REGIONS,
+        EXPLORED,
+        "test",
+        COVERED_ROOMS,
+        ADJACENCY,
+        **kwargs,
+    )
 
 
 def test_object_entries_room_stays() -> None:
-    entries = object_entries(SIGHTINGS, ROOM_SET)
+    entries = object_entries(SIGHTINGS, REGIONS)
     box = next(e for e in entries if e.name == "box")
     assert box.sightings == 4
     assert box.last_ts == T0 + 8.0
+    assert box.last_room_id == "room_2"
     by_room = {stay.room_id: stay for stay in box.rooms}
-    assert by_room[1].intervals == [[T0 + 2.0, T0 + 4.0]]
-    assert by_room[1].last_ts == T0 + 4.0
-    assert by_room[2].intervals == [[T0 + 8.0, T0 + 8.0]]
+    assert by_room["room_1"].intervals == [[T0 + 2.0, T0 + 4.0]]
+    assert by_room["room_1"].last_ts == T0 + 4.0
+    assert by_room["room_2"].intervals == [[T0 + 8.0, T0 + 8.0]]
 
 
 def test_find_trap_instances() -> None:
-    entries = object_entries(SIGHTINGS, ROOM_SET)
-    traps = find_trap_instances(entries, SIGHTINGS, ROOM_SET)
+    entries = object_entries(SIGHTINGS, REGIONS)
+    traps = find_trap_instances(entries, SIGHTINGS, REGIONS)
     assert len(traps) == 1
     trap = traps[0]
-    assert (trap.name, trap.room_id) == ("box", 1)
+    assert (trap.name, trap.room_id) == ("box", "room_1")
     assert trap.last_in_room_ts == T0 + 4.0
     assert trap.global_last_ts == T0 + 8.0
     # (2, 2) is inside room 1 and 3 m from room 2 — an unambiguous assignment.
     assert trap.margin_m == 3.0
 
 
-def test_q1_visits_and_last_exit() -> None:
-    key = build_answer_key("test_rec", TRAIL, SIGHTINGS, VOCABULARY, ROOM_SET)
-    case = key.case("q1_region_visits")
-    # The region is a 4 m box on the start pose = room 1: two visits.
+def test_q1_agent_visits_to_start_room() -> None:
+    case = _build_key().case("q1_agent_last_in_room")
+    # The robot starts in room_1: two visits, leaving for good at T0+11.
+    assert case.skill == "last_seen"
+    assert case.skill_args == {"name": "agent", "in_node": "room_1"}
     assert case.expected["visits"] == [[T0, T0 + 4.0], [T0 + 10.0, T0 + 11.0]]
+    assert case.expected["last_interval"] == [T0 + 10.0, T0 + 11.0]
     assert case.expected["last_exit_ts"] == T0 + 11.0
-    assert case.skill == "robot_visits_to_region"
-    assert case.skill_args["region"] == [0.0, 0.0, 4.0, 0.0, 4.0, 4.0, 0.0, 4.0]
 
 
 def test_q2_prefers_couch() -> None:
-    key = build_answer_key("test_rec", TRAIL, SIGHTINGS, VOCABULARY, ROOM_SET)
-    case = key.case("q2_last_seen")
+    case = _build_key().case("q2_last_seen")
+    assert case.skill == "last_seen"
     assert case.skill_args == {"name": "couch"}
     assert case.expected["last_ts"] == T0 + 6.0
+    assert case.expected["last_room_id"] == "room_2"
 
 
 def test_q3_counts_and_qualifier() -> None:
-    key = build_answer_key("test_rec", TRAIL, SIGHTINGS, VOCABULARY, ROOM_SET)
-    case = key.case("q3_room_count")
-    assert case.expected == {"n_rooms": 2, "n_corridors": 0, "explored_fraction": 0.5}
+    case = _build_key().case("q3_room_count")
+    assert case.skill == "get_scene"
+    assert case.expected == {"n_rooms": 2, "n_corridors": 1, "explored_fraction": 0.5}
     assert "lower bound" in case.grading_notes
 
 
 def test_q4_is_the_trap_case() -> None:
-    key = build_answer_key("test_rec", TRAIL, SIGHTINGS, VOCABULARY, ROOM_SET)
-    case = key.case("q4_last_seen_in_room")
-    assert case.skill_args == {"name": "box", "room_id": 1}
+    case = _build_key().case("q4_last_seen_in_room")
+    assert case.skill == "last_seen"
+    assert case.skill_args == {"name": "box", "in_node": "room_1"}
     assert case.expected["last_in_room_ts"] == T0 + 4.0
     assert case.expected["last_interval"] == [T0 + 2.0, T0 + 4.0]
-    assert case.expected["global_last_ts"] == T0 + 8.0
+    assert case.expected["later_elsewhere_ts"] == T0 + 8.0
     assert "TRAP" in case.grading_notes
 
 
 def test_q5_absent_object_never_in_vocabulary() -> None:
-    key = build_answer_key("test_rec", TRAIL, SIGHTINGS, VOCABULARY, ROOM_SET)
-    case = key.case("q5_never_in_room")
-    assert case.skill_args == {"name": "crocodile", "room_id": 1}
-    assert case.expected["ever_seen_in_region"] is False
+    case = _build_key().case("q5_never_in_room")
+    assert case.skill == "last_seen"
+    assert case.skill_args == {"name": "fire extinguisher", "in_node": "room_1"}
+    assert case.expected["sightings_matched"] == 0
     assert case.expected["ever_in_vocabulary"] is False
 
 
+def test_q6_where_is_requires_staleness_qualifier() -> None:
+    case = _build_key().case("q6_where_is")
+    assert case.skill == "find"
+    assert case.skill_args == {"text": "couch"}
+    assert case.expected["room_id"] == "room_2"
+    assert case.expected["staleness_qualifier_required"] is True
+    assert "staleness" in case.grading_notes or "as of" in case.grading_notes
+
+
+def test_q7_which_room_prefers_person() -> None:
+    case = _build_key().case("q7_which_room_last_seen")
+    assert case.skill == "last_seen"
+    assert case.skill_args == {"name": "person"}
+    assert case.expected["room_id"] == "room_1"
+
+
+def test_q8_node_level_containment() -> None:
+    case = _build_key().case("q8_whats_in_room")
+    # Node-level: room_1 holds the first box node + the person; room_2 the
+    # second box node + the couch. The tie breaks to the first room by id.
+    assert case.skill == "nodes_in"
+    assert case.skill_args == {"node_id": "room_1"}
+    assert case.expected["object_names"] == ["box", "person"]
+
+
+def test_q9_current_room_is_none_when_outside() -> None:
+    # The trail ends at (20, 20), outside every region — q9 must be dropped.
+    key = _build_key(queries=(9,))
+    assert [c.id for c in key.cases] == []
+
+
+def test_q10_corridor_adjacency() -> None:
+    case = _build_key().case("q10_rooms_on_corridor")
+    assert case.skill == "adjacent"
+    assert case.skill_args == {"node_id": "corridor_3"}
+    assert case.expected["neighbor_ids"] == ["room_1", "room_2"]
+
+
 def test_everything_starts_unconfirmed() -> None:
-    key = build_answer_key("test_rec", TRAIL, SIGHTINGS, VOCABULARY, ROOM_SET)
+    key = _build_key()
     assert all(not c.confirmed for c in key.cases)
     assert all(not o.confirmed for o in key.objects)
     assert not key.rooms.confirmed
@@ -147,16 +203,16 @@ def test_everything_starts_unconfirmed() -> None:
 
 
 def test_queries_subset_builds_only_those_cases() -> None:
-    key = build_answer_key("test_rec", TRAIL, SIGHTINGS, VOCABULARY, ROOM_SET, queries=(1, 3))
-    assert [c.id for c in key.cases] == ["q1_region_visits", "q3_room_count"]
+    key = _build_key(queries=(1, 3))
+    assert [c.id for c in key.cases] == ["q1_agent_last_in_room", "q3_room_count"]
 
 
 def test_q4_dropped_without_a_trap_instance() -> None:
     no_trap = [s for s in SIGHTINGS if s.name != "box"]
-    key = build_answer_key("test_rec", TRAIL, no_trap, VOCABULARY, ROOM_SET)
+    key = _build_key(sightings=no_trap)
     assert "q4_last_seen_in_room" not in [c.id for c in key.cases]
 
 
 def test_q2_dropped_without_sightings() -> None:
-    key = build_answer_key("test_rec", TRAIL, [], VOCABULARY, ROOM_SET, queries=(2, 5))
+    key = _build_key(queries=(2, 5), sightings=[])
     assert [c.id for c in key.cases] == ["q5_never_in_room"]

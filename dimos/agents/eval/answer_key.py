@@ -34,7 +34,7 @@ import yaml
 class RoomStay(BaseModel):
     """One object's presence in one room: sighting intervals within it."""
 
-    room_id: int
+    room_id: str  # scene-graph node id, e.g. "room_3"
     first_ts: float
     last_ts: float
     intervals: list[list[float]]
@@ -48,6 +48,7 @@ class ObjectEntry(BaseModel):
     first_ts: float
     last_ts: float
     last_position: list[float]
+    last_room_id: str = ""  # region of the last sighting ("" = none)
     rooms: list[RoomStay]
     confirmed: bool = False
 

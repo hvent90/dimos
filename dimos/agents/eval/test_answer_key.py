@@ -43,9 +43,13 @@ def _key() -> AnswerKey:
                 first_ts=1042.9,
                 last_ts=1054.6,
                 last_position=[-1.4, 4.8, 0.2],
+                last_room_id="room_2",
                 rooms=[
                     RoomStay(
-                        room_id=2, first_ts=1042.9, last_ts=1046.8, intervals=[[1042.9, 1046.8]]
+                        room_id="room_2",
+                        first_ts=1042.9,
+                        last_ts=1046.8,
+                        intervals=[[1042.9, 1046.8]],
                     )
                 ],
             )
@@ -55,7 +59,7 @@ def _key() -> AnswerKey:
                 id="q2_last_seen",
                 query=2,
                 question="When did you last see a couch?",
-                skill="last_seen_object",
+                skill="last_seen",
                 skill_args={"name": "couch"},
                 expected={"last_ts": 1054.6},
             )
@@ -83,6 +87,6 @@ def test_confirmed_entries_drop_out(tmp_path: Path) -> None:
 
 def test_case_lookup_by_id() -> None:
     key = _key()
-    assert key.case("q2_last_seen").skill == "last_seen_object"
+    assert key.case("q2_last_seen").skill == "last_seen"
     with pytest.raises(KeyError, match="q9_missing"):
         key.case("q9_missing")

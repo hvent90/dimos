@@ -827,6 +827,7 @@ class SceneMemorySkillContainer(Module):
         if radius <= 0:
             return SkillResult.fail("INVALID_INPUT", "radius must be positive")
         with self._graph() as graph:
+            self._ensure_rooms(graph)  # hits carry room lineage
             if node_id:
                 center_node = graph.node(node_id)
                 if center_node is None or center_node.position is None:
@@ -991,7 +992,9 @@ class SceneMemorySkillContainer(Module):
         self, name: str, in_node: str, window: tuple[float, float] | None
     ) -> SkillResult[CommonSkillError]:
         with self._graph() as graph:
-            note = self._ensure_rooms(graph) if in_node else ""
+            # Rooms-dependent even without in_node: the answer's lineage and
+            # room_id come from the room set, so auto-derive here too.
+            note = self._ensure_rooms(graph)
             if name.strip().lower() in _AGENT_NAMES:
                 return self._agent_seen(graph, in_node, window)
             region: SceneNode | None = None
@@ -1230,13 +1233,17 @@ class SceneMemorySkillContainer(Module):
         edges run anchor-doorway-anchor. ``ts`` is recording time so the
         viewer timeline lines up with the replayed camera/lidar streams.
         """
-        if not self.scene_graph_markers.transport:
-            return
+        if not (
+            self.scene_graph_rooms.transport
+            or self.scene_graph_markers.transport
+            or self.scene_graph_edges.transport
+        ):
+            return  # bare test containers have no wired streams
         regions = graph.regions()
         objects = graph.nodes(layer="object")
         agent = graph.node(AGENT_ID)
 
-        if regions:
+        if regions and self.scene_graph_rooms.transport:
             polygons = [r.polygon() for r in regions]
             points = np.vstack([np.column_stack([p, np.zeros(len(p))]) for p in polygons])
             ids = np.concatenate(
@@ -1281,7 +1288,8 @@ class SceneMemorySkillContainer(Module):
                     z=agent.position[2],
                 )
             )
-        self.scene_graph_markers.publish(EntityMarkers(markers=markers, ts=ts))
+        if self.scene_graph_markers.transport:
+            self.scene_graph_markers.publish(EntityMarkers(markers=markers, ts=ts))
 
         anchors = {r.id: r.xy for r in regions}
         segments: list[tuple[tuple[float, float, float], tuple[float, float, float]]] = []
@@ -1301,8 +1309,9 @@ class SceneMemorySkillContainer(Module):
                 segments.append(((pax, pay, SCENE_GRAPH_ROOM_Z), (mx, my, SCENE_GRAPH_ROOM_Z)))
                 segments.append(((mx, my, SCENE_GRAPH_ROOM_Z), (cax, cay, SCENE_GRAPH_ROOM_Z)))
                 traversability += [_ADJACENT_TRAV, _ADJACENT_TRAV]
-        self.scene_graph_edges.publish(
-            LineSegments3D(
-                ts=ts, frame_id="world", segments=segments, traversability=traversability
+        if self.scene_graph_edges.transport:
+            self.scene_graph_edges.publish(
+                LineSegments3D(
+                    ts=ts, frame_id="world", segments=segments, traversability=traversability
+                )
             )
-        )
