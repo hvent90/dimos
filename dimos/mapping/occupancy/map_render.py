@@ -19,7 +19,7 @@ axis labels, room polygons with per-vertex coordinate tags, object markers,
 and the robot pose. An agent that spots wrong room geometry in the picture
 can read the correct world coordinates from the gridlines and answer with
 numbers (e.g. a corrected polygon for a boundary edit). The ``view_map``
-skill (dimos/agents/skills/scene_memory.py) pairs the image with the same
+skill (dimos/agents/skills/scene_memory_rooms.py) pairs the image with the same
 geometry as JSON.
 """
 

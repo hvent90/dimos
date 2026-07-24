@@ -45,11 +45,15 @@ Room *derivation* history (the ``rooms``/``room_derivations`` streams
 written via :class:`RoomStore`) is evidence only: no query reads it. Room
 nodes in the graph are canonical; geometry is mutable across derivations
 while node ids stay stable: a re-derived room that mutually contains an
-existing region's centroid updates that node in place, unmatched old
-regions retire, unmatched derived rooms get fresh monotonic ids. The one
-exception is :meth:`SceneGraph.ensure_migrated`, which reads the latest
-stored derivation once to materialize room nodes when migrating a
-pre-graph DB.
+existing region's centroid updates that node in place (id and name
+survive), unmatched old regions retire, unmatched derived rooms get fresh
+monotonic ids. The one exception is :meth:`SceneGraph.ensure_migrated`,
+which reads the latest stored derivation once to materialize room nodes
+when migrating a pre-graph DB.
+
+Agent room edits (:meth:`rename_region`, :meth:`set_region_geometry`,
+:meth:`replace_regions`) append through the same event-sourced streams —
+every edit is one more observation row, attributable and replayable.
 """
 
 from __future__ import annotations
@@ -64,7 +68,11 @@ import numpy as np
 from numpy.typing import NDArray
 
 from dimos.constants import STATE_DIR
-from dimos.mapping.occupancy.polygons import assign_to_polygons, points_in_polygon
+from dimos.mapping.occupancy.polygons import (
+    assign_to_polygons,
+    distance_to_polygon,
+    points_in_polygon,
+)
 from dimos.mapping.occupancy.room_store import RoomStore, StoredRoom, StoredRoomSet
 from dimos.memory2.store.sqlite import SqliteStore
 from dimos.memory2.type.observation import Observation
@@ -187,6 +195,26 @@ class FoldResult:
     appended_sightings: int
     created_node_ids: tuple[str, ...]
     updated_node_ids: tuple[str, ...]
+
+
+@dataclass(frozen=True)
+class RegionGeometry:
+    """Derived geometric properties of one region outline."""
+
+    polygon: NDArray[np.float64]  # (N, 2) world xy
+    area_m2: float
+    centroid_xy: tuple[float, float]
+    anchor_xy: tuple[float, float]
+    max_clearance_m: float
+
+
+@dataclass(frozen=True)
+class RegionSpec:
+    """A region node to create: geometry plus layer and display name."""
+
+    kind: str  # "room" | "corridor"
+    name: str  # "" -> the node id
+    geometry: RegionGeometry
 
 
 def _node_from_obs(obs: Observation[Any]) -> SceneNode:
@@ -628,11 +656,12 @@ class SceneGraph:
 
         Region identity is stable across derivations: a derived room that
         mutually contains an existing region's centroid updates that node
-        in place, so its id survives. Unmatched old regions retire;
-        unmatched derived rooms get fresh monotonic ids. Doorway
-        ``adjacent`` edges rebuild from the derivation's records, objects
-        re-check containment against the new regions, and ``room_id`` is
-        backfilled on sighting rows that lack one.
+        in place — id and name survive, geometry and metadata refresh (any
+        agent ``origin`` mark clears; callers gate on it before deriving).
+        Unmatched old regions retire; unmatched derived rooms get fresh
+        monotonic ids. Doorway ``adjacent`` edges rebuild from the
+        derivation's records, objects re-check containment, and sighting
+        rows lacking a ``room_id`` are backfilled.
         """
         ts = room_set.derived_ts
         nodes, edges = self._load()
@@ -695,7 +724,7 @@ class SceneGraph:
                 SceneNode(
                     id=node_id,
                     layer=room.kind,
-                    name=node_id,  # room naming is deferred; rooms stay "room_3"
+                    name=node_id,  # unnamed until an agent renames it
                     position=(room.anchor_xy[0], room.anchor_xy[1], 0.0),
                     extent=[round(float(v), 3) for v in room.polygon.ravel()],
                     first_seen_ts=ts,
@@ -723,25 +752,201 @@ class SceneGraph:
                 ts,
             )
 
+        self._reassign_members(ts)
+
+    def _reassign_members(self, ts: float, recheck_sightings: bool = False) -> tuple[int, int]:
+        """Re-check containment after the region set changed.
+
+        Objects reparent to whichever live region contains them now.
+        Sighting rows lacking a ``room_id`` are backfilled; with
+        ``recheck_sightings`` every row's room is recomputed (a boundary
+        edit moves history, not just nodes). Returns (objects moved,
+        sighting rows rewritten).
+        """
+        nodes, _ = self._load()
         regions = self.regions()
+        moved = 0
         for node in [n for n in nodes.values() if n.layer == "object" and not n.retired]:
             room_id = self.assign_regions(np.asarray([node.xy], dtype=np.float64), regions)[0]
-            self._set_parent(node.id, room_id if room_id else BUILDING_ID, ts)
+            target = room_id if room_id else BUILDING_ID
+            if self.parent_id(node.id) != target:
+                moved += 1
+            self._set_parent(node.id, target, ts)
 
         rows = self.sightings()
-        needs_backfill = [s for s in rows if not s.room_id]
-        if needs_backfill:
-            xy = np.asarray([s.position[:2] for s in needs_backfill], dtype=np.float64)
-            resolved = self.assign_regions(xy, regions)
-            fixes = {
-                id(s): room_id
-                for s, room_id in zip(needs_backfill, resolved, strict=True)
-                if room_id
-            }
-            if fixes:
-                self._rewrite_sightings(
-                    [replace(s, room_id=fixes[id(s)]) if id(s) in fixes else s for s in rows]
-                )
+        candidates = rows if recheck_sightings else [s for s in rows if not s.room_id]
+        if not candidates:
+            return moved, 0
+        xy = np.asarray([s.position[:2] for s in candidates], dtype=np.float64)
+        resolved = self.assign_regions(xy, regions)
+        fixes: dict[int, str] = {}
+        for s, room_id in zip(candidates, resolved, strict=True):
+            if recheck_sightings:
+                if room_id != s.room_id:
+                    fixes[id(s)] = room_id
+            elif room_id:
+                fixes[id(s)] = room_id
+        if fixes:
+            self._rewrite_sightings(
+                [replace(s, room_id=fixes[id(s)]) if id(s) in fixes else s for s in rows]
+            )
+        return moved, len(fixes)
+
+    def region_or_raise(self, node_id: str) -> SceneNode:
+        """The live region node, or KeyError naming the known regions."""
+        nodes, _ = self._load()
+        node = nodes.get(node_id)
+        if node is None or node.layer not in ("room", "corridor") or node.retired:
+            known = ", ".join(n.id for n in self.regions()) or "none"
+            raise KeyError(f"no live region '{node_id}' (known regions: {known})")
+        return node
+
+    def rename_region(self, node_id: str, name: str, ts: float) -> SceneNode:
+        """Rename a room/corridor node; the name survives re-derivations.
+
+        Identity matching in :meth:`apply_rooms` keeps the node (and so its
+        name) when the same place re-derives.
+        """
+        node = self.region_or_raise(node_id)
+        renamed = replace(node, name=name, last_seen_ts=ts)
+        self._append_node(renamed, ts)
+        return renamed
+
+    def set_region_geometry(
+        self, node_id: str, geometry: RegionGeometry, ts: float
+    ) -> tuple[SceneNode, int, int]:
+        """Replace one region's outline in place (same id, same name).
+
+        Marks the node ``origin: "agent"`` so automatic derivation defers
+        to it. Returns (node, objects moved, sighting rows rewritten).
+        """
+        node = self.region_or_raise(node_id)
+        updated = replace(
+            node,
+            position=(geometry.anchor_xy[0], geometry.anchor_xy[1], 0.0),
+            extent=[round(float(v), 3) for v in geometry.polygon.ravel()],
+            last_seen_ts=ts,
+            metadata={
+                **node.metadata,
+                "area_m2": geometry.area_m2,
+                "centroid_xy": [
+                    round(geometry.centroid_xy[0], 3),
+                    round(geometry.centroid_xy[1], 3),
+                ],
+                "max_clearance_m": geometry.max_clearance_m,
+                "derived_ts": ts,
+                "origin": "agent",
+            },
+        )
+        self._append_node(updated, ts)
+        moved, rewritten = self._reassign_members(ts, recheck_sightings=True)
+        return updated, moved, rewritten
+
+    def replace_regions(
+        self, old_ids: list[str], specs: list[RegionSpec], ts: float
+    ) -> tuple[list[SceneNode], int, int]:
+        """Retire regions and create replacements (agent merge/split).
+
+        The new nodes get fresh monotonic ids and ``origin: "agent"``.
+        Doorway adjacency to outside regions re-points to whichever
+        replacement is nearest the doorway; adjacency wholly inside
+        ``old_ids`` retires. Objects and sightings re-check containment.
+        Returns (new nodes, objects moved, sighting rows rewritten).
+        """
+        old_nodes = [self.region_or_raise(node_id) for node_id in old_ids]
+        nodes, edges = self._load()
+
+        external: list[tuple[str, dict[str, Any]]] = []
+        for edge in list(edges.values()):
+            if edge.retired:
+                continue
+            if edge.parent_id in old_ids or edge.child_id in old_ids:
+                if edge.kind == "adjacent":
+                    other = edge.child_id if edge.parent_id in old_ids else edge.parent_id
+                    if other not in old_ids:
+                        external.append((other, dict(edge.metadata)))
+                self._append_edge(replace(edge, retired=True), ts)
+        for node in old_nodes:
+            self._append_node(replace(node, retired=True), ts)
+
+        next_region = 1 + max(
+            (_node_index(i) for i in nodes if i.startswith(("room_", "corridor_"))),
+            default=0,
+        )
+        created: list[SceneNode] = []
+        for spec in specs:
+            geometry = spec.geometry
+            node_id = f"{spec.kind}_{next_region}"
+            next_region += 1
+            node = SceneNode(
+                id=node_id,
+                layer=spec.kind,
+                name=spec.name or node_id,
+                position=(geometry.anchor_xy[0], geometry.anchor_xy[1], 0.0),
+                extent=[round(float(v), 3) for v in geometry.polygon.ravel()],
+                first_seen_ts=ts,
+                last_seen_ts=ts,
+                sightings=0,
+                retired=False,
+                metadata={
+                    "area_m2": geometry.area_m2,
+                    "centroid_xy": [
+                        round(geometry.centroid_xy[0], 3),
+                        round(geometry.centroid_xy[1], 3),
+                    ],
+                    "max_clearance_m": geometry.max_clearance_m,
+                    "derived_ts": ts,
+                    "origin": "agent",
+                },
+            )
+            self._append_node(node, ts)
+            self._set_parent(node_id, BUILDING_ID, ts)
+            created.append(node)
+
+        seen_pairs: set[tuple[str, str]] = set()
+        for other, metadata in external:
+            xy = metadata.get("xy")
+            target = created[0]
+            if xy is not None and len(created) > 1:
+                distances = [
+                    float(distance_to_polygon(np.asarray([xy], dtype=np.float64), n.polygon())[0])
+                    for n in created
+                ]
+                target = created[int(np.argmin(distances))]
+            pair = (min(other, target.id), max(other, target.id))
+            if pair in seen_pairs:
+                continue
+            seen_pairs.add(pair)
+            self._append_edge(
+                SceneEdge(
+                    parent_id=target.id,
+                    child_id=other,
+                    kind="adjacent",
+                    retired=False,
+                    metadata=metadata,
+                ),
+                ts,
+            )
+
+        moved, rewritten = self._reassign_members(ts, recheck_sightings=True)
+        return created, moved, rewritten
+
+    def link_adjacent(
+        self, a_id: str, b_id: str, xy: tuple[float, float], width_m: float, ts: float
+    ) -> None:
+        """Record a doorway-style adjacency between two live regions."""
+        self.region_or_raise(a_id)
+        self.region_or_raise(b_id)
+        self._append_edge(
+            SceneEdge(
+                parent_id=a_id,
+                child_id=b_id,
+                kind="adjacent",
+                retired=False,
+                metadata={"xy": [round(xy[0], 3), round(xy[1], 3)], "width_m": width_m},
+            ),
+            ts,
+        )
 
     def ensure_migrated(self) -> int:
         """Fold pre-graph sighting rows (no ``node_id``) through attachment.

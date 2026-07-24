@@ -45,6 +45,7 @@ from reactivex.disposable import Disposable
 
 from dimos.agents.annotation import skill
 from dimos.agents.skill_result import CommonSkillError, SkillResult
+from dimos.agents.skills.scene_memory_rooms import RoomCurationSkills
 from dimos.core.core import rpc
 from dimos.core.module import Module, ModuleConfig
 from dimos.core.stream import In, Out
@@ -328,8 +329,13 @@ class SceneMemoryConfig(ModuleConfig):
     attach_radius_m: float = ATTACH_RADIUS_M
 
 
-class SceneMemorySkillContainer(Module):
-    """Agent skills over the persistent scene graph (rooms, objects, time)."""
+class SceneMemorySkillContainer(RoomCurationSkills, Module):
+    """Agent skills over the persistent scene graph (rooms, objects, time).
+
+    The room-curation skills (view_map, rename/boundary/merge/split) live in
+    :class:`RoomCurationSkills` — same container at runtime, separate module
+    for size.
+    """
 
     config: SceneMemoryConfig
     global_costmap: In[OccupancyGrid]
@@ -368,6 +374,10 @@ class SceneMemorySkillContainer(Module):
     def _on_costmap(self, grid: OccupancyGrid) -> None:
         with self._grid_lock:
             self._latest_grid = grid
+
+    def _grid_or_none(self) -> OccupancyGrid | None:
+        with self._grid_lock:
+            return self._latest_grid
 
     def _graph(self) -> SceneGraph:
         return SceneGraph(
@@ -598,13 +608,21 @@ class SceneMemorySkillContainer(Module):
         )
 
     @skill
-    def derive_rooms(self) -> SkillResult[CommonSkillError]:
+    def derive_rooms(self, force: bool = False) -> SkillResult[CommonSkillError]:
         """Segment the current occupancy map into rooms and update the graph.
 
         Writes room/corridor nodes, containment and doorway-adjacency edges,
-        and re-checks which room contains each object. Rooms-dependent reads
-        auto-derive once, so calling this explicitly is only needed after
-        the map has grown.
+        and re-checks which room contains each object. Room ids and names
+        are stable: a re-derived room in the same place keeps its node.
+        Rooms-dependent reads auto-derive once, so calling this explicitly
+        is only needed after the map has grown.
+
+        Agent-edited geometry (set_room_boundary, merge_rooms, split_room)
+        is preserved: derivation refuses while edits exist unless force is
+        true, which discards them and re-derives from the map alone.
+
+        Args:
+            force: Discard agent-edited room geometry and re-derive.
         """
         with self._grid_lock:
             grid = self._latest_grid
@@ -613,6 +631,16 @@ class SceneMemorySkillContainer(Module):
                 "INVALID_STATE", "No occupancy map received yet — is mapping running?"
             )
         with self._mutate_lock, self._graph() as graph:
+            if not force:
+                edited = [n.id for n in graph.regions() if n.metadata.get("origin") == "agent"]
+                if edited:
+                    return SkillResult.ok(
+                        f"Rooms carry agent edits ({', '.join(edited)}); kept them. "
+                        "Call derive_rooms with force=true to discard the edits and "
+                        "re-derive from the map.",
+                        kept_agent_edits=edited,
+                        region_ids=[n.id for n in graph.regions()],
+                    )
             segmentation, changed = self._derive_into(graph)
             region_ids = [n.id for n in graph.regions()]
         rooms = segmentation.rooms()
@@ -1321,7 +1349,9 @@ class SceneMemorySkillContainer(Module):
         markers += [
             Marker(
                 entity_id=r.id,
-                label=r.id,
+                # Display name, so agent renames show up in the viewer (the
+                # marker already carries the id). Unnamed regions name == id.
+                label=r.name or r.id,
                 entity_type="location",
                 x=r.xy[0],
                 y=r.xy[1],
