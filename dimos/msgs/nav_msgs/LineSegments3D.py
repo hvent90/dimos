@@ -23,7 +23,14 @@ from __future__ import annotations
 import time
 from typing import TYPE_CHECKING, BinaryIO
 
+from dimos_lcm.geometry_msgs import (
+    Point as LCMPoint,
+    Pose as LCMPose,
+    PoseStamped as LCMPoseStamped,
+    Quaternion as LCMQuaternion,
+)
 from dimos_lcm.nav_msgs import Path as LCMPath
+from dimos_lcm.std_msgs import Header as LCMHeader, Time as LCMTime
 
 from dimos.types.timestamped import Timestamped
 
@@ -57,7 +64,35 @@ class LineSegments3D(Timestamped):
         self._traversability = traversability or [1.0] * len(self._segments)
 
     def lcm_encode(self) -> bytes:
-        raise NotImplementedError("Encoded on C++ side")
+        """Encode as ``nav_msgs/Path``: two poses per segment, w = traversability."""
+        lcm_msg = LCMPath()
+        lcm_poses = []
+        for idx, (p1, p2) in enumerate(self._segments):
+            trav = self._traversability[idx] if idx < len(self._traversability) else 1.0
+            for point in (p1, p2):
+                lcm_pose = LCMPoseStamped()
+                lcm_pose.pose = LCMPose()
+                lcm_pose.pose.position = LCMPoint()
+                lcm_pose.pose.position.x = point[0]
+                lcm_pose.pose.position.y = point[1]
+                lcm_pose.pose.position.z = point[2]
+                lcm_pose.pose.orientation = LCMQuaternion()
+                lcm_pose.pose.orientation.w = trav
+                lcm_pose.header = LCMHeader()
+                lcm_pose.header.stamp = LCMTime()
+                lcm_pose.header.stamp.sec = int(self.ts)
+                lcm_pose.header.stamp.nsec = int((self.ts - int(self.ts)) * 1e9)
+                lcm_pose.header.frame_id = self.frame_id
+                lcm_poses.append(lcm_pose)
+        lcm_msg.poses_length = len(lcm_poses)
+        lcm_msg.poses = lcm_poses
+        lcm_msg.header = LCMHeader()
+        lcm_msg.header.stamp = LCMTime()
+        lcm_msg.header.stamp.sec = int(self.ts)
+        lcm_msg.header.stamp.nsec = int((self.ts - int(self.ts)) * 1e9)
+        lcm_msg.header.frame_id = self.frame_id
+        encoded: bytes = lcm_msg.lcm_encode()
+        return encoded
 
     @classmethod
     def lcm_decode(cls, data: bytes | BinaryIO) -> LineSegments3D:

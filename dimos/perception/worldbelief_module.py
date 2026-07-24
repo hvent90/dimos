@@ -54,11 +54,26 @@ _HISTORY_PATH = _STATE_DIR / "worldbelief_history.db"
 logger = setup_logger()
 
 
+def _belief_extent(obj: Object) -> tuple[float, float, float, float, float, float] | None:
+    """World AABB from the belief's center + size; None when size is unknown."""
+    try:
+        hx, hy, hz = obj.size.x / 2.0, obj.size.y / 2.0, obj.size.z / 2.0
+        cx, cy, cz = float(obj.center.x), float(obj.center.y), float(obj.center.z)
+    except AttributeError:
+        return None
+    if max(hx, hy, hz) <= 0.0:
+        return None
+    return (cx - hx, cy - hy, cz - hz, cx + hx, cy + hy, cz + hz)
+
+
 class WorldBeliefModuleConfig(MemoryModuleConfig):
     # Replay reads this path directly. Live mode gets the active path from Recorder RPC
     # and uses this value only as the base naming convention for sibling-session recall.
     db_path: str | Path = _STATE_DIR / "recordings" / "worldbelief.db"
     history_path: str | Path = _HISTORY_PATH
+    # When set, every scan() appends its observations to this persistent
+    # scene graph (dimos.perception.scene_graph). Empty = disabled.
+    sightings_db: str | Path = ""
     scan_prompts: list[str] = Field(default_factory=list)
     depth_tolerance_s: float = Field(default=0.1, gt=0.0)
     stationary_hz: float = Field(default=1.0, gt=0.0)
@@ -299,6 +314,32 @@ class WorldBeliefModule(Module):
             return SkillResult.fail("INVALID_STATE", str(exc))
         except ScanIncompleteError as exc:
             return SkillResult.fail("EXECUTION_FAILED", f"Scan incomplete: {exc}")
+
+        if self.config.sightings_db:
+            # Lazy import: the scene graph pulls in the mapping stack, which
+            # this module otherwise never needs.
+            from dimos.perception.scene_graph import SceneGraph, Sighting
+
+            rows = [
+                Sighting(
+                    name=obj.name,
+                    ts=float(obj.last_seen_ts or obj.ts),
+                    position=(float(obj.center.x), float(obj.center.y), float(obj.center.z)),
+                    object_id=str(obj.object_id),
+                    extent=_belief_extent(obj),
+                )
+                for obj in observations
+            ]
+            with SceneGraph(self.config.sightings_db) as graph:
+                graph.ensure_migrated()
+                graph.fold_scan(
+                    rows,
+                    t0=result.source_end_ts - window,
+                    t1=result.source_end_ts,
+                    vocabulary=list(vocabulary),
+                    source="worldbelief.scan",
+                    frames=result.folded_frames,
+                )
 
         frame_id = self.config.belief.frame_id
         self.detections_3d.publish(
