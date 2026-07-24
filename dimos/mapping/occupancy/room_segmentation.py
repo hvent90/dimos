@@ -33,6 +33,7 @@ import numpy as np
 from numpy.typing import NDArray
 from scipy import ndimage
 
+from dimos.mapping.occupancy.polygons import mask_to_polygon
 from dimos.msgs.nav_msgs.OccupancyGrid import OccupancyGrid
 
 
@@ -163,18 +164,8 @@ def _region_polygon(
     origin_xy: tuple[float, float],
     epsilon_cells: float,
 ) -> NDArray[np.float64]:
-    """Simplified outer contour of a region mask, in world coordinates.
-
-    For a (rare) disconnected region, the largest component's outline is used.
-    """
-    contours, _ = cv2.findContours(
-        mask.astype(np.uint8), cv2.RETR_EXTERNAL, cv2.CHAIN_APPROX_SIMPLE
-    )
-    contour = max(contours, key=cv2.contourArea)
-    approx = cv2.approxPolyDP(contour, epsilon_cells, True)
-    cells = approx.reshape(-1, 2).astype(np.float64)  # (N, 2) as (x, y) cell coords
-    world: NDArray[np.float64] = (cells + 0.5) * resolution + np.asarray(origin_xy)
-    return world
+    """Simplified outer contour of a region mask, in world coordinates."""
+    return mask_to_polygon(mask, resolution, origin_xy, epsilon_cells)
 
 
 def _doorways(

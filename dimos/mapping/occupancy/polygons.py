@@ -16,6 +16,7 @@
 
 from collections.abc import Sequence
 
+import cv2
 import numpy as np
 from numpy.typing import NDArray
 
@@ -120,3 +121,33 @@ def polygon_from_flat(flat: list[float]) -> NDArray[np.float64]:
     if len(flat) < 6 or len(flat) % 2 != 0:
         raise ValueError(f"Flat polygon needs an even number of >= 6 coordinates, got {len(flat)}")
     return np.asarray(flat, dtype=np.float64).reshape(-1, 2)
+
+
+def mask_to_polygon(
+    mask: NDArray[np.bool_],
+    resolution: float,
+    origin_xy: tuple[float, float],
+    epsilon_cells: float = 1.5,
+) -> NDArray[np.float64]:
+    """Simplified outer contour of a cell mask, in world coordinates.
+
+    For a disconnected mask, the largest component's outline is used.
+
+    Args:
+        mask: (rows, cols) boolean cell mask; row 0 is the map's y-min edge.
+        resolution: Cell size in meters.
+        origin_xy: World coordinates of the map's (0, 0) cell corner.
+        epsilon_cells: Douglas-Peucker simplification tolerance, in cells.
+    Returns:
+        (N, 2) array of x, y vertices at cell centers.
+    """
+    contours, _ = cv2.findContours(
+        mask.astype(np.uint8), cv2.RETR_EXTERNAL, cv2.CHAIN_APPROX_SIMPLE
+    )
+    if not contours:
+        raise ValueError("mask has no set cells")
+    contour = max(contours, key=cv2.contourArea)
+    approx = cv2.approxPolyDP(contour, epsilon_cells, True)
+    cells = approx.reshape(-1, 2).astype(np.float64)  # (N, 2) as (x, y) cell coords
+    world: NDArray[np.float64] = (cells + 0.5) * resolution + np.asarray(origin_xy)
+    return world
