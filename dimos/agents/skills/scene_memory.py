@@ -315,6 +315,14 @@ class SceneMemoryConfig(ModuleConfig):
     base_to_optical: Transform | None = None
     detector_conf: float = 0.4
     scan_sample_period_s: float = 0.5
+    # Corroboration gate for scan_for_objects: a NEW object needs this many
+    # sightings over this many distinct frames before it becomes a node.
+    # Detector confidence can't separate weak open-vocab matches from real
+    # objects (true hits score ~0.1 on stylized renders, junk reaches 0.6+),
+    # but junk flickers while real objects re-fire across frames.
+    # Re-sightings of existing nodes always pass. 1/1 disables the gate.
+    scan_min_sightings: int = 3
+    scan_min_frames: int = 2
     # Fold geometry (see scene_graph module constants).
     sighting_snap_m: float = SIGHTING_SNAP_M
     attach_radius_m: float = ATTACH_RADIUS_M
@@ -464,11 +472,17 @@ class SceneMemorySkillContainer(Module):
         and attaches every sighting to a persistent object node (stable ids
         like object_7). Only object types named in the prompt can be found —
         everything else is invisible to this scan. Results persist across
-        restarts.
+        restarts. Detection matches APPEARANCE, not intent: an object you
+        call a "couch" may only fire under a near-synonym ("sofa", "bench",
+        "seat"), so scan a broad vocabulary of plausible names and treat any
+        hit near the expected spot as your object. Broad vocabularies are
+        safe: a new object only enters the graph once it is sighted in
+        several frames, so one-frame false matches are filtered out (the
+        result reports them).
 
         Args:
-            prompt: Object type names to look for, e.g.
-                ["chair", "couch", "potted plant"] or "chair, couch".
+            prompt: Object type names to look for — include synonyms, e.g.
+                ["couch", "sofa", "bench", "chair"] or "chair, couch".
         """
         # A bare string over MCP would otherwise iterate per character.
         if isinstance(prompt, str):
@@ -487,7 +501,7 @@ class SceneMemorySkillContainer(Module):
             return SkillResult.fail("NOT_CONFIGURED", f"No recording available: {e}")
 
         # Import here with the detector: the scan lane is optional heavy metal.
-        from dimos.perception.lidar_scan import iter_lidar_scan
+        from dimos.perception.lidar_scan import corroborated_sightings, iter_lidar_scan
 
         detector = self._get_detector()
         detector.set_prompts(text=vocabulary)  # type: ignore[attr-defined]
@@ -530,6 +544,21 @@ class SceneMemorySkillContainer(Module):
                 "EXECUTION_FAILED", "No frames with aligned odom+lidar found in the recording"
             )
         with self._mutate_lock, self._graph() as graph:
+            # Corroboration gate: a new object must be sighted in several
+            # frames before it may become a node; re-sightings of existing
+            # nodes pass through. Each scan covers the whole recording, so
+            # the gate is cumulative — a dropped one-off can confirm later.
+            anchors: dict[str, list[tuple[float, float]]] = {}
+            for node in graph.nodes(layer="object"):
+                if node.position is not None:
+                    anchors.setdefault(node.name, []).append(node.xy)
+            sightings, filtered = corroborated_sightings(
+                sightings,
+                anchors,
+                radius_m=self.config.attach_radius_m,
+                min_sightings=self.config.scan_min_sightings,
+                min_frames=self.config.scan_min_frames,
+            )
             result = graph.fold_scan(
                 sightings,
                 t0=t_lo,
@@ -543,11 +572,20 @@ class SceneMemorySkillContainer(Module):
         by_name: dict[str, int] = {}
         for row in sightings:
             by_name[row.name] = by_name.get(row.name, 0) + 1
+        filtered_note = (
+            f" Filtered {sum(filtered.values())} uncorroborated detection(s) {filtered} — "
+            f"a new object needs >={self.config.scan_min_sightings} sightings over "
+            f">={self.config.scan_min_frames} frames; real objects re-fire on rescan "
+            "from another vantage."
+            if filtered
+            else ""
+        )
         return SkillResult.ok(
             f"Scanned {n_frames} frames; {result.appended_sightings} new sighting(s): {by_name}. "
             f"Object nodes: {len(result.created_node_ids)} created, "
             f"{len(result.updated_node_ids)} updated. "
-            f"Vocabulary was {vocabulary} — other object types were not looked for.",
+            f"Vocabulary was {vocabulary} — other object types were not looked for."
+            f"{filtered_note}",
             sightings_by_name=by_name,
             appended_sightings=result.appended_sightings,
             created_nodes=list(result.created_node_ids),
@@ -556,6 +594,7 @@ class SceneMemorySkillContainer(Module):
             scanned_t0=round(t_lo, 3),
             scanned_t1=round(t_hi, 3),
             vocabulary=vocabulary,
+            filtered_uncorroborated=filtered,
         )
 
     @skill

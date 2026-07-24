@@ -24,9 +24,10 @@ world->camera extrinsic, and the nearest lidar window supplies the points.
 
 from __future__ import annotations
 
-from collections.abc import Iterator
+from collections.abc import Iterator, Mapping, Sequence
 from dataclasses import dataclass
-from typing import Any
+import math
+from typing import Any, Protocol, TypeVar
 
 import numpy as np
 
@@ -86,6 +87,93 @@ def _pick_stream(store: Store, candidates: list[str]) -> str:
 
 def _nearest(stream_obs: list[Observation[Any]], ts: float) -> Observation[Any]:
     return min(stream_obs, key=lambda o: abs(o.ts - ts))
+
+
+class SightingLike(Protocol):
+    """The fields corroboration reads — matches LidarSighting and Sighting."""
+
+    @property
+    def name(self) -> str: ...
+    @property
+    def ts(self) -> float: ...
+    @property
+    def position(self) -> tuple[float, float, float]: ...
+
+
+S = TypeVar("S", bound=SightingLike)
+
+
+def corroborated_sightings(
+    sightings: Sequence[S],
+    known_anchors: Mapping[str, Sequence[tuple[float, float]]],
+    *,
+    radius_m: float,
+    min_sightings: int,
+    min_frames: int,
+) -> tuple[list[S], dict[str, int]]:
+    """Keep sightings whose object re-fires; drop one-off detector flickers.
+
+    Open-vocabulary matches for objects that aren't really there rarely
+    survive a change of frame, while real objects re-fire as the camera
+    keeps facing them — and confidence can't separate the two (true matches
+    score ~0.1 on stylized renders while junk reaches 0.6+). So a new
+    object must be seen at least ``min_sightings`` times across at least
+    ``min_frames`` distinct frame timestamps before its rows enter the
+    graph. Same-name sightings cluster by position chaining within
+    ``radius_m`` (the fold's own attachment rule); a cluster landing within
+    ``radius_m`` of a ``known_anchors`` entry for its name passes straight
+    through — that object already earned its corroboration.
+
+    Returns (kept rows in ts order, dropped counts by name).
+    """
+    if min_sightings <= 1 and min_frames <= 1:
+        return sorted(sightings, key=lambda s: s.ts), {}
+
+    by_name: dict[str, list[S]] = {}
+    for row in sightings:
+        by_name.setdefault(row.name, []).append(row)
+
+    kept: list[S] = []
+    dropped: dict[str, int] = {}
+    for name, rows in by_name.items():
+        clusters: list[list[S]] = []
+        for row in sorted(rows, key=lambda s: s.ts):
+            home = next(
+                (
+                    cluster
+                    for cluster in clusters
+                    if any(
+                        math.hypot(
+                            row.position[0] - member.position[0],
+                            row.position[1] - member.position[1],
+                        )
+                        <= radius_m
+                        for member in cluster
+                    )
+                ),
+                None,
+            )
+            if home is None:
+                clusters.append([row])
+            else:
+                home.append(row)
+
+        anchors = known_anchors.get(name, ())
+        for cluster in clusters:
+            attaches = any(
+                math.hypot(row.position[0] - ax, row.position[1] - ay) <= radius_m
+                for row in cluster
+                for ax, ay in anchors
+            )
+            confirmed = (
+                len(cluster) >= min_sightings and len({row.ts for row in cluster}) >= min_frames
+            )
+            if attaches or confirmed:
+                kept.extend(cluster)
+            else:
+                dropped[name] = dropped.get(name, 0) + len(cluster)
+    kept.sort(key=lambda s: s.ts)
+    return kept, dropped
 
 
 def iter_lidar_scan(

@@ -35,7 +35,12 @@ from dimos.msgs.sensor_msgs.PointCloud2 import PointCloud2
 from dimos.perception.detection.detectors.base import Detector
 from dimos.perception.detection.type.detection2d.bbox import Detection2DBBox
 from dimos.perception.detection.type.detection2d.imageDetections2D import ImageDetections2D
-from dimos.perception.lidar_scan import iter_lidar_scan, project_points
+from dimos.perception.lidar_scan import (
+    LidarSighting,
+    corroborated_sightings,
+    iter_lidar_scan,
+    project_points,
+)
 
 T0 = 1_000_000.0
 CLUSTER_CENTER = np.array([2.0, 0.0, 0.3])
@@ -148,3 +153,61 @@ def test_iter_lidar_scan_missing_stream_raises(tmp_path: Path) -> None:
     with SqliteStore(path=str(db), must_exist=True) as store:
         with pytest.raises(LookupError, match="lidar"):
             list(iter_lidar_scan(store, StubDetector(), CAMERA, BASE_TO_OPTICAL))
+
+
+def _row(name: str, ts: float, x: float, y: float) -> LidarSighting:
+    return LidarSighting(
+        name=name, ts=ts, position=(x, y, 0.0), confidence=0.2, track_id=-1, n_points=10
+    )
+
+
+def test_corroboration_drops_one_frame_flickers() -> None:
+    rows = [
+        _row("couch", T0 + 0.0, 1.0, 1.0),
+        _row("couch", T0 + 0.5, 1.1, 1.0),
+        _row("couch", T0 + 1.0, 1.0, 1.1),
+        _row("surfboard", T0 + 0.5, 3.0, 3.0),  # one-frame junk match
+        _row("toilet", T0 + 1.0, 5.0, 5.0),  # ditto
+    ]
+    kept, dropped = corroborated_sightings(rows, {}, radius_m=0.75, min_sightings=3, min_frames=2)
+    assert [r.name for r in kept] == ["couch", "couch", "couch"]
+    assert dropped == {"surfboard": 1, "toilet": 1}
+
+
+def test_corroboration_needs_distinct_frames() -> None:
+    # Three same-frame boxes (e.g. per-class NMS survivors) are one vantage.
+    rows = [_row("chair", T0, 1.0 + 0.1 * i, 1.0) for i in range(3)]
+    kept, dropped = corroborated_sightings(rows, {}, radius_m=0.75, min_sightings=3, min_frames=2)
+    assert kept == []
+    assert dropped == {"chair": 3}
+
+
+def test_corroboration_passes_existing_objects_through() -> None:
+    # A single re-sighting near a known node keeps flowing — that object
+    # already earned its corroboration in an earlier scan.
+    rows = [_row("couch", T0, 1.2, 1.0), _row("couch", T0, 9.0, 9.0)]
+    kept, dropped = corroborated_sightings(
+        rows, {"couch": [(1.0, 1.0)]}, radius_m=0.75, min_sightings=3, min_frames=2
+    )
+    assert [(r.name, r.position[0]) for r in kept] == [("couch", 1.2)]
+    assert dropped == {"couch": 1}
+
+
+def test_corroboration_separates_spatial_clusters() -> None:
+    # Same name, two places: the re-fired cluster confirms, the flicker dies.
+    rows = [
+        _row("chair", T0 + 0.0, 1.0, 1.0),
+        _row("chair", T0 + 0.5, 1.1, 1.0),
+        _row("chair", T0 + 1.0, 1.0, 1.1),
+        _row("chair", T0 + 0.5, 6.0, 6.0),
+    ]
+    kept, dropped = corroborated_sightings(rows, {}, radius_m=0.75, min_sightings=3, min_frames=2)
+    assert all(r.position[0] < 2.0 for r in kept) and len(kept) == 3
+    assert dropped == {"chair": 1}
+
+
+def test_corroboration_disabled_at_one_one() -> None:
+    rows = [_row("surfboard", T0, 3.0, 3.0)]
+    kept, dropped = corroborated_sightings(rows, {}, radius_m=0.75, min_sightings=1, min_frames=1)
+    assert kept == rows
+    assert dropped == {}
