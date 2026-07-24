@@ -639,6 +639,14 @@ class SceneMemorySkillContainer(RoomCurationSkills, Module):
         by_name: dict[str, int] = {}
         for row in sightings:
             by_name[row.name] = by_name.get(row.name, 0) + 1
+        vantage_hint = (
+            " Zero sightings usually means the target was never in camera view — "
+            "the scan only sees what the camera has faced. Change vantage: turn in "
+            "place (navigate_to_pose at the current position with a new yaw_deg) or "
+            "move a few meters into free space, then scan again."
+            if not sightings
+            else ""
+        )
         filtered_note = (
             f" Filtered {sum(filtered.values())} uncorroborated detection(s) {filtered} — "
             f"a new object needs >={self.config.scan_min_sightings} sightings over "
@@ -652,7 +660,7 @@ class SceneMemorySkillContainer(RoomCurationSkills, Module):
             f"Object nodes: {len(result.created_node_ids)} created, "
             f"{len(result.updated_node_ids)} updated. "
             f"Vocabulary was {vocabulary} — other object types were not looked for."
-            f"{filtered_note}",
+            f"{filtered_note}{vantage_hint}",
             sightings_by_name=by_name,
             appended_sightings=result.appended_sightings,
             created_nodes=list(result.created_node_ids),

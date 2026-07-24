@@ -12,6 +12,7 @@
 # See the License for the specific language governing permissions and
 # limitations under the License.
 
+import math
 import time
 from typing import Any
 
@@ -119,11 +120,18 @@ class NavigationSkillContainer(Module):
     # patrol/follow/explore can't start over an active navigation goal.
     @skill(uses=[CAP_MOVEMENT])
     def navigate_with_text(self, query: str) -> str:
-        """Navigate to a location by querying the existing semantic map using natural language.
+        """Navigate COARSELY toward something by name. Not for precise placement.
 
         First attempts to locate an object in the robot's camera view using vision.
         If the object is found, navigates to it. If not, falls back to querying the
-        semantic map for a location matching the description.
+        semantic map — which drives to where the query was SEEN FROM (a stored
+        camera viewpoint), possibly meters away from the object itself.
+        For placement-constrained goals — "beside X", "next to X", "behind X",
+        or a specific distance — do not stop here: get the object's position
+        and extent from the scene graph (scan_for_objects, find), pick a
+        standable spot (free_space_near / nearest_free), and finish with
+        navigate_to_pose. Using this skill first to get near, then refining
+        with that chain, works well.
         CALL THIS SKILL FOR ONE SUBJECT AT A TIME. For example: "Go to the person wearing a blue shirt in the living room",
         you should call this skill twice, once for the person wearing a blue shirt and once for the living room.
         Args:
@@ -150,6 +158,32 @@ class NavigationSkillContainer(Module):
 
         return f"No tagged location called '{query}'. No object in view matching '{query}'. No matching location found in semantic map for '{query}'."
 
+    @skill(uses=[CAP_MOVEMENT])
+    def navigate_to_pose(self, x: float, y: float, yaw_deg: float | None = None) -> str:
+        """Navigate to explicit world coordinates, optionally facing a heading.
+
+        Sends the planner a metric goal in the map frame. Use after the map
+        and scene-graph query skills: find an object's position and extent,
+        pick a standable point (free_space_near / nearest_free), then call
+        this to go there.
+
+        Args:
+            x: Goal world x in meters (map frame).
+            y: Goal world y in meters (map frame).
+            yaw_deg: Final heading in degrees (0 = +x, counterclockwise,
+                90 = +y). Omit to leave the final facing unconstrained.
+        """
+        if not self._skill_started:
+            raise ValueError(f"{self} has not been started.")
+
+        goal_pose = PoseStamped(
+            position=make_vector3(x, y, 0),
+            orientation=Quaternion.from_euler(make_vector3(0, 0, math.radians(yaw_deg or 0.0))),
+            frame_id="map",
+        )
+        facing = f" facing {yaw_deg:.0f} deg" if yaw_deg is not None else ""
+        return self._navigate_to(goal_pose, f"Goal set to ({x:.2f}, {y:.2f}){facing}")
+
     def _navigate_by_tagged_location(self, query: str) -> str | None:
         robot_location = self._spatial_memory.query_tagged_location(query)
 
@@ -171,8 +205,18 @@ class NavigationSkillContainer(Module):
         )
         self._navigation.set_goal(pose)
 
+        # A goal ~0 m away means the match was a viewpoint of the current
+        # position — saying so lets the agent notice it isn't actually moving.
+        distance = ""
+        if self._latest_odom is not None:
+            d = math.hypot(
+                pose.position.x - self._latest_odom.position.x,
+                pose.position.y - self._latest_odom.position.y,
+            )
+            distance = f" The goal is {d:.1f} m from the robot's current position."
+
         return (
-            f"{message}. Started navigating to that position. "
+            f"{message}. Started navigating to that position.{distance} "
             f"To cancel movement call the 'stop_navigation' tool."
         )
 
