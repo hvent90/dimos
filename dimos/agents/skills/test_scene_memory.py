@@ -186,8 +186,18 @@ def seeded_db(tmp_path: Path) -> Path:
     with SceneGraph(db) as graph:
         graph.fold_scan(
             [
-                Sighting(name="couch", ts=T0 + 5.0, position=(1.0, 2.0, 0.1)),
-                Sighting(name="couch", ts=T0 + 9.0, position=(1.1, 2.0, 0.1)),
+                Sighting(
+                    name="couch",
+                    ts=T0 + 5.0,
+                    position=(1.0, 2.0, 0.1),
+                    extent=(0.2, 1.6, 0.0, 1.8, 2.4, 0.7),
+                ),
+                Sighting(
+                    name="couch",
+                    ts=T0 + 9.0,
+                    position=(1.1, 2.0, 0.1),
+                    extent=(0.3, 1.7, 0.0, 2.0, 2.4, 0.6),
+                ),
                 Sighting(name="tv", ts=T0 + 7.0, position=(4.0, 0.5, 1.2)),
             ],
             t0=T0,
@@ -273,6 +283,13 @@ def test_find_hit_and_miss(
     assert hit.success
     assert [h["id"] for h in hit.metadata["hits"]] == ["object_1"]
     assert hit.metadata["hits"][0]["ancestors"] == [{"id": BUILDING_ID, "layer": "building"}]
+    # Object footprint = union of the two sighting AABBs; z-range rides along.
+    assert hit.metadata["hits"][0]["extent"] == [0.2, 1.6, 2.0, 2.4]
+    assert hit.metadata["hits"][0]["z_range"] == [0.0, 0.7]
+    # The tv was folded without geometry — its extent stays honestly null.
+    tv = module.find("tv")
+    assert tv.metadata["hits"][0]["extent"] is None
+    assert "z_range" not in tv.metadata["hits"][0]
 
     by_id = module.find("object_2")
     assert [h["id"] for h in by_id.metadata["hits"]] == ["object_2"]
