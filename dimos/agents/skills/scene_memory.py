@@ -52,7 +52,11 @@ from dimos.core.core import rpc
 from dimos.core.module import Module, ModuleConfig
 from dimos.core.stream import In, Out
 from dimos.mapping.occupancy.polygons import assign_to_polygons, points_in_polygon
-from dimos.mapping.occupancy.room_segmentation import RoomSegmentation, segment_rooms
+from dimos.mapping.occupancy.room_segmentation import (
+    RoomSegmentation,
+    RoomSegmentationConfig,
+    segment_rooms,
+)
 from dimos.mapping.occupancy.room_store import RoomStore, StoredRoom, StoredRoomSet
 from dimos.memory2.replay import resolve_db_path
 from dimos.memory2.store.sqlite import SqliteStore
@@ -330,6 +334,10 @@ class SceneMemoryConfig(ModuleConfig):
     # Re-sightings of existing nodes always pass. 1/1 disables the gate.
     scan_min_sightings: int = 3
     scan_min_frames: int = 2
+    # Room boundaries form where free space pinches below this half-width.
+    # The default suits door-separated buildings; open-plan spaces need it
+    # wider so archways count as dividers (DimSim apartment: 1.0).
+    door_half_width_m: float = RoomSegmentationConfig().door_half_width_m
     # Fold geometry (see scene_graph module constants).
     sighting_snap_m: float = SIGHTING_SNAP_M
     attach_radius_m: float = ATTACH_RADIUS_M
@@ -509,7 +517,9 @@ class SceneMemorySkillContainer(RoomCurationSkills, Module):
         with self._grid_lock:
             grid = self._latest_grid
         assert grid is not None, "callers check a grid exists"
-        segmentation = segment_rooms(grid)
+        segmentation = segment_rooms(
+            grid, RoomSegmentationConfig(door_half_width_m=self.config.door_half_width_m)
+        )
         regions = graph.regions()
         if regions and all(
             r.metadata.get("derived_ts") == segmentation.derived_ts for r in regions

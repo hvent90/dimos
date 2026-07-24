@@ -487,6 +487,17 @@ def test_derive_rooms_and_restart_survival(
     assert listing.metadata["count"] == 2
 
 
+def test_derive_rooms_honors_door_half_width(
+    tmp_path: Path, make_container: Callable[..., SceneMemorySkillContainer]
+) -> None:
+    """A tiny half-width lets seeds bridge the 0.8 m doorway: rooms merge."""
+    module = make_container(sightings_db=str(tmp_path / "s.db"), door_half_width_m=0.05)
+    module._on_costmap(_two_room_grid())
+    derived = module.derive_rooms()
+    assert derived.success
+    assert derived.metadata["n_rooms"] == 1
+
+
 def test_scan_for_objects_requires_camera_config(
     trail_db: Path, tmp_path: Path, make_container: Callable[..., SceneMemorySkillContainer]
 ) -> None:
