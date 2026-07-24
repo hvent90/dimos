@@ -345,6 +345,9 @@ class SceneMemorySkillContainer(RoomCurationSkills, Module):
 
     config: SceneMemoryConfig
     global_costmap: In[OccupancyGrid]
+    # Live intrinsics from the camera module; wins over config.camera_info,
+    # which is a blueprint-time snapshot (sims swap in their own at runtime).
+    camera_info: In[CameraInfo]
     scene_graph_rooms: Out[ContourPolygons3D]
     scene_graph_markers: Out[EntityMarkers]
     scene_graph_edges: Out[LineSegments3D]
@@ -357,6 +360,7 @@ class SceneMemorySkillContainer(RoomCurationSkills, Module):
         self._detector_lock = threading.Lock()
         self._grid_lock = threading.Lock()
         self._latest_grid: OccupancyGrid | None = None
+        self._live_camera_info: CameraInfo | None = None
         # Distance-to-nearest-obstacle field, recomputed when the grid changes.
         self._clearance_cache: tuple[OccupancyGrid, NDArray[np.float64]] | None = None
         # Serializes graph mutations (fold, derivation, migration).
@@ -367,6 +371,8 @@ class SceneMemorySkillContainer(RoomCurationSkills, Module):
         super().start()
         if self.global_costmap.transport:
             self.register_disposable(Disposable(self.global_costmap.subscribe(self._on_costmap)))
+        if self.camera_info.transport:
+            self.register_disposable(Disposable(self.camera_info.subscribe(self._on_camera_info)))
         with self._mutate_lock, self._graph() as graph:
             migrated = graph.ensure_migrated()
             if migrated:
@@ -378,6 +384,9 @@ class SceneMemorySkillContainer(RoomCurationSkills, Module):
     @rpc
     def stop(self) -> None:
         super().stop()
+
+    def _on_camera_info(self, msg: CameraInfo) -> None:
+        self._live_camera_info = msg
 
     def _on_costmap(self, grid: OccupancyGrid) -> None:
         with self._grid_lock:
@@ -557,7 +566,8 @@ class SceneMemorySkillContainer(RoomCurationSkills, Module):
         vocabulary = sorted({p.strip() for p in prompt if p.strip()})
         if not vocabulary:
             return SkillResult.fail("INVALID_INPUT", "prompt must name at least one object type")
-        if self.config.camera_info is None or self.config.base_to_optical is None:
+        camera_info = self._live_camera_info or self.config.camera_info
+        if camera_info is None or self.config.base_to_optical is None:
             return SkillResult.fail(
                 "NOT_CONFIGURED",
                 "scan_for_objects needs camera_info and base_to_optical configured",
@@ -583,7 +593,7 @@ class SceneMemorySkillContainer(RoomCurationSkills, Module):
                 for frame in iter_lidar_scan(
                     store,
                     detector,
-                    self.config.camera_info,
+                    camera_info,
                     self.config.base_to_optical,
                     sample_period_s=self.config.scan_sample_period_s,
                 ):

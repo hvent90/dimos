@@ -28,7 +28,9 @@ from dimos.agents.skills.scene_memory import (
 )
 from dimos.memory2.store.sqlite import SqliteStore
 from dimos.msgs.geometry_msgs.PoseStamped import PoseStamped
+from dimos.msgs.geometry_msgs.Transform import Transform
 from dimos.msgs.nav_msgs.OccupancyGrid import OccupancyGrid
+from dimos.msgs.sensor_msgs.CameraInfo import CameraInfo
 from dimos.perception.scene_graph import BUILDING_ID, SceneGraph, Sighting
 
 T0 = 1_000_000.0
@@ -492,6 +494,42 @@ def test_scan_for_objects_requires_camera_config(
     result = module.scan_for_objects(["chair"])
     assert not result.success
     assert result.error_code == "NOT_CONFIGURED"
+
+
+def test_scan_for_objects_prefers_live_camera_info(
+    trail_db: Path,
+    tmp_path: Path,
+    make_container: Callable[..., SceneMemorySkillContainer],
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """Intrinsics published at runtime win over the blueprint-time snapshot."""
+    import dimos.perception.lidar_scan as lidar_scan_mod
+
+    config_cam = CameraInfo.from_fov(fov_deg=90, width=1280, height=720)
+    live_cam = CameraInfo.from_fov(fov_deg=46, width=640, height=288)
+    module = make_container(
+        trail_db=str(trail_db),
+        sightings_db=str(tmp_path / "s.db"),
+        camera_info=config_cam,
+        base_to_optical=Transform(frame_id="base_link", child_frame_id="camera_optical"),
+    )
+    module._on_camera_info(live_cam)
+
+    class _StubDetector:
+        def set_prompts(self, **kwargs: Any) -> None:
+            pass
+
+    monkeypatch.setattr(module, "_get_detector", lambda: _StubDetector())
+
+    seen: list[CameraInfo] = []
+
+    def fake_scan(store: Any, detector: Any, camera_info: CameraInfo, *a: Any, **k: Any) -> Any:
+        seen.append(camera_info)
+        return iter(())
+
+    monkeypatch.setattr(lidar_scan_mod, "iter_lidar_scan", fake_scan)
+    module.scan_for_objects(["chair"])
+    assert seen == [live_cam]
 
 
 def test_scan_for_objects_rejects_empty_prompt(
