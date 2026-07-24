@@ -279,16 +279,43 @@ def test_fold_without_rooms_parents_to_building(tmp_path: Path) -> None:
         assert all(s.room_id == "" for s in graph.sightings())
 
 
-def test_rederivation_reparents_and_keeps_single_parent(tmp_path: Path) -> None:
+def test_rederivation_keeps_ids_for_same_place_regions(tmp_path: Path) -> None:
     db = tmp_path / "scene.db"
     with SceneGraph(db) as graph:
         _seed_rooms(graph, db)
         _fold_couch_and_tv(graph)
         assert graph.parent_id("object_1") == "room_1"
 
-        # Re-derivation: old region nodes retire, ids are never reused.
+        # Same geometry re-derived: identity matching keeps the nodes —
+        # no retirement, no id churn, the object's parent edge untouched.
         _seed_rooms(graph, db, grid_ts=901.0)
-        assert [n.id for n in graph.nodes(layer="room")] == ["room_3", "room_4"]
+        assert [n.id for n in graph.nodes(layer="room")] == ["room_1", "room_2"]
+        room_1 = graph.node("room_1")
+        assert room_1 is not None
+        assert not room_1.retired
+        assert room_1.metadata["derived_ts"] == 901.0
+        assert graph.parent_id("object_1") == "room_1"
+
+
+def test_rederivation_reparents_when_geometry_changes(tmp_path: Path) -> None:
+    db = tmp_path / "scene.db"
+    with SceneGraph(db) as graph:
+        _seed_rooms(graph, db)
+        _fold_couch_and_tv(graph)
+        assert graph.parent_id("object_1") == "room_1"
+
+        # The dividing wall opens up: one big room whose centroid falls in
+        # neither old polygon, so no identity carries — the old rooms
+        # retire and the object reparents to the fresh node.
+        open_grid = _two_room_grid(901.0)
+        open_grid.grid[2:-2, 82:84] = 0
+        with RoomStore(db) as store:
+            store.save(segment_rooms(open_grid), source="test")
+            room_set = store.latest()
+        assert room_set is not None
+        graph.apply_rooms(room_set)
+
+        assert [n.id for n in graph.nodes(layer="room")] == ["room_3"]
         room_1 = graph.node("room_1")
         assert room_1 is not None
         assert room_1.retired

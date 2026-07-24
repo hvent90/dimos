@@ -44,11 +44,12 @@ nodes — "an object instance at a place".
 Room *derivation* history (the ``rooms``/``room_derivations`` streams
 written via :class:`RoomStore`) is evidence only: no query reads it. Room
 nodes in the graph are canonical; geometry is mutable across derivations
-while node ids stay unique (a re-derivation retires the old region nodes
-and allocates fresh ids — overlap matching old→new identities is a known
-deferral). The one exception is :meth:`SceneGraph.ensure_migrated`, which
-reads the latest stored derivation once to materialize room nodes when
-migrating a pre-graph DB.
+while node ids stay stable: a re-derived room that mutually contains an
+existing region's centroid updates that node in place, unmatched old
+regions retire, unmatched derived rooms get fresh monotonic ids. The one
+exception is :meth:`SceneGraph.ensure_migrated`, which reads the latest
+stored derivation once to materialize room nodes when migrating a
+pre-graph DB.
 """
 
 from __future__ import annotations
@@ -63,8 +64,8 @@ import numpy as np
 from numpy.typing import NDArray
 
 from dimos.constants import STATE_DIR
-from dimos.mapping.occupancy.polygons import assign_to_polygons
-from dimos.mapping.occupancy.room_store import RoomStore, StoredRoomSet
+from dimos.mapping.occupancy.polygons import assign_to_polygons, points_in_polygon
+from dimos.mapping.occupancy.room_store import RoomStore, StoredRoom, StoredRoomSet
 from dimos.memory2.store.sqlite import SqliteStore
 from dimos.memory2.type.observation import Observation
 
@@ -237,6 +238,47 @@ def _sighting_from_obs(obs: Observation[Any]) -> Sighting:
 
 def _node_index(node_id: str) -> int:
     return int(node_id.rsplit("_", 1)[1])
+
+
+def _region_centroid(node: SceneNode) -> tuple[float, float]:
+    stored = node.metadata.get("centroid_xy")
+    if stored:
+        return float(stored[0]), float(stored[1])
+    centroid = node.polygon().mean(axis=0)
+    return float(centroid[0]), float(centroid[1])
+
+
+def _match_regions(old_regions: list[SceneNode], rooms: list[StoredRoom]) -> dict[int, str]:
+    """StoredRoom.id -> existing region node id: identity across derivations.
+
+    A derived room inherits an existing region's identity when each one's
+    centroid falls inside the other's polygon — a same-place test that
+    tolerates outline jitter between derivations but refuses splits and
+    merges (where one centroid lands outside the counterpart). Conflicts
+    resolve one-to-one by centroid distance.
+    """
+    candidates: list[tuple[float, int, str]] = []
+    for room in rooms:
+        for node in old_regions:
+            if node.layer != room.kind or node.extent is None:
+                continue
+            old_centroid = _region_centroid(node)
+            if not points_in_polygon(np.asarray([old_centroid]), room.polygon)[0]:
+                continue
+            if not points_in_polygon(np.asarray([room.centroid_xy]), node.polygon())[0]:
+                continue
+            distance = math.hypot(
+                old_centroid[0] - room.centroid_xy[0], old_centroid[1] - room.centroid_xy[1]
+            )
+            candidates.append((distance, room.id, node.id))
+    matched: dict[int, str] = {}
+    used: set[str] = set()
+    for _, room_id, node_id in sorted(candidates):
+        if room_id in matched or node_id in used:
+            continue
+        matched[room_id] = node_id
+        used.add(node_id)
+    return matched
 
 
 def _union_extent(node: SceneNode, aabb: tuple[float, ...] | None) -> SceneNode:
@@ -584,12 +626,13 @@ class SceneGraph:
     def apply_rooms(self, room_set: StoredRoomSet) -> None:
         """Write a room derivation into the graph: nodes, edges, backfill.
 
-        Retires any previous region nodes and their edges (region ids are
-        never reused; overlap-matching identities across re-derivations is
-        deferred), writes room/corridor nodes with fresh monotonic ids,
-        ``contains`` edges from the building, ``adjacent`` edges from the
-        doorway records, re-checks object containment against the new
-        regions, and backfills ``room_id`` on sighting rows that lack one.
+        Region identity is stable across derivations: a derived room that
+        mutually contains an existing region's centroid updates that node
+        in place, so its id survives. Unmatched old regions retire;
+        unmatched derived rooms get fresh monotonic ids. Doorway
+        ``adjacent`` edges rebuild from the derivation's records, objects
+        re-check containment against the new regions, and ``room_id`` is
+        backfilled on sighting rows that lack one.
         """
         ts = room_set.derived_ts
         nodes, edges = self._load()
@@ -597,11 +640,22 @@ class SceneGraph:
 
         old_regions = self.regions()
         old_ids = {n.id for n in old_regions}
+        matched = _match_regions(old_regions, list(room_set.rooms))
+        retiring = old_ids - set(matched.values())
+
+        # Adjacency rebuilds wholesale from the new doorway records; other
+        # edges (contains) only retire with their region.
         for edge in list(edges.values()):
-            if not edge.retired and (edge.parent_id in old_ids or edge.child_id in old_ids):
+            if edge.retired:
+                continue
+            adjacent = edge.kind == "adjacent" and (
+                edge.parent_id in old_ids or edge.child_id in old_ids
+            )
+            if adjacent or edge.parent_id in retiring or edge.child_id in retiring:
                 self._append_edge(replace(edge, retired=True), ts)
         for region_node in old_regions:
-            self._append_node(replace(region_node, retired=True), ts)
+            if region_node.id in retiring:
+                self._append_node(replace(region_node, retired=True), ts)
 
         next_region = 1 + max(
             (_node_index(i) for i in nodes if i.startswith(("room_", "corridor_"))),
@@ -609,6 +663,31 @@ class SceneGraph:
         )
         id_map: dict[int, str] = {}
         for room in sorted(room_set.rooms, key=lambda r: r.id):
+            metadata = {
+                "area_m2": room.area_m2,
+                "centroid_xy": [
+                    round(room.centroid_xy[0], 3),
+                    round(room.centroid_xy[1], 3),
+                ],
+                "max_clearance_m": room.max_clearance_m,
+                "region_id": room.id,
+                "derived_ts": ts,
+                "explored_fraction": room_set.explored_fraction,
+            }
+            existing_id = matched.get(room.id)
+            if existing_id is not None:
+                id_map[room.id] = existing_id
+                self._append_node(
+                    replace(
+                        nodes[existing_id],
+                        position=(room.anchor_xy[0], room.anchor_xy[1], 0.0),
+                        extent=[round(float(v), 3) for v in room.polygon.ravel()],
+                        last_seen_ts=ts,
+                        metadata=metadata,
+                    ),
+                    ts,
+                )
+                continue
             node_id = f"{room.kind}_{next_region}"
             next_region += 1
             id_map[room.id] = node_id
@@ -623,17 +702,7 @@ class SceneGraph:
                     last_seen_ts=ts,
                     sightings=0,
                     retired=False,
-                    metadata={
-                        "area_m2": room.area_m2,
-                        "centroid_xy": [
-                            round(room.centroid_xy[0], 3),
-                            round(room.centroid_xy[1], 3),
-                        ],
-                        "max_clearance_m": room.max_clearance_m,
-                        "region_id": room.id,
-                        "derived_ts": ts,
-                        "explored_fraction": room_set.explored_fraction,
-                    },
+                    metadata=metadata,
                 ),
                 ts,
             )
