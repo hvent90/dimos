@@ -210,6 +210,46 @@ def test_out_of_order_fold_keeps_latest_position(tmp_path: Path) -> None:
         assert couch.sightings == 2
 
 
+def test_extent_unions_across_sightings_and_persists(tmp_path: Path) -> None:
+    db = tmp_path / "scene.db"
+    with SceneGraph(db) as graph:
+        graph.fold_scan(
+            [
+                Sighting(
+                    name="couch",
+                    ts=T0 + 1.0,
+                    position=(2.0, 2.0, 0.3),
+                    extent=(1.5, 1.8, 0.0, 2.5, 2.2, 0.6),
+                ),
+                Sighting(
+                    name="couch",
+                    ts=T0 + 2.0,
+                    position=(2.1, 2.05, 0.3),
+                    extent=(1.7, 1.9, 0.1, 2.8, 2.3, 0.5),
+                ),
+                # Extent-less producers must not erase accumulated bounds.
+                Sighting(name="couch", ts=T0 + 3.0, position=(2.1, 2.0, 0.3)),
+            ],
+            t0=T0,
+            t1=T0 + 5.0,
+            vocabulary=["couch"],
+            source="test",
+            frames=3,
+        )
+    with SceneGraph(db) as graph:
+        couch = graph.node("object_1")
+        assert couch is not None
+        footprint = couch.polygon()
+        assert footprint[:, 0].min() == 1.5
+        assert footprint[:, 1].min() == 1.8
+        assert footprint[:, 0].max() == 2.8
+        assert footprint[:, 1].max() == 2.3
+        assert couch.metadata["z_range"] == [0.0, 0.6]
+        rows = graph.sightings("couch")
+        assert rows[0].extent == (1.5, 1.8, 0.0, 2.5, 2.2, 0.6)
+        assert rows[2].extent is None
+
+
 def test_same_frame_same_name_detections_both_kept(tmp_path: Path) -> None:
     # Two same-name detections in one frame share ts and a blank track id;
     # both must survive dedupe and become two far-apart nodes.

@@ -58,6 +58,9 @@ class LidarSighting:
     confidence: float
     track_id: int  # -1 when the detector has no track for it
     n_points: int  # lidar points supporting the 3D position
+    # World AABB (x_min, y_min, z_min, x_max, y_max, z_max) of the supporting
+    # points — the visible portion of the object, not its full footprint.
+    extent: tuple[float, float, float, float, float, float] | None = None
 
 
 @dataclass
@@ -158,6 +161,8 @@ def iter_lidar_scan(
             if det3d is None:
                 continue
             center = det3d.center
+            pts, _ = det3d.pointcloud.as_numpy()
+            mins, maxs = pts.min(axis=0), pts.max(axis=0)
             sightings.append(
                 LidarSighting(
                     name=det.name,
@@ -166,6 +171,14 @@ def iter_lidar_scan(
                     confidence=float(det.confidence),
                     track_id=int(det.track_id) if det.track_id is not None else -1,
                     n_points=len(det3d.pointcloud),
+                    extent=(
+                        float(mins[0]),
+                        float(mins[1]),
+                        float(mins[2]),
+                        float(maxs[0]),
+                        float(maxs[1]),
+                        float(maxs[2]),
+                    ),
                 )
             )
         yield LidarScanFrame(

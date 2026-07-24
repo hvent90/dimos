@@ -54,6 +54,18 @@ _HISTORY_PATH = _STATE_DIR / "worldbelief_history.db"
 logger = setup_logger()
 
 
+def _belief_extent(obj: Object) -> tuple[float, float, float, float, float, float] | None:
+    """World AABB from the belief's center + size; None when size is unknown."""
+    try:
+        hx, hy, hz = obj.size.x / 2.0, obj.size.y / 2.0, obj.size.z / 2.0
+        cx, cy, cz = float(obj.center.x), float(obj.center.y), float(obj.center.z)
+    except AttributeError:
+        return None
+    if max(hx, hy, hz) <= 0.0:
+        return None
+    return (cx - hx, cy - hy, cz - hz, cx + hx, cy + hy, cz + hz)
+
+
 class WorldBeliefModuleConfig(MemoryModuleConfig):
     # Replay reads this path directly. Live mode gets the active path from Recorder RPC
     # and uses this value only as the base naming convention for sibling-session recall.
@@ -314,6 +326,7 @@ class WorldBeliefModule(Module):
                     ts=float(obj.last_seen_ts or obj.ts),
                     position=(float(obj.center.x), float(obj.center.y), float(obj.center.z)),
                     object_id=str(obj.object_id),
+                    extent=_belief_extent(obj),
                 )
                 for obj in observations
             ]

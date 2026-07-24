@@ -263,12 +263,14 @@ def _coverage_sentence(coverage: RegionCoverage, label: str) -> str:
 def _node_payload(graph: SceneGraph, node: SceneNode) -> dict[str, Any]:
     """The canonical node payload: state + ``parent`` + ``ancestors``.
 
-    ``extent`` is null for objects (the go2 lane produces positions only);
-    room/corridor nodes summarize their outline as an axis-aligned bbox
-    ``[x_min, y_min, x_max, y_max]`` (the full polygon stays in storage).
+    ``extent`` summarizes the node's stored outline as an axis-aligned bbox
+    ``[x_min, y_min, x_max, y_max]`` (the full polygon stays in storage):
+    room/corridor segmentation outlines, or an object footprint unioned from
+    the lidar points supporting its sightings. Null when never measured.
+    Nodes with a known vertical span also carry ``z_range`` ``[z_min, z_max]``.
     """
     extent: list[float] | None = None
-    if node.layer in ("room", "corridor") and node.extent is not None:
+    if node.extent is not None:
         polygon = node.polygon()
         extent = [
             round(float(polygon[:, 0].min()), 2),
@@ -276,7 +278,7 @@ def _node_payload(graph: SceneGraph, node: SceneNode) -> dict[str, Any]:
             round(float(polygon[:, 0].max()), 2),
             round(float(polygon[:, 1].max()), 2),
         ]
-    return {
+    payload = {
         "id": node.id,
         "name": node.name,
         "layer": node.layer,
@@ -288,6 +290,10 @@ def _node_payload(graph: SceneGraph, node: SceneNode) -> dict[str, Any]:
         "parent": graph.parent_id(node.id),
         "ancestors": [{"id": a.id, "layer": a.layer} for a in graph.ancestors(node.id)],
     }
+    z_range = node.metadata.get("z_range")
+    if z_range is not None:
+        payload["z_range"] = z_range
+    return payload
 
 
 def _lineage_sentence(payload: dict[str, Any]) -> str:
@@ -512,6 +518,7 @@ class SceneMemorySkillContainer(Module):
                                 position=s.position,
                                 object_id=str(s.track_id) if s.track_id >= 0 else "",
                                 confidence=s.confidence,
+                                extent=s.extent,
                             )
                         )
         except LookupError as e:
@@ -811,9 +818,9 @@ class SceneMemorySkillContainer(Module):
     ) -> SkillResult[CommonSkillError]:
         """What is within a radius of a node or point? Deterministic geometry.
 
-        Distances are between node positions only — object extents are not
-        available in this recording lane, so results say "position within
-        radius", not "surface within radius".
+        Distances are between node anchor positions — stored extents are not
+        used here, so results say "position within radius", not "surface
+        within radius" (hit payloads carry each node's extent bbox when known).
 
         Args:
             node_id: Center node id, e.g. "object_5" (give this OR xy).
@@ -856,8 +863,8 @@ class SceneMemorySkillContainer(Module):
             described = ", ".join(f"{p['name']} ({p['id']}) {p['distance_m']} m" for p in payloads)
             return SkillResult.ok(
                 f"{len(hits)} node(s) within {radius} m of ({cx:.2f}, {cy:.2f}): "
-                f"{described or 'none'}. Distances are between stored positions only "
-                "(extents unavailable in this lane).",
+                f"{described or 'none'}. Distances are between stored anchor positions, "
+                "not surfaces.",
                 center=[round(cx, 3), round(cy, 3)],
                 radius_m=radius,
                 hits=payloads,

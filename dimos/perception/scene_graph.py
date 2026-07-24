@@ -114,7 +114,10 @@ class SceneNode:
     layer: str  # "building" | "room" | "corridor" | "object" | "agent"
     name: str
     position: tuple[float, float, float] | None
-    extent: list[float] | None  # flat room outline polygon; None for objects
+    # Flat outline polygon: room/corridor segmentation outline, or an object's
+    # footprint rectangle unioned from sighting AABBs (z-range in
+    # ``metadata["z_range"]``). None when never measured.
+    extent: list[float] | None
     first_seen_ts: float
     last_seen_ts: float
     sightings: int
@@ -159,6 +162,9 @@ class Sighting:
     confidence: float | None = None
     source: str = ""
     vocabulary: tuple[str, ...] = ()
+    # World AABB (x_min, y_min, z_min, x_max, y_max, z_max) of the points
+    # supporting this observation; None when the producer has no geometry.
+    extent: tuple[float, ...] | None = None
 
 
 @dataclass(frozen=True)
@@ -225,11 +231,40 @@ def _sighting_from_obs(obs: Observation[Any]) -> Sighting:
         confidence=tags.get("confidence"),
         source=str(tags.get("source", "")),
         vocabulary=tuple(tags.get("vocabulary", ())),
+        extent=tuple(float(v) for v in tags["extent"]) if tags.get("extent") else None,
     )
 
 
 def _node_index(node_id: str) -> int:
     return int(node_id.rsplit("_", 1)[1])
+
+
+def _union_extent(node: SceneNode, aabb: tuple[float, ...] | None) -> SceneNode:
+    """Union one sighting's world AABB into the node's footprint and z-range.
+
+    Partial views accumulate toward the full footprint (each sighting bounds
+    only the visible portion). The union never shrinks, so an object that
+    moves keeps its old ground covered until a re-derivation exists.
+    """
+    if aabb is None:
+        return node
+    x_min, y_min, z_min, x_max, y_max, z_max = (float(v) for v in aabb)
+    if node.extent is not None:
+        corners = node.polygon()
+        x_min = min(x_min, float(corners[:, 0].min()))
+        y_min = min(y_min, float(corners[:, 1].min()))
+        x_max = max(x_max, float(corners[:, 0].max()))
+        y_max = max(y_max, float(corners[:, 1].max()))
+    previous = node.metadata.get("z_range")
+    if previous:
+        z_min = min(z_min, float(previous[0]))
+        z_max = max(z_max, float(previous[1]))
+    footprint = [x_min, y_min, x_max, y_min, x_max, y_max, x_min, y_max]
+    return replace(
+        node,
+        extent=[round(v, 3) for v in footprint],
+        metadata={**node.metadata, "z_range": [round(z_min, 3), round(z_max, 3)]},
+    )
 
 
 class SceneGraph:
@@ -441,6 +476,7 @@ class SceneGraph:
                 )
                 next_object += 1
                 created.append(node.id)
+            node = _union_extent(node, s.extent)
             live_objects[node.id] = node
             room_id = self.assign_regions(xy, regions)[0]
             assigned.append(replace(s, node_id=node.id, room_id=room_id))
@@ -502,6 +538,8 @@ class SceneGraph:
             }
             if s.confidence is not None:
                 tags["confidence"] = s.confidence
+            if s.extent is not None:
+                tags["extent"] = [round(float(v), 3) for v in s.extent]
             stream.append(s.name, ts=s.ts, pose=s.position, tags=tags)
         self._store.stream(SCAN_EVENTS_STREAM, str).append(
             source,
@@ -678,6 +716,8 @@ class SceneGraph:
             }
             if s.confidence is not None:
                 tags["confidence"] = s.confidence
+            if s.extent is not None:
+                tags["extent"] = [round(float(v), 3) for v in s.extent]
             stream.append(s.name, ts=s.ts, pose=s.position, tags=tags)
 
     def node(self, node_id: str) -> SceneNode | None:

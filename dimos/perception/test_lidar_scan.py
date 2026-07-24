@@ -114,6 +114,13 @@ def test_iter_lidar_scan_lifts_detection_to_cluster(synthetic_store: str) -> Non
     # Hidden-point removal keeps only the camera-facing shell of the cluster.
     assert s.n_points > 10
     np.testing.assert_allclose(s.position, CLUSTER_CENTER, atol=0.08)
+    assert s.extent is not None
+    x_min, y_min, z_min, x_max, y_max, z_max = s.extent
+    assert x_min <= CLUSTER_CENTER[0] <= x_max
+    assert y_min <= CLUSTER_CENTER[1] <= y_max
+    assert z_min <= CLUSTER_CENTER[2] <= z_max
+    # The cluster is a 3-sigma=0.09m ball; its shell AABB must stay tight.
+    assert max(x_max - x_min, y_max - y_min, z_max - z_min) < 0.5
 
 
 def test_iter_lidar_scan_skips_frames_without_odom(synthetic_store: str, tmp_path: Path) -> None:
