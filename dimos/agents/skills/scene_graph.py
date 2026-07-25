@@ -21,10 +21,11 @@ re-derivations: a room re-derived in the same place keeps its node, so its
 name and the objects assigned to it survive a remap.
 
 The read surface over that graph — ``get_scene``, ``find``, ``nodes_in``,
-``adjacent``, ``near``, ``where_am_i`` — returns the same payload for every
-node it mentions: id, layer, position, extent bbox, timestamps, ``parent``
-and ``ancestors``, so lineage is part of every answer rather than something
-the agent has to go and fetch.
+``adjacent``, ``near``, ``where_am_i``, ``last_seen``, ``seen_between`` —
+returns the same payload for every node it mentions: id, layer, position,
+extent bbox, timestamps, ``parent`` and ``ancestors``, so lineage is part of
+every answer rather than something the agent has to go and fetch. The
+temporal reads go through the full sightings log, never node caches.
 
 The robot's pose trail comes from a memory2 recording (the replay DB by
 default): it answers agent-position questions and qualifies scan coverage.
@@ -93,6 +94,10 @@ logger = setup_logger()
 # and doorway-straddling flicker), so one visit doesn't splinter into many.
 DEFAULT_VISIT_GAP_S = 2.0
 
+# Detections flicker frame to frame far more than odom does, so bridge larger
+# gaps when grouping an object's in-region sightings into stays.
+SIGHTING_VISIT_GAP_S = 5.0
+
 # Kept name for callers that predate the graph (see scene_graph.SIGHTING_SNAP_M).
 DEFAULT_SIGHTING_SNAP_M = SIGHTING_SNAP_M
 
@@ -100,6 +105,8 @@ DEFAULT_SIGHTING_SNAP_M = SIGHTING_SNAP_M
 # >= 0.9 renders green (contains), 0.4..0.9 yellow (adjacent).
 _CONTAINS_TRAV = 1.0
 _ADJACENT_TRAV = 0.5
+
+_AGENT_NAMES = {"agent", "agent_0", "robot"}
 
 
 def visit_intervals(
@@ -820,6 +827,303 @@ class SceneGraphSkillContainer(Module):
                 node=payload,
                 ts=round(ts, 3),
             )
+
+    @skill
+    def last_seen(self, name: str, in_node: str = "") -> SkillResult[CommonSkillError]:
+        """When and where was something last seen? The spatio-temporal workhorse.
+
+        Reads the full sightings log (not node caches), so it stays correct
+        when the subject later moved elsewhere: with in_node set, the answer
+        is the last sighting INSIDE that node, plus a note if it was later
+        seen outside. name="agent" answers for the robot from its pose
+        trail ("when were you last in room 4?"). A miss returns a
+        coverage-qualified negative, never a bare "no".
+
+        Args:
+            name: Object name as scanned (e.g. "couch"), or "agent" for the
+                robot itself.
+            in_node: Optional containment filter — a room/corridor id from
+                get_scene() (e.g. "room_2") or "building_0". Empty = anywhere.
+        """
+        return self._seen_query(name, in_node, window=None)
+
+    @skill
+    def seen_between(
+        self, name: str, t0: float, t1: float, in_node: str = ""
+    ) -> SkillResult[CommonSkillError]:
+        """Was something seen in a time window (optionally inside a node)?
+
+        Same answer shape as last_seen, restricted to sightings with
+        t0 <= ts <= t1 (recording-time epoch seconds; get_scene() gives the
+        recording's range).
+
+        Args:
+            name: Object name as scanned, or "agent" for the robot itself.
+            t0: Window start, epoch seconds.
+            t1: Window end, epoch seconds.
+            in_node: Optional containment filter node id. Empty = anywhere.
+        """
+        if t1 <= t0:
+            return SkillResult.fail("INVALID_INPUT", f"Need t0 < t1, got {t0}..{t1}")
+        return self._seen_query(name, in_node, window=(t0, t1))
+
+    def _resolve_filter_node(
+        self, graph: SceneGraph, in_node: str
+    ) -> tuple[SceneNode | None, SkillResult[CommonSkillError] | None]:
+        """Resolve an in_node filter to a region node (None = whole building)."""
+        node = graph.node(in_node)
+        if node is None:
+            region_ids = [r.id for r in graph.regions()]
+            return None, SkillResult.fail(
+                "INVALID_INPUT",
+                f"No node '{in_node}'. Known regions: {region_ids}; "
+                "rooms may not be derived yet (see get_scene).",
+            )
+        if node.layer == "building":
+            return None, None  # everything is in the building
+        if node.layer not in ("room", "corridor"):
+            return None, SkillResult.fail(
+                "INVALID_INPUT",
+                f"in_node must be a room, corridor, or {BUILDING_ID}; "
+                f"'{in_node}' is a {node.layer}.",
+            )
+        return node, None
+
+    def _seen_query(
+        self, name: str, in_node: str, window: tuple[float, float] | None
+    ) -> SkillResult[CommonSkillError]:
+        with self._graph() as graph:
+            # Rooms-dependent even without in_node: the answer's lineage and
+            # room_id come from the room set, so auto-derive here too.
+            note = self._ensure_rooms(graph)
+            if name.strip().lower() in _AGENT_NAMES:
+                return self._agent_seen(graph, in_node, window)
+            region: SceneNode | None = None
+            if in_node:
+                region, error = self._resolve_filter_node(graph, in_node)
+                if error is not None:
+                    return error
+            all_rows = graph.sightings(name)
+            rows = [s for s in all_rows if window is None or window[0] <= s.ts <= window[1]]
+            member = [region is None or s.room_id == region.id for s in rows]
+            in_rows = [s for s, m in zip(rows, member, strict=True) if m]
+            if not in_rows:
+                return self._seen_miss(graph, name, in_node, region, window, all_rows, note)
+
+            visits = visit_intervals(
+                np.asarray([s.ts for s in rows]),
+                np.asarray(member, dtype=bool),
+                max_gap_s=SIGHTING_VISIT_GAP_S,
+            )
+            last = in_rows[-1]
+            enter, exit_ = visits[-1]
+            later_elsewhere = [
+                s for s, m in zip(rows, member, strict=True) if not m and s.ts > exit_
+            ]
+            node = graph.node(last.node_id)
+            payload = _node_payload(graph, node) if node is not None else None
+            x, y, z = (round(v, 2) for v in last.position)
+            place = f" in {last.room_id}" if last.room_id else ""
+            label = f" in {in_node}" if in_node else ""
+            note_later = ""
+            extra: dict[str, Any] = {}
+            if in_node and later_elsewhere:
+                note_later = (
+                    f" Note: '{name}' was later seen outside {in_node}, most recently at "
+                    f"{_iso(later_elsewhere[-1].ts)} UTC."
+                )
+                extra["later_elsewhere_ts"] = round(later_elsewhere[-1].ts, 3)
+            if window is not None:
+                extra["window"] = [round(window[0], 3), round(window[1], 3)]
+            return SkillResult.ok(
+                f"Last saw '{name}'{label} at {_iso(last.ts)} UTC at ({x}, {y}, {z}){place}; "
+                f"that stay spanned {_iso(enter)}..{_iso(exit_)} UTC. "
+                f"{len(in_rows)} sighting(s) total.{note_later}{note}",
+                name=name,
+                last_sighting={
+                    "ts": round(last.ts, 3),
+                    "position": [x, y, z],
+                    "room_id": last.room_id or None,
+                    "node_id": last.node_id,
+                },
+                node=payload,
+                visits=[[round(a, 3), round(b, 3)] for a, b in visits],
+                last_interval=[round(enter, 3), round(exit_, 3)],
+                sightings_matched=len(in_rows),
+                in_node=in_node or None,
+                **extra,
+            )
+
+    def _seen_miss(
+        self,
+        graph: SceneGraph,
+        name: str,
+        in_node: str,
+        region: SceneNode | None,
+        window: tuple[float, float] | None,
+        all_rows: list[Sighting],
+        note: str,
+    ) -> SkillResult[CommonSkillError]:
+        """The coverage-qualified negative — never a bare "no"."""
+        ever = graph.ever_in_vocabulary(name)
+        known = sorted(graph.names())
+        events = graph.scan_events()
+        trail = self._trail_or_none()
+        everything = graph.sightings()
+        if region is not None:
+            member = np.asarray([s.room_id == region.id for s in everything], dtype=bool)
+            coverage = region_scan_coverage(region.polygon(), events, everything, member, trail)
+            label = in_node
+        else:
+            last_event = events[-1].ts if events else None
+            coverage = RegionCoverage(
+                scan_passes=len(events),
+                passes_covering_region=len(events),
+                last_covered_ts=last_event,
+            )
+            label = "anywhere scanned"
+        where = f" in {in_node}" if in_node else ""
+        when = f" between {_iso(window[0])} and {_iso(window[1])} UTC" if window is not None else ""
+        elsewhere = ""
+        extra: dict[str, Any] = {}
+        if all_rows:
+            last_any = all_rows[-1]
+            elsewhere = (
+                f" It was sighted {len(all_rows)} time(s) outside that filter, last at "
+                f"{_iso(last_any.ts)} UTC"
+                + (f" in {last_any.room_id}" if last_any.room_id else "")
+                + "."
+            )
+            extra["last_elsewhere_ts"] = round(last_any.ts, 3)
+        if window is not None:
+            extra["window"] = [round(window[0], 3), round(window[1], 3)]
+        return SkillResult.ok(
+            f"Never saw '{name}'{where}{when}.{elsewhere} "
+            f"{_vocabulary_sentence(name, ever)} {_coverage_sentence(coverage, label)}"
+            + (f" Objects sighted so far: {known}." if not all_rows else "")
+            + note,
+            name=name,
+            sightings_matched=0,
+            ever_in_vocabulary=ever,
+            known_names=known,
+            coverage={
+                "scan_passes": coverage.scan_passes,
+                "passes_covering_region": coverage.passes_covering_region,
+                "region_last_scanned_ts": round(coverage.last_covered_ts, 3)
+                if coverage.last_covered_ts is not None
+                else None,
+            },
+            in_node=in_node or None,
+            **extra,
+        )
+
+    def _agent_seen(
+        self, graph: SceneGraph, in_node: str, window: tuple[float, float] | None
+    ) -> SkillResult[CommonSkillError]:
+        """last_seen/seen_between for the robot itself, from the pose trail.
+
+        Region membership uses the strict room polygon (the robot moves
+        through free space; the snap rule exists for object positions that
+        land in walls). The agent node's containment is resolved here at
+        query time — nothing writes it continuously.
+        """
+        try:
+            trail = self._get_trail()
+        except (FileNotFoundError, LookupError) as e:
+            return SkillResult.fail("NOT_CONFIGURED", f"No pose trail available: {e}")
+        region: SceneNode | None = None
+        if in_node:
+            region, error = self._resolve_filter_node(graph, in_node)
+            if error is not None:
+                return error
+        keep = (
+            np.ones(len(trail.ts), dtype=bool)
+            if window is None
+            else (trail.ts >= window[0]) & (trail.ts <= window[1])
+        )
+        ts = trail.ts[keep]
+        xy = trail.xy[keep]
+        t0, t1 = trail.time_range()
+        if len(ts) == 0:
+            return SkillResult.fail(
+                "INVALID_INPUT",
+                f"The trail has no samples in that window; it covers {_iso(t0)}..{_iso(t1)} UTC.",
+            )
+        member = (
+            points_in_polygon(xy, region.polygon())
+            if region is not None
+            else np.ones(len(ts), dtype=bool)
+        )
+        visits = visit_intervals(ts, member, max_gap_s=DEFAULT_VISIT_GAP_S)
+        extra: dict[str, Any] = {}
+        if window is not None:
+            extra["window"] = [round(window[0], 3), round(window[1], 3)]
+        current_room = graph.assign_regions(np.asarray([trail.xy[-1]]))[0]
+        agent_payload = {
+            "id": AGENT_ID,
+            "name": "agent",
+            "layer": "agent",
+            "position": [round(float(trail.xy[-1, 0]), 3), round(float(trail.xy[-1, 1]), 3), 0.0],
+            "extent": None,
+            "parent": current_room or None,
+            "ancestors": (
+                [
+                    {"id": current_room, "layer": graph.node(current_room).layer},  # type: ignore[union-attr]
+                    *({"id": a.id, "layer": a.layer} for a in graph.ancestors(current_room)),
+                ]
+                if current_room
+                else []
+            ),
+        }
+        if not visits:
+            where = f" inside {in_node}" if in_node else ""
+            when = (
+                f" between {_iso(window[0])} and {_iso(window[1])} UTC"
+                if window is not None
+                else ""
+            )
+            return SkillResult.ok(
+                f"The robot was never{where}{when} during the recorded trail "
+                f"({_iso(t0)}..{_iso(t1)} UTC — full pose coverage, so this is a "
+                "confident negative).",
+                name="agent",
+                sightings_matched=0,
+                in_node=in_node or None,
+                node=agent_payload,
+                visits=[],
+                trail_start_ts=round(t0, 3),
+                trail_end_ts=round(t1, 3),
+                **extra,
+            )
+        enter, exit_ = visits[-1]
+        member_idx = np.nonzero(member)[0]
+        last_i = int(member_idx[-1])
+        last_ts = float(ts[last_i])
+        lx, ly = float(xy[last_i, 0]), float(xy[last_i, 1])
+        last_room = (
+            region.id if region is not None else graph.assign_regions(np.asarray([[lx, ly]]))[0]
+        )
+        if in_node and float(ts[-1]) > exit_:
+            extra["later_elsewhere_ts"] = round(float(ts[-1]), 3)
+        where = f" in {in_node}" if in_node else ""
+        after = f" (left {t1 - exit_:.1f} s before the end of the trail)" if in_node else ""
+        return SkillResult.ok(
+            f"The robot was last{where} from {_iso(enter)} to {_iso(exit_)} UTC{after}. "
+            f"{len(visits)} visit(s) total.",
+            name="agent",
+            last_sighting={
+                "ts": round(last_ts, 3),
+                "position": [round(lx, 3), round(ly, 3), 0.0],
+                "room_id": last_room or None,
+                "node_id": AGENT_ID,
+            },
+            node=agent_payload,
+            visits=[[round(a, 3), round(b, 3)] for a, b in visits],
+            last_interval=[round(enter, 3), round(exit_, 3)],
+            sightings_matched=int(member.sum()),
+            in_node=in_node or None,
+            **extra,
+        )
 
     def _publish_graph(self, graph: SceneGraph, ts: float) -> None:
         """Republish the graph on the viewer streams (rooms, markers, edges).

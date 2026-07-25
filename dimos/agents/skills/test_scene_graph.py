@@ -12,7 +12,7 @@
 # See the License for the specific language governing permissions and
 # limitations under the License.
 
-"""Scene-graph skills: trail, find/near, derive/persist."""
+"""Scene-graph skills: trail, find/near, last_seen, derive/persist."""
 
 from collections.abc import Callable, Iterator
 from pathlib import Path
@@ -209,6 +209,72 @@ def seeded_db(tmp_path: Path) -> Path:
     return db
 
 
+def test_last_seen_object(
+    seeded_db: Path, make_container: Callable[..., SceneGraphSkillContainer]
+) -> None:
+    module = make_container(sightings_db=str(seeded_db))
+    result = module.last_seen("couch")
+    assert result.success
+    assert result.metadata["last_sighting"] == {
+        "ts": T0 + 9.0,
+        "position": [1.1, 2.0, 0.1],
+        "room_id": None,
+        "node_id": "object_1",
+    }
+    assert result.metadata["sightings_matched"] == 2
+    assert result.metadata["in_node"] is None
+    assert result.metadata["last_interval"] == [T0 + 5.0, T0 + 9.0]
+    # The canonical node payload with lineage rides along.
+    node = result.metadata["node"]
+    assert node["id"] == "object_1"
+    assert node["parent"] == BUILDING_ID
+    assert node["ancestors"] == [{"id": BUILDING_ID, "layer": "building"}]
+
+
+def test_last_seen_in_vocabulary_but_never_seen(
+    seeded_db: Path, make_container: Callable[..., SceneGraphSkillContainer]
+) -> None:
+    # "plant" was looked for but never detected — the answer must say so
+    # rather than fabricate a sighting.
+    module = make_container(sightings_db=str(seeded_db))
+    result = module.last_seen("plant")
+    assert result.success
+    assert result.metadata["sightings_matched"] == 0
+    assert result.metadata["ever_in_vocabulary"] is True
+    assert result.metadata["coverage"]["scan_passes"] == 1
+    assert "was in the scan vocabulary" in result.message
+
+
+def test_last_seen_never_in_vocabulary(
+    seeded_db: Path, make_container: Callable[..., SceneGraphSkillContainer]
+) -> None:
+    module = make_container(sightings_db=str(seeded_db))
+    result = module.last_seen("fire extinguisher")
+    assert result.success
+    assert result.metadata["ever_in_vocabulary"] is False
+    assert "never in any scan's vocabulary" in result.message
+    assert result.metadata["known_names"] == ["couch", "tv"]
+
+
+def test_seen_between_window(
+    seeded_db: Path, make_container: Callable[..., SceneGraphSkillContainer]
+) -> None:
+    module = make_container(sightings_db=str(seeded_db))
+    result = module.seen_between("couch", T0, T0 + 6.0)
+    assert result.success
+    assert result.metadata["sightings_matched"] == 1
+    assert result.metadata["last_sighting"]["ts"] == T0 + 5.0
+    assert result.metadata["window"] == [T0, T0 + 6.0]
+
+    empty = module.seen_between("couch", T0 + 10.0, T0 + 20.0)
+    assert empty.success
+    assert empty.metadata["sightings_matched"] == 0
+
+    bad = module.seen_between("couch", T0 + 5.0, T0 + 1.0)
+    assert not bad.success
+    assert bad.error_code == "INVALID_INPUT"
+
+
 def test_find_hit_and_miss(
     seeded_db: Path, make_container: Callable[..., SceneGraphSkillContainer]
 ) -> None:
@@ -260,9 +326,7 @@ def test_near(seeded_db: Path, make_container: Callable[..., SceneGraphSkillCont
     assert not neither.success
 
 
-def test_nodes_in(
-    seeded_db: Path, make_container: Callable[..., SceneGraphSkillContainer]
-) -> None:
+def test_nodes_in(seeded_db: Path, make_container: Callable[..., SceneGraphSkillContainer]) -> None:
     module = make_container(sightings_db=str(seeded_db))
     listing = module.nodes_in(BUILDING_ID)
     assert listing.success
