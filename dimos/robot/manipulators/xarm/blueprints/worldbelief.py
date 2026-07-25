@@ -115,6 +115,7 @@ xarm6_worldbelief = autoconnect(
     WorldBeliefModule.blueprint(
         db_path=STATE_DIR / "worldbelief" / "xarm6" / "recordings" / "xarm6_worldbelief.db",
         history_path=STATE_DIR / "worldbelief" / "xarm6" / "worldbelief_history.db",
+        sightings_db=STATE_DIR / "scene_memory" / "sightings.db",
         scan_prompts=[],
         depth_tolerance_s=0.1,
         stationary_hz=4.0,

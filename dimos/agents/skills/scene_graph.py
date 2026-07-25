@@ -12,13 +12,18 @@
 # See the License for the specific language governing permissions and
 # limitations under the License.
 
-"""Scene-graph skills: derive rooms from the map, read the graph, publish it.
+"""Scene-graph skills: derive rooms, scan for objects, read the graph, publish it.
 
 ``derive_rooms`` segments the live global costmap into rooms and corridors
 and writes them into the persistent scene graph
 (:mod:`dimos.perception.scene_graph`), where room node ids are stable across
 re-derivations: a room re-derived in the same place keeps its node, so its
 name and the objects assigned to it survive a remap.
+
+``scan_for_objects`` fills the object layer: open-vocabulary detection over
+the recording's camera frames, positioned in the world by projecting the
+recording's lidar (:mod:`dimos.perception.lidar_scan`), folded in behind a
+corroboration gate so one-frame false matches never become nodes.
 
 The read surface over that graph — ``get_scene``, ``find``, ``nodes_in``,
 ``adjacent``, ``near``, ``where_am_i``, ``last_seen``, ``seen_between`` —
@@ -48,7 +53,7 @@ from dataclasses import dataclass
 from datetime import datetime, timezone
 from pathlib import Path
 import threading
-from typing import Any
+from typing import TYPE_CHECKING, Any
 
 import numpy as np
 from numpy.typing import NDArray
@@ -69,9 +74,11 @@ from dimos.mapping.occupancy.rooms.store import RoomStore, StoredRoom, StoredRoo
 from dimos.memory2.replay import resolve_db_path
 from dimos.memory2.store.sqlite import SqliteStore
 from dimos.memory2.type.observation import Observation
+from dimos.msgs.geometry_msgs.Transform import Transform
 from dimos.msgs.nav_msgs.ContourPolygons3D import ContourPolygons3D
 from dimos.msgs.nav_msgs.LineSegments3D import LineSegments3D
 from dimos.msgs.nav_msgs.OccupancyGrid import OccupancyGrid
+from dimos.msgs.sensor_msgs.CameraInfo import CameraInfo
 from dimos.msgs.sensor_msgs.PointCloud2 import PointCloud2
 from dimos.msgs.visualization_msgs.EntityMarkers import EntityMarkers, Marker
 from dimos.perception.scene_graph import (
@@ -87,6 +94,9 @@ from dimos.perception.scene_graph import (
     Sighting,
 )
 from dimos.utils.logging_config import setup_logger
+
+if TYPE_CHECKING:
+    from dimos.perception.detection.detectors.base import Detector
 
 logger = setup_logger()
 
@@ -258,7 +268,7 @@ def _vocabulary_sentence(name: str, ever_in_vocab: bool) -> str:
 
 def _coverage_sentence(coverage: RegionCoverage, label: str) -> str:
     if coverage.scan_passes == 0:
-        return "Nothing has been scanned yet."
+        return "Nothing has been scanned yet — run scan_for_objects first."
     if coverage.passes_covering_region == 0:
         return (
             f"No scan pass is known to have covered {label}, so this is weak evidence of absence."
@@ -319,6 +329,20 @@ class SceneGraphConfig(ModuleConfig):
     trail_streams: list[str] = ["go2_odom", "odom"]
     # The scene-graph store (persists across restarts).
     sightings_db: str | Path = DEFAULT_SIGHTINGS_DB
+    # Camera intrinsics + static base_link->camera_optical mount, needed only
+    # by scan_for_objects (wired per robot in the blueprint).
+    camera_info: CameraInfo | None = None
+    base_to_optical: Transform | None = None
+    detector_conf: float = 0.4
+    scan_sample_period_s: float = 0.5
+    # Corroboration gate for scan_for_objects: a NEW object needs this many
+    # sightings over this many distinct frames before it becomes a node.
+    # Detector confidence can't separate weak open-vocab matches from real
+    # objects (true hits score ~0.1 on stylized renders, junk reaches 0.6+),
+    # but junk flickers while real objects re-fire across frames.
+    # Re-sightings of existing nodes always pass. 1/1 disables the gate.
+    scan_min_sightings: int = 3
+    scan_min_frames: int = 2
     # Room boundaries form where free space pinches below this half-width.
     # The default suits door-separated buildings; open-plan spaces need it
     # wider so archways count as dividers (DimSim apartment: 1.0).
@@ -333,6 +357,9 @@ class SceneGraphSkillContainer(Module):
 
     config: SceneGraphConfig
     global_costmap: In[OccupancyGrid]
+    # Live intrinsics from the camera module; wins over config.camera_info,
+    # which is a blueprint-time snapshot (sims swap in their own at runtime).
+    camera_info: In[CameraInfo]
     scene_graph_rooms: Out[ContourPolygons3D]
     scene_graph_markers: Out[EntityMarkers]
     scene_graph_edges: Out[LineSegments3D]
@@ -341,8 +368,11 @@ class SceneGraphSkillContainer(Module):
         super().__init__(**kwargs)
         self._trail: PoseTrail | None = None
         self._trail_lock = threading.Lock()
+        self._detector: Detector | None = None
+        self._detector_lock = threading.Lock()
         self._grid_lock = threading.Lock()
         self._latest_grid: OccupancyGrid | None = None
+        self._live_camera_info: CameraInfo | None = None
         # Serializes graph mutations (fold, derivation, migration).
         self._mutate_lock = threading.Lock()
 
@@ -351,6 +381,8 @@ class SceneGraphSkillContainer(Module):
         super().start()
         if self.global_costmap.transport:
             self.register_disposable(Disposable(self.global_costmap.subscribe(self._on_costmap)))
+        if self.camera_info.transport:
+            self.register_disposable(Disposable(self.camera_info.subscribe(self._on_camera_info)))
         with self._mutate_lock, self._graph() as graph:
             migrated = graph.ensure_migrated()
             if migrated:
@@ -362,6 +394,9 @@ class SceneGraphSkillContainer(Module):
     @rpc
     def stop(self) -> None:
         super().stop()
+
+    def _on_camera_info(self, msg: CameraInfo) -> None:
+        self._live_camera_info = msg
 
     def _on_costmap(self, grid: OccupancyGrid) -> None:
         with self._grid_lock:
@@ -448,6 +483,164 @@ class SceneGraphSkillContainer(Module):
         self._publish_graph(graph, ts=segmentation.derived_ts)
         return segmentation, True
 
+    def _get_detector(self) -> Detector:
+        with self._detector_lock:
+            if self._detector is None:
+                # Lazy import: pulls in torch/ultralytics, which most skills
+                # never need.
+                from dimos.perception.detection.detectors.yoloe import (
+                    Yoloe2DDetector,
+                    YoloePromptMode,
+                )
+
+                self._detector = Yoloe2DDetector(
+                    prompt_mode=YoloePromptMode.PROMPT, conf=self.config.detector_conf
+                )
+            return self._detector
+
+    @skill
+    def scan_for_objects(self, prompt: list[str] | str) -> SkillResult[CommonSkillError]:
+        """Scan the recording for objects and fold sightings into the scene graph.
+
+        Runs open-vocabulary detection over the recorded camera frames,
+        positions each detection in the world using the recording's lidar,
+        and attaches every sighting to a persistent object node (stable ids
+        like object_7). Only object types named in the prompt can be found —
+        everything else is invisible to this scan. Results persist across
+        restarts. Detection matches APPEARANCE, not intent: an object you
+        call a "couch" may only fire under a near-synonym ("sofa", "bench",
+        "seat"), so scan a broad vocabulary of plausible names and treat any
+        hit near the expected spot as your object. Broad vocabularies are
+        safe: a new object only enters the graph once it is sighted in
+        several frames, so one-frame false matches are filtered out (the
+        result reports them).
+
+        Args:
+            prompt: Object type names to look for — include synonyms, e.g.
+                ["couch", "sofa", "bench", "chair"] or "chair, couch".
+        """
+        # A bare string over MCP would otherwise iterate per character.
+        if isinstance(prompt, str):
+            prompt = prompt.split(",")
+        vocabulary = sorted({p.strip() for p in prompt if p.strip()})
+        if not vocabulary:
+            return SkillResult.fail("INVALID_INPUT", "prompt must name at least one object type")
+        camera_info = self._live_camera_info or self.config.camera_info
+        if camera_info is None or self.config.base_to_optical is None:
+            return SkillResult.fail(
+                "NOT_CONFIGURED",
+                "scan_for_objects needs camera_info and base_to_optical configured",
+            )
+        try:
+            db_path = resolve_db_path(self._trail_db())
+        except (FileNotFoundError, LookupError) as e:
+            return SkillResult.fail("NOT_CONFIGURED", f"No recording available: {e}")
+
+        # Import here with the detector: the scan lane is optional heavy metal.
+        from dimos.perception.lidar_scan import corroborated_sightings, iter_lidar_scan
+
+        detector = self._get_detector()
+        detector.set_prompts(text=vocabulary)  # type: ignore[attr-defined]
+
+        sightings: list[Sighting] = []
+        n_frames = 0
+        t_lo = float("inf")
+        t_hi = float("-inf")
+        agent_position: tuple[float, float, float] | None = None
+        try:
+            with SqliteStore(path=str(db_path), must_exist=True) as store:
+                for frame in iter_lidar_scan(
+                    store,
+                    detector,
+                    camera_info,
+                    self.config.base_to_optical,
+                    sample_period_s=self.config.scan_sample_period_s,
+                ):
+                    n_frames += 1
+                    t_lo = min(t_lo, frame.ts)
+                    t_hi = max(t_hi, frame.ts)
+                    agent_position = (frame.robot_xy[0], frame.robot_xy[1], 0.0)
+                    for s in frame.sightings:
+                        sightings.append(
+                            Sighting(
+                                name=s.name,
+                                ts=s.ts,
+                                position=s.position,
+                                object_id=str(s.track_id) if s.track_id >= 0 else "",
+                                confidence=s.confidence,
+                                extent=s.extent,
+                            )
+                        )
+        except LookupError as e:
+            return SkillResult.fail(
+                "EXECUTION_FAILED", f"Recording is missing a required stream: {e}"
+            )
+        if n_frames == 0:
+            return SkillResult.fail(
+                "EXECUTION_FAILED", "No frames with aligned odom+lidar found in the recording"
+            )
+        with self._mutate_lock, self._graph() as graph:
+            # Corroboration gate: a new object must be sighted in several
+            # frames before it may become a node; re-sightings of existing
+            # nodes pass through. Each scan covers the whole recording, so
+            # the gate is cumulative — a dropped one-off can confirm later.
+            anchors: dict[str, list[tuple[float, float]]] = {}
+            for node in graph.nodes(layer="object"):
+                if node.position is not None:
+                    anchors.setdefault(node.name, []).append(node.xy)
+            sightings, filtered = corroborated_sightings(
+                sightings,
+                anchors,
+                radius_m=self.config.attach_radius_m,
+                min_sightings=self.config.scan_min_sightings,
+                min_frames=self.config.scan_min_frames,
+            )
+            result = graph.fold_scan(
+                sightings,
+                t0=t_lo,
+                t1=t_hi,
+                vocabulary=vocabulary,
+                source="scene_graph.scan_for_objects",
+                frames=n_frames,
+                agent_position=agent_position,
+            )
+            self._publish_graph(graph, ts=t_hi)
+        by_name: dict[str, int] = {}
+        for row in sightings:
+            by_name[row.name] = by_name.get(row.name, 0) + 1
+        vantage_hint = (
+            " Zero sightings usually means the target was never in camera view — "
+            "the scan only sees what the camera has faced. Change vantage: turn in "
+            "place (navigate_to_pose at the current position with a new yaw_deg) or "
+            "move a few meters into free space, then scan again."
+            if not sightings
+            else ""
+        )
+        filtered_note = (
+            f" Filtered {sum(filtered.values())} uncorroborated detection(s) {filtered} — "
+            f"a new object needs >={self.config.scan_min_sightings} sightings over "
+            f">={self.config.scan_min_frames} frames; real objects re-fire on rescan "
+            "from another vantage."
+            if filtered
+            else ""
+        )
+        return SkillResult.ok(
+            f"Scanned {n_frames} frames; {result.appended_sightings} new sighting(s): {by_name}. "
+            f"Object nodes: {len(result.created_node_ids)} created, "
+            f"{len(result.updated_node_ids)} updated. "
+            f"Vocabulary was {vocabulary} — other object types were not looked for."
+            f"{filtered_note}{vantage_hint}",
+            sightings_by_name=by_name,
+            appended_sightings=result.appended_sightings,
+            created_nodes=list(result.created_node_ids),
+            updated_nodes=list(result.updated_node_ids),
+            frames=n_frames,
+            scanned_t0=round(t_lo, 3),
+            scanned_t1=round(t_hi, 3),
+            vocabulary=vocabulary,
+            filtered_uncorroborated=filtered,
+        )
+
     @skill
     def derive_rooms(self, force: bool = False) -> SkillResult[CommonSkillError]:
         """Segment the current occupancy map into rooms and update the graph.
@@ -503,7 +696,7 @@ class SceneGraphSkillContainer(Module):
 
         Deterministic matching over the scene graph (exact id, exact name,
         then substring). A miss says whether the name was ever in any scan's
-        vocabulary.
+        vocabulary — if not, scan_for_objects with that name first.
 
         Args:
             text: An object/room name or node id, e.g. "couch" or "room_3".
