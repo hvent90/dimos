@@ -25,6 +25,13 @@ the recording's camera frames, positioned in the world by projecting the
 recording's lidar (:mod:`dimos.perception.lidar_scan`), folded in behind a
 corroboration gate so one-frame false matches never become nodes.
 
+``view_map`` renders that map as a top-down floor plan the agent can read
+world coordinates off, and ``rename_room``, ``set_room_boundary``,
+``merge_rooms`` and ``split_room`` write corrections back — the eyes and
+hands for the geometry segmentation gets wrong. Every edit marks the region
+``origin: "agent"``, which is what ``derive_rooms``' force gate reads, so
+automatic derivation defers to what the agent fixed.
+
 The read surface over that graph — ``get_scene``, ``find``, ``nodes_in``,
 ``adjacent``, ``near``, ``where_am_i``, ``last_seen``, ``seen_between`` —
 returns the same payload for every node it mentions: id, layer, position,
@@ -51,9 +58,11 @@ from __future__ import annotations
 
 from dataclasses import dataclass
 from datetime import datetime, timezone
+import math
 from pathlib import Path
 import threading
-from typing import TYPE_CHECKING, Any
+import time
+from typing import TYPE_CHECKING, Any, cast
 
 import numpy as np
 from numpy.typing import NDArray
@@ -64,7 +73,13 @@ from dimos.agents.skill_result import CommonSkillError, SkillResult
 from dimos.core.core import rpc
 from dimos.core.module import Module, ModuleConfig
 from dimos.core.stream import In, Out
-from dimos.mapping.occupancy.rooms.polygons import assign_to_polygons, points_in_polygon
+from dimos.mapping.occupancy.rooms.edits import boundary_region, merged_region, split_region
+from dimos.mapping.occupancy.rooms.polygons import (
+    assign_to_polygons,
+    points_in_polygon,
+    polygon_from_flat,
+)
+from dimos.mapping.occupancy.rooms.render import MapMarker, MapRegion, grid_step_m, render_map
 from dimos.mapping.occupancy.rooms.segmentation import (
     RoomSegmentation,
     RoomSegmentationConfig,
@@ -79,6 +94,7 @@ from dimos.msgs.nav_msgs.ContourPolygons3D import ContourPolygons3D
 from dimos.msgs.nav_msgs.LineSegments3D import LineSegments3D
 from dimos.msgs.nav_msgs.OccupancyGrid import OccupancyGrid
 from dimos.msgs.sensor_msgs.CameraInfo import CameraInfo
+from dimos.msgs.sensor_msgs.Image import Image, ImageFormat
 from dimos.msgs.sensor_msgs.PointCloud2 import PointCloud2
 from dimos.msgs.visualization_msgs.EntityMarkers import EntityMarkers, Marker
 from dimos.perception.scene_graph import (
@@ -88,6 +104,7 @@ from dimos.perception.scene_graph import (
     DEFAULT_SIGHTINGS_DB,
     SCENE_GRAPH_ROOM_Z,
     SIGHTING_SNAP_M,
+    RegionSpec,
     ScanEvent,
     SceneGraph,
     SceneNode,
@@ -321,6 +338,26 @@ def _lineage_sentence(payload: dict[str, Any]) -> str:
     return " -> ".join(chain)
 
 
+@dataclass
+class MapViewResult(SkillResult[CommonSkillError]):
+    """A SkillResult that also carries the rendered map image.
+
+    ``agent_encode`` appends the image as its own content block after the
+    JSON text block; the MCP client hoists non-text blocks into the agent's
+    context as vision input (see McpClient._mcp_tool_to_langchain).
+    """
+
+    image: Image | None = None
+
+    def agent_encode(self) -> list[dict[str, Any]]:
+        blocks = super().agent_encode()
+        if self.image is not None:
+            # Image.agent_encode is annotated as one AgentImageMessage but
+            # returns a list of content blocks.
+            blocks.extend(cast("list[dict[str, Any]]", self.image.agent_encode()))
+        return blocks
+
+
 class SceneGraphConfig(ModuleConfig):
     # Recording holding the robot's pose trail: a dataset name or .db path,
     # resolved like the replay DB. Defaults to the session's replay DB.
@@ -401,6 +438,10 @@ class SceneGraphSkillContainer(Module):
     def _on_costmap(self, grid: OccupancyGrid) -> None:
         with self._grid_lock:
             self._latest_grid = grid
+
+    def _grid_or_none(self) -> OccupancyGrid | None:
+        with self._grid_lock:
+            return self._latest_grid
 
     def _graph(self) -> SceneGraph:
         return SceneGraph(
@@ -649,9 +690,9 @@ class SceneGraphSkillContainer(Module):
         and re-checks which room contains each object. Room ids and names
         are stable: a re-derived room in the same place keeps its node.
 
-        Agent-edited room geometry is preserved: derivation refuses while
-        edits exist unless force is true, which discards them and
-        re-derives from the map alone.
+        Agent-edited geometry (set_room_boundary, merge_rooms, split_room)
+        is preserved: derivation refuses while edits exist unless force is
+        true, which discards them and re-derives from the map alone.
 
         Args:
             force: Discard agent-edited room geometry and re-derive.
@@ -688,6 +729,308 @@ class SceneGraphSkillContainer(Module):
             explored_fraction=segmentation.explored_fraction,
             derived_ts=round(segmentation.derived_ts, 3),
             region_ids=region_ids,
+        )
+
+    @skill
+    def view_map(self, bounds: list[float] | None = None) -> SkillResult[CommonSkillError]:
+        """Render the occupancy map with rooms, objects and the robot as an image.
+
+        A top-down floor plan built for coordinate reasoning: metric
+        gridlines labeled in world meters, each room's tinted polygon with
+        id and name, object markers, and the robot pose. The same geometry
+        is in the JSON metadata (exact room polygon vertices). Look at it
+        before fixing room geometry (set_room_boundary, merge_rooms,
+        split_room, rename_room) and again afterwards to verify; zoom in
+        for finer gridlines and per-vertex coordinate tags.
+
+        Args:
+            bounds: Optional [x_min, y_min, x_max, y_max] world-meter crop
+                to zoom into one area; omit for the full map.
+        """
+        grid = self._grid_or_none()
+        if grid is None:
+            return SkillResult.fail(
+                "INVALID_STATE", "No occupancy map received yet — is mapping running?"
+            )
+        crop: tuple[float, float, float, float] | None = None
+        if bounds is not None:
+            if len(bounds) != 4 or bounds[0] >= bounds[2] or bounds[1] >= bounds[3]:
+                return SkillResult.fail(
+                    "INVALID_INPUT",
+                    "bounds must be [x_min, y_min, x_max, y_max] with min < max",
+                )
+            crop = (bounds[0], bounds[1], bounds[2], bounds[3])
+
+        with self._graph() as graph:
+            note = self._ensure_rooms(graph)
+            regions = graph.regions()
+            objects = [
+                n for n in graph.nodes(layer="object") if n.position is not None and not n.retired
+            ]
+            rooms_meta = [
+                {
+                    "id": r.id,
+                    "name": r.name,
+                    "kind": r.layer,
+                    "area_m2": r.metadata.get("area_m2"),
+                    "origin": r.metadata.get("origin", "derived"),
+                    "polygon": [[round(float(x), 2), round(float(y), 2)] for x, y in r.polygon()],
+                }
+                for r in regions
+                if r.extent is not None
+            ]
+            objects_meta = [
+                {
+                    "id": n.id,
+                    "name": n.name,
+                    "x": round(n.xy[0], 2),
+                    "y": round(n.xy[1], 2),
+                    "room": graph.parent_id(n.id),
+                }
+                for n in objects
+            ]
+
+        agent_xy: tuple[float, float] | None = None
+        agent_heading: float | None = None
+        trail = self._trail_or_none()
+        if trail is not None and len(trail.ts):
+            agent_xy = (float(trail.xy[-1, 0]), float(trail.xy[-1, 1]))
+            if len(trail.ts) >= 2:
+                dx = trail.xy[-1, 0] - trail.xy[-2, 0]
+                dy = trail.xy[-1, 1] - trail.xy[-2, 1]
+                if abs(dx) > 1e-6 or abs(dy) > 1e-6:
+                    agent_heading = math.atan2(dy, dx)
+
+        try:
+            img = render_map(
+                grid,
+                regions=[
+                    MapRegion(id=r.id, name=r.name, kind=r.layer, polygon=r.polygon())
+                    for r in regions
+                    if r.extent is not None
+                ],
+                markers=[MapMarker(xy=n.xy, label=n.name) for n in objects],
+                agent_xy=agent_xy,
+                agent_heading=agent_heading,
+                bounds=crop,
+            )
+        except ValueError as e:
+            return SkillResult.fail("INVALID_INPUT", str(e))
+
+        x0, y0, x1, y1 = (
+            crop
+            if crop is not None
+            else (
+                float(grid.origin.position.x),
+                float(grid.origin.position.y),
+                float(grid.origin.position.x) + grid.width * grid.resolution,
+                float(grid.origin.position.y) + grid.height * grid.resolution,
+            )
+        )
+        step = grid_step_m(max(x1 - x0, y1 - y0))
+        message = (
+            f"Rendered map view x [{x0:.1f}, {x1:.1f}], y [{y0:.1f}, {y1:.1f}] m: "
+            f"{len(rooms_meta)} region(s), {len(objects_meta)} object(s). "
+            f"Gridlines every {step:g} m; exact room polygons are in metadata."
+        )
+        if note:
+            message += f" {note}"
+        return MapViewResult(
+            success=True,
+            message=message,
+            metadata={
+                "view_bounds": [round(v, 2) for v in (x0, y0, x1, y1)],
+                "grid_step_m": step,
+                "resolution_m": grid.resolution,
+                "rooms": rooms_meta,
+                "objects": objects_meta,
+                "agent": list(agent_xy) if agent_xy is not None else None,
+            },
+            image=Image(data=img, format=ImageFormat.BGR, ts=time.time()),
+        )
+
+    @skill
+    def rename_room(self, room_id: str, name: str) -> SkillResult[CommonSkillError]:
+        """Rename a room or corridor; the name survives future derivations.
+
+        Args:
+            room_id: Region node id, e.g. "room_3".
+            name: Human name for it, e.g. "kitchen".
+        """
+        name = name.strip()
+        if not name:
+            return SkillResult.fail("INVALID_INPUT", "name must not be empty")
+        ts = time.time()
+        with self._mutate_lock, self._graph() as graph:
+            try:
+                renamed = graph.rename_region(room_id, name, ts)
+            except KeyError as e:
+                return SkillResult.fail("INVALID_INPUT", str(e.args[0]))
+            self._publish_graph(graph, ts=ts)
+        return SkillResult.ok(
+            f"{room_id} is now named '{renamed.name}'.", room_id=room_id, name=renamed.name
+        )
+
+    @skill
+    def set_room_boundary(
+        self, room_id: str, polygon: list[float]
+    ) -> SkillResult[CommonSkillError]:
+        """Replace a room's outline polygon with corrected geometry.
+
+        The room keeps its id and name; objects and sighting history
+        re-check which room contains them. Agent-edited geometry is
+        preserved against automatic derivation (derive_rooms refuses
+        without force=true). Read coordinates off view_map first.
+
+        Args:
+            room_id: Region node id, e.g. "room_3".
+            polygon: Flat [x1, y1, x2, y2, ...] world-meter outline,
+                at least 3 vertices in order.
+        """
+        try:
+            outline = polygon_from_flat(polygon)
+        except ValueError as e:
+            return SkillResult.fail("INVALID_INPUT", str(e))
+        grid = self._grid_or_none()
+        ts = time.time()
+        with self._mutate_lock, self._graph() as graph:
+            geometry = boundary_region(grid, outline)
+            try:
+                node, moved, rewritten = graph.set_region_geometry(room_id, geometry, ts)
+            except KeyError as e:
+                return SkillResult.fail("INVALID_INPUT", str(e.args[0]))
+            self._publish_graph(graph, ts=ts)
+        return SkillResult.ok(
+            f"{room_id} boundary replaced ({geometry.area_m2} m^2, "
+            f"{len(outline)} vertices); {moved} object(s) changed rooms, "
+            f"{rewritten} sighting row(s) reassigned. Automatic derivation "
+            "will preserve this edit.",
+            room_id=node.id,
+            area_m2=geometry.area_m2,
+            objects_moved=moved,
+            sightings_reassigned=rewritten,
+        )
+
+    @skill
+    def merge_rooms(self, room_ids: list[str], name: str = "") -> SkillResult[CommonSkillError]:
+        """Merge adjacent rooms into one (fixes over-segmentation).
+
+        The merged room gets a fresh id (reported back); objects and
+        sighting history move to it, and doorways to outside rooms carry
+        over. Preserved against automatic derivation like all agent edits.
+
+        Args:
+            room_ids: Two or more region node ids, e.g. ["room_2", "room_3"].
+            name: Optional name for the merged room.
+        """
+        ids = list(dict.fromkeys(room_ids))
+        if len(ids) < 2:
+            return SkillResult.fail("INVALID_INPUT", "merge_rooms needs at least two distinct ids")
+        grid = self._grid_or_none()
+        if grid is None:
+            return SkillResult.fail(
+                "INVALID_STATE", "No occupancy map received yet — merging needs the map geometry."
+            )
+        ts = time.time()
+        with self._mutate_lock, self._graph() as graph:
+            try:
+                nodes = [graph.region_or_raise(node_id) for node_id in ids]
+            except KeyError as e:
+                return SkillResult.fail("INVALID_INPUT", str(e.args[0]))
+            geometry = merged_region(grid, [n.polygon() for n in nodes])
+            if geometry is None:
+                return SkillResult.fail(
+                    "INVALID_INPUT",
+                    f"{', '.join(ids)} are not contiguous on the map — merge needs adjacent rooms.",
+                )
+            kind = "corridor" if all(n.layer == "corridor" for n in nodes) else "room"
+            created, moved, rewritten = graph.replace_regions(
+                ids, [RegionSpec(kind=kind, name=name.strip(), geometry=geometry)], ts
+            )
+            self._publish_graph(graph, ts=ts)
+        new = created[0]
+        label = f"{new.id} ('{new.name}')" if new.name != new.id else new.id
+        return SkillResult.ok(
+            f"Merged {', '.join(ids)} into {label} ({geometry.area_m2} m^2); "
+            f"{moved} object(s) and {rewritten} sighting row(s) moved with it. "
+            "Automatic derivation will preserve this edit.",
+            merged_into=new.id,
+            name=new.name,
+            area_m2=geometry.area_m2,
+            objects_moved=moved,
+            sightings_reassigned=rewritten,
+        )
+
+    @skill
+    def split_room(
+        self, room_id: str, line: list[float], names: list[str] | None = None
+    ) -> SkillResult[CommonSkillError]:
+        """Split a room in two along a straight line (fixes under-segmentation).
+
+        The line extends across the whole room; each side becomes a new
+        room (fresh ids, reported back) joined by an adjacency where the
+        line crosses. Objects and sighting history re-check containment.
+        Preserved against automatic derivation like all agent edits.
+
+        Args:
+            room_id: Region node id to split, e.g. "room_3".
+            line: [x0, y0, x1, y1] — two world-meter points on the
+                dividing line (read them off view_map).
+            names: Optional names for the two halves: first the half left
+                of the line direction (x0,y0)->(x1,y1), then the right.
+        """
+        if len(line) != 4:
+            return SkillResult.fail("INVALID_INPUT", "line must be [x0, y0, x1, y1]")
+        p0 = np.asarray(line[:2], dtype=np.float64)
+        p1 = np.asarray(line[2:], dtype=np.float64)
+        if float(np.hypot(*(p1 - p0))) < 1e-6:
+            return SkillResult.fail("INVALID_INPUT", "line endpoints must differ")
+        wanted_names = [n.strip() for n in (names or [])]
+        if len(wanted_names) > 2:
+            return SkillResult.fail("INVALID_INPUT", "names takes at most two entries")
+        wanted_names += [""] * (2 - len(wanted_names))
+        grid = self._grid_or_none()
+        if grid is None:
+            return SkillResult.fail(
+                "INVALID_STATE", "No occupancy map received yet — splitting needs the map."
+            )
+        ts = time.time()
+        with self._mutate_lock, self._graph() as graph:
+            try:
+                node = graph.region_or_raise(room_id)
+            except KeyError as e:
+                return SkillResult.fail("INVALID_INPUT", str(e.args[0]))
+            halves = split_region(grid, node.polygon(), p0, p1)
+            if halves is None:
+                return SkillResult.fail(
+                    "INVALID_INPUT",
+                    f"The line does not divide {room_id} — both sides need map area.",
+                )
+            specs = [
+                RegionSpec(kind=node.layer, name=wanted_names[0], geometry=halves.a),
+                RegionSpec(kind=node.layer, name=wanted_names[1], geometry=halves.b),
+            ]
+            created, moved, rewritten = graph.replace_regions([room_id], specs, ts)
+            graph.link_adjacent(
+                created[0].id,
+                created[1].id,
+                halves.doorway_xy,
+                halves.seam_width_m,
+                ts,
+            )
+            self._publish_graph(graph, ts=ts)
+        described = ", ".join(
+            f"{n.id} ('{n.name}', {n.metadata['area_m2']} m^2)"
+            if n.name != n.id
+            else f"{n.id} ({n.metadata['area_m2']} m^2)"
+            for n in created
+        )
+        return SkillResult.ok(
+            f"Split {room_id} into {described}; {moved} object(s) and {rewritten} "
+            "sighting row(s) reassigned. Automatic derivation will preserve this edit.",
+            new_room_ids=[n.id for n in created],
+            objects_moved=moved,
+            sightings_reassigned=rewritten,
         )
 
     @skill
