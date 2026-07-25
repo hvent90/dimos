@@ -12,9 +12,12 @@
 # See the License for the specific language governing permissions and
 # limitations under the License.
 
+from collections.abc import Iterator
+import math
 from typing import Any
 
 from langchain_core.messages import HumanMessage
+import pytest
 
 from dimos.agents.skills.navigation import NavigationSkillContainer
 from dimos.core.core import rpc
@@ -115,6 +118,73 @@ class MockedSemanticNavSkill(NavigationSkillContainer):
 
     def _navigate_using_semantic_map(self, query):
         return f"Successfuly arrived at '{query}'"
+
+
+class RecordingNavigation:
+    """Keeps the goals it is handed instead of driving to them.
+
+    Structurally satisfies NavigationInterfaceSpec, which is a Protocol.
+    """
+
+    def __init__(self) -> None:
+        self.goals: list[PoseStamped] = []
+
+    def set_goal(self, goal: PoseStamped) -> bool:
+        self.goals.append(goal)
+        return True
+
+    def get_state(self) -> NavigationState:
+        return NavigationState.IDLE
+
+    def is_goal_reached(self) -> bool:
+        return False
+
+    def cancel_goal(self) -> bool:
+        return True
+
+
+class MockedPoseNavSkill(NavigationSkillContainer):
+    """Reaches started state without stream wiring.
+
+    ``start()`` subscribes to color_image and odom, which a bare container
+    has no transports for; navigate_to_pose reads neither.
+    """
+
+    def __init__(self, **kwargs: Any) -> None:
+        super().__init__(**kwargs)
+        self._skill_started = True
+
+
+@pytest.fixture()
+def pose_nav() -> Iterator[MockedPoseNavSkill]:
+    # __init__ spawns the module's LCM/event-loop threads; stop() joins them.
+    container = MockedPoseNavSkill()
+    try:
+        yield container
+    finally:
+        container.stop()
+
+
+def test_navigate_to_pose_sends_metric_goal(pose_nav: MockedPoseNavSkill) -> None:
+    container = pose_nav
+    navigation = RecordingNavigation()
+    container._navigation = navigation
+
+    message = container.navigate_to_pose(3.2, 1.4, yaw_deg=90.0)
+
+    assert "(3.20, 1.40)" in message
+    assert "90 deg" in message
+    assert "stop_navigation" in message
+    goal = navigation.goals[0]
+    assert goal.frame_id == "map"
+    assert goal.position.x == 3.2
+    assert goal.position.y == 1.4
+    # yaw_deg is degrees; the goal quaternion must carry radians.
+    assert goal.orientation.to_euler().z == pytest.approx(math.pi / 2)
+
+    # Omitted heading leaves the facing unconstrained (identity rotation).
+    container.navigate_to_pose(0.0, -2.0)
+    assert navigation.goals[1].orientation.to_euler().z == pytest.approx(0.0)
 
 
 def test_stop_movement(agent_setup) -> None:
