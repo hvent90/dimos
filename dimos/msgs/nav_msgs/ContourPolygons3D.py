@@ -27,11 +27,101 @@ import struct
 from typing import TYPE_CHECKING, BinaryIO
 
 from dimos_lcm.sensor_msgs import PointCloud2 as LCMPointCloud2
+import numpy as np
+from numpy.typing import NDArray
 
 from dimos.types.timestamped import Timestamped
 
 if TYPE_CHECKING:
     from rerun._baseclasses import Archetype
+
+# Matplotlib tab10 — same palette as room_segmentation.REGION_PALETTE, keyed
+# by (polygon id - 1), so viewer fills match the 2D debug renders.
+DEFAULT_MESH_PALETTE = [
+    (31, 119, 180), (255, 127, 14), (44, 160, 44), (214, 39, 40), (148, 103, 189),
+    (140, 86, 75), (227, 119, 194), (23, 190, 207), (188, 189, 34), (127, 127, 127),
+]  # fmt: skip
+
+
+def _ear_clip(ring: NDArray[np.float64]) -> list[tuple[int, int, int]]:
+    """Triangulate a simple CCW polygon (N, 2) by ear clipping.
+
+    Falls back to a centroid-free fan over the remaining vertices if no ear
+    is found (degenerate input) — wrong fills beat no fills for debug viz.
+    """
+
+    def cross(o: NDArray[np.float64], a: NDArray[np.float64], b: NDArray[np.float64]) -> float:
+        return float((a[0] - o[0]) * (b[1] - o[1]) - (a[1] - o[1]) * (b[0] - o[0]))
+
+    idx = list(range(len(ring)))
+    tris: list[tuple[int, int, int]] = []
+    while len(idx) > 3:
+        for k in range(len(idx)):
+            i0, i1, i2 = idx[k - 1], idx[k], idx[(k + 1) % len(idx)]
+            a, b, c = ring[i0], ring[i1], ring[i2]
+            if cross(a, b, c) <= 1e-12:  # reflex or collinear corner
+                continue
+            others = [j for j in idx if j not in (i0, i1, i2)]
+            pts = ring[others]
+            d1 = (b[0] - a[0]) * (pts[:, 1] - a[1]) - (b[1] - a[1]) * (pts[:, 0] - a[0])
+            d2 = (c[0] - b[0]) * (pts[:, 1] - b[1]) - (c[1] - b[1]) * (pts[:, 0] - b[0])
+            d3 = (a[0] - c[0]) * (pts[:, 1] - c[1]) - (a[1] - c[1]) * (pts[:, 0] - c[0])
+            # On-edge counts as blocking: a reflex vertex exactly on the
+            # candidate diagonal would let the ear poke outside the polygon.
+            if bool(np.any((d1 >= 0) & (d2 >= 0) & (d3 >= 0))):
+                continue
+            tris.append((i0, i1, i2))
+            idx.pop(k)
+            break
+        else:
+            break  # no ear found — degenerate remainder
+    if len(idx) == 3:
+        tris.append((idx[0], idx[1], idx[2]))
+    else:
+        for k in range(1, len(idx) - 1):
+            tris.append((idx[0], idx[k], idx[k + 1]))
+    return tris
+
+
+def _simplify_ring(ring: NDArray[np.float64], tolerance_m: float) -> NDArray[np.float64]:
+    """Drop grid stair-step vertices via Douglas-Peucker (closed contour)."""
+    import cv2
+
+    if len(ring) < 4 or tolerance_m <= 0:
+        return ring
+    approx = cv2.approxPolyDP(ring.astype(np.float32).reshape(-1, 1, 2), tolerance_m, True)
+    simplified = approx.reshape(-1, 2).astype(np.float64)
+    return simplified if len(simplified) >= 3 else ring
+
+
+def build_mesh_arrays(
+    polys: dict[int, NDArray[np.float64]],
+    z_offset: float,
+    palette: list[tuple[int, int, int]],
+    alpha: int,
+    simplify_m: float,
+) -> tuple[list[list[float]], list[list[int]], list[tuple[int, int, int, int]]]:
+    """Vertices, triangle indices, and per-vertex colors for the filled mesh."""
+    vertices: list[list[float]] = []
+    indices: list[list[int]] = []
+    vertex_colors: list[tuple[int, int, int, int]] = []
+    for poly_id, raw_ring in sorted(polys.items()):
+        ring = _simplify_ring(np.asarray(raw_ring, dtype=np.float64), simplify_m)
+        keep = np.linalg.norm(np.diff(ring, axis=0, append=ring[:1]), axis=1) > 1e-9
+        ring = ring[keep]
+        if len(ring) < 3:
+            continue
+        area2 = float(
+            np.sum(ring[:, 0] * np.roll(ring[:, 1], -1) - np.roll(ring[:, 0], -1) * ring[:, 1])
+        )
+        if area2 < 0:  # ear clipping expects CCW
+            ring = ring[::-1]
+        base = len(vertices)
+        vertices.extend([float(x), float(y), z_offset] for x, y in ring)
+        indices.extend([base + a, base + b, base + c] for a, b, c in _ear_clip(ring))
+        color = palette[(poly_id - 1) % len(palette)]
+        vertex_colors.extend([(*color, alpha)] * len(ring))
+    return vertices, indices, vertex_colors
 
 
 class ContourPolygons3D(Timestamped):
@@ -135,6 +225,36 @@ class ContourPolygons3D(Timestamped):
             strips,
             colors=[color] * len(strips),
             radii=[radii] * len(strips),
+        )
+
+    def to_rerun_mesh(
+        self,
+        z_offset: float = 0.03,
+        palette: list[tuple[int, int, int]] | None = None,
+        alpha: int = 130,
+        simplify_m: float = 0.08,
+    ) -> Archetype:
+        """Render the polygons as filled, per-id tinted ``rr.Mesh3D``.
+
+        Contours are Douglas-Peucker simplified by ``simplify_m`` (grid
+        stair-steps vanish), ear-clipped into triangles, and colored
+        ``palette[(id - 1) % len]`` — the same keying as the room
+        segmentation's 2D debug render, so figures and viewer agree.
+        ``z_offset`` is the absolute render height of the fill plane.
+        """
+        import rerun as rr
+
+        grouped: dict[int, list[tuple[float, float]]] = defaultdict(list)
+        for x, y, _z, intensity in self._parse_xyzi():
+            grouped[int(intensity)].append((x, y))
+        polys = {i: np.asarray(v, dtype=np.float64) for i, v in grouped.items()}
+        vertices, indices, vertex_colors = build_mesh_arrays(
+            polys, z_offset, palette or DEFAULT_MESH_PALETTE, alpha, simplify_m
+        )
+        return rr.Mesh3D(
+            vertex_positions=vertices,
+            triangle_indices=indices,
+            vertex_colors=vertex_colors,
         )
 
     def __str__(self) -> str:
