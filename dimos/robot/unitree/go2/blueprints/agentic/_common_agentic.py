@@ -15,6 +15,7 @@
 
 from dimos.agents.skills.navigation import NavigationSkillContainer
 from dimos.agents.skills.person_follow import PersonFollowSkillContainer
+from dimos.agents.skills.scene_memory import SceneMemorySkillContainer
 from dimos.agents.skills.speak_skill import SpeakSkill
 from dimos.agents.web_human_input import WebInput
 from dimos.core.coordination.blueprints import autoconnect
@@ -24,6 +25,7 @@ from dimos.robot.unitree.unitree_skill_container import UnitreeSkillContainer
 _common_agentic = autoconnect(
     NavigationSkillContainer.blueprint(),
     PersonFollowSkillContainer.blueprint(camera_info=GO2Connection.camera_info_static),
+    SceneMemorySkillContainer.blueprint(),
     UnitreeSkillContainer.blueprint(),
     WebInput.blueprint(),
     SpeakSkill.blueprint(),
