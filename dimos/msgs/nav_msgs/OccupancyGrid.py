@@ -16,6 +16,7 @@ from __future__ import annotations
 
 from enum import IntEnum
 from functools import lru_cache
+import math
 import time
 from typing import TYPE_CHECKING, BinaryIO
 
@@ -468,15 +469,34 @@ class OccupancyGrid(Timestamped):
             ts=self.ts,
         )
 
-    def cell_value(self, world_position: Vector3) -> int:
-        grid_position = self.world_to_grid(world_position)
-        x = int(grid_position.x)
-        y = int(grid_position.y)
+    def cell_index(self, world_position: VectorLike) -> tuple[int, int] | None:
+        """Indices of the cell containing a world point, or None if it is off-map.
 
-        if not (0 <= x < self.width and 0 <= y < self.height):
+        Args:
+            world_position: A vector-like object containing X,Y coordinates
+
+        Returns:
+            (column, row) — index the grid as ``grid[row, column]`` — or None
+            when the point falls outside the mapped area.
+        """
+        grid_position = self.world_to_grid(world_position)
+        column = math.floor(grid_position.x)
+        row = math.floor(grid_position.y)
+
+        if not (0 <= column < self.width and 0 <= row < self.height):
+            return None
+
+        return column, row
+
+    def cell_value(self, world_position: Vector3) -> int:
+        """Cost at a world point. Off-map reads as UNKNOWN; use cell_index to tell them apart."""
+        cell = self.cell_index(world_position)
+
+        if cell is None:
             return CostValues.UNKNOWN
 
-        return int(self.grid[y, x])
+        column, row = cell
+        return int(self.grid[row, column])
 
     def to_rerun(
         self,
