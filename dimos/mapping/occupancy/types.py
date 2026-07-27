@@ -15,3 +15,8 @@
 from typing import Literal, TypeAlias
 
 NavigationStrategy: TypeAlias = Literal["simple", "mixed"]
+
+# Cells at or above this cost are obstacles; unknown (-1) never is, and is excluded
+# from free space separately. On the default height_cost costmap, 50 is a step half
+# the robot's climb limit.
+DEFAULT_OBSTACLE_THRESHOLD = 50

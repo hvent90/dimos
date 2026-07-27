@@ -197,6 +197,7 @@ all_modules = {
     "far-planner": "dimos.navigation.cmu_nav.modules.far_planner.far_planner.FarPlanner",
     "fast-lio2": "dimos.hardware.sensors.lidar.fastlio2.module.FastLio2",
     "fast-lio2-recorder": "dimos.hardware.sensors.lidar.fastlio2.recorder.FastLio2Recorder",
+    "free-space-skill-container": "dimos.agents.skills.free_space.FreeSpaceSkillContainer",
     "front-camera": "dimos.teleop.hosted.blueprints.cloudflare.FrontCamera",
     "g1-connection": "dimos.robot.unitree.g1.connection.G1Connection",
     "g1-connection-base": "dimos.robot.unitree.g1.connection.G1ConnectionBase",
