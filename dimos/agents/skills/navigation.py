@@ -120,11 +120,18 @@ class NavigationSkillContainer(Module):
     # patrol/follow/explore can't start over an active navigation goal.
     @skill(uses=[CAP_MOVEMENT])
     def navigate_with_text(self, query: str) -> str:
-        """Navigate to a location by querying the existing semantic map using natural language.
+        """Navigate COARSELY toward something by name. Not for precise placement.
 
         First attempts to locate an object in the robot's camera view using vision.
         If the object is found, navigates to it. If not, falls back to querying the
-        semantic map for a location matching the description.
+        semantic map — which drives to where the query was SEEN FROM (a stored
+        camera viewpoint), possibly meters away from the object itself.
+        For placement-constrained goals — "beside X", "next to X", "behind X",
+        or a specific distance — do not stop here: get the object's position
+        and extent from the scene graph (scan_for_objects, find), pick a
+        standable spot (free_space_near / nearest_free), and finish with
+        navigate_to_pose. Using this skill first to get near, then refining
+        with that chain, works well.
         CALL THIS SKILL FOR ONE SUBJECT AT A TIME. For example: "Go to the person wearing a blue shirt in the living room",
         you should call this skill twice, once for the person wearing a blue shirt and once for the living room.
         Args:
