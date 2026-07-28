@@ -155,7 +155,10 @@ class NavigationSkillContainer(Module):
     def navigate_to_pose(self, x: float, y: float, yaw_deg: float | None = None) -> str:
         """Navigate to explicit world coordinates, optionally facing a heading.
 
-        Sends the planner a metric goal in the map frame.
+        Sends the planner a metric goal in the map frame. Use after the map
+        and scene-graph query skills: find an object's position and extent,
+        pick a standable point (free_space_near / nearest_free), then call
+        this to go there.
 
         Args:
             x: Goal world x in meters (map frame).
