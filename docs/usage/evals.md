@@ -197,9 +197,6 @@ vs `final`.
 - **MCP**: the `EvalModule` skills `run_evals` / `list_eval_suites` return the
   summary + run dir, so a coding agent can run evals, grep transcripts, edit
   prompts/encodings, and run again.
-- **Blind ablation**: `EvalRunner(blind=True)` withholds all observations. A
-  case that still passes blind is guessable — fix its distractors. Run every
-  new suite sighted and blind once before trusting it.
 - **Preflight**: before anything runs, every case is checked against the rig —
   a missing stream fails with `"No stream 'lidar'. Available: [...]"`, a case
   needing MCP/sim fails with what's missing. Errors are per-case; one broken

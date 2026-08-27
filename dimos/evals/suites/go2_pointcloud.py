@@ -23,6 +23,13 @@ quizzing whatever lossy encoding the agent receives for a ``PointCloud2``.
 ``go2_bigoffice`` is a 292 s exploration whose lidar is a rolling ~6 m local
 window, which is why the two datasets take different stream families.
 
+Free-space families live in their own suites, one per question class:
+:mod:`dimos.evals.suites.go2_pointcloud_clearance` and
+:mod:`dimos.evals.suites.go2_pointcloud_route`.
+
+Not sliced: the autoresearch loop gates against this suite rather than
+optimizing it, so every row is tagged ``frozen``.
+
 Regenerate (needs both recordings)::
 
     python -m dimos.evals.suites.go2_pointcloud
@@ -38,7 +45,11 @@ from dimos.evals.types import Suite
 
 _JSON = Path(__file__).parent / "go2_pointcloud_vqa.json"
 
-SUITE: Suite = generate.cases(json.loads(_JSON.read_text()), tags=frozenset({"pointcloud"}))
+# Not sliced: this suite is the frozen regression set the autoresearch loop
+# gates against, never the thing it optimizes.
+SUITE: Suite = generate.cases(
+    json.loads(_JSON.read_text()), tags=frozenset({"pointcloud", "frozen"})
+)
 
 _SHORT_TS = [5.0, 20.0, 40.0, 58.0]
 _SHORT_WINDOWS = [(0.0, 20.0), (15.0, 45.0), (30.0, 59.0), (0.0, 59.0)]

@@ -23,6 +23,7 @@ lifecycle: preflight, timing, error isolation, artifacts.
 from __future__ import annotations
 
 from collections.abc import Callable, Mapping, Sequence
+from concurrent.futures import ThreadPoolExecutor
 from dataclasses import asdict, dataclass, replace
 import json
 from pathlib import Path
@@ -69,6 +70,15 @@ class EvalRunnerConfig(BaseConfig):
     threshold: float = 1.0  # passed = score >= threshold
     strict: bool = False  # preflight failure aborts the whole run
     context_budget: int = 8  # max observations encoded per context Select
+    # Passive cases are independent single-shot calls, so the run is latency-
+    # bound: one 122-case bench is ~23 s of local work against ~24 min of
+    # serialized round-trips. Measured on that bench: 32-way finishes in 65 s
+    # with no errors. Note that an autoresearch round runs one bench *per
+    # subagent* concurrently, so a wide round multiplies this against a shared
+    # rate limit -- lower it with `--concurrency` when running several
+    # subagents. Interactive cases drive one robot and always run serially
+    # regardless.
+    concurrency: int = 32
     attach: bool = False  # True: drive an already-running dimos
     launch_timeout_s: float = 1200.0  # blueprint + MCP readiness (e2e parity)
     out_dir: Path = STATE_DIR / "evals"
@@ -131,19 +141,36 @@ class EvalRunner(Configurable, CompositeResource):
                 logger.warning("preflight failed", case=case.id, error=str(e))
                 results.append(EvalResult(case_id=case.id, error=f"preflight: {e}"))
 
-        for case in runnable:
-            result = self._guarded(case)
-            logger.info(
-                "eval case done",
-                case=case.id,
-                score=round(result.score, 3),
-                error=result.error or None,
-            )
-            results.append(result)
-
+        results.extend(self._execute(runnable))
         self._write_artifacts(results)
         self.stop()
         return results
+
+    def _execute(self, runnable: Sequence[EvalCase]) -> list[EvalResult]:
+        """Run the selected cases, in case order.
+
+        Passive cases are independent — a frozen store, one model call, no
+        shared mutable state — so they fan out across a thread pool and the run
+        stops being a queue of round-trips. Anything interactive drives a single
+        robot or simulator and runs serially no matter what ``concurrency``
+        says.
+        """
+        workers = min(self.config.concurrency, len(runnable))
+        if workers > 1 and not any(isinstance(c, InteractiveEval) for c in runnable):
+            _ = self.model  # build once here; racing on the lazy property would not
+            with ThreadPoolExecutor(max_workers=workers) as pool:
+                return list(pool.map(self._run_case, runnable))  # map preserves order
+        return [self._run_case(case) for case in runnable]
+
+    def _run_case(self, case: EvalCase) -> EvalResult:
+        result = self._guarded(case)
+        logger.info(
+            "eval case done",
+            case=case.id,
+            score=round(result.score, 3),
+            error=result.error or None,
+        )
+        return result
 
     def _guarded(self, case: EvalCase) -> EvalResult:
         t0 = time.monotonic()
@@ -159,7 +186,8 @@ class EvalRunner(Configurable, CompositeResource):
         except Exception as e:
             return EvalResult(case_id=case.id, error=repr(e), duration_s=time.monotonic() - t0)
         finally:
-            self.teardown_env()
+            if isinstance(case, InteractiveEval):
+                self.teardown_env()  # the runner owns env lifecycle; passive cases have none
 
     @property
     def run_dir(self) -> Path:
@@ -231,6 +259,11 @@ class EvalRunner(Configurable, CompositeResource):
                 f"(t is seconds from the first shown):",
             }
         ]
+        # A type that describes its encoding once, as a class constant, gets
+        # that description delivered once per stream rather than per frame.
+        legend = getattr(type(observations[0].data), "AGENT_ENCODE_LEGEND", None)
+        if isinstance(legend, str):
+            blocks.append({"type": "text", "text": f"format: {legend}"})
         for obs in observations:
             data = obs.data
             encoded = data.agent_encode() if hasattr(data, "agent_encode") else None
@@ -259,6 +292,17 @@ class EvalRunner(Configurable, CompositeResource):
         if self.config.chat_model is not None:
             return self.config.chat_model  # type: ignore[no-any-return]
         if self._model is None:
+            # Entry-point parity: `dimos evals run` picks up .env because the
+            # CLI calls load_dotenv() at import, but the evo bench and pytest
+            # import this runner directly and would otherwise start with no
+            # credential. load_dotenv() never overrides a variable already in
+            # the environment, so an injected one (evo env, CI secrets) still
+            # wins -- which is what makes this correct inside an experiment
+            # worktree, where .env is gitignored and therefore absent.
+            from dotenv import load_dotenv
+
+            load_dotenv()
+
             # Same construction as the production agent (Responses-API branch
             # for gpt-5.x) so evals measure the deployed model config.
             from dimos.agents.mcp.mcp_client import _init_model

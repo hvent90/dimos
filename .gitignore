@@ -94,3 +94,9 @@ yolo11n*.pt
 # Generic ignore patterns
 *.ignore
 *.ignore.*
+
+# autoresearch: per-run benchmark artifacts (docs/development/autoresearch.md)
+.evo_bench/
+
+# evals autoresearch scaffolding — local only, never shipped
+/dimos/evals/temp/
